@@ -9,7 +9,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 APP_DIR="$SCRIPT_DIR"
 
 UPSTREAM_REPO="flowork-os/FLOWORK-AGENT"
-RAW_VERSION_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/LINUX/VERSION"
+RAW_VERSION_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/linux/VERSION"
 ARCHIVE_URL="https://github.com/${UPSTREAM_REPO}/archive/refs/heads/main.tar.gz"
 
 LOCAL_VER_FILE="$APP_DIR/VERSION"
@@ -38,9 +38,9 @@ if [ "$NEEDS_UPDATE" = true ]; then
       curl -sL --max-time 120 "$ARCHIVE_URL" | tar -xzf - \
         --strip-components=2 \
         -C "$APP_DIR" \
-        --exclude="FLOWORK-AGENT-main/LINUX/portable-home/.flowork/*" \
-        --exclude="FLOWORK-AGENT-main/LINUX/.env" \
-        "FLOWORK-AGENT-main/LINUX" 2>/dev/null || true
+        --exclude="FLOWORK-AGENT-main/linux/portable-home/.flowork/*" \
+        --exclude="FLOWORK-AGENT-main/linux/.env" \
+        "FLOWORK-AGENT-main/linux" 2>/dev/null || true
 
       [ -n "$REMOTE_VER" ] && echo "$REMOTE_VER" > "$LOCAL_VER_FILE"
       echo "[Flowork] ✅ Synchronized successfully (v${REMOTE_VER:-$LOCAL_VER})."
