@@ -1456,7 +1456,7 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
         }));
     }
 
-    const vault = loadVault();
+    let vault = loadVault();
 
     if (pathname.includes(':fetchAvailableModels') || pathname.includes(':listModels')) {
         const googleServer = require('./google_server');

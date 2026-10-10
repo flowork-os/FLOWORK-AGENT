@@ -254,6 +254,11 @@ EOF_LAUNCHER
     ln -sf "$SCRIPT_DIR/x-flow" "$bin_dir/x-flow" 2>/dev/null || true
   fi
 
+  # Ensure favicon is present from canvas-ui if not in root
+  if [ ! -f "$SCRIPT_DIR/favicon.png" ] && [ -f "$SCRIPT_DIR/canvas-ui/favicon.png" ]; then
+    cp -f "$SCRIPT_DIR/canvas-ui/favicon.png" "$SCRIPT_DIR/favicon.png" 2>/dev/null || true
+  fi
+
   # Ensure icon is registered in standard hicolor icon themes
   if [ -f "$SCRIPT_DIR/favicon.png" ]; then
     for sz in 16 32 48 64 128 256; do
@@ -272,18 +277,19 @@ EOF_LAUNCHER
     cp -f "$SCRIPT_DIR/favicon.png" "$HOME/.icons/x-flow.png" 2>/dev/null || true
   fi
 
-  # 100% Portable Desktop Entry (Zero Hardcoded Paths — FreeDesktop Compliant)
-  local launcher_content='[Desktop Entry]
+  # 100% Portable Desktop Entry with Absolute Exec and Path
+  local launcher_content="[Desktop Entry]
 Version=1.0
 Type=Application
 Name=X-Flow Canvas Host
 Comment=Sovereign Multi-OS Canvas Host & Polyglot Engine
-Exec=flowork-launcher %k
-Icon=x-flow
+Exec=$bin_dir/flowork-launcher
+Path=$SCRIPT_DIR
+Icon=flowork
 Terminal=false
 Categories=Development;
 StartupNotify=true
-StartupWMClass=127.0.0.1'
+StartupWMClass=127.0.0.1"
 
   # Sovereign Binary Thumbnailer (Dynamic per-PC $HOME path)
   local thumb_dir="${XDG_DATA_HOME:-$HOME/.local/share}/thumbnailers"
@@ -344,10 +350,13 @@ EOF_ENTRY
     echo "$launcher_content" > "$desktop_dir/X-Flow.desktop"
     chmod +x "$desktop_dir/X-Flow.desktop" 2>/dev/null || true
     gio set "$desktop_dir/X-Flow.desktop" metadata::trusted true 2>/dev/null || true
+    gio set "$desktop_dir/X-Flow.desktop" metadata::trusted yes 2>/dev/null || true
   fi
 
   echo "$launcher_content" > "$SCRIPT_DIR/X-Flow.desktop"
   chmod +x "$SCRIPT_DIR/X-Flow.desktop" 2>/dev/null || true
+  gio set "$SCRIPT_DIR/X-Flow.desktop" metadata::trusted true 2>/dev/null || true
+  gio set "$SCRIPT_DIR/X-Flow.desktop" metadata::trusted yes 2>/dev/null || true
 }
 sync_desktop_launchers 2>/dev/null || true
 

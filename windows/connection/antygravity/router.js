@@ -815,7 +815,7 @@ async function handleAntigravityRequest(req, res, parsedUrl, pathname, serverPor
             ? gAuth.upstream_endpoint
             : 'https://auth.floworkos.com/api/connector/proxy/cloudcode';
         const [rawSubPath, rawQuery] = (req.url || '').split('?');
-        const targetUrl = new URL(targetBaseUrl);
+        let targetUrl = new URL(targetBaseUrl);
         targetUrl.pathname = targetUrl.pathname.replace(/\/+$/, '') + '/' + (rawSubPath || '').replace(/^\/+/, '');
         if (rawQuery) targetUrl.search = '?' + rawQuery;
 
