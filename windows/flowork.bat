@@ -9,7 +9,7 @@ set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
 set "UPSTREAM_REPO=flowork-os/FLOWORK-AGENT"
-set "RAW_VERSION_URL=https://raw.githubusercontent.com/%UPSTREAM_REPO%/main/windows/VERSION"
+set "RAW_VERSION_URL=https://raw.githubusercontent.com/%UPSTREAM_REPO%/main/WINDOWS/VERSION"
 set "ARCHIVE_URL=https://github.com/%UPSTREAM_REPO%/archive/refs/heads/main.zip"
 set "LOCAL_VER_FILE=%SCRIPT_DIR%VERSION"
 
@@ -27,6 +27,7 @@ for /f "usebackq delims=" %%v in (`powershell -NoProfile -Command "try { (Invoke
 set "NEEDS_UPDATE=0"
 if not exist "%SCRIPT_DIR%run.bat" set "NEEDS_UPDATE=1"
 if not exist "%SCRIPT_DIR%connection" set "NEEDS_UPDATE=1"
+if not exist "%SCRIPT_DIR%Persona" set "NEEDS_UPDATE=1"
 if "%LOCAL_VER%"=="" set "NEEDS_UPDATE=1"
 if defined REMOTE_VER (
     if not "%REMOTE_VER%"=="%LOCAL_VER%" set "NEEDS_UPDATE=1"
@@ -41,7 +42,7 @@ if "%NEEDS_UPDATE%"=="1" (
         try { ^
             Invoke-WebRequest -Uri '%ARCHIVE_URL%' -OutFile $zip -UseBasicParsing; ^
             Expand-Archive -Path $zip -DestinationPath $ext -Force; ^
-            $src = Join-Path $ext 'FLOWORK-AGENT-main\windows'; ^
+            $src = Join-Path $ext 'FLOWORK-AGENT-main\WINDOWS'; ^
             if (Test-Path $src) { ^
                 Get-ChildItem -Path $src -Recurse | Where-Object { $_.FullName -notmatch 'portable-home\\\.flowork' } | ForEach-Object { ^
                     $rel = $_.FullName.Substring($src.Length).TrimStart('\'); ^

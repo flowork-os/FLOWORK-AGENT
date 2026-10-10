@@ -10,6 +10,31 @@ const config = googleServer.loadConfig();
 const FLOW_CLIENT_ID = '[MANAGED_AT_EDGE_BY_FLOWORKOS]';
 const ANTIGRAVITY_CLIENT_SECRET = '[MANAGED_BY_AUTH_FLOWORKOS_COM]';
 
+function isAllowedOrigin(origin) {
+    if (!origin) return false;
+    try {
+        const u = new url.URL(origin);
+        const host = u.hostname.toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')) return true;
+        if (host === 'floworkos.com' || host.endsWith('.floworkos.com')) return true;
+        if (u.protocol === 'file:' || u.protocol === 'vscode-file:' || u.protocol === 'electron:') return true;
+    } catch (_) {}
+    return false;
+}
+
+function getSafeCorsHeaders(req) {
+    const origin = req?.headers?.origin || req?.headers?.referer || '';
+    if (origin && isAllowedOrigin(origin)) {
+        try {
+            return {
+                'Access-Control-Allow-Origin': new url.URL(origin).origin,
+                'Vary': 'Origin'
+            };
+        } catch (_) {}
+    }
+    return {};
+}
+
 function getPortableHome() {
     if (process.env.FLOWORK_PORTABLE_ROOT) {
         const pRoot = path.resolve(process.env.FLOWORK_PORTABLE_ROOT);
@@ -1004,8 +1029,10 @@ async function refreshAccountToken(account, force = false) {
                             account.refresh_token = json.refreshToken || json.refresh_token;
                         }
                         account.expires_at = Date.now() + (((json.expiresIn || json.expires_in) || 3600) * 1000);
-                        account.status = 'active';
-                        account.error_message = '';
+                        if (account.status !== 'validation_required') {
+                            account.status = 'active';
+                            account.error_message = '';
+                        }
                         console.log(`[Account Rotator] ✅ Token refreshed via auth.floworkos.com for ${account.email} (valid for ${(json.expiresIn || json.expires_in || 3600)}s)`);
                         resolve({ refreshed: true, access_token: account.access_token });
                     } else {
@@ -1671,19 +1698,59 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
             } catch (_) {}
         }
 
+        const requestStartTime = Date.now();
+        const MAX_OVERALL_REQUEST_TIME_MS = 80000;
+
         // Forward attempt function with failover
         const attemptForward = async (currentAccount, attemptCount = 0) => {
+            const isStreamRequest = isV1BetaStream || req.url.includes('stream') || (req.headers.accept && req.headers.accept.includes('text/event-stream'));
+
+            const returnGracefulFallback = (msg) => {
+                if (res.headersSent) return;
+                res.writeHead(200, { 'Content-Type': isStreamRequest ? 'text/event-stream' : 'application/json' });
+                const fb = formatSovereignPayload(null, msg);
+                if (isStreamRequest) {
+                    res.write(`data: ${JSON.stringify(fb)}\n\n`);
+                    res.end();
+                } else {
+                    res.end(JSON.stringify(fb));
+                }
+            };
+
+            if (Date.now() - requestStartTime > MAX_OVERALL_REQUEST_TIME_MS) {
+                console.warn(`[Account Rotator] ⏱️ Global request deadline exceeded (${MAX_OVERALL_REQUEST_TIME_MS / 1000}s). Returning graceful fallback.`);
+                return returnGracefulFallback('[Flowork Engine Notice] Inferensi model upstream memerlukan waktu lebih lama. Silakan ulangi instruksi.');
+            }
+
             // Guarantee token validity prior to upstream dispatch
             const tokenRes = await ensureAccountTokenValid(currentAccount, 2 * 60 * 1000);
             if (tokenRes && tokenRes.details && tokenRes.details.refreshed) {
                 saveVault(vault);
             }
 
+            // Flowork Sovereign Upstream Dispatcher:
+            // For generateContent (or streamGenerateContent), always dispatch as streamGenerateContent?alt=sse upstream.
+            // Google's daily-cloudcode-pa gateway deadlocks/hangs on non-streaming requests with reasoning models (Gemini 3.8 Flash High)
+            // but streams response chunks within 2-4 seconds!
+            const isGenerateContent = (upstreamPath || '').toLowerCase().includes('generatecontent');
+            const useUpstreamSse = isGenerateContent || isStreamRequest;
+
+            let effectiveSubPath = (upstreamPath || '').split('?')[0] || '';
+            let effectiveQuery = (upstreamPath || '').split('?')[1] || '';
+
+            if (useUpstreamSse) {
+                if (!effectiveSubPath.includes('streamGenerateContent')) {
+                    effectiveSubPath = effectiveSubPath.replace(/generateContent/i, 'streamGenerateContent');
+                }
+                if (!effectiveQuery.includes('alt=sse')) {
+                    effectiveQuery = effectiveQuery ? `${effectiveQuery}&alt=sse` : 'alt=sse';
+                }
+            }
+
             const targetBaseUrl = 'https://daily-cloudcode-pa.googleapis.com';
-            const [rawSubPath, rawQuery] = (upstreamPath || '').split('?');
             const targetUrl = new URL(targetBaseUrl);
-            targetUrl.pathname = targetUrl.pathname.replace(/\/+$/, '') + '/' + (rawSubPath || '').replace(/^\/+/, '');
-            if (rawQuery) targetUrl.search = '?' + rawQuery;
+            targetUrl.pathname = targetUrl.pathname.replace(/\/+$/, '') + '/' + effectiveSubPath.replace(/^\/+/, '');
+            if (effectiveQuery) targetUrl.search = '?' + effectiveQuery;
             console.log(`[Account Rotator] 📡 DISPATCHING ${req.method} ${targetUrl.href} (account: ${currentAccount.email})`);
             try {
                 const dumpDir = path.join(__dirname, '..', '..', '.FL_BIN');
@@ -1691,37 +1758,32 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                 fs.writeFileSync(path.join(dumpDir, 'last_upstream_payload.json'), reqBody.toString('utf8'));
             } catch (_) {}
 
-            const isStreamRequest = isV1BetaStream || req.url.includes('stream') || (req.headers.accept && req.headers.accept.includes('text/event-stream'));
-
             const proxyHeaders = { ...req.headers };
             proxyHeaders.host = targetUrl.host;
             proxyHeaders['user-agent'] = 'antigravity/2.8.1';
             proxyHeaders['authorization'] = `Bearer ${currentAccount.access_token || ''}`;
             proxyHeaders['content-length'] = reqBody.length;
             proxyHeaders['connection'] = 'close';
+            if (useUpstreamSse) {
+                proxyHeaders['accept'] = 'text/event-stream';
+            }
             delete proxyHeaders['accept-encoding'];
             delete proxyHeaders['x-goog-api-key'];
             delete proxyHeaders['x-goog-access-token'];
 
+            // Upstream streaming delivers chunks progressively.
+            // Give up to 45s for Google to ingest large prompt contexts (50k+ tokens), then reset timeout on each chunk.
+            const UPSTREAM_TIMEOUT_MS = 45000;
             const proxyReq = https.request(targetUrl, {
                 method: req.method,
                 headers: proxyHeaders,
-                timeout: 60000
+                timeout: UPSTREAM_TIMEOUT_MS
             }, async (proxyRes) => {
+                proxyReq.setTimeout(UPSTREAM_TIMEOUT_MS);
+                proxyRes.on('data', () => proxyReq.setTimeout(UPSTREAM_TIMEOUT_MS));
+                proxyRes.on('end', () => proxyReq.setTimeout(0));
                 console.log(`[Account Rotator] 📥 UPSTREAM STATUS: ${proxyRes.statusCode} for ${targetUrl.href} [${currentAccount.email}]`);
                 const maxAttempts = Math.max(vault.accounts.length, 25);
-
-                const returnGracefulFallback = (msg) => {
-                    if (res.headersSent) return;
-                    res.writeHead(200, { 'Content-Type': isStreamRequest ? 'text/event-stream' : 'application/json' });
-                    const fb = formatSovereignPayload(null, msg);
-                    if (isStreamRequest) {
-                        res.write(`data: ${JSON.stringify(fb)}\n\n`);
-                        res.end();
-                    } else {
-                        res.end(JSON.stringify(fb));
-                    }
-                };
 
                 // 1. Check for HTTP 401 Unauthorized (Expired or Revoked Token)
                 if (proxyRes.statusCode === 401 && attemptCount < maxAttempts) {
@@ -1892,6 +1954,7 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                 currentAccount.requests_count = (currentAccount.requests_count || 0) + 1;
                 currentAccount.last_used_at = new Date().toISOString();
                 if (proxyRes.statusCode === 200) {
+                    vault.active_account_id = currentAccount.id;
                     setImmediate(() => notifyCloudUsage('google', 'gemini-3.8-flash-high', 1));
                 }
                 saveVault(vault);
@@ -1901,9 +1964,11 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                 responseHeaders['access-control-allow-methods'] = 'GET, POST, OPTIONS, PUT, DELETE';
                 responseHeaders['access-control-allow-headers'] = '*';
 
-                const isStream = isStreamRequest || (proxyRes.headers['content-type'] && proxyRes.headers['content-type'].includes('text/event-stream'));
+                const isStream = isStreamRequest;
                 delete responseHeaders['content-length'];
-                res.writeHead(proxyRes.statusCode, responseHeaders);
+                if (isStream) {
+                    res.writeHead(proxyRes.statusCode, responseHeaders);
+                }
 
                 if (isStream) {
                     let streamBuffer = '';
@@ -1925,7 +1990,16 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                                         const payload = formatSovereignPayload(obj);
                                         if (payload.candidates && payload.candidates.length > 0) {
                                             const cand = payload.candidates[0];
-                                            if (cand.finishReason) hasSentFinishReason = true;
+                                            if (cand.finishReason) {
+                                                hasSentFinishReason = true;
+                                                res.write(`data: ${JSON.stringify(payload)}\n\n`);
+                                                res.end();
+                                                try {
+                                                    proxyRes.destroy();
+                                                    proxyReq.destroy();
+                                                } catch (_) {}
+                                                return;
+                                            }
                                             if (cand.content && Array.isArray(cand.content.parts) && cand.content.parts.some(p => p.functionCall || (p.text && p.text.trim().length > 0))) {
                                                 hasSentAnyContent = true;
                                             }
@@ -1951,6 +2025,7 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                     });
 
                     proxyRes.on('end', () => {
+                        if (hasSentFinishReason) return;
                         if (streamBuffer.trim()) {
                             const trimmed = streamBuffer.trim();
                             if (trimmed.startsWith('data:')) {
@@ -1987,47 +2062,173 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                         res.end();
                     });
                 } else {
-                    let respData = '';
-                    proxyRes.on('data', c => { respData += c; });
-                    proxyRes.on('end', () => {
+                    // Non-streaming client (e.g. x-flow curl CLI):
+                    // Upstream delivered SSE chunks fast (3-4s). Reassemble into single JSON response for curl.
+                    let streamBuffer = '';
+                    let accumulatedCandidates = [];
+                    let accumulatedUsageMetadata = null;
+                    let hasReceivedAnyCandidate = false;
+                    let hasCompleted = false;
+
+                    const finishAndSend = () => {
+                        if (hasCompleted || res.headersSent) return;
+                        hasCompleted = true;
                         try {
-                            const dumpDir = path.join(__dirname, '..', '..', '.FL_BIN');
-                            if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
-                            fs.writeFileSync(path.join(dumpDir, 'last_upstream_response.json'), respData);
-                            const parsed = JSON.parse(respData);
-                            if (parsed.usageMetadata) {
-                                console.log('[Account Rotator] 📊 TOKEN USAGE:', JSON.stringify(parsed.usageMetadata));
+                            const finalPayload = {
+                                candidates: accumulatedCandidates.length > 0 ? accumulatedCandidates : [{
+                                    content: { role: 'model', parts: [{ text: ' ' }] },
+                                    finishReason: 'STOP',
+                                    index: 0
+                                }],
+                                usageMetadata: accumulatedUsageMetadata || undefined
+                            };
+                            finalPayload.response = { candidates: finalPayload.candidates };
+                            if (accumulatedUsageMetadata) {
+                                finalPayload.response.usageMetadata = accumulatedUsageMetadata;
                             }
-                            const payload = formatSovereignPayload(parsed, 'Maaf, model AI upstream tidak mengembalikan respons atau terkena safety filter.');
-                            return res.end(JSON.stringify(payload));
-                        } catch (_) {}
-                        res.end(respData);
+
+                            const formatted = formatSovereignPayload(finalPayload);
+                            try {
+                                const dumpDir = path.join(__dirname, '..', '..', '.FL_BIN');
+                                if (!fs.existsSync(dumpDir)) fs.mkdirSync(dumpDir, { recursive: true });
+                                fs.writeFileSync(path.join(dumpDir, 'last_upstream_response.json'), JSON.stringify(formatted, null, 2));
+                            } catch (_) {}
+
+                            const corsH = getSafeCorsHeaders(req);
+                            res.writeHead(200, {
+                                'Content-Type': 'application/json',
+                                ...corsH
+                            });
+                            res.end(JSON.stringify(formatted));
+                            try {
+                                proxyRes.destroy();
+                                proxyReq.destroy();
+                            } catch (_) {}
+                        } catch (aggErr) {
+                            console.error('[Account Rotator] Stream aggregator error:', aggErr.message);
+                            return returnGracefulFallback('[Flowork Engine Notice] Gagal merakit respons model inferensi.');
+                        }
+                    };
+
+                    proxyRes.on('data', chunk => {
+                        if (hasCompleted) return;
+                        streamBuffer += chunk.toString('utf8');
+                        const lines = streamBuffer.split('\n');
+                        streamBuffer = lines.pop(); // keep last incomplete line
+
+                        let shouldFlushEarly = false;
+
+                        for (const line of lines) {
+                            const trimmed = line.trim();
+                            if (trimmed.startsWith('data:')) {
+                                const jsonStr = trimmed.slice(5).trim();
+                                if (jsonStr) {
+                                    try {
+                                        const obj = JSON.parse(jsonStr);
+                                        const cand = obj.response?.candidates?.[0] || obj.candidates?.[0];
+                                        if (cand) {
+                                            hasReceivedAnyCandidate = true;
+                                            if (accumulatedCandidates.length === 0) {
+                                                accumulatedCandidates.push(JSON.parse(JSON.stringify(cand)));
+                                            } else {
+                                                const baseCand = accumulatedCandidates[0];
+                                                if (cand.finishReason) {
+                                                    baseCand.finishReason = cand.finishReason;
+                                                }
+                                                const incomingParts = cand.content?.parts || [];
+                                                if (incomingParts.length > 0) {
+                                                    if (!baseCand.content) {
+                                                        baseCand.content = { role: 'model', parts: [] };
+                                                    }
+                                                    if (!Array.isArray(baseCand.content.parts)) {
+                                                        baseCand.content.parts = [];
+                                                    }
+                                                    for (const inPart of incomingParts) {
+                                                        const lastPart = baseCand.content.parts[baseCand.content.parts.length - 1];
+                                                        if (inPart.text && lastPart && lastPart.text && !lastPart.functionCall && !inPart.functionCall) {
+                                                            lastPart.text += inPart.text;
+                                                        } else {
+                                                            baseCand.content.parts.push(inPart);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            if (cand.finishReason) {
+                                                shouldFlushEarly = true;
+                                            }
+                                        }
+                                        if (obj.usageMetadata || obj.response?.usageMetadata) {
+                                            accumulatedUsageMetadata = obj.usageMetadata || obj.response?.usageMetadata;
+                                        }
+                                    } catch (_) {}
+                                }
+                            }
+                        }
+
+                        if (shouldFlushEarly && hasReceivedAnyCandidate) {
+                            setTimeout(finishAndSend, 15);
+                        }
+                    });
+
+                    proxyRes.on('end', () => {
+                        if (hasCompleted) return;
+                        try {
+                            if (streamBuffer.trim().startsWith('data:')) {
+                                const jsonStr = streamBuffer.trim().slice(5).trim();
+                                if (jsonStr) {
+                                    try {
+                                        const obj = JSON.parse(jsonStr);
+                                        const cand = obj.response?.candidates?.[0] || obj.candidates?.[0];
+                                        if (cand && accumulatedCandidates.length > 0) {
+                                            if (cand.finishReason) accumulatedCandidates[0].finishReason = cand.finishReason;
+                                        }
+                                        if (obj.usageMetadata || obj.response?.usageMetadata) {
+                                            accumulatedUsageMetadata = obj.usageMetadata || obj.response?.usageMetadata;
+                                        }
+                                    } catch (_) {}
+                                }
+                            }
+
+                            // If upstream returned plain JSON instead of SSE:
+                            if (!hasReceivedAnyCandidate && streamBuffer.trim().startsWith('{')) {
+                                try {
+                                    const parsed = JSON.parse(streamBuffer.trim());
+                                    const payload = formatSovereignPayload(parsed);
+                                    const corsH = getSafeCorsHeaders(req);
+                                    res.writeHead(200, {
+                                        'Content-Type': 'application/json',
+                                        ...corsH
+                                    });
+                                    hasCompleted = true;
+                                    return res.end(JSON.stringify(payload));
+                                } catch (_) {}
+                            }
+
+                            finishAndSend();
+                        } catch (aggErr) {
+                            console.error('[Account Rotator] Stream aggregator error:', aggErr.message);
+                            return returnGracefulFallback('[Flowork Engine Notice] Gagal merakit respons model inferensi.');
+                        }
                     });
                 }
             });
 
             proxyReq.on('timeout', () => {
-                console.warn(`[Account Rotator] ⏱️ Upstream request timed out (60s) on [${currentAccount.email}]. Aborting socket for failover...`);
+                console.warn(`[Account Rotator] ⏱️ Upstream request timed out (${UPSTREAM_TIMEOUT_MS / 1000}s) on [${currentAccount.email}]. Aborting socket for failover...`);
                 proxyReq.destroy(new Error('ETIMEDOUT'));
             });
 
             proxyReq.on('error', (err) => {
                 console.error(`[Account Rotator] Upstream error on [${currentAccount.email}]:`, err.message);
-                if (attemptCount < vault.accounts.length - 1) {
+                const elapsed = Date.now() - requestStartTime;
+                if (attemptCount < vault.accounts.length - 1 && elapsed < MAX_OVERALL_REQUEST_TIME_MS - 20000) {
                     const fallback = getNextAvailableAccount(vault, currentAccount.id);
                     if (fallback) {
                         return attemptForward(fallback, attemptCount + 1);
                     }
                 }
                 if (!res.headersSent) {
-                    const fb = formatSovereignPayload(null, `Koneksi inferensi upstream terputus (${err.message}). Silakan ulangi instruksi.`);
-                    res.writeHead(200, { 'Content-Type': isStreamRequest ? 'text/event-stream' : 'application/json' });
-                    if (isStreamRequest) {
-                        res.write(`data: ${JSON.stringify(fb)}\n\n`);
-                        res.end();
-                    } else {
-                        res.end(JSON.stringify(fb));
-                    }
+                    returnGracefulFallback(`Koneksi inferensi upstream terputus (${err.message}). Silakan ulangi instruksi.`);
                 }
             });
 
@@ -2382,5 +2583,3 @@ module.exports = {
     getSyncDrivePath,
     MAX_ACCOUNTS
 };
-
-

@@ -57,10 +57,17 @@ function openUrlInBrowser(targetUrl) {
             const display = process.env.DISPLAY || ':0';
             const env = { ...process.env, HOME: realHome, DISPLAY: display };
             const child = spawn('xdg-open', [safeUrl], { detached: true, stdio: 'ignore', env });
+            child.on('exit', () => {});
+            child.on('close', () => {});
             child.on('error', () => {
                 const fallback = spawn('gio', ['open', safeUrl], { detached: true, stdio: 'ignore', env });
+                fallback.on('exit', () => {});
+                fallback.on('close', () => {});
                 fallback.on('error', () => {
-                    spawn('sensible-browser', [safeUrl], { detached: true, stdio: 'ignore', env }).unref();
+                    const sb = spawn('sensible-browser', [safeUrl], { detached: true, stdio: 'ignore', env });
+                    sb.on('exit', () => {});
+                    sb.on('close', () => {});
+                    sb.unref();
                 });
                 fallback.unref();
             });
@@ -507,7 +514,7 @@ function createSovereignRouter(options = {}) {
                                 name: name,
                                 description: description,
                                 path: `${skillFolderBase}/${entry.name}`,
-                                content: `[FLOWORK_SKILL: /${name}]\nTarget Runbook: ${skillFolderBase}/${entry.name}/${runbook}\n\nInstruksi Operasional:\nBaca dan jalankan SOP keahlian secara penuh dari direktori tubuh Flowork OS: ${skillFolderBase}/${entry.name}/${runbook}.`
+                                content: `[FLOWORK_SKILL: /${name}]\nTarget Runbook: ${skillFolderBase}/${entry.name}/${runbook}\n\nOperational Instructions:\nRead and execute the complete SOP skill runbook from the Flowork OS directory: ${skillFolderBase}/${entry.name}/${runbook}.`
                             });
                         }
                     }
@@ -522,6 +529,17 @@ function createSovereignRouter(options = {}) {
         // ========================================================
         // 2C. SOVEREIGN ENGINE STATUS & PROVIDER CATALOG
         // ========================================================
+        if (pathname === '/api/sys-pulse' || pathname === '/sys-pulse') {
+            const pulse = (canvasAppHost && typeof canvasAppHost.getMultiOsSysPulse === 'function')
+                ? canvasAppHost.getMultiOsSysPulse()
+                : { success: true, timestamp: Date.now() };
+            res.writeHead(200, {
+                'Content-Type': 'application/json',
+                'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
+            });
+            return res.end(JSON.stringify(pulse));
+        }
+
         if (pathname === '/api/providers' || pathname === '/providers') {
             res.writeHead(200, { 'Content-Type': 'application/json' });
             return res.end(JSON.stringify({

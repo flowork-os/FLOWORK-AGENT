@@ -1,4 +1,5 @@
-// @lock: CONECTION/antygravity/router.js (SOVEREIGN LOCKED COMPONENT)
+// @lock - Relock connection/antygravity/router.js to uphold Rule #10: Kesucian Gembok @lock.
+
 
 const https = require('https');
 const url = require('url');
@@ -74,6 +75,31 @@ function getVaultPath() {
         try { fs.mkdirSync(floworkDir, { recursive: true }); } catch (_) {}
     }
     return path.join(floworkDir, 'account_pool.json');
+}
+
+function isAllowedOrigin(origin) {
+    if (!origin) return false;
+    try {
+        const u = new url.URL(origin);
+        const host = u.hostname.toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')) return true;
+        if (host === 'floworkos.com' || host.endsWith('.floworkos.com')) return true;
+        if (u.protocol === 'file:' || u.protocol === 'vscode-file:' || u.protocol === 'electron:') return true;
+    } catch (_) {}
+    return false;
+}
+
+function getSafeCorsHeaders(req) {
+    const origin = req?.headers?.origin || req?.headers?.referer || '';
+    if (origin && isAllowedOrigin(origin)) {
+        try {
+            return {
+                'Access-Control-Allow-Origin': new url.URL(origin).origin,
+                'Vary': 'Origin'
+            };
+        } catch (_) {}
+    }
+    return {};
 }
 
 function loadVault() {
@@ -406,9 +432,10 @@ async function handleAntigravityRequest(req, res, parsedUrl, pathname, serverPor
         const catalog = googleServer.getModelCatalog();
         const vault = loadVault();
         const activeModel = vault.providers?.google?.model || catalog.defaultOverride || 'gemini-3.8-flash-high';
+        const corsH = getSafeCorsHeaders(req);
         res.writeHead(200, {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            ...corsH
         });
         res.end(JSON.stringify({
             success: true,
@@ -702,9 +729,10 @@ async function handleAntigravityRequest(req, res, parsedUrl, pathname, serverPor
             };
         }
         const activeModel = vault.providers?.google?.model || catalog.defaultOverride || 'gemini-3.8-flash-high';
+        const corsH = getSafeCorsHeaders(req);
         res.writeHead(200, { 
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            ...corsH
         });
         res.end(JSON.stringify({
             models: modelsMap,
@@ -719,9 +747,10 @@ async function handleAntigravityRequest(req, res, parsedUrl, pathname, serverPor
         const email = vault.providers?.google?.user_email || vault.providers?.google?.email || vault.providers?.sovereign?.user_email || vault.providers?.sovereign?.email || vault.flowork_user?.email || (vault.flowork_user?.username ? `${vault.flowork_user.username}@floworkos.com` : 'user@floworkos.com');
         const name = vault.flowork_user?.name || vault.flowork_user?.username || 'Flowork Operator';
         const tier = vault.flowork_user?.tier ? `${vault.flowork_user.tier}-tier` : 'enterprise-tier';
+        const corsH = getSafeCorsHeaders(req);
         res.writeHead(200, {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*'
+            ...corsH
         });
         res.end(JSON.stringify({
             user: {
@@ -757,9 +786,10 @@ async function handleAntigravityRequest(req, res, parsedUrl, pathname, serverPor
 
         if (gAuth.connected === false && (!gAuth.access_token && !gAuth.refresh_token)) {
             console.warn('[Antigravity Router] ⚠️ Request rejected: Antigravity is DISCONNECTED.');
+            const corsH = getSafeCorsHeaders(req);
             res.writeHead(503, { 
                 'Content-Type': 'application/json',
-                'Access-Control-Allow-Origin': '*'
+                ...corsH
             });
             res.end(JSON.stringify({
                 error: {

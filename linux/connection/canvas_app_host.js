@@ -10,6 +10,7 @@ const { spawn } = require('child_process');
 
 // Ephemeral intra-process dispatch secret (Strict zero-cross-site prompt injection guard)
 const INTERNAL_DISPATCH_SECRET = crypto.randomBytes(32).toString('hex');
+const appTokens = new Map(); // Ephemeral scoped tokens: token -> { appId, createdAt }
 const CANDIDATE_APPS_ROOT = [
     process.env.FLOWORK_PLUGINS_ROOT,
     process.env.FLOWORK_APPS_ROOT,
@@ -23,12 +24,105 @@ for (const cand of CANDIDATE_APPS_ROOT) {
         break;
     }
 }
+
+function isSovereignOrigin(origin) {
+    if (!origin) return false;
+    try {
+        const u = new URL(origin);
+        const host = u.hostname.toLowerCase();
+        if (host === 'localhost' || host === '127.0.0.1' || host === '::1' || host.endsWith('.localhost')) return true;
+        if (host === 'floworkos.com' || host.endsWith('.floworkos.com')) return true;
+        if (u.protocol === 'file:' || u.protocol === 'vscode-file:' || u.protocol === 'electron:') return true;
+    } catch (_) {}
+    return false;
+}
 const runningEngines = new Map(); // appId -> childProcess
 const appSseClients = new Set();
 let appWatchDebounce = null;
 
+// Multi-OS CPU Tick Delta Tracker (Works identically on Windows, Linux, and macOS)
+let _prevCpuTicks = null;
+function sampleCpuTicks() {
+    const cpus = os.cpus() || [];
+    let idle = 0;
+    let total = 0;
+    for (let i = 0; i < cpus.length; i++) {
+        const t = (cpus[i] && cpus[i].times) || {};
+        const coreTotal = (t.user || 0) + (t.nice || 0) + (t.sys || 0) + (t.irq || 0) + (t.idle || 0);
+        idle += (t.idle || 0);
+        total += coreTotal;
+    }
+    return {
+        idle,
+        total,
+        cores: cpus.length || 1,
+        model: (cpus[0] && cpus[0].model) ? cpus[0].model.trim() : 'Multi-Core CPU'
+    };
+}
+_prevCpuTicks = sampleCpuTicks();
+
+function getMultiOsSysPulse() {
+    const curr = sampleCpuTicks();
+    let cpuPct = 0;
+    if (_prevCpuTicks && curr.total > _prevCpuTicks.total) {
+        const totalDiff = curr.total - _prevCpuTicks.total;
+        const idleDiff = curr.idle - _prevCpuTicks.idle;
+        cpuPct = Math.max(1, Math.min(100, Math.round(((totalDiff - idleDiff) / totalDiff) * 100)));
+    } else {
+        const load1 = (typeof os.loadavg === 'function' && os.loadavg()[0]) || 0;
+        cpuPct = load1 > 0 ? Math.max(1, Math.min(100, Math.round((load1 / curr.cores) * 100))) : 8;
+    }
+    _prevCpuTicks = curr;
+
+    const totalBytes = os.totalmem() || 1;
+    const freeBytes = os.freemem() || 0;
+    const usedBytes = Math.max(0, totalBytes - freeBytes);
+    const totalGb = Number((totalBytes / (1024 ** 3)).toFixed(1));
+    const usedGb = Number((usedBytes / (1024 ** 3)).toFixed(1));
+    const ramPct = Math.max(1, Math.min(100, Math.round((usedBytes / totalBytes) * 100)));
+
+    const rawPlat = (os.platform() || '').toLowerCase();
+    const osLabel = rawPlat === 'win32' ? 'WINDOWS' : (rawPlat === 'darwin' ? 'MACOS' : (rawPlat === 'linux' ? 'LINUX' : (rawPlat.toUpperCase() || 'OS')));
+    const archLabel = (os.arch() || 'x64').toUpperCase();
+    const rssMb = Math.round(((process.memoryUsage && process.memoryUsage().rss) || 0) / (1024 * 1024));
+
+    return {
+        success: true,
+        cpuPct,
+        cores: curr.cores,
+        cpuModel: curr.model,
+        usedGb,
+        totalGb,
+        ramPct,
+        osLabel,
+        archLabel,
+        platform: rawPlat,
+        rssMb,
+        uptimeSec: Math.round(os.uptime ? os.uptime() : 0),
+        timestamp: Date.now()
+    };
+}
+
 function getAppsRoot() {
     return APPS_ROOT;
+}
+
+function loadAppManifest(appDir) {
+    if (!appDir || !fs.existsSync(appDir)) return null;
+    const candidateManifests = [
+        path.join(appDir, 'plugin.manifest.json'),
+        path.join(appDir, 'app.manifest.json'),
+        path.join(appDir, 'manifest.json'),
+        path.join(appDir, 'package.json')
+    ];
+    for (const mPath of candidateManifests) {
+        if (fs.existsSync(mPath)) {
+            try {
+                return JSON.parse(fs.readFileSync(mPath, 'utf8'));
+            } catch (_) {}
+        }
+    }
+    return null;
 }
 
 function listApps() {
@@ -40,20 +134,7 @@ function listApps() {
         const appDir = path.join(APPS_ROOT, ent.name);
         
         // Scan for potential manifests
-        let manifest = null;
-        const candidateManifests = [
-            path.join(appDir, 'app.manifest.json'),
-            path.join(appDir, 'manifest.json'),
-            path.join(appDir, 'package.json')
-        ];
-        for (const mPath of candidateManifests) {
-            if (fs.existsSync(mPath)) {
-                try {
-                    manifest = JSON.parse(fs.readFileSync(mPath, 'utf8'));
-                    break;
-                } catch (_) {}
-            }
-        }
+        const manifest = loadAppManifest(appDir);
 
         // Detect GUI entry
         let entryGui = null;
@@ -110,7 +191,7 @@ function broadcastAppsChanged() {
 // ⚡ Active Real-Time Filesystem Watcher on /app
 if (fs.existsSync(APPS_ROOT)) {
     try {
-        fs.watch(APPS_ROOT, { recursive: false }, (eventType, filename) => {
+        const watcher = fs.watch(APPS_ROOT, { recursive: false }, (eventType, filename) => {
             if (filename && (filename.startsWith('.') || filename.startsWith('_'))) return;
             clearTimeout(appWatchDebounce);
             appWatchDebounce = setTimeout(() => {
@@ -118,6 +199,7 @@ if (fs.existsSync(APPS_ROOT)) {
                 broadcastAppsChanged();
             }, 100);
         });
+        if (watcher && typeof watcher.unref === 'function') watcher.unref();
         console.log(`[Canvas App Host] 👁️ Real-time watcher active on ${APPS_ROOT}`);
     } catch (err) {
         console.warn(`[Canvas App Host] Watcher warning: ${err.message}`);
@@ -137,29 +219,28 @@ function isPortActive(port) {
 }
 
 async function ensureAppEngine(appId) {
-    const appDir = path.join(APPS_ROOT, appId);
-    const manifestPath = path.join(appDir, 'app.manifest.json');
-    let defaultPort = null;
-    if (fs.existsSync(manifestPath)) {
-        try {
-            const m = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-            defaultPort = m.ipc?.default_port || null;
-        } catch (_) {}
-    }
+    const cleanAppId = String(appId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanAppId) return false;
+
+    const appDir = path.resolve(APPS_ROOT, cleanAppId);
+    if (!appDir.startsWith(path.resolve(APPS_ROOT) + path.sep)) return false;
+
+    const m = loadAppManifest(appDir) || {};
+    const defaultPort = m.ipc?.default_port || null;
 
     if (defaultPort && await isPortActive(defaultPort)) {
         return true;
     }
 
-    if (runningEngines.has(appId)) {
-        const proc = runningEngines.get(appId);
+    if (runningEngines.has(cleanAppId)) {
+        const proc = runningEngines.get(cleanAppId);
         if (!proc.killed && proc.exitCode === null) return true;
     }
 
     const serverMjs = path.join(appDir, 'engine', 'server.mjs');
     if (!fs.existsSync(serverMjs)) return false;
 
-    console.log(`[Canvas App Host] 🚀 Auto-launching engine for '${appId}'...`);
+    console.log(`[Canvas App Host] 🚀 Auto-launching engine for '${cleanAppId}'...`);
     try {
         const child = spawn(process.execPath, [serverMjs], {
             cwd: path.join(appDir, 'engine'),
@@ -167,11 +248,14 @@ async function ensureAppEngine(appId) {
             stdio: 'ignore',
             env: { ...process.env, FLOWORK_SIDECAR_HOST_PORT: '17700' }
         });
+        child.on('exit', () => { runningEngines.delete(cleanAppId); });
+        child.on('close', () => { runningEngines.delete(cleanAppId); });
+        child.on('error', () => { runningEngines.delete(cleanAppId); });
         child.unref();
-        runningEngines.set(appId, child);
+        runningEngines.set(cleanAppId, child);
         return true;
     } catch (err) {
-        console.warn(`[Canvas App Host] Failed to launch engine for ${appId}:`, err.message);
+        console.warn(`[Canvas App Host] Failed to launch engine for ${cleanAppId}:`, err.message);
         return false;
     }
 }
@@ -216,11 +300,8 @@ function setActiveAppState(appId, view = 'app') {
         updatedAt: new Date().toISOString()
     };
     if (view === 'app' && appId) {
-        const manifestPath = path.join(APPS_ROOT, appId, 'app.manifest.json');
-        let m = {};
-        if (fs.existsSync(manifestPath)) {
-            try { m = JSON.parse(fs.readFileSync(manifestPath, 'utf8')); } catch (_) {}
-        }
+        const appDir = path.join(APPS_ROOT, appId);
+        const m = loadAppManifest(appDir) || {};
         state = {
             id: appId,
             name: m.name || appId,
@@ -562,34 +643,52 @@ async function internalDispatchPromptToMainChat(promptText, requestedChatId = nu
 }
 
 function getAppBundle(appId) {
-    const guiDir = path.join(APPS_ROOT, appId, 'gui');
+    const cleanAppId = String(appId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+    if (!cleanAppId) return null;
+
+    const appDir = path.resolve(APPS_ROOT, cleanAppId);
+    if (!appDir.startsWith(path.resolve(APPS_ROOT) + path.sep)) return null;
+
+    const guiDir = path.join(appDir, 'gui');
     const indexHtmlPath = path.join(guiDir, 'index.html');
     if (!fs.existsSync(indexHtmlPath)) return null;
 
     let html = fs.readFileSync(indexHtmlPath, 'utf8');
 
-    // Inline all CSS
+    // Inline CSS safely within app gui directory boundary
     html = html.replace(/<link\s+[^>]*rel=["']stylesheet["'][^>]*href=["']([^"']+)["'][^>]*\/?>/gi, (match, href) => {
-        const cssPath = path.join(guiDir, href.split('?')[0]);
-        if (fs.existsSync(cssPath)) {
+        const cleanHref = href.split('?')[0].replace(/\\/g, '/');
+        const cssPath = path.resolve(guiDir, cleanHref);
+        if (cssPath.startsWith(guiDir + path.sep) && fs.existsSync(cssPath)) {
             return `<style>/* inlined ${href} */\n${fs.readFileSync(cssPath, 'utf8')}\n</style>`;
         }
         return match;
     });
 
-    // Inline all JS
+    // Inline JS safely within app gui directory boundary
     html = html.replace(/<script\s+[^>]*src=["']([^"']+)["'][^>]*><\/script>/gi, (match, src) => {
-        const jsPath = path.join(guiDir, src.split('?')[0]);
-        if (fs.existsSync(jsPath)) {
+        const cleanSrc = src.split('?')[0].replace(/\\/g, '/');
+        const jsPath = path.resolve(guiDir, cleanSrc);
+        if (jsPath.startsWith(guiDir + path.sep) && fs.existsSync(jsPath)) {
             return `<script>/* inlined ${src} */\n${fs.readFileSync(jsPath, 'utf8')}\n</script>`;
         }
         return match;
     });
 
+    // Generate ephemeral scoped session token for this app
+    const appToken = crypto.randomBytes(32).toString('hex');
+    appTokens.set(appToken, { appId: cleanAppId, createdAt: Date.now() });
+
+    // Clean up stale app tokens older than 24 hours
+    const now = Date.now();
+    for (const [k, v] of appTokens.entries()) {
+        if (now - v.createdAt > 86400000) appTokens.delete(k);
+    }
+
     // Prepend Sovereign App Enclave Shim
     const shim = `
     <script>
-      window.__FLOWORK_APP_ID__ = "${appId}";
+      window.__FLOWORK_APP_ID__ = "${cleanAppId}";
       window.__FLOWORK_SIDECAR_PORT__ = 17700;
       window.__FLOWORK_CHAT_ID__ = function() {
         try {
@@ -611,9 +710,9 @@ function getAppBundle(appId) {
           if (url.includes('/api/prompt-dispatch') && (opts.method || 'GET').toUpperCase() === 'POST') {
             opts.headers = opts.headers || {};
             if (typeof opts.headers.set === 'function') {
-              opts.headers.set('X-Flowork-Dispatch-Key', '${INTERNAL_DISPATCH_SECRET}');
+              opts.headers.set('X-Flowork-Dispatch-Key', '${appToken}');
             } else {
-              opts.headers['X-Flowork-Dispatch-Key'] = '${INTERNAL_DISPATCH_SECRET}';
+              opts.headers['X-Flowork-Dispatch-Key'] = '${appToken}';
             }
             try {
               const bodyObj = JSON.parse(opts.body || '{}');
@@ -659,12 +758,13 @@ function handleRequest(req, res, pathname, loadVault) {
         function proxyToPort(idx) {
             if (res.headersSent) return;
             if (idx >= portsToTry.length) {
-                if (!res.headersSent) {
-                    try {
-                        res.writeHead(502, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+                        const errHeaders = { 'Content-Type': 'application/json' };
+                        const reqOrigin = req.headers.origin || req.headers.referer || '';
+                        if (isSovereignOrigin(reqOrigin)) {
+                            try { errHeaders['Access-Control-Allow-Origin'] = new URL(reqOrigin).origin; } catch (_) {}
+                        }
+                        res.writeHead(502, errHeaders);
                         res.end(JSON.stringify({ success: false, error: '[Proxy Error] No active router responding on candidate ports: ' + portsToTry.join(', ') }));
-                    } catch (_) {}
-                }
                 return;
             }
             const routerPort = parseInt(portsToTry[idx], 10);
@@ -685,6 +785,12 @@ function handleRequest(req, res, pathname, loadVault) {
                 }
             };
 
+            const originHeader = req.headers.origin || req.headers.referer || '';
+            let allowedCorsOrigin = '';
+            if (isSovereignOrigin(originHeader)) {
+                try { allowedCorsOrigin = new URL(originHeader).origin; } catch (_) {}
+            }
+
             const proxyReq = http.request({
                 hostname: '127.0.0.1',
                 port: routerPort,
@@ -696,9 +802,13 @@ function handleRequest(req, res, pathname, loadVault) {
                 if (res.headersSent) return;
                 try {
                     const respHeaders = { ...proxyRes.headers };
-                    respHeaders['access-control-allow-origin'] = '*';
+                    if (allowedCorsOrigin) {
+                        respHeaders['access-control-allow-origin'] = allowedCorsOrigin;
+                    } else {
+                        delete respHeaders['access-control-allow-origin'];
+                    }
                     respHeaders['access-control-allow-methods'] = 'GET, POST, OPTIONS, PUT, DELETE';
-                    respHeaders['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With';
+                    respHeaders['access-control-allow-headers'] = 'Content-Type, Authorization, X-Requested-With, X-Flowork-Dispatch-Key';
                     res.writeHead(proxyRes.statusCode, respHeaders);
                     proxyRes.pipe(res);
                 } catch (_) {}
@@ -719,28 +829,49 @@ function handleRequest(req, res, pathname, loadVault) {
         return true;
     }
 
+    const originHeader = req.headers.origin || req.headers.referer || '';
+    let allowedCorsOrigin = '';
+    if (isSovereignOrigin(originHeader)) {
+        try { allowedCorsOrigin = new URL(originHeader).origin; } catch (_) {}
+    }
+
+    // 0. GET /api/sys-pulse (Multi-OS Real-Time Hardware Telemetry for Agent Loop Bar)
+    if (req.method === 'GET' && pathname === '/api/sys-pulse') {
+        const pulse = getMultiOsSysPulse();
+        const headers = {
+            'Content-Type': 'application/json',
+            'Cache-Control': 'no-store, no-cache, must-revalidate, max-age=0'
+        };
+        if (allowedCorsOrigin) headers['Access-Control-Allow-Origin'] = allowedCorsOrigin;
+        res.writeHead(200, headers);
+        res.end(JSON.stringify(pulse));
+        return true;
+    }
+
     // 1. GET /api/apps (Catalog - 100% Plug & Play Dynamic)
     if (req.method === 'GET' && pathname === '/api/apps') {
         const apps = listApps();
-        res.writeHead(200, {
+        const headers = {
             'Content-Type': 'application/json',
-            'Access-Control-Allow-Origin': '*',
             'Cache-Control': 'no-store, no-cache, must-revalidate, proxy-revalidate, max-age=0',
             'Pragma': 'no-cache',
             'Expires': '0'
-        });
+        };
+        if (allowedCorsOrigin) headers['Access-Control-Allow-Origin'] = allowedCorsOrigin;
+        res.writeHead(200, headers);
         res.end(JSON.stringify({ success: true, count: apps.length, apps }));
         return true;
     }
 
     // 1e. GET /api/apps-stream (Server-Sent Events for Real-Time Instant Discovery)
     if (req.method === 'GET' && pathname === '/api/apps-stream') {
-        res.writeHead(200, {
+        const sseHeaders = {
             'Content-Type': 'text/event-stream',
             'Cache-Control': 'no-cache, no-store, must-revalidate',
-            'Connection': 'keep-alive',
-            'Access-Control-Allow-Origin': '*'
-        });
+            'Connection': 'keep-alive'
+        };
+        if (allowedCorsOrigin) sseHeaders['Access-Control-Allow-Origin'] = allowedCorsOrigin;
+        res.writeHead(200, sseHeaders);
         const currentApps = listApps();
         res.write(`data: ${JSON.stringify({ type: 'INIT', count: currentApps.length, apps: currentApps })}\n\n`);
 
@@ -767,11 +898,38 @@ function handleRequest(req, res, pathname, loadVault) {
         return true;
     }
 
+    // 1b2. GET /tools/:toolId/* (Dynamic Tool Asset Gateway for CSS & UI modules)
+    if (req.method === 'GET' && pathname.startsWith('/tools/')) {
+        const subPath = pathname.replace(/^\/tools\//, '').trim();
+        const toolsRoot = path.resolve(__dirname, '..', 'tools');
+        const targetPath = path.resolve(toolsRoot, subPath);
+        if (targetPath.startsWith(toolsRoot + path.sep) && fs.existsSync(targetPath) && fs.statSync(targetPath).isFile()) {
+            const ext = path.extname(targetPath).toLowerCase();
+            const mimeMap = {
+                '.css': 'text/css; charset=utf-8',
+                '.js': 'application/javascript; charset=utf-8',
+                '.mjs': 'application/javascript; charset=utf-8',
+                '.json': 'application/json; charset=utf-8',
+                '.svg': 'image/svg+xml',
+                '.png': 'image/png'
+            };
+            const headers = {
+                'Content-Type': contentType,
+                'Cache-Control': 'no-cache'
+            };
+            if (allowedCorsOrigin) headers['Access-Control-Allow-Origin'] = allowedCorsOrigin;
+            res.writeHead(200, headers);
+            fs.createReadStream(targetPath).pipe(res);
+            return true;
+        }
+    }
+
     // 1c. GET /api/active-app & POST /api/active-app (Canvas App State Telemetry)
     if (pathname === '/api/active-app') {
+        const corsH = allowedCorsOrigin ? { 'access-control-allow-origin': allowedCorsOrigin } : {};
         if (req.method === 'GET') {
             const current = getActiveAppState();
-            res.writeHead(200, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+            res.writeHead(200, { 'Content-Type': 'application/json', ...corsH });
             res.end(JSON.stringify({ success: true, activeApp: current }));
             return true;
         }
@@ -782,10 +940,10 @@ function handleRequest(req, res, pathname, loadVault) {
                 try {
                     const parsed = JSON.parse(body || '{}');
                     const updated = setActiveAppState(parsed.appId, parsed.view || (parsed.appId ? 'app' : 'closed'));
-                    res.writeHead(200, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+                    res.writeHead(200, { 'Content-Type': 'application/json', ...corsH });
                     res.end(JSON.stringify({ success: true, activeApp: updated }));
                 } catch (err) {
-                    res.writeHead(400, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+                    res.writeHead(400, { 'Content-Type': 'application/json', ...corsH });
                     res.end(JSON.stringify({ success: false, error: err.message }));
                 }
             });
@@ -795,21 +953,22 @@ function handleRequest(req, res, pathname, loadVault) {
 
     // 1d. GET /api/active-chat (Inspect currently open chat in IDE)
     if (req.method === 'GET' && pathname === '/api/active-chat') {
+        const corsH = allowedCorsOrigin ? { 'access-control-allow-origin': allowedCorsOrigin } : {};
         getActiveCdpPort().then(cdpPort => {
             fetch(`http://127.0.0.1:${cdpPort}/json/list`)
                 .then(r => r.json())
                 .then(list => {
                     const page = list.find(t => t.type === 'page' && t.webSocketDebuggerUrl);
                     const activeChatId = page ? ((page.url || '').match(/\/c\/([a-zA-Z0-9_-]+)/) || [])[1] || null : null;
-                    res.writeHead(200, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+                    res.writeHead(200, { 'Content-Type': 'application/json', ...corsH });
                     res.end(JSON.stringify({ success: true, activeChatId, pageUrl: page ? page.url : null }));
                 })
                 .catch(err => {
-                    res.writeHead(500, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+                    res.writeHead(500, { 'Content-Type': 'application/json', ...corsH });
                     res.end(JSON.stringify({ success: false, error: err.message }));
                 });
         }).catch(err => {
-            res.writeHead(500, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+            res.writeHead(500, { 'Content-Type': 'application/json', ...corsH });
             res.end(JSON.stringify({ success: false, error: err.message }));
         });
         return true;
@@ -853,7 +1012,8 @@ function handleRequest(req, res, pathname, loadVault) {
                 } catch (_) {}
             }
         }
-        res.writeHead(200, { 'Content-Type': 'application/json', 'access-control-allow-origin': '*' });
+        const corsH = allowedCorsOrigin ? { 'access-control-allow-origin': allowedCorsOrigin } : {};
+        res.writeHead(200, { 'Content-Type': 'application/json', ...corsH });
         res.end(JSON.stringify({ success: true, user }));
         return true;
     }
@@ -938,7 +1098,9 @@ function handleRequest(req, res, pathname, loadVault) {
         const authHeader = req.headers['authorization'] || '';
         const bearerToken = authHeader.startsWith('Bearer ') ? authHeader.slice(7).trim() : '';
 
-        const isKeyValid = Boolean(dispatchKey && dispatchKey === INTERNAL_DISPATCH_SECRET);
+        const isMasterKey = Boolean(dispatchKey && dispatchKey === INTERNAL_DISPATCH_SECRET);
+        const isAppKey = Boolean(dispatchKey && appTokens.has(dispatchKey));
+        const isKeyValid = isMasterKey || isAppKey;
         let isTokenValid = false;
         if (bearerToken) {
             try {
@@ -984,13 +1146,28 @@ function handleRequest(req, res, pathname, loadVault) {
     // 4. Static Apps GUI Serving: /apps/:appId/*
     if (pathname.startsWith('/apps/')) {
         const parts = pathname.replace(/^\/apps\//, '').split('/');
-        const appId = parts[0];
-        if (appId) {
-            ensureAppEngine(appId);
+        const rawAppId = parts[0];
+        const cleanAppId = String(rawAppId || '').replace(/[^a-zA-Z0-9_-]/g, '');
+        if (cleanAppId) {
+            ensureAppEngine(cleanAppId);
 
-            const relPath = parts.slice(1).join('/') || 'gui/index.html';
-            const safeRelPath = path.normalize(relPath).replace(/^(\.\.[\/\\])+/, '');
-            const targetFile = path.join(APPS_ROOT, appId, safeRelPath);
+            const appBase = path.resolve(APPS_ROOT, cleanAppId);
+            if (!appBase.startsWith(path.resolve(APPS_ROOT) + path.sep)) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Access Denied: Invalid app boundary' }));
+                return true;
+            }
+
+            const rawRelPath = parts.slice(1).join('/') || 'gui/index.html';
+            const cleanRelPath = path.normalize(rawRelPath).replace(/^(\.\.[\/\\])+/, '');
+            const targetFile = path.resolve(appBase, cleanRelPath);
+
+            // Strict boundary containment: targetFile must remain within appBase
+            if (!targetFile.startsWith(appBase + path.sep) && targetFile !== appBase) {
+                res.writeHead(403, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ success: false, error: 'Access Denied: Path traversal detected' }));
+                return true;
+            }
 
             if (fs.existsSync(targetFile) && fs.statSync(targetFile).isFile()) {
                 const ext = path.extname(targetFile).toLowerCase();
@@ -1159,7 +1336,12 @@ async function startCdpGuardian() {
 function startStandalone(port = 17700) {
     const http = require('http');
     const server = http.createServer((req, res) => {
-        res.setHeader('Access-Control-Allow-Origin', '*');
+        const originHeader = req.headers.origin || req.headers.referer || '';
+        if (isSovereignOrigin(originHeader)) {
+            try {
+                res.setHeader('Access-Control-Allow-Origin', new URL(originHeader).origin);
+            } catch (_) {}
+        }
         res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
         res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Flowork-Dispatch-Key');
         if (req.method === 'OPTIONS') {
@@ -1189,5 +1371,6 @@ module.exports = {
     ensureAppEngine,
     dispatchPromptToMainChat,
     handleRequest,
-    startStandalone
+    startStandalone,
+    getMultiOsSysPulse
 };

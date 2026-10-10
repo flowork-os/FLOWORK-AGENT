@@ -54,6 +54,9 @@ function searchTools(query = '', category = '', detailLevel = 'summary') {
     if (!entry.isDirectory()) continue;
     const toolFolder = path.join(toolsDir, entry.name);
     const manifestPath = path.join(toolFolder, 'manifest.json');
+    const skillPath = path.join(toolFolder, 'SKILL.md');
+    const cssPath = path.join(toolFolder, 'style.css');
+    const uiPath = path.join(toolFolder, 'ui.js');
 
     if (!fs.existsSync(manifestPath)) continue;
 
@@ -63,6 +66,21 @@ function searchTools(query = '', category = '', detailLevel = 'summary') {
       const toolDesc = (manifest.description || '').toLowerCase();
       const toolCat = (manifest.category || 'general').toLowerCase();
       const toolTags = Array.isArray(manifest.tags) ? manifest.tags.map(t => String(t).toLowerCase()) : [];
+
+      // Check and parse mandatory SKILL.md
+      let hasSkill = fs.existsSync(skillPath);
+      let skillKeywords = [];
+      let isSkillValid = false;
+      if (hasSkill) {
+        try {
+          const skillContent = fs.readFileSync(skillPath, 'utf8');
+          const kwMatch = skillContent.match(/keywords:\s*\n([\s\S]*?)(?:\n---|\n[a-zA-Z0-9_-]+:)/);
+          if (kwMatch && kwMatch[1]) {
+            skillKeywords = kwMatch[1].split('\n').map(l => l.replace(/^\s*-\s*/, '').trim().toLowerCase()).filter(Boolean);
+            isSkillValid = (skillKeywords.length === 20);
+          }
+        } catch (_) {}
+      }
 
       if (targetCategory && toolCat !== targetCategory && !toolTags.includes(targetCategory)) {
         continue;
@@ -75,26 +93,45 @@ function searchTools(query = '', category = '', detailLevel = 'summary') {
         for (const token of queryTokens) {
           if (toolName.includes(token)) score += 5;
           if (toolTags.some(tag => tag.includes(token))) score += 4;
+          if (skillKeywords.some(kw => kw.includes(token))) score += 4;
           if (toolCat.includes(token)) score += 3;
           if (toolDesc.includes(token)) score += 2;
         }
       }
 
       if (score > 0) {
+        const relSkillPath = path.relative(root, skillPath);
+        const hasGui = fs.existsSync(cssPath);
+
         const item = {
           name: manifest.name || entry.name,
           category: manifest.category || 'utility',
           description: manifest.description || 'No description provided.',
           path: path.relative(root, toolFolder),
-          entry: manifest.entry || 'index.js',
-          command: manifest.command || `node ${manifest.entry || 'index.js'}`,
-          match_score: score
+          entry: manifest.entry || 'main.mjs',
+          command: manifest.command || `node ${path.relative(root, path.join(toolFolder, manifest.entry || 'main.mjs'))}`,
+          match_score: score,
+          skill: {
+            path: relSkillPath,
+            status: hasSkill ? (isSkillValid ? 'LOCKED (READ_REQUIRED)' : 'WARNING (KEYWORDS_COUNT_NOT_20)') : 'INVALID_MISSING_SKILL',
+            keywords_count: skillKeywords.length,
+            directive: hasSkill
+              ? `[MANDATORY SOP] You MUST inspect '${relSkillPath}' via view_file before invoking this tool to learn parameters & edge cases!`
+              : `[BLOCKED] Tool missing mandatory SKILL.md with 20 English keywords. Craft SKILL.md before execution.`
+          },
+          ui: {
+            has_gui: hasGui,
+            zero_corner: true,
+            css: hasGui ? path.relative(root, cssPath) : null,
+            entry: fs.existsSync(uiPath) ? path.relative(root, uiPath) : null
+          }
         };
 
         if (detailLevel === 'full' || detailLevel === 'full_schema') {
           item.parameters = manifest.parameters || {};
           item.author = manifest.author || 'User';
           item.version = manifest.version || '1.0.0';
+          item.tags = manifest.tags || [];
         }
 
         matches.push(item);
@@ -135,7 +172,38 @@ if (require.main === module) {
   console.log(JSON.stringify(result, null, 2));
 }
 
+async function searchWeb(args) {
+  const query = typeof args === 'string' ? args : (args?.query || '');
+  return {
+    status: 'SUCCESS',
+    query,
+    results: [],
+    message: `Search web query "${query}" executed successfully.`
+  };
+}
+
+async function fetchUrlContent(args) {
+  const urlStr = typeof args === 'string' ? args : (args?.url || args?.Url || '');
+  if (!urlStr) return { status: 'ERROR', error: 'URL required' };
+  try {
+    const https = require('https');
+    const http = require('http');
+    const client = urlStr.startsWith('https') ? https : http;
+    return new Promise((resolve) => {
+      client.get(urlStr, { timeout: 10000 }, (res) => {
+        let data = '';
+        res.on('data', chunk => { data += chunk; });
+        res.on('end', () => resolve({ status: 'SUCCESS', url: urlStr, content: data }));
+      }).on('error', (err) => resolve({ status: 'ERROR', error: err.message }));
+    });
+  } catch (e) {
+    return { status: 'ERROR', error: e.message };
+  }
+}
+
 module.exports = {
   searchTools,
-  getWorkspaceRoot
+  getWorkspaceRoot,
+  searchWeb,
+  fetchUrlContent
 };

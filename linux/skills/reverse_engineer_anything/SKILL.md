@@ -19,31 +19,32 @@ Defensive, multi-target reverse engineering SOP for extracting underlying archit
 
 ### Phase 1: Target Ingestion & Triage
 1. **Target Identification & Format Routing:**
-   - **Electron / JavaScript / ASAR**: Route directly to static JS analysis without heavy engines:
+   - **Electron / JavaScript / ASAR**: Route directly to sovereign Chromium Pickle parser:
      ```bash
-     npx -y rea-agents@latest analyze-javascript-application /path/to/extracted/app --json
+     node tools/fl_asar/main.mjs --target_path /path/to/app.asar
      ```
-   - **Native Binary (ELF / PE / Mach-O)**: Inspect file architecture:
+   - **Native Binary (ELF / PE / Mach-O)**: Inspect file architecture, mitigations & headers:
      ```bash
-     file /path/to/binary
-     readelf -h /path/to/binary
-     objdump -f /path/to/binary
+     node tools/fl_bin_inspect/main.mjs --target_path /path/to/binary
      ```
-   - **Android APK**: Unpack and inspect package manifest and Dalvik bytecode via headless JADX:
+   - **Managed Assembly (.NET / CIL / CLR)**: Inspect metadata streams and disassemble CIL bytecode:
      ```bash
-     jadx -d output_dir /path/to/app.apk
+     node tools/fl_cil_inspect/main.mjs --target_path /path/to/assembly.dll
      ```
-   - **Managed Assembly (.NET / Mono / JVM)**: Inspect metadata and IL/bytecode with ILSpy/javap.
-   - **Firmware Blob**: Perform entropy calculation and region carving with `binwalk -e` or `unblob`.
+   - **Android APK**: Inspect package manifest, DEX pools, and export topologies:
+     ```bash
+     node tools/rea_inspect_android_package/main.mjs --target_path /path/to/app.apk
+     ```
+   - **Firmware Blob**: Perform entropy calculation and partition carving via `rea_extract_firmware`.
 
-### Phase 2: Engine Selection & Headless Decompilation
+### Phase 2: Engine Selection & Hybrid Decompilation
 1. **Engine Selection Protocol:**
-   - For native Linux/macOS binaries: Route to headless Ghidra (requires JDK 21+ and `GHIDRA_INSTALL_DIR`) or Hopper (virtual display `Xvfb`).
-   - For Windows PE x64 binaries: Route to Windows Ghidra P0 adapter or IDA Pro headless database supervisor.
-   - Run readiness check scoped to provider:
+   - For native binaries (Linux/Windows/macOS): Route to `rea_decompile` featuring Hybrid Socket Bridge detection with graceful POSIX fallback:
      ```bash
-     npx -y rea-agents@latest doctor --provider ghidra --json
+     node tools/rea_decompile/main.mjs --target_path /path/to/binary --symbol main
      ```
+   - If local Ghidra / Hopper / IDA socket bridge is active, `rea_decompile` queries high-level pseudocode.
+   - If daemons are offline, it falls back seamlessly to Intel disassembly under Exit Code 0.
 2. **Deterministic Binary Decomposition:**
    - Extract symbol tables, exported functions, and imported dynamic link libraries:
      ```bash

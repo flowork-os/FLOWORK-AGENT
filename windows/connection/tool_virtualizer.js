@@ -231,6 +231,30 @@ class FloworkOSToolVirtualizer {
                     });
                     declaredNames.add('search_tools');
                 }
+
+                // Enforce mandatory 'reason' parameter across EVERY tool declaration so the AI always explains why it uses each tool
+                for (const toolGroup of reqObj.tools) {
+                    if (Array.isArray(toolGroup.functionDeclarations)) {
+                        for (const decl of toolGroup.functionDeclarations) {
+                            if (!decl || !decl.parameters) continue;
+                            if (!decl.parameters.properties || typeof decl.parameters.properties !== 'object') {
+                                decl.parameters.properties = {};
+                            }
+                            if (!decl.parameters.properties.reason) {
+                                decl.parameters.properties.reason = {
+                                    type: 'STRING',
+                                    description: 'MANDATORY ON EVERY TOOL CALL: Clear, concise reason explaining WHY you are calling this tool right now and what specific action/goal it performs (displayed directly to the user in the live tool HUD).'
+                                };
+                            }
+                            if (!Array.isArray(decl.parameters.required)) {
+                                decl.parameters.required = [];
+                            }
+                            if (!decl.parameters.required.includes('reason')) {
+                                decl.parameters.required.push('reason');
+                            }
+                        }
+                    }
+                }
             }
         } catch (_) {}
         return FloworkOSToolVirtualizer.pruneOversizedToolOutputs(payload);

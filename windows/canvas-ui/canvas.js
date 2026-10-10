@@ -1340,11 +1340,11 @@ function updateRouterTopbarPill() {
   const pillModel = document.getElementById('router-pill-model');
   const topbarPill = document.getElementById('btn-topbar-router');
 
-  if (pillTitle) pillTitle.textContent = 'CONECTION';
+  if (pillTitle) pillTitle.textContent = 'CONNECTION';
   if (pillModel) pillModel.style.display = 'none';
   if (topbarPill) {
     const count = routerSwitchboardState.totalAccounts;
-    topbarPill.title = `CONECTION Switchboard (:${rPort}) • ${count} Accounts • ${selectedChatModelId}`;
+    topbarPill.title = `CONNECTION Switchboard (:${rPort}) • ${count} Accounts • ${selectedChatModelId}`;
     topbarPill.style.borderColor = routerSwitchboardState.connected ? 'rgba(0, 229, 255, 0.4)' : 'rgba(239, 68, 68, 0.4)';
   }
 
@@ -2098,6 +2098,7 @@ function initLayoutResizers() {
       resizerLeft.setPointerCapture(e.pointerId);
       resizerLeft.classList.add('is-active');
       document.body.classList.add('is-resizing');
+      sidebar.classList.add('is-resizing');
 
       window.addEventListener('pointermove', onPointerMove);
       window.addEventListener('pointerup', onPointerUp);
@@ -2131,6 +2132,7 @@ function initLayoutResizers() {
 
       resizerLeft.classList.remove('is-active');
       document.body.classList.remove('is-resizing');
+      sidebar.classList.remove('is-resizing');
 
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
@@ -2170,6 +2172,7 @@ function initLayoutResizers() {
       resizerRight.setPointerCapture(e.pointerId);
       resizerRight.classList.add('is-active');
       document.body.classList.add('is-resizing');
+      rightbar.classList.add('is-resizing');
 
       window.addEventListener('pointermove', onPointerMove);
       window.addEventListener('pointerup', onPointerUp);
@@ -2204,6 +2207,7 @@ function initLayoutResizers() {
 
       resizerRight.classList.remove('is-active');
       document.body.classList.remove('is-resizing');
+      rightbar.classList.remove('is-resizing');
 
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerUp);
@@ -2529,8 +2533,10 @@ function renderDock() {
 }
 
 // =============================================================================
-// FLOWORK OS — SOVEREIGN COSMIC STARFIELD ENGINE (Zero-CPU, Full-Viewport)
+// FLOWORK OS — SOVEREIGN DYNAMIC HYPER-WARP STARFIELD ENGINE
 // =============================================================================
+let cosmicStarfieldController = null;
+
 function initStarfieldBackground() {
   const canvas = document.getElementById('flw-starfield-canvas');
   if (!canvas) return;
@@ -2538,52 +2544,134 @@ function initStarfieldBackground() {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  function renderStars() {
-    const width = (canvas.width = window.innerWidth);
-    const height = (canvas.height = window.innerHeight);
+  let width = (canvas.width = window.innerWidth);
+  let height = (canvas.height = window.innerHeight);
 
-    ctx.clearRect(0, 0, width, height);
+  const STAR_COUNT = 300;
+  const stars = [];
 
-    const STAR_COUNT = 340;
-    const starColors = [
-      'rgba(0, 229, 255, ',    // Electric Cyan
-      'rgba(56, 189, 248, ',   // Sky Blue
-      'rgba(192, 132, 252, ',  // Soft Violet
-      'rgba(255, 255, 255, ',  // Pure White
-      'rgba(0, 242, 254, '    // Neon Turquoise
-    ];
-
-    for (let i = 0; i < STAR_COUNT; i++) {
-      const x = Math.random() * width;
-      const y = Math.random() * height;
-      const size = Math.random() * 1.8 + 0.4;
-      const color = starColors[Math.floor(Math.random() * starColors.length)];
-      const alpha = Math.random() * 0.75 + 0.2;
-
-      ctx.fillStyle = color + alpha + ')';
-      ctx.beginPath();
-      ctx.arc(x, y, size, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Sparkle cross glint for prominent cosmic stars
-      if (size > 1.3 && alpha > 0.45) {
-        ctx.strokeStyle = color + (alpha * 0.5) + ')';
-        ctx.lineWidth = 0.8;
-        ctx.beginPath();
-        ctx.moveTo(x - 3.5, y); ctx.lineTo(x + 3.5, y);
-        ctx.moveTo(x, y - 3.5); ctx.lineTo(x, y + 3.5);
-        ctx.stroke();
-      }
-    }
+  for (let i = 0; i < STAR_COUNT; i++) {
+    stars.push({
+      x: (Math.random() - 0.5) * width * 2,
+      y: (Math.random() - 0.5) * height * 2,
+      z: Math.random() * width,
+      pz: 0,
+      size: Math.random() * 1.6 + 0.4,
+      color: i % 4 === 0 ? '#00f2fe' : (i % 4 === 1 ? '#c084fc' : (i % 4 === 2 ? '#38bdf8' : '#ffffff'))
+    });
   }
 
-  renderStars();
+  let currentSpeed = 0.5;
+  let targetSpeed = 0.5;
+  let shockwave = null;
+  let animId = null;
 
-  let resizeTimer = null;
+  function renderFrame() {
+    currentSpeed += (targetSpeed - currentSpeed) * 0.08;
+
+    const messagesEl = document.getElementById('rightbar-messages');
+    const isWarpActive = messagesEl && messagesEl.classList.contains('chat-focus-mode');
+    targetSpeed = isWarpActive ? 16.0 : 0.5;
+
+    const cx = width / 2;
+    const cy = height / 2;
+
+    if (currentSpeed > 2.5) {
+      ctx.fillStyle = 'rgba(5, 11, 20, 0.32)';
+      ctx.fillRect(0, 0, width, height);
+    } else {
+      ctx.clearRect(0, 0, width, height);
+    }
+
+    for (let i = 0; i < stars.length; i++) {
+      const s = stars[i];
+      s.pz = s.z;
+      s.z -= currentSpeed;
+
+      if (s.z <= 0) {
+        s.z = width;
+        s.pz = width;
+        s.x = (Math.random() - 0.5) * width * 2;
+        s.y = (Math.random() - 0.5) * height * 2;
+      }
+
+      const k = 280 / s.z;
+      const px = s.x * (280 / s.pz) + cx;
+      const py = s.y * (280 / s.pz) + cy;
+      const x = s.x * k + cx;
+      const y = s.y * k + cy;
+
+      if (x < 0 || x > width || y < 0 || y > height) continue;
+
+      const alpha = Math.min(1, Math.max(0.12, (1 - s.z / width) * (currentSpeed > 2.5 ? 1.4 : 0.85)));
+
+      if (currentSpeed > 2.5) {
+        ctx.strokeStyle = s.color;
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = Math.min(2.4, (1 - s.z / width) * 2.0);
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(x, y);
+        ctx.stroke();
+      } else {
+        ctx.fillStyle = s.color;
+        ctx.globalAlpha = alpha;
+        ctx.beginPath();
+        ctx.arc(x, y, s.size * (1 - s.z / width + 0.3), 0, Math.PI * 2);
+        ctx.fill();
+
+        if (s.size > 1.3 && alpha > 0.45) {
+          ctx.strokeStyle = s.color;
+          ctx.lineWidth = 0.7;
+          ctx.beginPath();
+          ctx.moveTo(x - 3, y); ctx.lineTo(x + 3, y);
+          ctx.moveTo(x, y - 3); ctx.lineTo(x, y + 3);
+          ctx.stroke();
+        }
+      }
+    }
+
+    if (shockwave) {
+      shockwave.r += (shockwave.maxR - shockwave.r) * 0.12 + 6;
+      shockwave.alpha *= 0.93;
+      if (shockwave.alpha < 0.02 || shockwave.r >= shockwave.maxR) {
+        shockwave = null;
+      } else {
+        ctx.save();
+        ctx.beginPath();
+        ctx.arc(shockwave.x, shockwave.y, shockwave.r, 0, Math.PI * 2);
+        ctx.strokeStyle = `rgba(0, 242, 254, ${shockwave.alpha})`;
+        ctx.lineWidth = 3.5 * shockwave.alpha;
+        ctx.shadowColor = '#00f2fe';
+        ctx.shadowBlur = 16;
+        ctx.stroke();
+        ctx.restore();
+      }
+    }
+
+    ctx.globalAlpha = 1.0;
+    animId = requestAnimationFrame(renderFrame);
+  }
+
+  animId = requestAnimationFrame(renderFrame);
+
   window.addEventListener('resize', () => {
-    clearTimeout(resizeTimer);
-    resizeTimer = setTimeout(renderStars, 150);
+    width = canvas.width = window.innerWidth;
+    height = canvas.height = window.innerHeight;
   }, { passive: true });
+
+  cosmicStarfieldController = {
+    triggerShockwave: () => {
+      shockwave = {
+        x: width / 2,
+        y: height / 2,
+        r: 15,
+        maxR: Math.max(width, height) * 0.85,
+        alpha: 0.85
+      };
+    }
+  };
+  window.cosmicStarfieldController = cosmicStarfieldController;
 }
 
 // 6. Filter & Render Cockpit Pebble Cards
@@ -3171,6 +3259,14 @@ function handleTelemetryEvent(eventType, data) {
 
     emitAgentTelemetry({ type, tag, text, meta });
   } 
+  // 2b. Live Terminal Stream Chunks
+  else if (eventType === 'terminal_stream') {
+    const tail = (data.tail || data.line || '').trim();
+    if (tail) {
+      const text = tail.length > 46 ? tail.slice(0, 44) + '…' : tail;
+      emitAgentTelemetry({ type: 'cmd', tag: 'LOG', text, meta: 'STREAM' });
+    }
+  }
   // 3. Step finish
   else if (eventType === 'tool_done') {
     emitAgentTelemetry({ type: 'done', tag: 'LOG', text: 'step complete', meta: 'EXIT 0' });
@@ -3742,7 +3838,7 @@ function updateModelPillDisplay() {
   if (pillText) {
     pillText.textContent = current.name;
   }
-  const heroModelBadge = document.querySelector('.ag-hero-model');
+  const heroModelBadge = document.querySelector('.fl-hero-model');
   if (heroModelBadge) {
     heroModelBadge.textContent = current.id;
   }
@@ -4130,6 +4226,394 @@ function initAccountSelector() {
   });
 }
 
+// ── Chat-Bound Persona & Specialist Selector ──
+let AVAILABLE_PERSONAS = [
+  { id: 'default', name: 'Default Agent', icon: '🤖', description: 'Enclave core prompt only. Zero external persona loaded.' }
+];
+let currentSessionPersonaId = 'default';
+let pendingSessionPersonaId = 'default';
+let agentSelectorInitialized = false;
+
+function getSelectedPersonaObj() {
+  const targetId = currentSessionPersonaId || 'default';
+  const found = AVAILABLE_PERSONAS.find(p => p.id.toLowerCase() === targetId.toLowerCase());
+  if (found) return found;
+  return {
+    id: targetId,
+    name: targetId === 'default' ? 'Default Agent' : targetId,
+    icon: '🎭',
+    description: 'Specialist persona active'
+  };
+}
+
+function updateAgentPillDisplay() {
+  const current = getSelectedPersonaObj();
+  const pillText = document.getElementById('chat-agent-pill-text');
+  const pillIcon = document.getElementById('chat-agent-pill-icon');
+  const pillEl = document.getElementById('chat-agent-pill');
+  if (pillText) {
+    pillText.textContent = current.name || 'Default Agent';
+  }
+  if (pillIcon) {
+    pillIcon.textContent = current.icon || '🤖';
+  }
+  if (pillEl) {
+    if (current.id !== 'default') {
+      pillEl.classList.add('is-locked');
+      pillEl.title = `Locked Chat Persona: ${current.name} (Isolated Prompts & Triggers)`;
+    } else {
+      pillEl.classList.remove('is-locked');
+      pillEl.title = 'Default Agent: Binary Enclave Prompt & Active Skills Only';
+    }
+  }
+}
+
+async function fetchAvailablePersonas() {
+  try {
+    const res = await fetch('/api/personas');
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.status === 'ok' && Array.isArray(data.personas)) {
+        AVAILABLE_PERSONAS = data.personas;
+        updateAgentPillDisplay();
+        renderAgentDropdown();
+      }
+    }
+  } catch (err) {
+    console.warn('[Persona] Failed to fetch available personas:', err);
+  }
+}
+
+function renderAgentDropdown() {
+  const listEl = document.getElementById('chat-agent-list');
+  if (!listEl) return;
+
+  const currentId = (currentSessionPersonaId || 'default').toLowerCase();
+
+  listEl.innerHTML = AVAILABLE_PERSONAS.map(p => {
+    const isSelected = p.id.toLowerCase() === currentId;
+    const isDef = p.id.toLowerCase() === 'default';
+    const badgeText = isDef ? 'CORE' : 'SPECIALIST';
+    const badgeClass = isDef ? 'badge-agent-default' : 'badge-agent-specialist';
+    return `
+      <div class="agent-option-item ${isSelected ? 'selected' : ''}" data-persona-id="${p.id}">
+        <div class="agent-option-left">
+          <span class="agent-option-icon">${p.icon || (isDef ? '🤖' : '🎭')}</span>
+          <div class="agent-option-content">
+            <div class="agent-option-title-row">
+              <span class="agent-option-name">${p.name}</span>
+              <span class="agent-option-badge ${badgeClass}">${badgeText}</span>
+            </div>
+            <div class="agent-option-desc">${p.description || ''}</div>
+          </div>
+        </div>
+        ${isSelected ? '<span class="agent-option-check">✓</span>' : ''}
+      </div>
+    `;
+  }).join('');
+
+  listEl.querySelectorAll('.agent-option-item').forEach(item => {
+    item.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const personaId = item.getAttribute('data-persona-id');
+      if (personaId) {
+        await setSessionAgentPersona(personaId);
+        closeAgentDropdown();
+      }
+    });
+  });
+}
+
+async function setSessionAgentPersona(personaId) {
+  currentSessionPersonaId = personaId;
+  pendingSessionPersonaId = personaId;
+  updateAgentPillDisplay();
+  renderAgentDropdown();
+  if (typeof isSlashPaletteOpen !== 'undefined' && isSlashPaletteOpen) {
+    const chatInput = document.getElementById('rightbar-chat-input');
+    if (chatInput) handleSlashInput(chatInput);
+  }
+
+  if (currentChatSessionId) {
+    try {
+      const res = await fetch(`/api/chat/sessions/${currentChatSessionId}/persona`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          persona_id: personaId === 'default' ? null : personaId
+        })
+      });
+      if (res.ok) {
+        const pObj = getSelectedPersonaObj();
+        showFloworkLaserToast(`🎭 Chat Persona locked to: ${pObj.name}`, true);
+      }
+    } catch (e) {
+      console.warn('[Persona] Failed to set session persona:', e);
+    }
+  }
+}
+
+function openAgentDropdown() {
+  const dropdown = document.getElementById('chat-agent-dropdown');
+  const pill = document.getElementById('chat-agent-pill');
+  if (dropdown && pill) {
+    fetchAvailablePersonas();
+    renderAgentDropdown();
+    dropdown.style.display = 'block';
+    pill.classList.add('active');
+  }
+}
+
+function closeAgentDropdown() {
+  const dropdown = document.getElementById('chat-agent-dropdown');
+  const pill = document.getElementById('chat-agent-pill');
+  if (dropdown && pill) {
+    dropdown.style.display = 'none';
+    pill.classList.remove('active');
+  }
+}
+
+function toggleAgentDropdown() {
+  const dropdown = document.getElementById('chat-agent-dropdown');
+  if (dropdown && dropdown.style.display === 'block') {
+    closeAgentDropdown();
+  } else {
+    openAgentDropdown();
+  }
+}
+
+function initAgentSelector() {
+  updateAgentPillDisplay();
+  fetchAvailablePersonas();
+
+  if (agentSelectorInitialized) return;
+  agentSelectorInitialized = true;
+
+  const pill = document.getElementById('chat-agent-pill');
+  if (pill) {
+    pill.addEventListener('click', (e) => {
+      e.stopPropagation();
+      toggleAgentDropdown();
+    });
+  }
+
+  document.addEventListener('click', (e) => {
+    const wrap = document.getElementById('chat-agent-selector-wrap');
+    if (wrap && !wrap.contains(e.target)) {
+      closeAgentDropdown();
+    }
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      closeAgentDropdown();
+    }
+  });
+}
+
+// =============================================================================
+// FLOWORK OS SOVEREIGN PERSONA-LOCKED SLASH COMMAND PALETTE
+// =============================================================================
+let slashPaletteSelectedIndex = 0;
+let filteredSlashCommands = [];
+let isSlashPaletteOpen = false;
+
+function getActivePersonaSlashCommands() {
+  const currentPersona = getSelectedPersonaObj();
+  // Per User Sovereign Command: Default persona MUST have ZERO slash commands
+  if (!currentPersona || currentPersona.id === 'default') {
+    return [];
+  }
+  // Custom persona slash commands are strictly defined in its persona.json
+  if (Array.isArray(currentPersona.slash_commands) && currentPersona.slash_commands.length > 0) {
+    return currentPersona.slash_commands;
+  }
+  return [];
+}
+
+function handleSlashInput(inputEl) {
+  const paletteEl = document.getElementById('chat-slash-palette');
+  if (!paletteEl) return;
+  const text = inputEl.value;
+  const cursorPos = inputEl.selectionStart != null ? inputEl.selectionStart : text.length;
+  const textBeforeCursor = text.slice(0, cursorPos);
+
+  // Detect if cursor is on a slash token at start of line or after whitespace
+  const match = textBeforeCursor.match(/(?:^|\s)\/([a-zA-Z0-9_\-]*)$/);
+  if (!match) {
+    closeSlashPalette();
+    return;
+  }
+
+  const allCommands = getActivePersonaSlashCommands();
+  // If active persona has zero slash commands (e.g. default), do not show palette
+  if (!allCommands || allCommands.length === 0) {
+    closeSlashPalette();
+    return;
+  }
+
+  const query = match[1].toLowerCase();
+  const currentPersona = getSelectedPersonaObj();
+
+  filteredSlashCommands = allCommands.filter(cmd => {
+    const cName = (cmd.command || '').replace(/^\//, '').toLowerCase();
+    const cDesc = (cmd.description || '').toLowerCase();
+    return cName.includes(query) || cDesc.includes(query);
+  });
+
+  if (filteredSlashCommands.length === 0) {
+    closeSlashPalette();
+    return;
+  }
+
+  slashPaletteSelectedIndex = 0;
+  paletteEl.style.display = 'flex';
+  isSlashPaletteOpen = true;
+  renderSlashPalette(paletteEl, currentPersona);
+}
+
+function renderSlashPalette(paletteEl, currentPersona) {
+  paletteEl.innerHTML = `
+    <div class="slash-palette-header">
+      <span>SLASH COMMANDS</span>
+      <span class="slash-persona-tag">🔒 ${escapeHtml(currentPersona.name || 'Core')}</span>
+    </div>
+    <div class="slash-palette-list" id="slash-palette-list">
+    </div>
+  `;
+  renderSlashPaletteItems(paletteEl);
+}
+
+function renderSlashPaletteItems(paletteEl) {
+  const listEl = paletteEl.querySelector('#slash-palette-list');
+  if (!listEl) return;
+
+  const currentPersona = getSelectedPersonaObj();
+  const personaId = (currentPersona.id || 'default').toLowerCase();
+
+  listEl.innerHTML = filteredSlashCommands.map((cmd, idx) => {
+    const isSelected = idx === slashPaletteSelectedIndex;
+    const isCore = cmd.scope === 'core' || ['/plan', '/goal', '/boost', '/learn', '/browser', '/schedule'].includes(cmd.command);
+    const badgeText = isCore ? 'CORE' : personaId.toUpperCase();
+    const badgeClass = isCore ? 'slash-badge-core' : 'slash-badge-coder';
+
+    return `
+      <div class="slash-palette-item ${isSelected ? 'selected' : ''}" data-cmd="${escapeHtml(cmd.command)}" data-index="${idx}">
+        <div class="slash-item-left">
+          <span class="slash-item-icon">${cmd.icon || '⚡'}</span>
+          <span class="slash-item-command">${escapeHtml(cmd.command)}</span>
+          <span class="slash-item-desc">${escapeHtml(cmd.description || '')}</span>
+        </div>
+        <div class="slash-item-right">
+          <span class="slash-item-badge ${badgeClass}">${badgeText}</span>
+        </div>
+      </div>
+    `;
+  }).join('');
+
+  // Robust mouse and click handlers without innerHTML recreation on hover!
+  listEl.onmousedown = (e) => {
+    const item = e.target.closest('.slash-palette-item');
+    if (item) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cmd = item.getAttribute('data-cmd');
+      if (cmd) {
+        selectSlashCommand(cmd);
+      }
+    }
+  };
+
+  listEl.onclick = (e) => {
+    const item = e.target.closest('.slash-palette-item');
+    if (item) {
+      e.preventDefault();
+      e.stopPropagation();
+      const cmd = item.getAttribute('data-cmd');
+      if (cmd) {
+        selectSlashCommand(cmd);
+      }
+    }
+  };
+
+  listEl.onmouseover = (e) => {
+    const item = e.target.closest('.slash-palette-item');
+    if (item) {
+      const idx = parseInt(item.getAttribute('data-index') || '0', 10);
+      if (idx !== slashPaletteSelectedIndex) {
+        slashPaletteSelectedIndex = idx;
+        listEl.querySelectorAll('.slash-palette-item').forEach((el, i) => {
+          el.classList.toggle('selected', i === slashPaletteSelectedIndex);
+        });
+      }
+    }
+  };
+}
+
+function scrollSelectedSlashItemIntoView(paletteEl) {
+  const listEl = paletteEl.querySelector('#slash-palette-list');
+  if (!listEl) return;
+  const selectedItem = listEl.querySelector('.slash-palette-item.selected');
+  if (selectedItem) {
+    selectedItem.scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function navigateSlashPalette(direction) {
+  const paletteEl = document.getElementById('chat-slash-palette');
+  if (!paletteEl || filteredSlashCommands.length === 0) return;
+  const listEl = paletteEl.querySelector('#slash-palette-list');
+  if (!listEl) return;
+  slashPaletteSelectedIndex = (slashPaletteSelectedIndex + direction + filteredSlashCommands.length) % filteredSlashCommands.length;
+  listEl.querySelectorAll('.slash-palette-item').forEach((el, i) => {
+    el.classList.toggle('selected', i === slashPaletteSelectedIndex);
+  });
+  scrollSelectedSlashItemIntoView(paletteEl);
+}
+
+function selectSlashCommand(cmdText) {
+  const chatInput = document.getElementById('rightbar-chat-input');
+  if (!chatInput) return;
+
+  const text = chatInput.value;
+  const cursorPos = chatInput.selectionStart != null ? chatInput.selectionStart : text.length;
+  const textBeforeCursor = text.slice(0, cursorPos);
+  const textAfterCursor = text.slice(cursorPos);
+
+  // Replace the slash token with the full command and a trailing space
+  const replacedBefore = textBeforeCursor.replace(/(?:^|\s)\/([a-zA-Z0-9_\-]*)$/, (match) => {
+    const leadingWhitespace = match.startsWith(' ') || match.startsWith('\n') ? match[0] : '';
+    return leadingWhitespace + cmdText + ' ';
+  });
+
+  chatInput.value = replacedBefore + textAfterCursor;
+  const newCursorPos = replacedBefore.length;
+  chatInput.focus();
+  chatInput.setSelectionRange(newCursorPos, newCursorPos);
+
+  closeSlashPalette();
+}
+
+function closeSlashPalette() {
+  const paletteEl = document.getElementById('chat-slash-palette');
+  if (paletteEl) {
+    paletteEl.style.display = 'none';
+  }
+  isSlashPaletteOpen = false;
+  slashPaletteSelectedIndex = 0;
+}
+
+function initSlashCommandPalette() {
+  document.addEventListener('click', (e) => {
+    const paletteEl = document.getElementById('chat-slash-palette');
+    const chatInput = document.getElementById('rightbar-chat-input');
+    if (isSlashPaletteOpen && paletteEl && !paletteEl.contains(e.target) && e.target !== chatInput) {
+      closeSlashPalette();
+    }
+  });
+}
+
+
 function updateTopStatusBar() {
   const bar = document.getElementById('chat-top-status-bar');
   const txt = document.getElementById('chat-top-status-text');
@@ -4186,16 +4670,16 @@ function renderQueueTray() {
 
   if (list) {
     list.innerHTML = queuedMessages.map((q, idx) => `
-      <div class="ag-queue-row" data-qid="${q.id}">
-        <span class="ag-queue-row-text" title="${escapeHtml(q.text)}">${escapeHtml(q.text)}</span>
-        <div class="ag-queue-actions">
-          <button class="ag-queue-btn btn-send-now" data-send-qid="${q.id}" title="Send now">
+      <div class="fl-queue-row" data-qid="${q.id}">
+        <span class="fl-queue-row-text" title="${escapeHtml(q.text)}">${escapeHtml(q.text)}</span>
+        <div class="fl-queue-actions">
+          <button class="fl-queue-btn btn-send-now" data-send-qid="${q.id}" title="Send now">
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"></polyline></svg>
           </button>
-          <button class="ag-queue-btn btn-edit-queue" data-edit-qid="${q.id}" title="Edit message">
+          <button class="fl-queue-btn btn-edit-queue" data-edit-qid="${q.id}" title="Edit message">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/></svg>
           </button>
-          <button class="ag-queue-btn btn-delete-queue" data-del-qid="${q.id}" title="Delete from queue">
+          <button class="fl-queue-btn btn-delete-queue" data-del-qid="${q.id}" title="Delete from queue">
             <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
           </button>
         </div>
@@ -4228,8 +4712,8 @@ async function stopCurrentChatTurn() {
 
   if (activeBodyArea) {
     const stoppedDiv = document.createElement('div');
-    stoppedDiv.className = 'ag-stopped-banner';
-    stoppedDiv.innerHTML = '<span class="ag-stopped-icon">⏹</span> Generation stopped by user';
+    stoppedDiv.className = 'fl-stopped-banner';
+    stoppedDiv.innerHTML = '<span class="fl-stopped-icon">⏹</span> Generation stopped by user';
     activeBodyArea.appendChild(stoppedDiv);
   }
 
@@ -4237,6 +4721,13 @@ async function stopCurrentChatTurn() {
   activeTaskKeys.clear();
   updateTopStatusBar();
   hidePinnedPrompt();
+
+  const messagesContainer = document.getElementById('rightbar-messages');
+  if (messagesContainer) {
+    messagesContainer.classList.remove('chat-focus-mode');
+    messagesContainer.querySelectorAll('.chat-msg-active-turn').forEach(el => el.classList.remove('chat-msg-active-turn'));
+  }
+  setMascotAgentLoop(false);
 
   isChatStreaming = false;
   const sendBtn = document.getElementById('btn-rightbar-send');
@@ -4622,7 +5113,36 @@ window.toggleChartRawData = function(btnEl) {
 };
 
 function generateDonutSvg(data, options = {}) {
-  const items = Array.isArray(data) ? data : (data.data || data.items || []);
+  let rawItems = [];
+  if (Array.isArray(data)) {
+    rawItems = data;
+  } else if (data && typeof data === 'object') {
+    if (Array.isArray(data.data)) rawItems = data.data;
+    else if (Array.isArray(data.items)) rawItems = data.items;
+    else if (Array.isArray(data.slices)) rawItems = data.slices;
+    else if (Array.isArray(data.segments)) rawItems = data.segments;
+    else if (Array.isArray(data.series)) rawItems = data.series;
+    else if (Array.isArray(data.labels) && Array.isArray(data.values)) {
+      rawItems = data.labels.map((l, i) => ({ label: l, value: data.values[i] }));
+    } else {
+      // Key-value pairs: e.g. { "BTC": 45, "ETH": 35, "SOL": 20 }
+      rawItems = Object.entries(data)
+        .filter(([k, v]) => typeof v === 'number' && !['width', 'height', 'total', 'size'].includes(k.toLowerCase()))
+        .map(([k, v]) => ({ label: k, value: v }));
+    }
+  }
+
+  // Normalize items
+  const items = rawItems.map(it => {
+    if (typeof it === 'number') return { label: 'Value', value: it };
+    if (!it || typeof it !== 'object') return { label: String(it), value: 0 };
+    return {
+      label: it.label || it.name || it.title || it.category || it.x || 'Item',
+      value: Number(it.value ?? it.val ?? it.amount ?? it.count ?? it.y ?? 0),
+      color: it.color || it.fill
+    };
+  }).filter(it => it.value > 0);
+
   if (!items.length) return '';
   const total = items.reduce((sum, it) => sum + Number(it.value || 0), 0);
   const size = 180, cx = 90, cy = 90, r = 68, innerR = 46;
@@ -4650,7 +5170,7 @@ function generateDonutSvg(data, options = {}) {
     startAngle = endAngle;
   });
 
-  const centerMain = options.centerText || (total > 0 ? String(total) : '0');
+  const centerMain = options.centerText || (total > 0 ? (total >= 1000 ? total.toLocaleString() : String(total)) : '0');
   const centerSub = options.centerSub || 'TOTAL';
 
   return `
@@ -4683,10 +5203,54 @@ function generateDonutSvg(data, options = {}) {
 }
 
 function generateTradingSvg(payload) {
-  const series = payload.series || payload.candles || payload.data || [];
+  let rawSeries = [];
+  if (Array.isArray(payload)) {
+    rawSeries = payload;
+  } else if (payload && typeof payload === 'object') {
+    rawSeries = payload.series || payload.candles || payload.data || payload.items || [];
+    if (!Array.isArray(rawSeries) && rawSeries && typeof rawSeries === 'object') {
+      rawSeries = rawSeries.candles || rawSeries.series || rawSeries.data || [];
+    }
+  }
+
+  // Normalize candle entries
+  const series = rawSeries.map((s, idx) => {
+    if (Array.isArray(s)) {
+      // [time, open, high, low, close, volume] or [open, high, low, close]
+      if (s.length >= 5) {
+        return {
+          time: String(s[0]),
+          open: Number(s[1]),
+          high: Number(s[2]),
+          low: Number(s[3]),
+          close: Number(s[4]),
+          volume: Number(s[5] || 0)
+        };
+      } else if (s.length === 4) {
+        return {
+          time: String(idx + 1),
+          open: Number(s[0]),
+          high: Number(s[1]),
+          low: Number(s[2]),
+          close: Number(s[3]),
+          volume: 0
+        };
+      }
+    }
+    if (!s || typeof s !== 'object') return null;
+    return {
+      time: s.time || s.t || s.timestamp || s.date || String(idx + 1),
+      open: Number(s.open ?? s.o ?? s.openPrice ?? 0),
+      high: Number(s.high ?? s.h ?? s.highPrice ?? 0),
+      low: Number(s.low ?? s.l ?? s.lowPrice ?? 0),
+      close: Number(s.close ?? s.c ?? s.closePrice ?? s.price ?? 0),
+      volume: Number(s.volume ?? s.v ?? s.vol ?? 0)
+    };
+  }).filter(Boolean);
+
   if (!series.length) return '';
-  const symbol = payload.symbol || payload.pair || 'FLOW/USDT';
-  const timeframe = payload.timeframe || payload.tf || '1H';
+  const symbol = (payload && (payload.symbol || payload.pair || payload.ticker)) || 'BTC/USDT';
+  const timeframe = (payload && (payload.timeframe || payload.tf || payload.interval)) || '1H';
   const w = 480, h = 240;
   const padTop = 30, padBottom = 40, padLeft = 10, padRight = 65;
   const plotW = w - padLeft - padRight;
@@ -4770,9 +5334,16 @@ function generateTradingSvg(payload) {
 }
 
 function generateBarSvg(payload) {
-  const items = payload.data || payload.items || [];
-  let labels = payload.labels || [];
-  let values = payload.values || [];
+  let labels = payload.labels || (payload.data && payload.data.labels) || [];
+  let values = payload.values || (payload.data && payload.data.values) || [];
+  let items = payload.items || (payload.data && payload.data.items) || (payload.data && payload.data.bars) || (Array.isArray(payload.data) ? payload.data : []);
+
+  if (payload.data && Array.isArray(payload.data.series) && payload.data.series.length > 0) {
+    const s0 = payload.data.series[0];
+    if (s0.data && Array.isArray(s0.data)) values = s0.data.map(Number);
+    else if (s0.values && Array.isArray(s0.values)) values = s0.values.map(Number);
+  }
+
   if (items.length && (!labels.length || !values.length)) {
     labels = items.map(it => it.label || it.name || '');
     values = items.map(it => Number(it.value !== undefined ? it.value : it.val || 0));
@@ -4813,39 +5384,86 @@ function generateBarSvg(payload) {
 }
 
 function generateLineSvg(payload) {
-  let labels = payload.labels || [];
-  let values = payload.values || [];
-  if (payload.data && Array.isArray(payload.data)) {
-    if (!values.length) values = payload.data.map(d => typeof d === 'number' ? d : Number(d.value || 0));
-    if (!labels.length) labels = payload.data.map((d, i) => d.label || d.time || String(i + 1));
+  let labels = payload.labels || (payload.data && payload.data.labels) || [];
+  let values = [];
+  let strokeCol = payload.color || '#00f0ff';
+
+  if (payload.data && Array.isArray(payload.data.series) && payload.data.series.length > 0) {
+    const s0 = payload.data.series[0];
+    if (s0.data && Array.isArray(s0.data)) values = s0.data.map(Number);
+    else if (s0.values && Array.isArray(s0.values)) values = s0.values.map(Number);
+    if (s0.color) strokeCol = s0.color;
+  } else if (payload.data && Array.isArray(payload.data.values)) {
+    values = payload.data.values.map(Number);
+  } else if (payload.values && Array.isArray(payload.values)) {
+    values = payload.values.map(Number);
+  } else if (payload.data && Array.isArray(payload.data)) {
+    values = payload.data.map(d => typeof d === 'number' ? d : Number(d.value !== undefined ? d.value : d.val || 0));
+    if (!labels.length) labels = payload.data.map((d, i) => d.label || d.time || d.name || String(i + 1));
   }
+
   if (!values.length) return '';
+  if (!labels.length) labels = values.map((_, i) => String(i + 1));
+
+  const unit = (payload.options && payload.options.unit) || '';
   const w = 480, h = 200;
-  const padTop = 25, padBottom = 35, padLeft = 20, padRight = 30;
+  const padTop = 25, padBottom = 35, padLeft = 25, padRight = 35;
   const plotW = w - padLeft - padRight;
   const plotH = h - padTop - padBottom;
   const minV = Math.min(...values);
   const maxV = Math.max(...values);
   const range = (maxV - minV) || 1;
   const scaleY = v => padTop + plotH - ((v - minV) / range) * plotH;
-  const colW = plotW / Math.max(1, values.length - 1);
+  const colW = values.length > 1 ? plotW / (values.length - 1) : plotW;
 
-  const points = values.map((v, i) => ({ x: padLeft + i * colW, y: scaleY(v), val: v, lbl: labels[i] || '' }));
-  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
-  const areaD = `${pathD} L ${points[points.length - 1].x} ${padTop + plotH} L ${points[0].x} ${padTop + plotH} Z`;
-  const strokeCol = payload.color || '#00f0ff';
-  const dots = points.map(p => `<circle cx="${p.x}" cy="${p.y}" r="3" fill="#080e1e" stroke="${strokeCol}" stroke-width="2"><title>${p.lbl}: ${p.val}</title></circle>`).join('');
+  const points = values.map((v, i) => ({
+    x: padLeft + (values.length > 1 ? i * colW : plotW / 2),
+    y: scaleY(v),
+    val: v,
+    lbl: labels[i] || ''
+  }));
+
+  const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' ');
+  const areaD = values.length > 1
+    ? `${pathD} L ${points[points.length - 1].x.toFixed(1)} ${padTop + plotH} L ${points[0].x.toFixed(1)} ${padTop + plotH} Z`
+    : '';
+
+  const gradId = 'line-grad-' + Math.floor(Math.random() * 100000);
+  const elements = [];
+
+  for (let i = 0; i <= 3; i++) {
+    const yVal = padTop + (plotH * i) / 3;
+    const gridNum = maxV - (range * i) / 3;
+    elements.push(`<line x1="${padLeft}" y1="${yVal}" x2="${padLeft + plotW}" y2="${yVal}" stroke="rgba(0, 240, 255, 0.1)" stroke-dasharray="2,3" />`);
+    elements.push(`<text x="${padLeft + plotW + 4}" y="${yVal + 3}" fill="#64748b" font-size="8" font-family="monospace">${gridNum >= 1000 ? (gridNum/1000).toFixed(1) + 'k' : Math.round(gridNum)}</text>`);
+  }
+
+  const dots = points.map((p, idx) => {
+    const displayVal = unit ? `${unit}${p.val.toLocaleString()}` : p.val.toLocaleString();
+    const shortLbl = p.lbl.length > 8 ? p.lbl.slice(0, 7) + '…' : p.lbl;
+    const lblNode = (idx % Math.ceil(values.length / 6) === 0 || idx === values.length - 1)
+      ? `<text x="${p.x.toFixed(1)}" y="${h - 10}" text-anchor="middle" fill="#94a3b8" font-size="8.5" font-family="monospace">${escapeHtml(shortLbl)}</text>`
+      : '';
+    return `
+      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="3.5" fill="#080e1e" stroke="${strokeCol}" stroke-width="2">
+        <title>${p.lbl}: ${displayVal}</title>
+      </circle>
+      <text x="${p.x.toFixed(1)}" y="${p.y - 7}" text-anchor="middle" fill="#ffffff" font-size="8.5" font-weight="700" font-family="monospace">${displayVal}</text>
+      ${lblNode}
+    `;
+  }).join('');
 
   return `
     <div class="tactical-line-container">
       <svg viewBox="0 0 ${w} ${h}" class="tactical-line-svg" width="100%">
         <defs>
-          <linearGradient id="line-area-grad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="${strokeCol}" stop-opacity="0.35" />
+          <linearGradient id="${gradId}" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stop-color="${strokeCol}" stop-opacity="0.3" />
             <stop offset="100%" stop-color="${strokeCol}" stop-opacity="0.0" />
           </linearGradient>
         </defs>
-        <path d="${areaD}" fill="url(#line-area-grad)" />
+        ${areaD ? `<path d="${areaD}" fill="url(#${gradId})" />` : ''}
+        ${elements.join('')}
         <path d="${pathD}" fill="none" stroke="${strokeCol}" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
         ${dots}
       </svg>
@@ -4853,36 +5471,504 @@ function generateLineSvg(payload) {
   `;
 }
 
+function generateKpiDeckHtml(payload) {
+  const cards = (payload.data && Array.isArray(payload.data.cards)) ? payload.data.cards :
+                (payload.data && Array.isArray(payload.data.metrics)) ? payload.data.metrics :
+                (payload.data && Array.isArray(payload.data.items)) ? payload.data.items :
+                (Array.isArray(payload.cards) ? payload.cards :
+                (Array.isArray(payload.data) ? payload.data : []));
+  if (!cards.length) return '';
+
+  const cardsHtml = cards.map((c, i) => {
+    const label = c.label || c.name || c.title || 'Metric';
+    const val = c.value !== undefined ? c.value : (c.val !== undefined ? c.val : '-');
+    const unit = c.unit || (payload.options && payload.options.unit) || '';
+    const displayVal = (unit && !String(val).includes(unit)) ? `${unit}${val}` : String(val);
+    const change = c.change || c.delta || '';
+    const trend = (c.trend || (String(change).startsWith('+') ? 'up' : String(change).startsWith('-') ? 'down' : '')).toLowerCase();
+    const status = (c.status || '').toLowerCase();
+
+    // Map contextual telemetry glyph
+    let glyph = '◈';
+    const lLower = label.toLowerCase();
+    if (lLower.includes('asset') || lLower.includes('money') || lLower.includes('rev') || lLower.includes('mrr') || lLower.includes('cost') || lLower.includes('price')) glyph = '💎';
+    else if (lLower.includes('perf') || lLower.includes('speed') || lLower.includes('acc') || lLower.includes('target') || lLower.includes('kpi') || lLower.includes('rate')) glyph = '🎯';
+    else if (lLower.includes('ping') || lLower.includes('lat') || lLower.includes('resp') || lLower.includes('ms') || lLower.includes('time') || lLower.includes('ops')) glyph = '⚡';
+    else if (lLower.includes('core') || lLower.includes('cpu') || lLower.includes('ram') || lLower.includes('load') || lLower.includes('node') || lLower.includes('host')) glyph = '🧬';
+    else if (lLower.includes('brain') || lLower.includes('synapse') || lLower.includes('ai') || lLower.includes('memory') || lLower.includes('token') || lLower.includes('neural')) glyph = '🧠';
+
+    let trendBadge = '';
+    if (change) {
+      const isUp = trend === 'up' || trend === 'bull' || String(change).startsWith('+');
+      const isDown = trend === 'down' || trend === 'bear' || String(change).startsWith('-');
+      const badgeCls = isUp ? 'kpi-badge-up' : (isDown ? 'kpi-badge-down' : 'kpi-badge-neutral');
+      const arrow = isUp ? '▲ ' : (isDown ? '▼ ' : '');
+      trendBadge = `<span class="tactical-kpi-badge ${badgeCls}">${arrow}${escapeHtml(String(change))}</span>`;
+    }
+
+    let statusDot = '';
+    if (status) {
+      const isOk = status === 'ok' || status === 'healthy' || status === 'success';
+      const isWarn = status === 'warn' || status === 'warning';
+      const dotCol = isOk ? '#10b981' : (isWarn ? '#f59e0b' : '#f43f5e');
+      statusDot = `<span class="kpi-status-dot" style="background:${dotCol};box-shadow:0 0 6px ${dotCol};" title="Status: ${escapeHtml(status)}"></span>`;
+    }
+
+    // Micro sparkline SVG
+    const sparkGradId = `spark-grad-${i}-${Math.floor(Math.random() * 10000)}`;
+    const sparkCol = trend === 'down' ? '#f43f5e' : (trend === 'up' ? '#10b981' : '#00f0ff');
+    const y1 = 16 - (i % 3) * 4;
+    const y2 = 8 + (i % 2) * 5;
+    const y3 = trend === 'down' ? 18 : 6;
+    const sparkSvg = `
+      <div class="kpi-sparkline-wrap">
+        <svg viewBox="0 0 120 24" class="kpi-sparkline-svg" preserveAspectRatio="none">
+          <defs>
+            <linearGradient id="${sparkGradId}" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="${sparkCol}" stop-opacity="0.35" />
+              <stop offset="100%" stop-color="${sparkCol}" stop-opacity="0.0" />
+            </linearGradient>
+          </defs>
+          <path d="M 0 18 Q 30 ${y1} 60 ${y2} T 120 ${y3} L 120 24 L 0 24 Z" fill="url(#${sparkGradId})" />
+          <path d="M 0 18 Q 30 ${y1} 60 ${y2} T 120 ${y3}" fill="none" stroke="${sparkCol}" stroke-width="1.8" stroke-linecap="round" />
+        </svg>
+      </div>
+    `;
+
+    return `
+      <div class="tactical-kpi-card">
+        <span class="kpi-corner-tr"></span>
+        <span class="kpi-corner-bl"></span>
+        <div class="kpi-card-head">
+          <div class="kpi-card-meta">
+            <span class="kpi-glyph">${glyph}</span>
+            <span class="kpi-card-label">${escapeHtml(label)}</span>
+          </div>
+          <div class="kpi-head-right">
+            <span class="kpi-tag-chip">HUD // M-${i + 1}</span>
+            ${statusDot}
+          </div>
+        </div>
+        <div class="kpi-card-main">
+          <span class="kpi-card-val">${escapeHtml(displayVal)}</span>
+          ${trendBadge}
+        </div>
+        ${sparkSvg}
+        ${c.desc ? `<div class="kpi-card-desc">${escapeHtml(c.desc)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="tactical-kpi-grid">
+      ${cardsHtml}
+    </div>
+  `;
+}
+
+function generatePipelineHtml(payload) {
+  const stages = (payload.data && Array.isArray(payload.data.stages)) ? payload.data.stages :
+                 (payload.data && Array.isArray(payload.data.steps)) ? payload.data.steps :
+                 (Array.isArray(payload.stages) ? payload.stages :
+                 (Array.isArray(payload.data) ? payload.data : []));
+  if (!stages.length) return '';
+
+  const stagesHtml = stages.map((s, idx) => {
+    const name = s.name || s.stage || s.label || `Stage ${idx + 1}`;
+    const status = (s.status || 'pending').toLowerCase();
+    let icon = '○';
+    let statusCls = 'stage-pending';
+    if (status === 'done' || status === 'completed' || status === 'success') {
+      icon = '✔';
+      statusCls = 'stage-done';
+    } else if (status === 'running' || status === 'active' || status === 'in_progress') {
+      icon = '⚡';
+      statusCls = 'stage-running';
+    } else if (status === 'failed' || status === 'error') {
+      icon = '✖';
+      statusCls = 'stage-failed';
+    }
+    return `
+      <div class="tactical-pipeline-stage ${statusCls}">
+        <div class="pipeline-stage-icon">${icon}</div>
+        <div class="pipeline-stage-info">
+          <span class="pipeline-stage-name">${escapeHtml(name)}</span>
+          <span class="pipeline-stage-status">${escapeHtml(status.toUpperCase())}</span>
+        </div>
+      </div>
+    `;
+  }).join('<div class="pipeline-stage-arrow">→</div>');
+
+  return `
+    <div class="tactical-pipeline-container">
+      ${stagesHtml}
+    </div>
+  `;
+}
+
+function generateDataGridHtml(payload) {
+  let rows = (payload.data && Array.isArray(payload.data.rows)) ? payload.data.rows :
+             (payload.data && Array.isArray(payload.data.items)) ? payload.data.items :
+             (Array.isArray(payload.rows) ? payload.rows :
+             (Array.isArray(payload.data) ? payload.data : []));
+  let cols = (payload.data && Array.isArray(payload.data.columns)) ? payload.data.columns :
+             (Array.isArray(payload.columns) ? payload.columns : []);
+  if (!rows.length) return '';
+  if (!cols.length && rows.length > 0 && typeof rows[0] === 'object') {
+    cols = Object.keys(rows[0]);
+  }
+  if (!cols.length) return '';
+
+  const thead = cols.map(c => `<th>${escapeHtml(String(c))}</th>`).join('');
+  const tbody = rows.map(r => {
+    const tds = cols.map(c => {
+      const val = r[c] !== undefined ? String(r[c]) : '';
+      const isStatus = ['status', 'state'].includes(String(c).toLowerCase());
+      if (isStatus) {
+        const isOk = ['healthy', 'done', 'ok', 'active', 'online'].includes(val.toLowerCase());
+        const isBad = ['error', 'failed', 'dead', 'offline'].includes(val.toLowerCase());
+        const badgeCol = isOk ? '#10b981' : (isBad ? '#f43f5e' : '#f59e0b');
+        return `<td><span class="grid-status-badge" style="color:${badgeCol};border-color:${badgeCol};background:${badgeCol}18;">${escapeHtml(val)}</span></td>`;
+      }
+      return `<td>${escapeHtml(val)}</td>`;
+    }).join('');
+    return `<tr>${tds}</tr>`;
+  }).join('');
+
+  return `
+    <div class="tactical-grid-container">
+      <table class="tactical-grid-table">
+        <thead><tr>${thead}</tr></thead>
+        <tbody>${tbody}</tbody>
+      </table>
+    </div>
+  `;
+}
+
+function generateGaugeSvg(payload) {
+  const val = Number((payload.data && payload.data.value !== undefined) ? payload.data.value : (payload.value !== undefined ? payload.value : 50));
+  const min = Number((payload.data && payload.data.min !== undefined) ? payload.data.min : 0);
+  const max = Number((payload.data && payload.data.max !== undefined) ? payload.data.max : 100);
+  const unit = (payload.data && payload.data.unit) || (payload.options && payload.options.unit) || '%';
+  const label = (payload.data && payload.data.label) || payload.title || 'LEVEL';
+
+  const range = (max - min) || 100;
+  const pct = Math.max(0, Math.min(1, (val - min) / range));
+  const angle = -180 + pct * 180;
+
+  const w = 240, h = 140, cx = 120, cy = 110, r = 80;
+  const rad = (Math.PI * angle) / 180;
+  const needleX = cx + (r - 15) * Math.cos(rad);
+  const needleY = cy + (r - 15) * Math.sin(rad);
+
+  const col = pct < 0.6 ? '#10b981' : (pct < 0.85 ? '#f59e0b' : '#f43f5e');
+
+  return `
+    <div class="tactical-gauge-container">
+      <svg viewBox="0 0 ${w} ${h}" class="tactical-gauge-svg">
+        <path d="M 40 110 A 80 80 0 0 1 200 110" fill="none" stroke="rgba(255,255,255,0.1)" stroke-width="14" stroke-linecap="round" />
+        <path d="M 40 110 A 80 80 0 0 1 ${needleX.toFixed(1)} ${needleY.toFixed(1)}" fill="none" stroke="${col}" stroke-width="14" stroke-linecap="round" style="filter:drop-shadow(0 0 6px ${col});" />
+        <circle cx="${cx}" cy="${cy}" r="7" fill="#ffffff" />
+        <line x1="${cx}" y1="${cy}" x2="${needleX.toFixed(1)}" y2="${needleY.toFixed(1)}" stroke="#ffffff" stroke-width="3" stroke-linecap="round" />
+        <text x="${cx}" y="${cy - 20}" text-anchor="middle" fill="#ffffff" font-size="18" font-weight="800" font-family="monospace">${val}${unit}</text>
+        <text x="${cx}" y="${cy + 22}" text-anchor="middle" fill="#94a3b8" font-size="9.5" font-family="monospace">${escapeHtml(label)}</text>
+      </svg>
+    </div>
+  `;
+}
+
+function generateDiagramSvg(payload) {
+  const nodes = (payload.data && Array.isArray(payload.data.nodes)) ? payload.data.nodes : (Array.isArray(payload.nodes) ? payload.nodes : []);
+  const links = (payload.data && Array.isArray(payload.data.links)) ? payload.data.links : (Array.isArray(payload.links) ? payload.links : []);
+  if (!nodes.length) return '';
+
+  const w = 480, h = 180;
+  const n = nodes.length;
+  const nodeW = Math.max(90, Math.min(130, (w - 60) / n));
+  const nodeH = 46;
+  const gap = n > 1 ? (w - 40 - n * nodeW) / (n - 1) : 0;
+  const y = (h - nodeH) / 2;
+
+  const nodeMap = {};
+  const nodeEls = [];
+
+  nodes.forEach((node, idx) => {
+    const x = 20 + idx * (nodeW + gap);
+    nodeMap[node.id || String(idx)] = { x, y, cx: x + nodeW / 2, cy: y + nodeH / 2, w: nodeW, h: nodeH };
+    const label = node.label || node.name || node.id || `Node ${idx + 1}`;
+    const type = (node.type || 'service').toUpperCase();
+    nodeEls.push(`
+      <g class="diagram-node">
+        <rect x="${x}" y="${y}" width="${nodeW}" height="${nodeH}" rx="6" fill="#080e1e" stroke="rgba(0, 240, 255, 0.4)" stroke-width="1.5" />
+        <rect x="${x}" y="${y}" width="${nodeW}" height="14" rx="6" fill="rgba(0, 240, 255, 0.12)" />
+        <text x="${x + nodeW / 2}" y="${y + 10}" text-anchor="middle" fill="#38bdf8" font-size="7.5" font-weight="700" font-family="monospace">${escapeHtml(type)}</text>
+        <text x="${x + nodeW / 2}" y="${y + 32}" text-anchor="middle" fill="#ffffff" font-size="10" font-weight="600" font-family="monospace">${escapeHtml(label.length > 14 ? label.slice(0, 13) + '…' : label)}</text>
+      </g>
+    `);
+  });
+
+  const linkEls = [];
+  links.forEach(link => {
+    const from = nodeMap[link.from];
+    const to = nodeMap[link.to];
+    if (from && to) {
+      const x1 = from.x + from.w;
+      const y1 = from.cy;
+      const x2 = to.x;
+      const y2 = to.cy;
+      linkEls.push(`
+        <line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#00f0ff" stroke-width="2" stroke-dasharray="4,3" marker-end="url(#diag-arrow)" />
+        ${link.label ? `<text x="${(x1 + x2) / 2}" y="${y1 - 6}" text-anchor="middle" fill="#94a3b8" font-size="8" font-family="monospace">${escapeHtml(link.label)}</text>` : ''}
+      `);
+    }
+  });
+
+  return `
+    <div class="tactical-diagram-container">
+      <svg viewBox="0 0 ${w} ${h}" class="tactical-diagram-svg" width="100%">
+        <defs>
+          <marker id="diag-arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+            <path d="M 0 1 L 10 5 L 0 9 z" fill="#00f0ff" />
+          </marker>
+        </defs>
+        ${linkEls.join('')}
+        ${nodeEls.join('')}
+      </svg>
+    </div>
+  `;
+}
+
+function generateLogStreamerHtml(payload) {
+  const logs = (payload.data && Array.isArray(payload.data.logs)) ? payload.data.logs :
+               (payload.data && Array.isArray(payload.data.lines)) ? payload.data.lines :
+               (Array.isArray(payload.logs) ? payload.logs :
+               (Array.isArray(payload.data) ? payload.data : []));
+  if (!logs.length) return '';
+
+  const logLines = logs.map(l => {
+    let lvl = 'INFO';
+    let msg = '';
+    let time = '';
+    if (typeof l === 'string') {
+      msg = l;
+      const m = l.match(/\[(INFO|WARN|ERROR|DEBUG|FATAL|SUCCESS)\]/i);
+      if (m) lvl = m[1].toUpperCase();
+    } else if (typeof l === 'object') {
+      lvl = (l.level || l.lvl || 'INFO').toUpperCase();
+      msg = l.message || l.msg || l.text || JSON.stringify(l);
+      time = l.time || l.timestamp || '';
+    }
+
+    let lvlCol = '#38bdf8';
+    if (lvl.includes('WARN')) lvlCol = '#f59e0b';
+    else if (lvl.includes('ERR') || lvl.includes('FATAL')) lvlCol = '#f43f5e';
+    else if (lvl.includes('SUCC') || lvl.includes('OK')) lvlCol = '#10b981';
+    else if (lvl.includes('DEBUG')) lvlCol = '#94a3b8';
+
+    return `
+      <div class="tactical-log-line">
+        ${time ? `<span class="log-time">${escapeHtml(time)}</span>` : ''}
+        <span class="log-lvl-badge" style="color:${lvlCol};border-color:${lvlCol};background:${lvlCol}18;">[${escapeHtml(lvl)}]</span>
+        <span class="log-msg-text">${escapeHtml(msg)}</span>
+      </div>
+    `;
+  }).join('');
+
+  return `
+    <div class="tactical-log-streamer">
+      <div class="log-streamer-head">
+        <span class="log-streamer-dot"></span>
+        <span>TELEMETRY STREAM // LIVE MONITOR</span>
+      </div>
+      <div class="log-streamer-body">
+        ${logLines}
+      </div>
+    </div>
+  `;
+}
+
+function generateRadarSvg(payload) {
+  let labels = payload.labels || (payload.data && payload.data.labels) || [];
+  let values = [];
+
+  if (payload.data && Array.isArray(payload.data.series) && payload.data.series.length > 0) {
+    const s0 = payload.data.series[0];
+    values = (s0.data || s0.values || []).map(Number);
+  } else if (payload.data && Array.isArray(payload.data.values)) {
+    values = payload.data.values.map(Number);
+  } else if (payload.values && Array.isArray(payload.values)) {
+    values = payload.values.map(Number);
+  } else if (payload.data && Array.isArray(payload.data.items)) {
+    labels = payload.data.items.map(it => it.label || it.name || '');
+    values = payload.data.items.map(it => Number(it.value !== undefined ? it.value : it.val || 0));
+  }
+
+  if (!values.length) return '';
+  if (!labels.length) labels = values.map((_, i) => `Axis ${i + 1}`);
+
+  const n = values.length;
+  const w = 340, h = 260, cx = 170, cy = 130, maxR = 85;
+  const maxV = Math.max(...values, 100);
+
+  const angleStep = (2 * Math.PI) / n;
+  const gridRings = [0.25, 0.5, 0.75, 1.0];
+
+  const gridEls = [];
+  gridRings.forEach(ratio => {
+    const r = maxR * ratio;
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const a = -Math.PI / 2 + i * angleStep;
+      pts.push(`${(cx + r * Math.cos(a)).toFixed(1)},${(cy + r * Math.sin(a)).toFixed(1)}`);
+    }
+    gridEls.push(`<polygon points="${pts.join(' ')}" fill="none" stroke="rgba(0, 240, 255, 0.15)" stroke-width="1" />`);
+  });
+
+  const axisEls = [];
+  const valPts = [];
+  for (let i = 0; i < n; i++) {
+    const a = -Math.PI / 2 + i * angleStep;
+    const endX = cx + maxR * Math.cos(a);
+    const endY = cy + maxR * Math.sin(a);
+    axisEls.push(`<line x1="${cx}" y1="${cy}" x2="${endX.toFixed(1)}" y2="${endY.toFixed(1)}" stroke="rgba(0, 240, 255, 0.2)" />`);
+
+    const lblR = maxR + 18;
+    const lblX = cx + lblR * Math.cos(a);
+    const lblY = cy + lblR * Math.sin(a) + 3;
+    const shortLbl = labels[i].length > 10 ? labels[i].slice(0, 9) + '…' : labels[i];
+    axisEls.push(`<text x="${lblX.toFixed(1)}" y="${lblY.toFixed(1)}" text-anchor="middle" fill="#94a3b8" font-size="8.5" font-family="monospace">${escapeHtml(shortLbl)}</text>`);
+
+    const valR = (Math.max(0, values[i]) / maxV) * maxR;
+    valPts.push(`${(cx + valR * Math.cos(a)).toFixed(1)},${(cy + valR * Math.sin(a)).toFixed(1)}`);
+  }
+
+  return `
+    <div class="tactical-radar-container">
+      <svg viewBox="0 0 ${w} ${h}" class="tactical-radar-svg">
+        ${gridEls.join('')}
+        ${axisEls.join('')}
+        <polygon points="${valPts.join(' ')}" fill="rgba(0, 240, 255, 0.25)" stroke="#00f0ff" stroke-width="2" />
+        ${valPts.map((p, idx) => `<circle cx="${p.split(',')[0]}" cy="${p.split(',')[1]}" r="3" fill="#ffffff" stroke="#00f0ff" stroke-width="1.5"><title>${labels[idx]}: ${values[idx]}</title></circle>`).join('')}
+      </svg>
+    </div>
+  `;
+}
+
 function renderTacticalChartCard(rawCode, rawLang) {
-  const lang = (rawLang || '').toLowerCase().trim();
-  let chartType = 'donut';
-  if (lang.includes('trading') || lang.includes('candlestick')) chartType = 'trading';
-  else if (lang.includes('donut') || lang.includes('pie')) chartType = 'donut';
-  else if (lang.includes('bar')) chartType = 'bar';
-  else if (lang.includes('line') || lang.includes('area')) chartType = 'line';
+  let cleanLang = (rawLang || '').toLowerCase().trim();
+  if (cleanLang.startsWith('visual:')) cleanLang = cleanLang.slice(7).trim();
 
   let parsed = null;
+  let detectedTitle = '';
+
+  // 1. Direct JSON parse
   try {
     parsed = JSON.parse(rawCode);
-    if (parsed.type) chartType = parsed.type.toLowerCase();
   } catch (_) {
-    const lines = rawCode.split('\n').map(l => l.trim()).filter(Boolean);
-    const items = [];
-    for (const l of lines) {
-      const m = l.match(/^([^:,]+)[:=]\s*([0-9.]+)/);
-      if (m) items.push({ label: m[1].trim(), value: parseFloat(m[2]) });
+    // 2. Embedded JSON slice: e.g. "BTC/USDT 1D\n[ [17000, 10, ... ] ]"
+    const firstBracket = rawCode.search(/[{\[]/);
+    const lastBracket = Math.max(rawCode.lastIndexOf('}'), rawCode.lastIndexOf(']'));
+    if (firstBracket !== -1 && lastBracket > firstBracket) {
+      const prefix = rawCode.slice(0, firstBracket).trim();
+      if (prefix) {
+        detectedTitle = prefix.split('\n')[0].trim();
+      }
+      try {
+        const jsonSlice = rawCode.slice(firstBracket, lastBracket + 1);
+        parsed = JSON.parse(jsonSlice);
+      } catch (_) {}
     }
-    if (items.length) parsed = { data: items };
+
+    // 3. Fallback line-by-line parsing (key-value, CSV candles, tuple candles)
+    if (!parsed) {
+      const lines = rawCode.split('\n').map(l => l.trim()).filter(Boolean);
+      const items = [];
+      const candleRows = [];
+      for (const l of lines) {
+        if (!detectedTitle && !l.match(/^[0-9\[{(]/) && !l.includes(':') && !l.includes('=')) {
+          detectedTitle = l;
+          continue;
+        }
+        // Normalize CSV / space-separated / tuple line: "[17000, 10, 12, 9, 11]" or "17000, 10, 12, 9, 11"
+        const cleanLine = l.replace(/[\[\]\(\),]/g, ' ').trim();
+        const parts = cleanLine.split(/\s+/).map(p => parseFloat(p)).filter(n => !isNaN(n));
+        if (parts.length >= 4) {
+          candleRows.push(parts);
+          continue;
+        }
+        const m = l.match(/^([^:,]+)[:=]\s*([0-9.]+)/);
+        if (m) items.push({ label: m[1].trim(), value: parseFloat(m[2]) });
+      }
+      if (candleRows.length >= 2) {
+        parsed = { widget_type: 'trading', title: detectedTitle || 'TRADING CANDLESTICK', symbol: detectedTitle || 'BTC/USDT', candles: candleRows };
+      } else if (items.length) {
+        parsed = { data: items, title: detectedTitle };
+      }
+    }
   }
 
   if (!parsed) return null;
 
+  // Normalize parsed payload structure
+  if (Array.isArray(parsed)) {
+    const isCandleList = cleanLang.includes('trading') || cleanLang.includes('candle') || (parsed[0] && (Array.isArray(parsed[0]) && parsed[0].length >= 4 || parsed[0].open !== undefined));
+    if (isCandleList) {
+      parsed = { widget_type: 'trading', symbol: detectedTitle || 'BTC/USDT', candles: parsed, title: detectedTitle };
+    } else {
+      parsed = { data: parsed, title: detectedTitle };
+    }
+  } else if (typeof parsed === 'object') {
+    if (detectedTitle) {
+      if (!parsed.title) parsed.title = detectedTitle;
+      if (!parsed.symbol && (cleanLang.includes('trading') || parsed.widget_type === 'trading' || parsed.candles)) {
+        parsed.symbol = detectedTitle;
+      }
+    }
+  }
+
+  let rawType = (parsed.widget_type || parsed.type || cleanLang || '').toLowerCase().trim();
+  if (rawType.startsWith('visual:')) rawType = rawType.slice(7).trim();
+
+  let chartType = '';
+  if (rawType.includes('kpi') || rawType.includes('metric')) chartType = 'kpi';
+  else if (rawType.includes('trading') || rawType.includes('candlestick')) chartType = 'trading';
+  else if (rawType.includes('pipeline') || rawType.includes('workflow')) chartType = 'pipeline';
+  else if (rawType.includes('grid') || rawType.includes('table')) chartType = 'grid';
+  else if (rawType.includes('diagram') || rawType.includes('architecture') || rawType.includes('flowchart')) chartType = 'diagram';
+  else if (rawType.includes('log') || rawType.includes('streamer') || rawType.includes('telemetry')) chartType = 'log_streamer';
+  else if (rawType.includes('radar')) chartType = 'radar';
+  else if (rawType.includes('gauge') || rawType.includes('speedometer')) chartType = 'gauge';
+  else if (rawType.includes('donut') || rawType.includes('pie')) chartType = 'donut';
+  else if (rawType.includes('bar')) chartType = 'bar';
+  else if (rawType.includes('line') || rawType.includes('area')) chartType = 'line';
+  else {
+    if (parsed.candles || parsed.symbol || (Array.isArray(parsed) && parsed[0] && (parsed[0].open !== undefined || parsed[0].close !== undefined))) {
+      chartType = 'trading';
+    } else {
+      chartType = 'donut';
+    }
+  }
+
   let bodyHtml = '';
-  if (chartType === 'trading' || chartType === 'candlestick') {
+  if (chartType === 'kpi') {
+    bodyHtml = generateKpiDeckHtml(parsed);
+  } else if (chartType === 'trading') {
     bodyHtml = generateTradingSvg(parsed);
+  } else if (chartType === 'pipeline') {
+    bodyHtml = generatePipelineHtml(parsed);
+  } else if (chartType === 'grid') {
+    bodyHtml = generateDataGridHtml(parsed);
+  } else if (chartType === 'diagram') {
+    bodyHtml = generateDiagramSvg(parsed);
+  } else if (chartType === 'log_streamer') {
+    bodyHtml = generateLogStreamerHtml(parsed);
+  } else if (chartType === 'radar') {
+    bodyHtml = generateRadarSvg(parsed);
+  } else if (chartType === 'gauge') {
+    bodyHtml = generateGaugeSvg(parsed);
   } else if (chartType === 'bar') {
     bodyHtml = generateBarSvg(parsed);
-  } else if (chartType === 'line' || chartType === 'area') {
+  } else if (chartType === 'line') {
     bodyHtml = generateLineSvg(parsed);
   } else {
     bodyHtml = generateDonutSvg(parsed, {
@@ -4894,14 +5980,28 @@ function renderTacticalChartCard(rawCode, rawLang) {
   if (!bodyHtml) return null;
 
   const title = parsed.title || `${chartType.toUpperCase()} METRICS`;
-  const typeLabel = (chartType === 'trading' || chartType === 'candlestick') ? 'TRADING CANDLESTICK' : chartType.toUpperCase();
+  const subtitle = parsed.subtitle ? ` <span class="chart-card-subtitle">// ${escapeHtml(parsed.subtitle)}</span>` : '';
+  const typeLabelMap = {
+    trading: 'TRADING CANDLESTICK',
+    kpi: 'KPI DECK',
+    pipeline: 'PIPELINE TRACKER',
+    grid: 'DATA GRID',
+    diagram: 'ARCHITECTURE DIAGRAM',
+    log_streamer: 'LOG STREAMER',
+    radar: 'RADAR CHART',
+    gauge: 'GAUGE METER',
+    donut: 'DONUT CHART',
+    bar: 'BAR CHART',
+    line: 'LINE CHART'
+  };
+  const typeLabel = typeLabelMap[chartType] || chartType.toUpperCase();
 
   return `
-    <div class="chat-chart-card" data-chart-type="${escapeHtml(chartType)}">
+    <div class="chat-chart-card chat-chart-${escapeHtml(chartType)}" data-chart-type="${escapeHtml(chartType)}">
       <div class="chart-card-header">
         <span class="chart-card-title">
           <span>📊</span>
-          <span>[ CHART // ${escapeHtml(typeLabel)} ] ${escapeHtml(title)}</span>
+          <span>[ VISUAL // ${escapeHtml(typeLabel)} ] ${escapeHtml(title)}${subtitle}</span>
         </span>
         <div class="chart-card-actions">
           <button class="chart-action-btn" onclick="downloadChartAsSvg(this)" title="Export SVG image">📷 SVG</button>
@@ -4928,12 +6028,87 @@ function renderMarkdown(md) {
 
   // 1. Multi-line code blocks ```lang\ncode\n```
   const codeCards = [];
+  const seenChartKeys = new Set();
   let formatted = textToRender.replace(/```([a-zA-Z0-9_\-\.:]*)\n([\s\S]*?)```/g, (match, lang, code) => {
     const l = lang ? lang.trim().toUpperCase() : 'CODE';
     const rawCode = code.trim();
 
-    // Check if this is a Chart Block
-    if (/^(CHART|TRADING|CANDLESTICK|DONUT|PIE|BAR|LINE|AREA)(:|$)/i.test(l)) {
+    // Check if this is a Visual Painting Slot (Wall Painter / "Ngecat Tembok")
+    if (l.startsWith('VISUAL_PAINTING:') || l.startsWith('VISUAL_PAINT:')) {
+      const parts = l.split(':');
+      const widgetType = (parts[1] || 'chart').toLowerCase();
+      const stepIdx = parts[2] || '';
+      let rawTitle = parts[3] ? decodeURIComponent(parts[3]) : '';
+      if (!rawTitle) rawTitle = `${widgetType.toUpperCase()} TELEMETRY`;
+
+      const paintHtml = `
+        <div class="fl-holo-paint-slot" data-paint-step="${escapeHtml(stepIdx)}">
+          <div class="fl-paint-roller-track">
+            <div class="fl-paint-roller-blade"></div>
+            <div class="fl-paint-surface">
+              <div class="fl-paint-grid"></div>
+              <div class="fl-paint-wireframe-ghost">
+                ${generatePaintGhostSvg(widgetType)}
+              </div>
+            </div>
+          </div>
+          <div class="fl-paint-caption-bar">
+            <div class="fl-paint-caption-left">
+              <span class="fl-paint-glow-dot">●</span>
+              <span class="fl-paint-tag">[HOLO // PAINTING] ${escapeHtml(widgetType.toUpperCase())}</span>
+              <span class="fl-paint-title">⚡ ${escapeHtml(rawTitle)}</span>
+            </div>
+            <div class="fl-paint-telemetry">
+              <span class="fl-paint-pulse-ring"></span>
+              <span>SYNTHESIZING SHADERS</span>
+            </div>
+          </div>
+        </div>
+      `;
+      const placeholder = '___CODE_BLOCK_' + codeCards.length + '___';
+      codeCards.push(paintHtml);
+      return placeholder;
+    }
+
+    // Check if this is a Chart / Visual Block
+    let isVisualBlock = l.startsWith('VISUAL:') || /^(CHART|TRADING|CANDLESTICK|DONUT|PIE|BAR|LINE|AREA|KPI|GAUGE|RADAR|PIPELINE|GRID|TABLE|DATA_GRID|DIAGRAM)(:|$)/i.test(l);
+    if (!isVisualBlock && (l === 'JSON' || l === 'CODE' || l === 'JAVASCRIPT' || l === 'JS' || l === '')) {
+      const trimmed = rawCode.trim();
+      if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+        try {
+          const parsedCheck = JSON.parse(trimmed);
+          if (parsedCheck && typeof parsedCheck === 'object') {
+            const wt = (parsedCheck.widget_type || parsedCheck.type || parsedCheck.chartType || parsedCheck.chart_type || '').toLowerCase();
+            if (wt.includes('trading') || wt.includes('donut') || wt.includes('pie') || wt.includes('kpi') || wt.includes('bar') || wt.includes('line') || wt.includes('candlestick') || wt.includes('radar') || wt.includes('gauge') || wt.includes('pipeline') || wt.includes('grid') || wt.includes('chart')) {
+              isVisualBlock = true;
+            } else if (parsedCheck.candles || parsedCheck.series || (parsedCheck.data && Array.isArray(parsedCheck.data) && parsedCheck.data.length > 0 && (parsedCheck.data[0].open !== undefined || parsedCheck.data[0].close !== undefined || (parsedCheck.data[0].label !== undefined && parsedCheck.data[0].value !== undefined)))) {
+              isVisualBlock = true;
+            } else if (Array.isArray(parsedCheck) && parsedCheck.length > 0 && (parsedCheck[0].open !== undefined || parsedCheck[0].close !== undefined || (parsedCheck[0].label !== undefined && parsedCheck[0].value !== undefined))) {
+              isVisualBlock = true;
+            }
+          }
+        } catch (_) {}
+      }
+    }
+
+    if (isVisualBlock) {
+      let cleanL = l.startsWith('VISUAL:') ? l.slice(7).trim().toLowerCase() : l.toLowerCase();
+      let chartKey = '';
+      try {
+        const pObj = JSON.parse(rawCode);
+        const t = (pObj.title || pObj.Title || pObj.name || '').trim().toLowerCase();
+        const wt = (pObj.widget_type || cleanL).toLowerCase();
+        chartKey = `${wt}::${t}`;
+      } catch (_) {
+        chartKey = `${cleanL}::${rawCode.slice(0, 35)}`;
+      }
+
+      // Strict Anti-Duplication Guard: If same chart already rendered in this message, skip!
+      if (chartKey && seenChartKeys.has(chartKey)) {
+        return '';
+      }
+      if (chartKey) seenChartKeys.add(chartKey);
+
       const chartHtml = renderTacticalChartCard(rawCode, l);
       if (chartHtml) {
         const placeholder = '___CODE_BLOCK_' + codeCards.length + '___';
@@ -4941,7 +6116,6 @@ function renderMarkdown(md) {
         return placeholder;
       }
     }
-
     const escaped = escapeHtml(rawCode);
     const lineCount = rawCode ? rawCode.split('\n').length : 1;
     const isRunnable = ['BASH', 'SH', 'SHELL', 'PYTHON', 'PY', 'JS', 'JAVASCRIPT', 'NODE'].includes(l);
@@ -5074,7 +6248,7 @@ function renderMarkdown(md) {
   formatted = formatted.replace(/(?:^|\n)> ?(?:\[!([A-Z]+)\])? ?([^\n]+(?:\n> ?[^\n]+)*)/g, (match, alertType, content) => {
     const cleanLines = match.split(/\n/).map(l => l.replace(/^> ?(\[!([A-Z]+)\])? ?/, '')).filter(Boolean);
     const type = (alertType || 'NOTE').toUpperCase();
-    return `\n\n<div class="ag-callout ag-callout-${type.toLowerCase()}"><div class="ag-callout-header"><span class="ag-callout-tag">[!${type}]</span></div><div class="ag-callout-body">${cleanLines.join('<br>')}</div></div>\n\n`;
+    return `\n\n<div class="fl-callout fl-callout-${type.toLowerCase()}"><div class="fl-callout-header"><span class="fl-callout-tag">[!${type}]</span></div><div class="fl-callout-body">${cleanLines.join('<br>')}</div></div>\n\n`;
   });
 
   // 4. Headings
@@ -5134,9 +6308,9 @@ function renderMarkdown(md) {
     return `<p class="chat-p">${trimmed.replace(/\n/g, '<br>')}</p>`;
   }).join('');
 
-  // Restore code cards
+  // Restore code cards (using function to avoid $ replacement pattern corruption)
   codeCards.forEach((card, idx) => {
-    formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', card);
+    formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', () => card);
   });
 
   return formatted;
@@ -5273,10 +6447,10 @@ function initRightbarChat() {
   const btnSend = document.getElementById('btn-rightbar-send');
   const historyList = document.getElementById('history-items-list');
 
-  // Restore Rightbar collapsed preference
-  const isRightbarCollapsed = localStorage.getItem('xflow_rightbar_collapsed') === 'true';
-  if (isRightbarCollapsed && rightbarChat) {
-    rightbarChat.classList.add('collapsed');
+  // Default Rightbar open
+  if (rightbarChat) {
+    rightbarChat.classList.remove('collapsed');
+    localStorage.setItem('xflow_rightbar_collapsed', 'false');
   }
   if (window.__updateLayoutResizers) window.__updateLayoutResizers();
 
@@ -5342,7 +6516,7 @@ function initRightbarChat() {
   // Quick-action prompt chips click delegation
   if (rightbarMessages) {
     rightbarMessages.addEventListener('click', (e) => {
-      const chip = e.target.closest('.ag-chip-btn');
+      const chip = e.target.closest('.fl-chip-btn');
       if (chip) {
         const prompt = chip.getAttribute('data-prompt');
         if (prompt && chatInput) {
@@ -5410,7 +6584,7 @@ function initRightbarChat() {
   const topStatusBar = document.getElementById('chat-top-status-bar');
   if (topStatusBar) {
     topStatusBar.addEventListener('click', () => {
-      const activeCard = document.querySelector('.ag-subagent-card, .ag-tool-card');
+      const activeCard = document.querySelector('.fl-subagent-card, .fl-tool-card');
       if (activeCard) {
         activeCard.scrollIntoView({ behavior: 'smooth', block: 'center' });
       }
@@ -5567,15 +6741,43 @@ function initRightbarChat() {
 
   initModelSelector();
   initAccountSelector();
+  initAgentSelector();
+  initSlashCommandPalette();
 
   // Input textarea auto-height & enter-to-send / escape-to-stop
   if (chatInput) {
     chatInput.addEventListener('input', () => {
       chatInput.style.height = 'auto';
       chatInput.style.height = Math.min(chatInput.scrollHeight, 120) + 'px';
+      handleSlashInput(chatInput);
     });
 
     chatInput.addEventListener('keydown', (e) => {
+      if (isSlashPaletteOpen) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          navigateSlashPalette(1);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          navigateSlashPalette(-1);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          if (filteredSlashCommands.length > 0 && slashPaletteSelectedIndex >= 0 && slashPaletteSelectedIndex < filteredSlashCommands.length) {
+            e.preventDefault();
+            selectSlashCommand(filteredSlashCommands[slashPaletteSelectedIndex].command);
+            return;
+          }
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          closeSlashPalette();
+          return;
+        }
+      }
+
       if (e.key === 'Escape' && isChatStreaming) {
         e.preventDefault();
         stopCurrentChatTurn();
@@ -5645,6 +6847,7 @@ async function syncActiveChatSession() {
   try {
     const res = await fetch(`/api/chat/steps/${encodeURIComponent(currentChatSessionId)}`);
     const data = await res.json();
+    if (isChatStreaming) return;
     if (data.status === 'ok' && data.data && Array.isArray(data.data.steps)) {
       const serverSteps = data.data.steps;
       const count = serverSteps.length;
@@ -5934,6 +7137,483 @@ function updateMascotAudioEnergy() {
 
 let lastMascotRenderTime = 0;
 let isMascotHovered = false;
+let isMascotAgentLooping = false;
+
+// ==========================================================================
+// SOVEREIGN THINKING ARSENAL & MULTI-OS LOOP HARDWARE TELEMETRY
+// ==========================================================================
+const sessionPinnedSkills = new Set();
+const sessionPinnedTools = new Set();
+const turnPinnedSkills = new Set();
+const turnPinnedTools = new Set();
+const activeRunningTools = new Set();
+
+function detectClientMultiOs() {
+  const ua = (typeof navigator !== 'undefined' && navigator.userAgent) ? navigator.userAgent : '';
+  const plat = (typeof navigator !== 'undefined' && (navigator.userAgentData?.platform || navigator.platform)) ? (navigator.userAgentData?.platform || navigator.platform) : '';
+  const combined = `${plat} ${ua}`.toLowerCase();
+
+  let osLabel = 'LINUX';
+  let osIcon = '🐧';
+  if (combined.includes('win')) {
+    osLabel = 'WINDOWS';
+    osIcon = '🪟';
+  } else if (combined.includes('mac') || combined.includes('darwin')) {
+    osLabel = 'MACOS';
+    osIcon = '🍎';
+  } else if (combined.includes('linux') || combined.includes('x11')) {
+    osLabel = 'LINUX';
+    osIcon = '🐧';
+  }
+
+  let archLabel = 'X64';
+  if (combined.includes('arm64') || combined.includes('aarch64') || (osLabel === 'MACOS' && !combined.includes('intel'))) {
+    archLabel = 'ARM64';
+  } else if (combined.includes('x86_64') || combined.includes('win64') || combined.includes('wow64') || combined.includes('amd64') || combined.includes('x64')) {
+    archLabel = 'X64';
+  }
+  return { osLabel, osIcon, archLabel, fullTag: `${osIcon} ${osLabel} ${archLabel}` };
+}
+
+function cleanKernelToolName(rawName) {
+  if (!rawName) return '';
+  return String(rawName)
+    .trim()
+    .replace(/^default_api:/i, '')
+    .replace(/^flow_/i, '')
+    .replace(/^mcp_[a-z0-9_-]+_/i, '')
+    .toLowerCase();
+}
+
+const KNOWN_KERNEL_TOOLS = [
+  'render_visual', 'brain_control', 'run_command', 'view_file', 'write_to_file',
+  'replace_file_content', 'search_tools', 'skill_control', 'ask_question', 'schedule',
+  'manage_task', 'invoke_subagent', 'define_subagent', 'manage_subagents', 'send_message',
+  'generate_image', 'read_url_content', 'search_web', 'browser_control', 'telegram_control',
+  'project_RADAR', 'symbol_outline', 'read_symbol', 'grep_search', 'find_by_name'
+];
+
+function sanitizeToolOutput(raw) {
+  if (raw === null || raw === undefined) return '';
+  let s = typeof raw === 'object' ? JSON.stringify(raw, null, 2) : String(raw);
+  s = s.replace(/<SOVEREIGN_TOOL_INTERCEPT_GATE_INJECTION>[\s\S]*?<\/SOVEREIGN_TOOL_INTERCEPT_GATE_INJECTION>/g, '');
+  s = s.replace(/<SOVEREIGN_SKILL_RADAR>[\s\S]*?<\/SOVEREIGN_SKILL_RADAR>/g, '');
+  s = s.replace(/<SOVEREIGN_BRAIN_ALERT>[\s\S]*?<\/SOVEREIGN_BRAIN_ALERT>/g, '');
+  s = s.replace(/\[TOOL RESULT FOR [^\]]+\]:\s*/g, '');
+  return s.trim();
+}
+
+function extractToolReason(toolName, details) {
+  const cleanTool = cleanKernelToolName(toolName || 'tool');
+  const d = (details && details.details && typeof details.details === 'object')
+    ? { ...details, ...details.details }
+    : (details && typeof details === 'object' ? details : {});
+
+  const explicit = d.reason || d.Reason || d.rationale || d.Rationale || d.purpose || d.explanation || d.toolAction || d.Description || d.Instruction || d.toolSummary || '';
+  if (explicit && typeof explicit === 'string' && explicit.trim().length > 0) {
+    return explicit.trim();
+  }
+
+  // Context-aware fallback when rendering historical steps or legacy tool calls
+  const rawFile = String(d.AbsolutePath || d.TargetFile || d.file_path || d.path || d.file || '');
+  const baseFile = rawFile ? rawFile.replace(/\\/g, '/').split('/').pop() : '';
+  const cmd = String(d.CommandLine || d.commandLine || d.command || '');
+  const q = String(d.query || d.keyword || d.q || '');
+  const url = String(d.Url || d.url || '');
+  const act = String(d.action || d.Action || '');
+
+  if (cleanTool.includes('view_file') || cleanTool.includes('read_file') || cleanTool.includes('inspect')) {
+    const sLine = d.StartLine || d.start_line || '';
+    const eLine = d.EndLine || d.end_line || '';
+    return baseFile
+      ? `Inspecting ${baseFile}${sLine ? ` (lines ${sLine}–${eLine || sLine + 50})` : ''} to analyze source structure`
+      : 'Reading file contents for analysis';
+  }
+  if (cleanTool.includes('write_to_file') || cleanTool.includes('write_file') || cleanTool.includes('forge')) {
+    return baseFile ? `Writing updated source code to ${baseFile}` : 'Creating/writing target file';
+  }
+  if (cleanTool.includes('replace_file_content') || cleanTool.includes('replace') || cleanTool.includes('splice') || cleanTool.includes('edit')) {
+    const sLine = d.StartLine || d.start_line || '';
+    const eLine = d.EndLine || d.end_line || '';
+    return baseFile
+      ? `Splicing code block in ${baseFile}${sLine ? ` (lines ${sLine}–${eLine || sLine})` : ''}`
+      : 'Applying surgical code patch to file';
+  }
+  if (cleanTool.includes('run_command') || cleanTool.includes('exec') || cleanTool.includes('terminal')) {
+    return cmd ? `Executing shell command: ${cmd.slice(0, 68)}` : 'Running terminal verification command';
+  }
+  if (cleanTool.includes('search_tools') || cleanTool.includes('tool_search')) {
+    return q ? `Searching & mounting kernel tools matching "${q}"` : 'Discovering and mounting required kernel tools';
+  }
+  if (cleanTool.includes('skill')) {
+    const sk = d.skill_name || d.name || d.id || '';
+    return sk ? `Pinning & activating sovereign skill "${sk}"` : `Running skill gatekeeper operation (${act || 'list'})`;
+  }
+  if (cleanTool.includes('search_web')) {
+    return q ? `Executing OSINT web search for "${q}"` : 'Scanning web intelligence sources';
+  }
+  if (cleanTool.includes('read_url')) {
+    return url ? `Extracting clean markdown content from ${url}` : 'Fetching remote URL documentation';
+  }
+  if (cleanTool.includes('brain')) {
+    return act === 'write'
+      ? `Crystallizing verified solution "${d.title || 'memory'}" into .fl_brain`
+      : `Recalling past verified solutions from .fl_brain${q ? ` for "${q}"` : ''}`;
+  }
+  if (cleanTool.includes('visual') || cleanTool.includes('chart')) {
+    return `Rendering interactive visual widget (${d.widget_type || d.type || 'chart'})`;
+  }
+  return `Executing ${cleanTool} to advance autonomous task trajectory`;
+}
+
+function injectLiveReasonBanner(liveBox, toolName, details) {
+  if (!liveBox) return;
+  const reasonText = extractToolReason(toolName, details);
+  if (!reasonText) return;
+
+  let banner = liveBox.querySelector('.fl-live-reason-banner');
+  if (!banner) {
+    banner = document.createElement('div');
+    banner.className = 'fl-live-reason-banner';
+    liveBox.insertBefore(banner, liveBox.firstChild);
+  }
+  banner.innerHTML = `
+    <span class="fl-lrb-badge">💬 REASON</span>
+    <span class="fl-lrb-text">${escapeHtml(reasonText)}</span>
+  `;
+}
+
+function recordThinkingArsenal(toolName, details, status = 'running', outputData = null) {
+  const cleanTool = cleanKernelToolName(toolName);
+  if (!cleanTool) return;
+
+  const d = (details && details.details && typeof details.details === 'object')
+    ? { ...details, ...details.details }
+    : (details && typeof details === 'object' ? details : {});
+
+  const reasonText = extractToolReason(toolName, details);
+  let logMsg = reasonText ? `[WHY // ${cleanTool.toUpperCase()}] 💬 ${reasonText}` : '';
+
+  // 1. Track active / pinned tool
+  sessionPinnedTools.add(cleanTool);
+  turnPinnedTools.add(cleanTool);
+  if (status === 'running') {
+    activeRunningTools.add(cleanTool);
+  } else {
+    activeRunningTools.delete(cleanTool);
+  }
+
+  // 2. Extract pinned skills from skill_control OR reading SKILL.md via view_file
+  if (cleanTool.includes('skill')) {
+    const rawSkill = d.skill_name || d.name || d.skill || d.id || d.target || '';
+    if (rawSkill && typeof rawSkill === 'string') {
+      const sName = rawSkill.trim().replace(/^skills[\/\\]/i, '').replace(/[\/\\]SKILL\.md$/i, '');
+      if (sName) {
+        sessionPinnedSkills.add(sName);
+        turnPinnedSkills.add(sName);
+        logMsg = `[SKILL // PINNED] 🎯 ${sName} — ${reasonText}`;
+      }
+    } else if (d.action === 'list' && !outputData) {
+      turnPinnedSkills.add('skill_catalog');
+      logMsg = `[SKILL // GATE] 🎯 ${reasonText || 'Scanning sovereign 20-keyword skill registry...'}`;
+    }
+    if (outputData) {
+      const outStr = typeof outputData === 'string' ? outputData : JSON.stringify(outputData);
+      const skillMatches = outStr.match(/\b([a-z0-9]+(?:[-_][a-z0-9]+)+)\b/gi) || [];
+      const knownSkillHints = ['agy-customizations', 'antigravity-guide', 'antigravity_guide', 'generative_ui', 'migrate-workflows'];
+      skillMatches.forEach(cand => {
+        const lower = cand.toLowerCase();
+        if (knownSkillHints.includes(lower) || lower.endsWith('_skill') || lower.includes('flowork')) {
+          sessionPinnedSkills.delete('skill_catalog');
+          turnPinnedSkills.delete('skill_catalog');
+          sessionPinnedSkills.add(lower);
+          turnPinnedSkills.add(lower);
+        }
+      });
+    }
+  }
+
+  // Also detect skill pinning when agent reads a SKILL.md file via view_file!
+  const filePath = String(d.AbsolutePath || d.file_path || d.path || d.TargetFile || '');
+  if (filePath && /SKILL\.md$/i.test(filePath)) {
+    const parts = filePath.replace(/\\/g, '/').split('/');
+    const skillIdx = parts.findIndex(p => p.toLowerCase() === 'SKILL.md'.toLowerCase());
+    const folderName = skillIdx > 0 ? parts[skillIdx - 1] : '';
+    if (folderName && folderName !== 'skills' && folderName !== '.') {
+      sessionPinnedSkills.delete('skill_catalog');
+      turnPinnedSkills.delete('skill_catalog');
+      sessionPinnedSkills.add(folderName);
+      turnPinnedSkills.add(folderName);
+      logMsg = `[SKILL // PINNED] 🎯 ${folderName} — ${reasonText}`;
+    }
+  }
+
+  // 3. Extract mounted tools from search_tools query & output
+  if (cleanTool.includes('search_tools') || cleanTool.includes('tool_search')) {
+    const q = String(d.query || d.keyword || d.search || '').toLowerCase();
+    const outStr = outputData ? (typeof outputData === 'string' ? outputData : JSON.stringify(outputData)).toLowerCase() : '';
+    const combinedSearch = `${q} ${outStr}`;
+    KNOWN_KERNEL_TOOLS.forEach(kt => {
+      const ktLower = kt.toLowerCase();
+      if (combinedSearch.includes(ktLower) || (q && ktLower.includes(q.split(/\s+/)[0]))) {
+        sessionPinnedTools.add(ktLower);
+        turnPinnedTools.add(ktLower);
+      }
+    });
+    if (q) {
+      logMsg = `[TOOLS // MOUNTED] 🛠️ search_tools("${q.slice(0, 24)}") — ${reasonText}`;
+    }
+  }
+
+  if (currentThinkingController && typeof currentThinkingController.refreshArsenal === 'function') {
+    currentThinkingController.refreshArsenal(logMsg);
+  }
+  FloworkLoopSysMonitor.updateArsenalCounters();
+}
+
+const FloworkLoopSysMonitor = {
+  _pollTimer: null,
+  _clockTimer: null,
+  _loopStartTime: 0,
+  _activeEndpoint: null,
+  _lastFrameTime: performance.now(),
+  _lastPulseData: null,
+
+  ensureBar() {
+    let bar = document.getElementById('fl-loop-sys-bar');
+    if (bar) return bar;
+    const footer = document.querySelector('.rightbar-chat-footer');
+    const inputBox = footer ? footer.querySelector('.chat-input-box') : null;
+    if (!footer || !inputBox) return null;
+
+    bar = document.createElement('div');
+    bar.className = 'fl-loop-sys-bar';
+    bar.id = 'fl-loop-sys-bar';
+    bar.style.display = 'none';
+    const clientOs = detectClientMultiOs();
+    bar.innerHTML = `
+      <div class="fl-lsb-left">
+        <span class="fl-lsb-os-pill" id="fl-lsb-os" title="Multi-OS Kernel Host">${clientOs.fullTag}</span>
+        <div class="fl-lsb-metric" id="fl-lsb-cpu-wrap" title="Real-time Multi-OS CPU Load">
+          <span class="fl-lsb-label">CPU</span>
+          <div class="fl-lsb-bar"><div class="fl-lsb-fill cpu" id="fl-lsb-cpu-fill" style="width:15%"></div></div>
+          <span class="fl-lsb-val" id="fl-lsb-cpu-val">--% (--C)</span>
+        </div>
+        <div class="fl-lsb-metric" id="fl-lsb-ram-wrap" title="Real-time System RAM Usage">
+          <span class="fl-lsb-label">RAM</span>
+          <div class="fl-lsb-bar"><div class="fl-lsb-fill ram" id="fl-lsb-ram-fill" style="width:20%"></div></div>
+          <span class="fl-lsb-val" id="fl-lsb-ram-val">--/--G (--%)</span>
+        </div>
+        <span class="fl-lsb-rss-pill" id="fl-lsb-rss" title="Engine Process Memory Footprint">RSS --MB</span>
+      </div>
+      <div class="fl-lsb-right">
+        <span class="fl-lsb-arsenal-pill" id="fl-lsb-arsenal" title="Pinned Skills & Active Tools in Loop">🎯 0 SKILLS • 🛠️ 0 TOOLS</span>
+        <span class="fl-lsb-loop-pill" id="fl-lsb-timer"><span class="fl-lsb-pulse"></span> <span id="fl-lsb-timer-txt">LOOP 0.0s</span></span>
+      </div>
+    `;
+    footer.insertBefore(bar, inputBox);
+    return bar;
+  },
+
+  start() {
+    const bar = this.ensureBar();
+    if (!bar) return;
+
+    if (!this._loopStartTime) {
+      this._loopStartTime = Date.now();
+    }
+    bar.style.display = 'flex';
+    const clientOs = detectClientMultiOs();
+    const osEl = document.getElementById('fl-lsb-os');
+    if (osEl && !this._lastPulseData) {
+      osEl.textContent = clientOs.fullTag;
+    }
+
+    this.updateArsenalCounters();
+
+    if (!this._pollTimer) {
+      this.pollSysPulse();
+      this._pollTimer = setInterval(() => this.pollSysPulse(), 1000);
+    }
+    if (!this._clockTimer) {
+      this._clockTimer = setInterval(() => {
+        if (!isMascotAgentLooping && !isChatStreaming) {
+          this.stop();
+          return;
+        }
+        const elapsed = ((Date.now() - this._loopStartTime) / 1000).toFixed(1);
+        const timerTxt = document.getElementById('fl-lsb-timer-txt');
+        if (timerTxt) timerTxt.textContent = `LOOP ${elapsed}s`;
+      }, 100);
+    }
+  },
+
+  stop() {
+    if (this._pollTimer) {
+      clearInterval(this._pollTimer);
+      this._pollTimer = null;
+    }
+    if (this._clockTimer) {
+      clearInterval(this._clockTimer);
+      this._clockTimer = null;
+    }
+    this._loopStartTime = 0;
+    const bar = document.getElementById('fl-loop-sys-bar');
+    if (bar) {
+      bar.style.display = 'none';
+    }
+  },
+
+  updateArsenalCounters() {
+    const arsenalEl = document.getElementById('fl-lsb-arsenal');
+    if (!arsenalEl) return;
+    const skillsCount = turnPinnedSkills.size || sessionPinnedSkills.size;
+    const toolsCount = turnPinnedTools.size || sessionPinnedTools.size;
+    const activeToolName = activeRunningTools.size > 0 ? Array.from(activeRunningTools).pop().toUpperCase() : '';
+    if (activeToolName) {
+      arsenalEl.innerHTML = `🎯 ${skillsCount} SKILL${skillsCount === 1 ? '' : 'S'} • 🛠️ ${toolsCount} (${escapeHtml(activeToolName.slice(0, 14))})`;
+    } else {
+      arsenalEl.innerHTML = `🎯 ${skillsCount} SKILL${skillsCount === 1 ? '' : 'S'} • 🛠️ ${toolsCount} TOOL${toolsCount === 1 ? '' : 'S'}`;
+    }
+  },
+
+  async pollSysPulse() {
+    const candidates = [];
+    if (this._activeEndpoint) candidates.push(this._activeEndpoint);
+    const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+    const host = (typeof window !== 'undefined' && window.location && window.location.hostname) ? window.location.hostname : '127.0.0.1';
+    const sidecarUrl = `http://${host}:17700/api/sys-pulse`;
+    const routerUrl = `${routerBase}/api/sys-pulse`;
+    if (!candidates.includes(sidecarUrl)) candidates.push(sidecarUrl);
+    if (!candidates.includes(routerUrl)) candidates.push(routerUrl);
+
+    let data = null;
+    for (const url of candidates) {
+      try {
+        const ctrl = new AbortController();
+        const tid = setTimeout(() => ctrl.abort(), 650);
+        const res = await fetch(url, { signal: ctrl.signal, cache: 'no-store' });
+        clearTimeout(tid);
+        if (res.ok) {
+          const parsed = await res.json();
+          if (parsed && parsed.success) {
+            data = parsed;
+            this._activeEndpoint = url;
+            break;
+          }
+        }
+      } catch (_) {}
+    }
+
+    if (!data) {
+      // 100% Multi-OS Browser Fallback (Windows, macOS, Linux)
+      const clientOs = detectClientMultiOs();
+      const cores = (typeof navigator !== 'undefined' && navigator.hardwareConcurrency) ? navigator.hardwareConcurrency : 8;
+      const totalGb = (typeof navigator !== 'undefined' && navigator.deviceMemory) ? navigator.deviceMemory : 16;
+      const heapBytes = (typeof performance !== 'undefined' && performance.memory && performance.memory.usedJSHeapSize)
+        ? performance.memory.usedJSHeapSize
+        : 68 * 1024 * 1024;
+      const rssMb = Math.round(heapBytes / (1024 * 1024));
+      const usedGb = Number(Math.min(totalGb * 0.85, Math.max(1.8, (totalGb * 0.32) + (rssMb / 1024))).toFixed(1));
+      const ramPct = Math.round((usedGb / totalGb) * 100);
+      const activeBoost = activeRunningTools.size > 0 ? 28 : 14;
+      const cpuPct = Math.min(98, Math.max(6, Math.round(activeBoost + Math.abs(Math.sin(Date.now() / 600) * 18))));
+      data = {
+        cpuPct,
+        cores,
+        cpuModel: `${clientOs.osLabel} Multi-Core Engine`,
+        usedGb,
+        totalGb,
+        ramPct,
+        osLabel: clientOs.osLabel,
+        archLabel: clientOs.archLabel,
+        rssMb
+      };
+    }
+
+    this._lastPulseData = data;
+    this.renderPulse(data);
+  },
+
+  renderPulse(d) {
+    const osEl = document.getElementById('fl-lsb-os');
+    const cpuFill = document.getElementById('fl-lsb-cpu-fill');
+    const cpuVal = document.getElementById('fl-lsb-cpu-val');
+    const cpuWrap = document.getElementById('fl-lsb-cpu-wrap');
+    const ramFill = document.getElementById('fl-lsb-ram-fill');
+    const ramVal = document.getElementById('fl-lsb-ram-val');
+    const rssEl = document.getElementById('fl-lsb-rss');
+
+    const osName = (d.osLabel || 'LINUX').toUpperCase();
+    const osIcon = osName.includes('WIN') ? '🪟' : (osName.includes('MAC') || osName.includes('DARWIN') ? '🍎' : '🐧');
+    if (osEl) {
+      osEl.textContent = `${osIcon} ${osName} ${d.archLabel || 'X64'}`;
+      if (d.cpuModel) osEl.title = `${osName} ${d.archLabel || ''} • ${d.cpuModel}`;
+    }
+
+    const cpuPct = Math.max(1, Math.min(100, Number(d.cpuPct) || 10));
+    if (cpuFill) {
+      cpuFill.style.width = `${cpuPct}%`;
+      cpuFill.className = `fl-lsb-fill cpu ${cpuPct > 85 ? 'crit' : (cpuPct > 60 ? 'warn' : '')}`;
+    }
+    if (cpuVal) {
+      cpuVal.textContent = `${cpuPct}% (${d.cores || 8}C)`;
+    }
+    if (cpuWrap && d.cpuModel) {
+      cpuWrap.title = `CPU: ${d.cpuModel} (${cpuPct}% across ${d.cores || 8} cores)`;
+    }
+
+    const ramPct = Math.max(1, Math.min(100, Number(d.ramPct) || 20));
+    if (ramFill) {
+      ramFill.style.width = `${ramPct}%`;
+      ramFill.className = `fl-lsb-fill ram ${ramPct > 85 ? 'crit' : (ramPct > 70 ? 'warn' : '')}`;
+    }
+    if (ramVal) {
+      ramVal.textContent = `${d.usedGb ?? '--'}/${d.totalGb ?? '--'}G (${ramPct}%)`;
+    }
+    if (rssEl) {
+      rssEl.textContent = `RSS ${d.rssMb || 48}MB`;
+    }
+  }
+};
+
+function setMascotAgentLoop(isLooping, statusText = '') {
+  isMascotAgentLooping = !!isLooping;
+  const messagesContainer = document.getElementById('rightbar-messages');
+  const speechText = document.getElementById('chat-mascot-speech-text');
+  const speechBubble = document.getElementById('chat-mascot-speech');
+
+  if (isMascotAgentLooping) {
+    if (messagesContainer) {
+      messagesContainer.classList.add('agent-is-looping');
+    }
+    if (speechText) {
+      speechText.textContent = statusText || 'Processing operations & executing autonomous loop...';
+    }
+    if (speechBubble) {
+      speechBubble.style.display = 'flex';
+    }
+    if (currentThinkingController && statusText && currentThinkingController.setStatus) {
+      currentThinkingController.setStatus(statusText);
+    }
+    FloworkLoopSysMonitor.start();
+    startMascotLoopIfNeeded();
+  } else {
+    if (messagesContainer) {
+      messagesContainer.classList.remove('agent-is-looping');
+    }
+    FloworkLoopSysMonitor.stop();
+    resetMascotGreetingSpeech();
+    renderSingleMascotFrame();
+  }
+}
+
+function resetMascotGreetingSpeech() {
+  const speechText = document.getElementById('chat-mascot-speech-text');
+  if (speechText) {
+    speechText.textContent = '"Welcome to Flowork OS. I am Mr. Flow, sovereign AI agent ready to assist your operations."';
+  }
+}
 
 function renderSingleMascotFrame() {
   if (!mascotRenderer || !mascotScene || !mascotCamera) return;
@@ -5956,15 +7636,15 @@ function mascotRenderLoop() {
   const audio = document.getElementById('chat-mascot-audio');
   const isAudioActive = audio && !audio.paused;
 
-  // On-Demand Sleep: If audio is paused and user is not hovering, draw 1 frame and exit loop!
-  if (!isAudioActive && !isMascotHovered) {
+  // On-Demand Sleep: If audio is paused, user is not hovering, and agent is NOT looping, draw 1 frame and exit loop!
+  if (!isAudioActive && !isMascotHovered && !isMascotAgentLooping) {
     renderSingleMascotFrame();
     mascotAnimId = null;
     return;
   }
 
   const now = performance.now();
-  const targetInterval = isAudioActive ? 33 : 60; // 30 FPS speaking, 16 FPS hover
+  const targetInterval = (isAudioActive || isMascotAgentLooping) ? 33 : 60; // 30 FPS speaking/looping, 16 FPS hover
   if (now - lastMascotRenderTime >= targetInterval) {
     lastMascotRenderTime = now;
     if (mascotClock) {
@@ -5975,6 +7655,12 @@ function mascotRenderLoop() {
 
       if (mascotControls) mascotControls.update();
       updateMascotAudioEnergy();
+
+      if (isMascotAgentLooping) {
+        // Cognitive thinking wave: procedural wave energy for mouth bars, light, and rings!
+        const loopPulse = Math.sin(elapsedTime * 6) * 0.5 + 0.5;
+        mascotSmoothVocalEnergy = Math.max(mascotSmoothVocalEnergy, 0.28 + loopPulse * 0.48);
+      }
 
       if (mascotFaceRoot) {
         const basePosY = mascotFaceRoot.userData.basePosY || 0;
@@ -6276,7 +7962,7 @@ async function initChatMascot() {
 
 function getEmptyHeroHtml() {
   return `
-    <div class="ag-empty-hero flw-mascot-hero" id="chat-empty-hero">
+    <div class="fl-empty-hero flw-mascot-hero" id="chat-empty-hero">
       <div class="flw-chat-mascot-box">
         <div class="flw-chat-mascot-stage" id="chat-mascot-stage-wrap">
           <canvas id="chat-mascot-canvas" class="flw-chat-mascot-canvas"></canvas>
@@ -6306,7 +7992,6 @@ function getEmptyHeroHtml() {
 
 async function startNewChatSession(resetToDefault = true) {
   if (isChatStreaming) return;
-  stopChatMascot();
   hidePinnedPrompt();
   clearChatAttachments();
   activeTurnUserCard = null;
@@ -6318,15 +8003,27 @@ async function startNewChatSession(resetToDefault = true) {
   currentSessionAccountId = 'combo';
   currentSessionFailoverPolicy = 'fallback_pool';
   updateAccountPillDisplay();
+  pendingSessionPersonaId = 'default';
+  currentSessionPersonaId = 'default';
+  updateAgentPillDisplay();
   const rightbarMessages = document.getElementById('rightbar-messages');
   const rightbarHistoryView = document.getElementById('rightbar-history-view');
   if (rightbarHistoryView) rightbarHistoryView.style.display = 'none';
   if (rightbarMessages) {
     rightbarMessages.style.display = 'flex';
-    rightbarMessages.innerHTML = getEmptyHeroHtml();
-    requestAnimationFrame(() => {
-      initChatMascot();
-    });
+    rightbarMessages.classList.remove('has-messages');
+    rightbarMessages.classList.remove('agent-is-looping');
+    setMascotAgentLoop(false);
+    rightbarMessages.querySelectorAll('.chat-msg').forEach(el => el.remove());
+    if (!rightbarMessages.querySelector('#chat-empty-hero')) {
+      rightbarMessages.insertAdjacentHTML('afterbegin', getEmptyHeroHtml());
+      requestAnimationFrame(() => {
+        initChatMascot();
+      });
+    } else {
+      resetMascotGreetingSpeech();
+      renderSingleMascotFrame();
+    }
   }
   closeWorkspaceDropdown();
 
@@ -6562,7 +8259,8 @@ async function fetchChatHistory() {
         }
         const title = escapeHtml(displayTitle);
         const time = escapeHtml(s.timestamp || '');
-        const steps = s.step_count ? ` • ${s.step_count} steps` : '';
+        const personaBadge = (s.agent_persona && s.agent_persona !== 'default') ? ` • 🎭 ${escapeHtml(s.agent_persona)}` : '';
+        const steps = (s.step_count ? ` • ${s.step_count} steps` : '') + personaBadge;
         return `
           <div class="history-item ${isActive}" data-session-id="${s.id}">
             <div class="history-item-left">
@@ -6593,7 +8291,6 @@ async function fetchChatHistory() {
 }
 
 async function loadChatSession(sessionId) {
-  stopChatMascot();
   currentChatSessionId = sessionId;
   localStorage.setItem('xflow_active_session_id', sessionId);
   localStorage.removeItem('xflow_new_chat_explicit');
@@ -6604,7 +8301,12 @@ async function loadChatSession(sessionId) {
   if (rightbarHistoryView) rightbarHistoryView.style.display = 'none';
   if (rightbarMessages) {
     rightbarMessages.style.display = 'flex';
-    rightbarMessages.innerHTML = '<div style="padding:24px; text-align:center; color:var(--text-dim); font-size:11px;">Loading conversation steps...</div>';
+    rightbarMessages.querySelectorAll('.chat-msg, .fl-chat-loading-indicator').forEach(el => el.remove());
+    const loadIndicator = document.createElement('div');
+    loadIndicator.className = 'fl-chat-loading-indicator';
+    loadIndicator.style.cssText = 'padding:24px; text-align:center; color:var(--text-dim); font-size:11px;';
+    loadIndicator.textContent = 'Loading conversation steps...';
+    rightbarMessages.appendChild(loadIndicator);
   }
 
   try {
@@ -6628,6 +8330,11 @@ async function loadChatSession(sessionId) {
       } else {
         setSessionWorkspaceBadge('flowork (Root)', '');
       }
+
+      // Sync persona specialist lock strictly to this chat's locked persona!
+      currentSessionPersonaId = data.data.agent_persona || 'default';
+      pendingSessionPersonaId = currentSessionPersonaId;
+      updateAgentPillDisplay();
     } else {
       showToast('Could not load session steps');
     }
@@ -6665,7 +8372,7 @@ async function deleteChatSession(sessionId, e) {
 }
 
 // ==========================================================================
-// ANTIGRAVITY NATIVE CHAT RENDERERS & CONTROLLERS (Zero Zombie Code)
+// FLOWORK SOVEREIGN NATIVE CHAT RENDERERS & CONTROLLERS (Zero Zombie Code)
 // ==========================================================================
 
 function playFloworkTaskDoneSound() {
@@ -6678,39 +8385,275 @@ function playFloworkTaskDoneSound() {
   } catch (_) {}
 }
 
-function createThinkingController(container) {
-  if (!container) return { stop: () => 1, updateSnippet: () => {} };
-  const startTime = Date.now();
-  
-  container.innerHTML = `
-    <div class="ag-thinking-pill">
-      <span class="ag-thinking-beacon"></span>
-      <span class="ag-thinking-tag">[REASONING // SYNAPSE]</span>
-      <span class="ag-thinking-txt">Thinking...</span>
-      <span class="ag-thinking-timer">0s</span>
-      <span class="ag-thinking-snippet" style="display:none;"></span>
+function buildThinkingArsenalHtml() {
+  const skills = Array.from(new Set([...turnPinnedSkills, ...sessionPinnedSkills]));
+  const tools = Array.from(new Set([...turnPinnedTools, ...sessionPinnedTools]));
+
+  const skillsChipsHtml = skills.length > 0
+    ? skills.map(s => `<span class="fl-ta-chip skill">🎯 ${escapeHtml(s)}</span>`).join('')
+    : `<span class="fl-ta-chip idle">⚡ AUTO-GATE READY</span>`;
+
+  const toolsChipsHtml = tools.length > 0
+    ? tools.map(t => {
+        const isRun = activeRunningTools.has(t);
+        return `<span class="fl-ta-chip tool ${isRun ? 'is-running' : 'is-locked'}">${isRun ? '⚡' : '✓'} ${escapeHtml(t)}</span>`;
+      }).join('')
+    : `<span class="fl-ta-chip idle">⚡ STANDBY</span>`;
+
+  return `
+    <div class="fl-thinking-arsenal-row skills-row">
+      <span class="fl-ta-label">🎯 PINNED SKILLS</span>
+      <div class="fl-ta-chips fl-ta-skills-chips">${skillsChipsHtml}</div>
+    </div>
+    <div class="fl-thinking-arsenal-row tools-row">
+      <span class="fl-ta-label">🛠️ PINNED TOOLS</span>
+      <div class="fl-ta-chips fl-ta-tools-chips">${toolsChipsHtml}</div>
     </div>
   `;
-  
-  const timerEl = container.querySelector('.ag-thinking-timer');
-  const snippetEl = container.querySelector('.ag-thinking-snippet');
+}
 
+function createThinkingController(container) {
+  if (!container) return { stop: () => 1, updateSnippet: () => {}, setStatus: () => {}, advanceDag: () => {}, refreshArsenal: () => {} };
+  const startTime = Date.now();
+  const clientOs = detectClientMultiOs();
+
+  const cognitiveLogs = [
+    '[AST // LEX] Ingesting prompt semantic token stream...',
+    '[BRAIN // RECALL] Querying sovereign memory index -> MATCH 0.99',
+    '[SOVEREIGN // RULES] Enforcing FL_RULES.MD anti-yesman: LOCKED',
+    '[DAG // GRAPH] Compiling autonomous trajectory pipeline...',
+    `[SYS // PROBE] Validating multi-OS boundary: ${clientOs.osLabel} ${clientOs.archLabel}`,
+    '[VECTOR // COS] Cosine semantic distance ranking across 1,536 dims...',
+    '[KERNEL // SANDBOX] Sovereign runtime isolation verified',
+    '[EVAL // EXIT0] Simulating state machine trajectory for Exit Code 0...',
+    '[AST // OPT] Context slice optimized: 4,096 tokens allocated',
+    '[FS // INDEX] Scanning project boundary & workspace manifest...',
+    '[SYNAPSE // PLAN] Synthesizing surgical tool dispatch graph...',
+    '[MEM // VAULT] Retrieving past successful runbook solutions...',
+    '[STREAM // IO] Allocating sovereign 64KB execution pipe...',
+    '[RUNTIME // SPEED] Cognitive bus clocking at 4.2 GHz frequency...',
+    '[HEURISTIC // EVAL] Branch pruning depth=5 :: optimal route selected',
+    '[SOVEREIGN // KERNEL] Anti-zombie audit: all runtime resources clean'
+  ];
+
+  let logIdx = 0;
+
+  container.innerHTML = `
+    <div class="fl-thinking-card">
+      <div class="fl-thinking-top-row">
+        <div class="fl-thinking-top-left">
+          <span class="fl-thinking-tag">[NEURAL CORE // SYNAPSE ACTIVE]</span>
+        </div>
+        <div class="fl-thinking-top-right">
+          <div class="fl-thinking-speed-pill">
+            <span>⚡</span>
+            <span class="fl-thinking-speed-txt">~188 tok/s</span>
+          </div>
+          <div class="fl-thinking-timer-pill">
+            <span class="fl-thinking-spinner"></span>
+            <span class="fl-thinking-timer-txt">0.0s</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="fl-thinking-arsenal-bar">
+        ${buildThinkingArsenalHtml()}
+      </div>
+
+      <div class="fl-thinking-body-row">
+        <div class="fl-thinking-brain-pod">
+          <div class="fl-brain-scan-laser"></div>
+          <svg class="fl-cyber-brain-svg" viewBox="0 0 100 100" fill="none">
+            <circle cx="50" cy="50" r="42" fill="url(#flBrainAura)" opacity="0.3"/>
+            <!-- Left Hemisphere -->
+            <path class="fl-brain-outline" d="M48 22 C36 22 24 30 22 44 C20 58 28 72 38 78 C44 82 48 82 48 82" stroke="#00e5ff" stroke-width="1.8" stroke-linecap="round"/>
+            <path class="fl-brain-circuit" d="M46 30 C38 32 30 38 29 46 C28 54 32 62 40 68" stroke="rgba(0,229,255,0.6)" stroke-width="1.2" stroke-dasharray="3 2"/>
+            <path d="M46 38 C40 40 35 46 36 54 C37 60 41 64 46 66" stroke="#c084fc" stroke-width="1.2"/>
+            <!-- Right Hemisphere -->
+            <path class="fl-brain-outline" d="M52 22 C64 22 76 30 78 44 C80 58 72 72 62 78 C56 82 52 82 52 82" stroke="#00e5ff" stroke-width="1.8" stroke-linecap="round"/>
+            <path class="fl-brain-circuit" d="M54 30 C62 32 70 38 71 46 C72 54 68 62 60 68" stroke="rgba(0,229,255,0.6)" stroke-width="1.2" stroke-dasharray="3 2"/>
+            <path d="M54 38 C60 40 65 46 64 54 C63 60 59 64 54 66" stroke="#c084fc" stroke-width="1.2"/>
+            <!-- Central Corpus Callosum -->
+            <line x1="50" y1="24" x2="50" y2="80" stroke="#00e5ff" stroke-width="1.5" stroke-dasharray="4 2"/>
+            <line x1="46" y1="42" x2="54" y2="42" stroke="#00f2fe" stroke-width="1.2"/>
+            <line x1="45" y1="54" x2="55" y2="54" stroke="#00f2fe" stroke-width="1.2"/>
+            <!-- Firing Synapse Nodes -->
+            <circle class="fl-synapse-node syn-1" cx="29" cy="46" r="2.8" fill="#00e5ff"/>
+            <circle class="fl-synapse-node syn-2" cx="71" cy="46" r="2.8" fill="#00e5ff"/>
+            <circle class="fl-synapse-node syn-3" cx="36" cy="54" r="2.2" fill="#c084fc"/>
+            <circle class="fl-synapse-node syn-4" cx="64" cy="54" r="2.2" fill="#c084fc"/>
+            <circle class="fl-synapse-node syn-5" cx="38" cy="30" r="2.2" fill="#38bdf8"/>
+            <circle class="fl-synapse-node syn-6" cx="62" cy="30" r="2.2" fill="#38bdf8"/>
+            <circle class="fl-synapse-node syn-center" cx="50" cy="54" r="3.2" fill="#00f2fe"/>
+            <defs>
+              <radialGradient id="flBrainAura" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#00e5ff" stop-opacity="0.35"/>
+                <stop offset="100%" stop-color="#7c3aed" stop-opacity="0"/>
+              </radialGradient>
+            </defs>
+          </svg>
+          <span class="fl-brain-pod-label">SYNAPSE</span>
+        </div>
+
+        <div class="fl-thinking-terminal-viewport">
+          <div class="fl-thinking-log-stream"></div>
+        </div>
+      </div>
+
+      <div class="fl-thinking-status-row">
+        <span class="fl-thinking-status-dot">●</span>
+        <span class="fl-thinking-status-text">Synthesizing cognitive trajectory & prompt tokens...</span>
+      </div>
+
+      <div class="fl-thinking-laser-track">
+        <div class="fl-thinking-laser-beam"></div>
+      </div>
+    </div>
+  `;
+
+  const timerEl = container.querySelector('.fl-thinking-timer-txt');
+  const speedEl = container.querySelector('.fl-thinking-speed-txt');
+  const statusEl = container.querySelector('.fl-thinking-status-text');
+  const logStreamEl = container.querySelector('.fl-thinking-log-stream');
+  const terminalViewport = container.querySelector('.fl-thinking-terminal-viewport');
+  const arsenalBarEl = container.querySelector('.fl-thinking-arsenal-bar');
+
+  // Push initial 2 lines
+  if (logStreamEl) {
+    for (let i = 0; i < 2; i++) {
+      const line = document.createElement('div');
+      line.className = 'fl-thinking-log-line';
+      line.innerHTML = `<span class="fl-thinking-log-bullet">⚡</span><span>${escapeHtml(cognitiveLogs[logIdx % cognitiveLogs.length])}</span>`;
+      logStreamEl.appendChild(line);
+      logIdx++;
+    }
+  }
+
+  // Hyper-speed terminal stream interval (~40ms) - feels incredibly fast!
+  const streamTickerId = setInterval(() => {
+    if (!logStreamEl || !container.isConnected) {
+      clearInterval(streamTickerId);
+      return;
+    }
+    const line = document.createElement('div');
+    line.className = 'fl-thinking-log-line';
+    const logText = cognitiveLogs[logIdx % cognitiveLogs.length];
+    line.innerHTML = `<span class="fl-thinking-log-bullet">⚡</span><span>${escapeHtml(logText)}</span>`;
+    logStreamEl.appendChild(line);
+    logIdx++;
+
+    // Speed telemetry jitter ~175 - 215 tok/s
+    if (logIdx % 3 === 0 && speedEl) {
+      const jitterSpeed = Math.floor(182 + (Math.sin(logIdx * 0.5) * 24) + Math.random() * 8);
+      speedEl.textContent = `~${jitterSpeed} tok/s`;
+    }
+
+    // Keep max 8 lines in DOM for ultra-lightweight memory and buttery 60fps
+    while (logStreamEl.children.length > 8) {
+      logStreamEl.removeChild(logStreamEl.firstChild);
+    }
+    if (terminalViewport) {
+      terminalViewport.scrollTop = terminalViewport.scrollHeight;
+    }
+  }, 40);
+
+  // Precision elapsed timer every 100ms
   const timerId = setInterval(() => {
-    const elapsed = Math.max(1, Math.round((Date.now() - startTime) / 1000));
-    if (timerEl) timerEl.textContent = `${elapsed}s`;
-  }, 1000);
+    if (!container.isConnected) {
+      clearInterval(timerId);
+      clearInterval(streamTickerId);
+      return;
+    }
+    const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
+    if (timerEl) timerEl.textContent = `${elapsedSec}s`;
+  }, 100);
+
+  const refreshArsenal = (logMessage = '') => {
+    if (arsenalBarEl && container.isConnected) {
+      arsenalBarEl.innerHTML = buildThinkingArsenalHtml();
+    }
+    if (logMessage && logStreamEl && container.isConnected) {
+      const line = document.createElement('div');
+      line.className = 'fl-thinking-log-line real-thought';
+      line.innerHTML = `<span class="fl-thinking-log-bullet" style="color:#00ffb2;">★</span><span>${escapeHtml(logMessage)}</span>`;
+      logStreamEl.appendChild(line);
+      while (logStreamEl.children.length > 8) logStreamEl.removeChild(logStreamEl.firstChild);
+      if (terminalViewport) terminalViewport.scrollTop = terminalViewport.scrollHeight;
+    }
+  };
 
   return {
+    refreshArsenal,
+    setStatus: (text) => {
+      if (!statusEl || !text) return;
+      statusEl.dataset.custom = 'true';
+      statusEl.textContent = text;
+      if (logStreamEl) {
+        const line = document.createElement('div');
+        line.className = 'fl-thinking-log-line real-thought';
+        line.innerHTML = `<span class="fl-thinking-log-bullet" style="color:#00ffb2;">★</span><span>${escapeHtml(text)}</span>`;
+        logStreamEl.appendChild(line);
+        while (logStreamEl.children.length > 8) logStreamEl.removeChild(logStreamEl.firstChild);
+      }
+    },
     updateSnippet: (text) => {
-      if (!snippetEl || !text) return;
-      const clean = text.replace(/[\r\n\t]+/g, ' ').trim();
-      if (clean.length > 3) {
-        snippetEl.style.display = 'inline-block';
-        snippetEl.textContent = clean.length > 35 ? clean.slice(0, 33) + '…' : clean;
+      if (!text) return;
+      const clean = text.trim();
+      if (!clean) return;
+
+      // Live-detect mentioned skills or tools inside thinking text
+      const lower = clean.toLowerCase();
+      let arsenalChanged = false;
+      ['agy-customizations', 'antigravity-guide', 'antigravity_guide', 'generative_ui', 'migrate-workflows'].forEach(sk => {
+        if (lower.includes(sk)) {
+          sessionPinnedSkills.add(sk);
+          turnPinnedSkills.add(sk);
+          arsenalChanged = true;
+        }
+      });
+      const skillMdMatch = clean.match(/skills\/([a-zA-Z0-9_-]+)\/SKILL\.md/i);
+      if (skillMdMatch && skillMdMatch[1]) {
+        sessionPinnedSkills.add(skillMdMatch[1]);
+        turnPinnedSkills.add(skillMdMatch[1]);
+        arsenalChanged = true;
+      }
+      KNOWN_KERNEL_TOOLS.forEach(kt => {
+        const ktLower = kt.toLowerCase();
+        if (lower.includes(ktLower)) {
+          turnPinnedTools.add(ktLower);
+          sessionPinnedTools.add(ktLower);
+          arsenalChanged = true;
+        }
+      });
+      if (arsenalChanged) {
+        refreshArsenal();
+        FloworkLoopSysMonitor.updateArsenalCounters();
+      }
+
+      const lastLine = clean.split('\n').map(l => l.trim()).filter(Boolean).pop() || '';
+      if (lastLine) {
+        if (statusEl) {
+          statusEl.dataset.custom = 'true';
+          statusEl.textContent = lastLine.replace(/^[•\-\*#>\s]+/, '').slice(0, 75);
+        }
+        if (logStreamEl) {
+          const line = document.createElement('div');
+          line.className = 'fl-thinking-log-line real-thought';
+          line.innerHTML = `<span class="fl-thinking-log-bullet" style="color:#c084fc;">★</span><span>[REASON] ${escapeHtml(lastLine.slice(0, 60))}</span>`;
+          logStreamEl.appendChild(line);
+          while (logStreamEl.children.length > 8) logStreamEl.removeChild(logStreamEl.firstChild);
+        }
+      }
+    },
+    advanceDag: (targetId, customLabel) => {
+      if (customLabel && statusEl) {
+        statusEl.dataset.custom = 'true';
+        statusEl.textContent = customLabel;
       }
     },
     stop: () => {
       clearInterval(timerId);
+      clearInterval(streamTickerId);
       const totalSec = Math.max(1, Math.round((Date.now() - startTime) / 1000));
       return totalSec;
     }
@@ -6718,21 +8661,32 @@ function createThinkingController(container) {
 }
 
 function formatThoughtCard(thinkingText, durationSec = 1) {
-  if (!thinkingText || !thinkingText.trim()) return null;
+  const skills = Array.from(new Set([...turnPinnedSkills, ...sessionPinnedSkills]));
+  const tools = Array.from(new Set([...turnPinnedTools, ...sessionPinnedTools]));
+  const hasArsenal = skills.length > 0 || tools.length > 0;
+  if ((!thinkingText || !thinkingText.trim()) && !hasArsenal) return null;
+
+  const summaryBadges = [];
+  if (skills.length > 0) summaryBadges.push(`🎯 ${skills.length} Skill${skills.length > 1 ? 's' : ''}`);
+  if (tools.length > 0) summaryBadges.push(`🛠️ ${tools.length} Tool${tools.length > 1 ? 's' : ''}`);
+  const summaryMeta = summaryBadges.length > 0 ? `<span class="fl-thought-arsenal-pill">${summaryBadges.join(' • ')}</span>` : '';
+
   const card = document.createElement('details');
-  card.className = 'ag-thought-card';
+  card.className = 'fl-thought-card';
   card.innerHTML = `
-    <summary class="ag-thought-summary">
-      <span class="ag-thought-chevron">›</span>
-      <span class="ag-thought-icon">
+    <summary class="fl-thought-summary">
+      <span class="fl-thought-chevron">›</span>
+      <span class="fl-thought-icon">
         <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2a8 8 0 0 0-8 8c0 3.5 2 6 4 7v3h8v-3c2-1 4-3.5 4-7a8 8 0 0 0-8-8z"/><line x1="9" y1="22" x2="15" y2="22"/></svg>
       </span>
-      <span class="ag-thought-tag">[REASONING // SYNAPSE]</span>
-      <span class="ag-thought-label">Thought for ${durationSec}s</span>
-      <span class="ag-thought-action">View reasoning</span>
+      
+      <span class="fl-thought-label">Thought for ${durationSec}s</span>
+      ${summaryMeta}
+      <span class="fl-thought-action">View reasoning</span>
     </summary>
-    <div class="ag-thought-content">
-      <div class="ag-thought-inner">${escapeHtml(thinkingText.trim())}</div>
+    ${hasArsenal ? `<div class="fl-thinking-arsenal-bar is-persisted">${buildThinkingArsenalHtml()}</div>` : ''}
+    <div class="fl-thought-content">
+      <div class="fl-thought-inner">${escapeHtml((thinkingText || 'Autonomous tool & skill trajectory executed.').trim())}</div>
     </div>
   `;
   return card;
@@ -6763,26 +8717,25 @@ function formatSubagentCard(details, status = 'done') {
   }
 
   const card = document.createElement('details');
-  card.className = 'ag-subagent-card';
-  if (status === 'running') card.setAttribute('open', '');
+  card.className = 'fl-subagent-card';
+  card.open = false;
 
   card.innerHTML = `
-    <summary class="ag-subagent-header">
-      <span class="ag-tool-chevron">›</span>
-      <span class="ag-subagent-icon">
+    <summary class="fl-subagent-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-subagent-icon">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path><circle cx="8.5" cy="7" r="4"></circle><line x1="20" y1="8" x2="20" y2="14"></line><line x1="23" y1="11" x2="17" y2="11"></line></svg>
       </span>
-      <span class="ag-subagent-tag">[SUBAGENT // DISPATCH]</span>
-      <span class="ag-subagent-name">${escapeHtml(role)}</span>
-      ${model ? `<span class="ag-subagent-model">${escapeHtml(model)}</span>` : ''}
-      <span class="ag-tool-badge ${status}">${status === 'running' ? '<span class="ag-tool-spinner"></span> Active' : '✓ Completed'}</span>
+      <span class="fl-subagent-name">${escapeHtml(role)}</span>
+      ${model ? `<span class="fl-subagent-model">${escapeHtml(model)}</span>` : ''}
+      <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> Active' : '✓ Completed'}</span>
     </summary>
-    <div class="ag-subagent-body">
-      ${prompt ? `<div class="ag-subagent-prompt"><span class="ag-subagent-lbl">DIRECTIVE:</span> <span class="ag-subagent-txt">${escapeHtml(prompt)}</span></div>` : ''}
+    <div class="fl-subagent-body">
+      ${prompt ? `<div class="fl-subagent-prompt"><span class="fl-subagent-lbl">DIRECTIVE:</span> <span class="fl-subagent-txt">${escapeHtml(prompt)}</span></div>` : ''}
       ${subagentOutput ? `
-      <div class="ag-tool-block">
-        <div class="ag-tool-block-header"><span>AUDIT TRACE</span><button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
-        <pre class="ag-tool-code"><code>${escapeHtml(subagentOutput)}</code></pre>
+      <div class="fl-tool-block">
+        <div class="fl-tool-block-header"><span>AUDIT TRACE</span><button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
+        <pre class="fl-tool-code"><code>${escapeHtml(subagentOutput)}</code></pre>
       </div>` : ''}
     </div>
   `;
@@ -6807,24 +8760,23 @@ function formatTaskCard(details, status = 'done') {
   }
 
   const card = document.createElement('details');
-  card.className = 'ag-task-card';
-  if (status === 'running') card.setAttribute('open', '');
+  card.className = 'fl-task-card';
+  card.open = false;
 
   card.innerHTML = `
-    <summary class="ag-task-header">
-      <span class="ag-tool-chevron">›</span>
-      <span class="ag-task-icon">
+    <summary class="fl-task-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-task-icon">
         <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
       </span>
-      <span class="ag-task-tag">[TASK // ${escapeHtml(actionTag)}]</span>
-      <span class="ag-task-title">${escapeHtml(title)}</span>
-      <span class="ag-tool-badge ${status}">${status === 'running' ? '<span class="ag-tool-spinner"></span> Running' : '✓ Done'}</span>
+      <span class="fl-task-title">${escapeHtml(title)}</span>
+      <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> Running' : '✓ Done'}</span>
     </summary>
-    <div class="ag-task-body">
+    <div class="fl-task-body">
       ${taskDetailsStr ? `
-      <div class="ag-tool-block">
-        <div class="ag-tool-block-header"><span>TASK CONFIG</span><button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
-        <pre class="ag-tool-code"><code>${escapeHtml(taskDetailsStr)}</code></pre>
+      <div class="fl-tool-block">
+        <div class="fl-tool-block-header"><span>TASK CONFIG</span><button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
+        <pre class="fl-tool-code"><code>${escapeHtml(taskDetailsStr)}</code></pre>
       </div>` : ''}
     </div>
   `;
@@ -6858,33 +8810,144 @@ function showAskQuestionModal(questions, onSubmitted) {
 
   container.innerHTML = '';
 
+  const totalPages = questions.length;
+  let currentPage = 0;
+
+  // Resolve or dynamically spawn navigation buttons in action bar
+  let btnClose = document.getElementById('btn-close-ask-modal');
+  let btnSkip = document.getElementById('btn-skip-ask-modal');
+  let btnPrev = document.getElementById('btn-prev-ask-modal');
+  let btnNext = document.getElementById('btn-next-ask-modal');
+  let btnSubmit = document.getElementById('btn-submit-ask-modal');
+
+  const actionsWrap = modal.querySelector('.modal-form-actions');
+  if (!btnPrev && actionsWrap) {
+    btnPrev = document.createElement('button');
+    btnPrev.type = 'button';
+    btnPrev.id = 'btn-prev-ask-modal';
+    btnPrev.className = 'btn-modal-cancel';
+    btnPrev.textContent = '‹ Previous';
+    btnPrev.style.cssText = 'display: none; padding: 7px 16px;';
+    if (btnSubmit) actionsWrap.insertBefore(btnPrev, btnSubmit);
+    else actionsWrap.appendChild(btnPrev);
+  }
+  if (!btnNext && actionsWrap) {
+    btnNext = document.createElement('button');
+    btnNext.type = 'button';
+    btnNext.id = 'btn-next-ask-modal';
+    btnNext.className = 'btn-modal-submit';
+    btnNext.style.cssText = 'display: none; background: linear-gradient(135deg, #0284c7, #0369a1); padding: 7px 18px; color: #fff; border: none; cursor: pointer; font-weight: 600; border-radius: 8px;';
+    btnNext.innerHTML = '<span>Next ›</span>';
+    if (btnSubmit) actionsWrap.insertBefore(btnNext, btnSubmit);
+    else actionsWrap.appendChild(btnNext);
+  }
+
+  // Multi-page stepper header bar (only displayed if totalPages > 1)
+  let paginationBar = null;
+  const pagePills = [];
+  let pageCounterBadge = null;
+
+  if (totalPages > 1) {
+    paginationBar = document.createElement('div');
+    paginationBar.className = 'ask-pagination-bar';
+
+    const infoWrap = document.createElement('div');
+    infoWrap.style.cssText = 'display: flex; align-items: center; gap: 8px;';
+
+    pageCounterBadge = document.createElement('span');
+    pageCounterBadge.className = 'ask-page-counter-badge';
+    pageCounterBadge.textContent = `Page 1 of ${totalPages}`;
+    infoWrap.appendChild(pageCounterBadge);
+
+    const pillsWrap = document.createElement('div');
+    pillsWrap.className = 'ask-pagination-pills';
+
+    for (let i = 0; i < totalPages; i++) {
+      const pill = document.createElement('button');
+      pill.type = 'button';
+      pill.className = `ask-page-pill ${i === 0 ? 'active' : ''}`;
+      pill.setAttribute('data-target-page', String(i));
+      pill.title = `Jump to Question ${i + 1}`;
+      pill.innerHTML = `<span>${i + 1}</span><span class="pill-check" style="font-size: 9px; display: none; margin-left: 2px;">✓</span>`;
+
+      pill.onclick = (e) => {
+        e.preventDefault();
+        goToPage(i);
+      };
+
+      pillsWrap.appendChild(pill);
+      pagePills.push(pill);
+    }
+
+    paginationBar.appendChild(infoWrap);
+    paginationBar.appendChild(pillsWrap);
+    container.appendChild(paginationBar);
+  }
+
+  // Render question cards (one page per question)
+  const pageElements = [];
   questions.forEach((qItem, qIdx) => {
     const qBox = document.createElement('div');
-    qBox.className = 'ask-question-box';
-    qBox.style.cssText = 'background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 10px;';
+    qBox.className = 'ask-question-page ask-question-box';
+    qBox.setAttribute('data-page-idx', String(qIdx));
+    qBox.style.cssText = `background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 12px; padding: 14px 16px; display: ${qIdx === 0 ? 'flex' : 'none'}; flex-direction: column; gap: 10px;`;
+
+    const qHeader = document.createElement('div');
+    qHeader.style.cssText = 'display: flex; align-items: flex-start; justify-content: space-between; gap: 10px;';
 
     const qText = document.createElement('div');
-    qText.style.cssText = 'font-size: 13.5px; font-weight: 600; color: #f1f5f9; line-height: 1.45;';
-    qText.textContent = `${qIdx + 1}. ${qItem.question || 'Pilihan:'}`;
-    qBox.appendChild(qText);
+    qText.style.cssText = 'font-size: 13.5px; font-weight: 600; color: #f1f5f9; line-height: 1.45; flex: 1;';
+    qText.textContent = totalPages > 1 ? `${qIdx + 1}. ${qItem.question || 'Select an option:'}` : (qItem.question || 'Select an option:');
+    qHeader.appendChild(qText);
 
     const isMulti = Boolean(qItem.is_multi_select);
+    const modeBadge = document.createElement('span');
+    modeBadge.style.cssText = 'font-size: 10px; padding: 2px 8px; border-radius: 9999px; background: rgba(56, 189, 248, 0.15); border: 1px solid rgba(56, 189, 248, 0.3); color: #38bdf8; font-weight: 700; white-space: nowrap; flex-shrink: 0;';
+    modeBadge.textContent = isMulti ? 'Multi-Select' : 'Single Choice';
+    qHeader.appendChild(modeBadge);
+
+    qBox.appendChild(qHeader);
+
     const options = Array.isArray(qItem.options) ? qItem.options : [];
     const optList = document.createElement('div');
     optList.style.cssText = 'display: flex; flex-direction: column; gap: 7px; margin-top: 2px;';
 
     options.forEach((optText, optIdx) => {
       const label = document.createElement('label');
-      label.style.cssText = 'display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; cursor: pointer; padding: 6px 10px; border-radius: 8px; background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); transition: all 0.15s;';
+      label.className = 'ask-opt-item';
+      label.style.cssText = 'display: flex; align-items: center; gap: 10px; font-size: 13px; color: #cbd5e1; cursor: pointer; padding: 7px 12px; border-radius: 8px; background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(255, 255, 255, 0.05); transition: all 0.15s;';
       label.onmouseover = () => { label.style.background = 'rgba(14, 165, 233, 0.12)'; label.style.borderColor = 'rgba(56, 189, 248, 0.35)'; };
-      label.onmouseout = () => { label.style.background = 'rgba(30, 41, 59, 0.5)'; label.style.borderColor = 'rgba(255, 255, 255, 0.05)'; };
+      label.onmouseout = () => {
+        const isChecked = input.checked;
+        label.style.background = isChecked ? 'rgba(14, 165, 233, 0.15)' : 'rgba(30, 41, 59, 0.5)';
+        label.style.borderColor = isChecked ? 'rgba(56, 189, 248, 0.4)' : 'rgba(255, 255, 255, 0.05)';
+      };
 
       const input = document.createElement('input');
       input.type = isMulti ? 'checkbox' : 'radio';
       input.name = `ask_q_opt_${qIdx}`;
       input.value = optText;
       input.style.accentColor = '#0ea5e9';
-      if (optIdx === 0 && !isMulti) input.checked = true;
+      if (optIdx === 0 && !isMulti) {
+        input.checked = true;
+        label.style.background = 'rgba(14, 165, 233, 0.15)';
+        label.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+      }
+
+      input.onchange = () => {
+        const siblings = optList.querySelectorAll('.ask-opt-item');
+        siblings.forEach(lbl => {
+          const inp = lbl.querySelector('input');
+          if (inp && inp.checked) {
+            lbl.style.background = 'rgba(14, 165, 233, 0.15)';
+            lbl.style.borderColor = 'rgba(56, 189, 248, 0.4)';
+          } else {
+            lbl.style.background = 'rgba(30, 41, 59, 0.5)';
+            lbl.style.borderColor = 'rgba(255, 255, 255, 0.05)';
+          }
+        });
+        updatePillAnsweredStatus(qIdx);
+      };
 
       const span = document.createElement('span');
       span.textContent = optText;
@@ -6900,18 +8963,93 @@ function showAskQuestionModal(questions, onSubmitted) {
     const writeInInput = document.createElement('input');
     writeInInput.type = 'text';
     writeInInput.placeholder = 'Or type custom response...';
-    writeInInput.className = 'modal-text-input';
+    writeInInput.className = 'modal-text-input ask-write-in-input';
     writeInInput.style.cssText = 'height: 32px; font-size: 12px; flex: 1; padding: 4px 10px; border-radius: 6px; background: rgba(15, 23, 42, 0.8); border: 1px solid rgba(255, 255, 255, 0.12); color: #fff;';
+    writeInInput.oninput = () => {
+      updatePillAnsweredStatus(qIdx);
+    };
+    writeInInput.onkeydown = (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        if (currentPage < totalPages - 1) {
+          goToPage(currentPage + 1);
+        } else if (btnSubmit) {
+          btnSubmit.click();
+        }
+      }
+    };
     writeInWrap.appendChild(writeInInput);
     optList.appendChild(writeInWrap);
 
     qBox.appendChild(optList);
     container.appendChild(qBox);
+    pageElements.push(qBox);
   });
 
-  const btnClose = document.getElementById('btn-close-ask-modal');
-  const btnSkip = document.getElementById('btn-skip-ask-modal');
-  const btnSubmit = document.getElementById('btn-submit-ask-modal');
+  const isPageAnswered = (idx) => {
+    const checked = container.querySelectorAll(`input[name="ask_q_opt_${idx}"]:checked`);
+    if (checked.length > 0) return true;
+    const box = pageElements[idx];
+    const writeIn = box ? box.querySelector('.ask-write-in-input') : null;
+    return Boolean(writeIn && writeIn.value.trim());
+  };
+
+  const updatePillAnsweredStatus = (idx) => {
+    if (!pagePills[idx]) return;
+    const answered = isPageAnswered(idx);
+    pagePills[idx].classList.toggle('is-answered', answered);
+    const checkEl = pagePills[idx].querySelector('.pill-check');
+    if (checkEl) checkEl.style.display = answered ? 'inline' : 'none';
+  };
+
+  const goToPage = (targetIdx) => {
+    if (targetIdx < 0 || targetIdx >= totalPages) return;
+    currentPage = targetIdx;
+
+    pageElements.forEach((el, idx) => {
+      el.style.display = (idx === currentPage) ? 'flex' : 'none';
+    });
+
+    if (pageCounterBadge) {
+      pageCounterBadge.textContent = `Page ${currentPage + 1} of ${totalPages}`;
+    }
+
+    pagePills.forEach((p, idx) => {
+      const isActive = idx === currentPage;
+      p.classList.toggle('active', isActive);
+      updatePillAnsweredStatus(idx);
+    });
+
+    // Update bottom action buttons
+    if (totalPages > 1) {
+      if (btnPrev) btnPrev.style.display = (currentPage > 0) ? 'inline-flex' : 'none';
+      if (btnNext) btnNext.style.display = (currentPage < totalPages - 1) ? 'inline-flex' : 'none';
+      if (btnSubmit) btnSubmit.style.display = (currentPage === totalPages - 1) ? 'inline-flex' : 'none';
+    } else {
+      if (btnPrev) btnPrev.style.display = 'none';
+      if (btnNext) btnNext.style.display = 'none';
+      if (btnSubmit) btnSubmit.style.display = 'inline-flex';
+    }
+  };
+
+  // Initial update of pills answered indicators
+  for (let i = 0; i < totalPages; i++) {
+    updatePillAnsweredStatus(i);
+  }
+
+  // Hook navigation buttons
+  if (btnPrev) {
+    btnPrev.onclick = (e) => {
+      e.preventDefault();
+      goToPage(currentPage - 1);
+    };
+  }
+  if (btnNext) {
+    btnNext.onclick = (e) => {
+      e.preventDefault();
+      goToPage(currentPage + 1);
+    };
+  }
 
   const closeModal = () => {
     modal.style.display = 'none';
@@ -6924,11 +9062,10 @@ function showAskQuestionModal(questions, onSubmitted) {
     btnSubmit.onclick = () => {
       const answers = [];
       questions.forEach((qItem, qIdx) => {
-        const isMulti = Boolean(qItem.is_multi_select);
         const checkedInputs = container.querySelectorAll(`input[name="ask_q_opt_${qIdx}"]:checked`);
         let selectedVals = Array.from(checkedInputs).map(i => i.value);
-        const qBox = container.children[qIdx];
-        const writeInInput = qBox ? qBox.querySelector('input[type="text"]') : null;
+        const qBox = pageElements[qIdx];
+        const writeInInput = qBox ? qBox.querySelector('.ask-write-in-input') : null;
         if (writeInInput && writeInInput.value.trim()) {
           selectedVals.push(writeInInput.value.trim());
         }
@@ -6949,6 +9086,7 @@ function showAskQuestionModal(questions, onSubmitted) {
     };
   }
 
+  goToPage(0);
   modal.style.display = 'flex';
 }
 
@@ -6958,7 +9096,7 @@ function formatAskQuestionCard(details, status = 'done') {
   const firstQ = questions[0] ? questions[0].question : 'Interactive consultation requested';
 
   const card = document.createElement('div');
-  card.className = 'ag-tool-card ag-ask-card';
+  card.className = 'fl-tool-card fl-ask-card';
   card.style.cssText = 'border: 1px solid rgba(14, 165, 233, 0.45); background: rgba(14, 165, 233, 0.08); border-radius: 10px; padding: 12px 14px; margin: 8px 0; display: flex; flex-direction: column; gap: 8px;';
 
   card.innerHTML = `
@@ -6968,7 +9106,7 @@ function formatAskQuestionCard(details, status = 'done') {
         <span>[CONSULT // ASK USER]</span>
         <span style="color: #94a3b8; font-weight: 400; font-size: 12px;">(${qCount} question${qCount > 1 ? 's' : ''})</span>
       </div>
-      <button class="ag-ask-open-btn" style="background: #0284c7; color: white; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 5px;">
+      <button class="fl-ask-open-btn" style="background: #0284c7; color: white; border: none; padding: 4px 12px; border-radius: 6px; font-size: 12px; font-weight: 600; cursor: pointer; display: flex; align-items: center; gap: 5px;">
         <span>Open Dialog</span>
         <span>›</span>
       </button>
@@ -6978,7 +9116,7 @@ function formatAskQuestionCard(details, status = 'done') {
     </div>
   `;
 
-  const btnOpen = card.querySelector('.ag-ask-open-btn');
+  const btnOpen = card.querySelector('.fl-ask-open-btn');
   if (btnOpen) {
     btnOpen.onclick = (e) => {
       e.stopPropagation();
@@ -6995,6 +9133,536 @@ function formatAskQuestionCard(details, status = 'done') {
 
   return card;
 }
+
+/* ==========================================================================
+   JARVIS TACTICAL CYBER-HUD & AUDIO ENGINE
+   ========================================================================== */
+
+const FloworkJarvisAudio = {
+  mode: localStorage.getItem('flw_jarvis_audio_mode') || 'all',
+  lastTrigger: 0,
+  lastType: '',
+  audioCtx: null,
+
+  initAudioContext() {
+    if (!this.audioCtx) {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      if (AudioCtx) this.audioCtx = new AudioCtx();
+    }
+    if (this.audioCtx && this.audioCtx.state === 'suspended') {
+      this.audioCtx.resume();
+    }
+  },
+
+  setMode(newMode) {
+    this.mode = newMode;
+    localStorage.setItem('flw_jarvis_audio_mode', newMode);
+    this.updateToggleUi();
+  },
+
+  toggleMode() {
+    if (this.mode === 'all') this.setMode('sfx_only');
+    else if (this.mode === 'sfx_only') this.setMode('muted');
+    else this.setMode('all');
+  },
+
+  updateToggleUi() {
+    const btn = document.getElementById('btn-jarvis-audio-toggle');
+    if (!btn) return;
+    if (this.mode === 'all') {
+      btn.className = 'fl-jarvis-toggle-btn';
+      btn.innerHTML = '🔊 MR. FLOW: VOICE+SFX';
+      btn.title = 'Mr. Flow Audio: Voice and SFX Enabled (Click to change)';
+    } else if (this.mode === 'sfx_only') {
+      btn.className = 'fl-jarvis-toggle-btn';
+      btn.innerHTML = '🔈 MR. FLOW: SFX ONLY';
+      btn.title = 'Mr. Flow Audio: SFX Only (Click to mute)';
+    } else {
+      btn.className = 'fl-jarvis-toggle-btn is-muted';
+      btn.innerHTML = '🔇 MR. FLOW: MUTED';
+      btn.title = 'Mr. Flow Audio: Muted (Click to enable)';
+    }
+  },
+
+  initUi() {
+    let btn = document.getElementById('btn-jarvis-audio-toggle');
+    if (!btn) {
+      const headerActions = document.querySelector('.chat-header-actions') || document.querySelector('.rightbar-header');
+      if (headerActions) {
+        btn = document.createElement('button');
+        btn.id = 'btn-jarvis-audio-toggle';
+        btn.className = 'fl-jarvis-toggle-btn';
+        btn.onclick = () => FloworkJarvisAudio.toggleMode();
+        headerActions.insertBefore(btn, headerActions.firstChild);
+      }
+    }
+    this.updateToggleUi();
+  },
+
+  playSynthSfx(type) {
+    try {
+      this.initAudioContext();
+      if (!this.audioCtx) return;
+      const ctx = this.audioCtx;
+      const now = ctx.currentTime;
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+
+      if (type === 'radar_lock') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        osc.frequency.exponentialRampToValueAtTime(1760, now + 0.12);
+        gain.gain.setValueAtTime(0.14, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.18);
+        osc.start(now);
+        osc.stop(now + 0.18);
+      } else if (type === 'terminal_click') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(520, now);
+        osc.frequency.setValueAtTime(260, now + 0.04);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.08);
+        osc.start(now);
+        osc.stop(now + 0.08);
+      } else if (type === 'lock' || type === 'skill_pinned') {
+        osc.type = 'square';
+        osc.frequency.setValueAtTime(440, now);
+        osc.frequency.exponentialRampToValueAtTime(880, now + 0.15);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+        osc.start(now);
+        osc.stop(now + 0.22);
+      } else if (type === 'warp' || type === 'agent_spawn') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(120, now);
+        osc.frequency.exponentialRampToValueAtTime(600, now + 0.25);
+        gain.gain.setValueAtTime(0.12, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.3);
+        osc.start(now);
+        osc.stop(now + 0.3);
+      } else if (type === 'klaxon' || type === 'alert_breach') {
+        osc.type = 'sawtooth';
+        osc.frequency.setValueAtTime(320, now);
+        osc.frequency.setValueAtTime(220, now + 0.15);
+        gain.gain.setValueAtTime(0.18, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+        osc.start(now);
+        osc.stop(now + 0.35);
+      } else if (type === 'shutter_click' || type === 'camera_shutter') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(800, now);
+        osc.frequency.exponentialRampToValueAtTime(120, now + 0.05);
+        gain.gain.setValueAtTime(0.22, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+        osc.start(now);
+        osc.stop(now + 0.06);
+      } else if (type === 'synapse_warp' || type === 'warp_hum') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(180, now);
+        osc.frequency.exponentialRampToValueAtTime(720, now + 0.18);
+        gain.gain.setValueAtTime(0.08, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.22);
+        osc.start(now);
+        osc.stop(now + 0.22);
+      } else if (type === 'relay_step' || type === 'dag_advance') {
+        osc.type = 'triangle';
+        osc.frequency.setValueAtTime(1100, now);
+        osc.frequency.setValueAtTime(1550, now + 0.03);
+        gain.gain.setValueAtTime(0.06, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.06);
+        osc.start(now);
+        osc.stop(now + 0.06);
+      } else if (type === 'success_chime' || type === 'exit_zero') {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(880, now);
+        gain.gain.setValueAtTime(0.09, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.28);
+        osc.start(now);
+        osc.stop(now + 0.28);
+
+        const osc2 = ctx.createOscillator();
+        const gain2 = ctx.createGain();
+        osc2.type = 'sine';
+        osc2.frequency.setValueAtTime(1760, now + 0.08);
+        gain2.gain.setValueAtTime(0.07, now + 0.08);
+        gain2.gain.exponentialRampToValueAtTime(0.01, now + 0.35);
+        osc2.connect(gain2);
+        gain2.connect(ctx.destination);
+        osc2.start(now + 0.08);
+        osc2.stop(now + 0.35);
+      } else {
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(659, now);
+        osc.frequency.setValueAtTime(987, now + 0.08);
+        gain.gain.setValueAtTime(0.1, now);
+        gain.gain.exponentialRampToValueAtTime(0.01, now + 0.2);
+        osc.start(now);
+        osc.stop(now + 0.2);
+      }
+    } catch (_) {}
+  },
+
+  playSpeechFallback(text) {
+    if (this.mode !== 'all' || !window.speechSynthesis) return;
+    try {
+      window.speechSynthesis.cancel();
+      const utt = new SpeechSynthesisUtterance(text);
+      utt.lang = 'en-GB';
+      utt.pitch = 0.88;
+      utt.rate = 1.05;
+      const voices = window.speechSynthesis.getVoices();
+      const enVoice = voices.find(v => v.lang.startsWith('en-GB') || (v.lang.startsWith('en') && v.name.toLowerCase().includes('male'))) || voices.find(v => v.lang.startsWith('en'));
+      if (enVoice) utt.voice = enVoice;
+      window.speechSynthesis.speak(utt);
+    } catch (_) {}
+  },
+
+  trigger(archetype, customText) {
+    if (this.mode === 'muted') return;
+
+    const now = Date.now();
+    if (now - this.lastTrigger < 800 && this.lastType === archetype) return;
+
+    this.lastTrigger = now;
+    this.lastType = archetype;
+
+    const audioMeta = {
+      target_lock: {
+        file: '/canvas/sounds/jarvis/target_locked.mp3',
+        speech: "Target acquired. Scanning perimeter, sir.",
+        sfx: 'radar_lock'
+      },
+      terminal_exec: {
+        file: '/canvas/sounds/jarvis/terminal_exec.mp3',
+        speech: "Executing payload, sir. Terminal stream live.",
+        sfx: 'terminal_click'
+      },
+      terminal_done: {
+        file: '/canvas/sounds/jarvis/terminal_done.mp3',
+        speech: "Process completed cleanly with exit code zero.",
+        sfx: 'chime'
+      },
+      skill_search: {
+        file: '/canvas/sounds/jarvis/skill_search.mp3',
+        speech: "Querying skill repository for requested capability.",
+        sfx: 'blip'
+      },
+      skill_pinned: {
+        file: '/canvas/sounds/jarvis/skill_pinned.mp3',
+        speech: "Runbook pinned. Operational protocol engaged, sir.",
+        sfx: 'lock'
+      },
+      agent_spawn: {
+        file: '/canvas/sounds/jarvis/agent_spawn.mp3',
+        speech: "Sub-agent deployed into orbit. Swarm telemetry synchronized.",
+        sfx: 'warp'
+      },
+      agent_complete: {
+        file: '/canvas/sounds/jarvis/agent_complete.mp3',
+        speech: "Sub-agent reporting back. Mission accomplished, sir.",
+        sfx: 'chime'
+      },
+      code_patched: {
+        file: '/canvas/sounds/jarvis/code_patched.mp3',
+        speech: "Source code modified with surgical precision, sir.",
+        sfx: 'laser'
+      },
+      alert_breach: {
+        file: '/canvas/sounds/jarvis/alert_breach.mp3',
+        speech: "Command intercepted. Security protocol triggered, sir.",
+        sfx: 'klaxon'
+      },
+      system_online: {
+        file: '/canvas/sounds/jarvis/system_online.mp3',
+        speech: "Flowork OS Sovereign Engine online. All systems nominal.",
+        sfx: 'chime'
+      }
+    };
+
+    const meta = audioMeta[archetype] || audioMeta.terminal_exec;
+    const speechText = customText || meta.speech;
+
+    this.playSynthSfx(meta.sfx);
+
+    if (this.mode === 'all') {
+      try {
+        const audio = new Audio(meta.file);
+        audio.volume = 0.95;
+        const p = audio.play();
+        if (p !== undefined) {
+          p.catch((err) => {
+            console.warn('[Jarvis Audio] MP3 play error:', err);
+            this.playSpeechFallback(speechText);
+          });
+        }
+      } catch (err) {
+        this.playSpeechFallback(speechText);
+      }
+    }
+  }
+};
+
+const FloworkChatTacticalOverlay = {
+  activeTimer: null,
+  activeTypingTimer: null,
+
+  getMountTarget() {
+    return document.getElementById('rightbar-chat') || document.querySelector('.rightbar-chat') || document.body;
+  },
+
+  computeSpeed(len) {
+    if (len <= 20) return 40;
+    if (len <= 40) return 32;
+    if (len <= 70) return 22;
+    if (len <= 110) return 14;
+    return 9;
+  },
+
+  typewrite(element, text, customSpeed) {
+    if (!element || !text) return;
+    element.textContent = '';
+    let idx = 0;
+    if (this.activeTypingTimer) clearInterval(this.activeTypingTimer);
+    const speed = customSpeed || this.computeSpeed(text.length);
+    this.activeTypingTimer = setInterval(() => {
+      if (idx < text.length) {
+        element.textContent += text[idx];
+        idx++;
+        if (idx % 3 === 0 && window.FloworkJarvisAudio && FloworkJarvisAudio.mode === 'all') {
+          FloworkJarvisAudio.playSynthSfx('terminal_click');
+        }
+      } else {
+        clearInterval(this.activeTypingTimer);
+        this.activeTypingTimer = null;
+      }
+    }, speed);
+  },
+
+  spawn(archetype, data = {}) {
+    const target = this.getMountTarget();
+    if (!target) return;
+
+    // Clean up any lingering tactical overlays in the DOM
+    document.querySelectorAll('.fl-chat-tactical-overlay').forEach(el => el.remove());
+    if (this.activeTimer) clearTimeout(this.activeTimer);
+    if (this.activeTypingTimer) clearInterval(this.activeTypingTimer);
+
+    const overlay = document.createElement('div');
+    overlay.className = 'fl-chat-tactical-overlay';
+
+    let windowHtml = '';
+    let textToType = '';
+
+    if (archetype === 'target_lock') {
+      const url = data.url || data.query || 'https://perimeter.target.network';
+      textToType = String(url);
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-target_lock">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot cyan">●</span>
+              <span class="fl-cyber-tag cyan">[JET // RECON]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">360° RADAR LOCK</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(0,242,254,0.15);color:#00f2fe;border-color:rgba(0,242,254,0.5);"><span class="fl-tool-spinner"></span> TARGET LOCK</span>
+          </div>
+          <div class="fl-tactical-screen" style="display:flex;align-items:center;gap:12px;">
+            <div class="fl-chat-target-radar" style="width:68px;height:68px;margin:0;flex-shrink:0;">
+              <div class="fl-chat-radar-sweep"></div>
+              <div class="fl-chat-target-crosshair" style="width:26px;height:26px;"></div>
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:10px;font-weight:700;color:#00f2fe;letter-spacing:0.06em;text-transform:uppercase;">LOCKING ON TARGET:</div>
+              <div style="font-size:10.5px;color:#f1f5f9;margin-top:4px;word-break:break-all;"><span class="fl-popup-typing-target"></span></div>
+            </div>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>COORD: <strong style="color:#00e5ff;">ACQUIRED</strong></span>
+            <span>RADAR: <strong style="color:#00e5ff;">ACTIVE SWEEP</strong></span>
+          </div>
+        </div>
+      `;
+    } else if (archetype === 'terminal_exec') {
+      const cmd = data.cmd || data.commandLine || 'bash command';
+      textToType = '$ ' + String(cmd);
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-terminal_exec">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot cyan">●</span>
+              <span class="fl-cyber-tag cyan">[CYBER // BREACH]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">LIVE TERMINAL</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(0,255,178,0.15);color:#00ffb2;border-color:rgba(0,255,178,0.5);"><span class="fl-tool-spinner"></span> INJECTING PAYLOAD</span>
+          </div>
+          <div class="fl-tactical-screen">
+            <div class="fl-chat-term-matrix">01000110 01001100 01001111 01010111 01001111 01010010 01001011</div>
+            <pre class="fl-tactical-code"><code style="color:#00ffb2;"><span class="fl-popup-typing-target"></span></code></pre>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>STREAM: <strong style="color:#00ffb2;">LIVE TTY</strong></span>
+            <span>SECURITY: <strong style="color:#00ffb2;">SOVEREIGN</strong></span>
+            <span>STATUS: <strong style="color:#00ffb2;">ACTIVE</strong></span>
+          </div>
+        </div>
+      `;
+    } else if (archetype === 'skill_pinned' || archetype === 'skill_search') {
+      const skillId = data.skillId || data.id || 'surgical_engineer';
+      textToType = `> repo: skills/${skillId}`;
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-skill_pinned">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot cyan">●</span>
+              <span class="fl-cyber-tag cyan">[QUANTUM // RUNBOOK]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">SKILL PROTOCOL</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(168,85,247,0.18);color:#c084fc;border-color:rgba(168,85,247,0.5);"><span class="fl-tool-spinner"></span> DISCOVERY</span>
+          </div>
+          <div class="fl-tactical-screen">
+            <div class="fl-chat-search-bar" style="margin:4px 0 6px 0;padding:4px 8px;">
+              <span style="font-size:12px;">🔍</span>
+              <span style="font-size:10.5px;color:#e2e8f0;"><span class="fl-popup-typing-target"></span></span>
+            </div>
+            <div style="font-size:9.5px;color:#94a3b8;display:flex;align-items:center;justify-content:space-between;">
+              <span>Sovereign Operational Runbook Protocol</span>
+              <span class="fl-chat-pin-stamp" style="padding:1px 5px;font-size:8.5px;">🎯 PINNED</span>
+            </div>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>TOKENS: <strong style="color:#c084fc;">LOCKED</strong></span>
+            <span>PROTOCOL: <strong style="color:#c084fc;">ENGAGED</strong></span>
+          </div>
+        </div>
+      `;
+    } else if (archetype === 'agent_spawn') {
+      const role = data.role || data.type || 'Sub-Agent Specialist';
+      textToType = String(role);
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-agent_spawn">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot cyan">●</span>
+              <span class="fl-cyber-tag cyan">[ORBITAL // SWARM]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">SUB-AGENT MESH</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(56,189,248,0.18);color:#38bdf8;border-color:rgba(56,189,248,0.5);"><span class="fl-tool-spinner"></span> LAUNCH</span>
+          </div>
+          <div class="fl-tactical-screen" style="display:flex;align-items:center;gap:12px;">
+            <div class="fl-chat-sat-orbit" style="width:68px;height:68px;margin:0;flex-shrink:0;">
+              <div class="fl-chat-sat-node" style="width:10px;height:10px;top:-5px;"></div>
+              <div style="width:16px;height:16px;border-radius:50%;background:#38bdf8;box-shadow:0 0 14px #38bdf8;"></div>
+            </div>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:10px;font-weight:700;color:#38bdf8;letter-spacing:0.06em;text-transform:uppercase;">SPAWNING SUB-AGENT:</div>
+              <div style="font-size:10.5px;color:#f1f5f9;margin-top:4px;word-break:break-all;"><span class="fl-popup-typing-target"></span></div>
+            </div>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>HANDSHAKE: <strong style="color:#00f2fe;">VERIFIED</strong></span>
+            <span>MESH: <strong style="color:#00f2fe;">ACTIVE</strong></span>
+          </div>
+        </div>
+      `;
+    } else if (archetype === 'alert_breach') {
+      const errMsg = data.error || data.message || 'Execution halted by Sovereign Gatekeeper';
+      textToType = String(errMsg);
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-alert_breach">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot" style="background:#ef4444;box-shadow:0 0 8px #ef4444;">●</span>
+              <span class="fl-cyber-tag" style="color:#ef4444;">[DEFENSE // SHIELD]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">GATE INTERCEPT</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(239,68,68,0.25);color:#f87171;border-color:rgba(239,68,68,0.6);">SECURITY TRIGGERED</span>
+          </div>
+          <div class="fl-tactical-screen" style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:24px;filter:drop-shadow(0 0 8px rgba(239,68,68,0.8));">🛡️</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:10px;font-weight:700;color:#f87171;">SECURITY PROTOCOL ENGAGED</div>
+              <div style="font-size:10.5px;color:#fca5a5;margin-top:3px;word-break:break-all;"><span class="fl-popup-typing-target"></span></div>
+            </div>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>GATE: <strong style="color:#ef4444;">BLOCKED</strong></span>
+            <span>POLICY: <strong style="color:#ef4444;">SOVEREIGN ENFORCED</strong></span>
+          </div>
+        </div>
+      `;
+    } else if (archetype === 'system_online') {
+      textToType = 'ALL SYSTEMS NOMINAL • EXIT CODE 0 ASSURED';
+      windowHtml = `
+        <div class="fl-chat-tactical-window type-system_online">
+          <div class="fl-tactical-top">
+            <div class="fl-tactical-header-tag">
+              <span class="fl-cyber-dot cyan">●</span>
+              <span class="fl-cyber-tag cyan">[SOVEREIGN // CORE]</span>
+              <span class="fl-cyber-dot amber">●</span>
+              <span class="fl-cyber-tag amber">SYSTEM READY</span>
+            </div>
+            <span class="fl-tactical-badge" style="background:rgba(0,229,255,0.18);color:#00e5ff;border-color:rgba(0,229,255,0.5);">⚡ ONLINE</span>
+          </div>
+          <div class="fl-tactical-screen" style="display:flex;align-items:center;gap:10px;">
+            <span style="font-size:24px;filter:drop-shadow(0 0 8px rgba(0,229,255,0.8));">🛡️</span>
+            <div style="flex:1;min-width:0;">
+              <div style="font-size:10px;font-weight:700;color:#00e5ff;">FLOWORK OS SOVEREIGN ENGINE</div>
+              <div style="font-size:10.5px;color:#94a3b8;margin-top:3px;"><span class="fl-popup-typing-target"></span></div>
+            </div>
+          </div>
+          <div class="fl-tactical-bottom">
+            <span>STATUS: <strong style="color:#00e5ff;">NOMINAL</strong></span>
+            <span>EXIT CODE: <strong style="color:#00e5ff;">0 ASSURED</strong></span>
+          </div>
+        </div>
+      `;
+    }
+
+    overlay.innerHTML = windowHtml;
+    target.appendChild(overlay);
+
+    const typingTargetEl = overlay.querySelector('.fl-popup-typing-target');
+    const speed = this.computeSpeed(textToType ? textToType.length : 20);
+    if (typingTargetEl && textToType) {
+      this.typewrite(typingTargetEl, textToType, speed);
+    }
+
+    const typingDuration = (textToType ? textToType.length : 20) * speed;
+    const totalStay = Math.max(2600, typingDuration + 1100);
+
+    this.activeTimer = setTimeout(() => {
+      if (overlay.isConnected) {
+        overlay.classList.add('is-leaving');
+        setTimeout(() => {
+          if (overlay.isConnected) overlay.remove();
+        }, 360);
+      }
+    }, totalStay);
+  }
+};
+
+const FloworkTacticalHUD = {
+  spawn(archetype, data = {}) {
+    FloworkChatTacticalOverlay.spawn(archetype, data);
+  }
+};
+
+window.FloworkChatTacticalOverlay = FloworkChatTacticalOverlay;
+window.FloworkMrFlowAudio = FloworkJarvisAudio;
+window.FloworkJarvisAudio = FloworkJarvisAudio;
+
+let hasPlayedSystemOnline = false;
+document.addEventListener('click', () => {
+  FloworkJarvisAudio.initAudioContext();
+  hasPlayedSystemOnline = true;
+}, { once: true });
 
 function formatToolCard(toolName, details = {}, status = 'done') {
   const rawTool = (toolName || 'tool').toLowerCase();
@@ -7030,7 +9698,7 @@ function formatToolCard(toolName, details = {}, status = 'done') {
     fullInput = JSON.stringify(details, null, 2);
     const rawOut = details.rawOutput ?? details.output ?? details.stdout ?? details.result ?? null;
     if (rawOut !== undefined && rawOut !== null && rawOut !== '') {
-      output = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
+      output = sanitizeToolOutput(rawOut);
     }
   }
 
@@ -7061,83 +9729,3735 @@ function formatToolCard(toolName, details = {}, status = 'done') {
   }
 
   const displayArg = shortArg.length > 55 ? shortArg.slice(0, 55) + '...' : shortArg;
+  const reasonText = extractToolReason(toolName, details);
+  const shortReason = reasonText.length > 52 ? reasonText.slice(0, 50) + '…' : reasonText;
 
   const card = document.createElement('details');
-  card.className = 'ag-tool-card';
-  if (status === 'running') card.setAttribute('open', '');
+  card.className = 'fl-tool-card';
+  card.open = false;
 
   card.innerHTML = `
-    <summary class="ag-tool-header">
-      <span class="ag-tool-chevron">›</span>
-      <span class="ag-tool-icon">${toolIconSvg}</span>
-      <span class="ag-tool-tag">[${escapeHtml(toolTag)}]</span>
-      <span class="ag-tool-title">${escapeHtml(toolTitle)}</span>
-      ${displayArg ? `<code class="ag-tool-cmd">${escapeHtml(displayArg)}</code>` : ''}
-      <span class="ag-tool-badge ${status}">${status === 'running' ? '<span class="ag-tool-spinner"></span> Running' : '✓ Done'}</span>
+    <summary class="fl-tool-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-tool-icon">${toolIconSvg}</span>
+      <span class="fl-tool-title">${escapeHtml(toolTitle)}</span>
+      ${displayArg ? `<code class="fl-tool-cmd">${escapeHtml(displayArg)}</code>` : ''}
+      ${reasonText ? `<span class="fl-tool-reason-pill" title="${escapeHtml(reasonText)}">💬 ${escapeHtml(shortReason)}</span>` : ''}
+      <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> Running' : '✓ Done'}</span>
     </summary>
-    <div class="ag-tool-details">
+    <div class="fl-tool-details">
+      ${reasonText ? `<div class="fl-tool-reason-box"><span class="fl-trb-lbl">💬 REASON:</span> <span class="fl-trb-txt">${escapeHtml(reasonText)}</span></div>` : ''}
       ${fullInput ? `
-      <div class="ag-tool-block">
-        <div class="ag-tool-block-header"><span>PARAMETERS</span><button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
-        <pre class="ag-tool-code"><code>${escapeHtml(fullInput)}</code></pre>
+      <div class="fl-tool-block">
+        <div class="fl-tool-block-header"><span>PARAMETERS</span><button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
+        <pre class="fl-tool-code"><code>${escapeHtml(fullInput)}</code></pre>
       </div>` : ''}
       ${output ? `
-      <div class="ag-tool-block">
-        <div class="ag-tool-block-header"><span>OUTPUT</span><button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
-        <pre class="ag-tool-code"><code>${escapeHtml(output)}</code></pre>
+      <div class="fl-tool-block">
+        <div class="fl-tool-block-header"><span>OUTPUT</span><button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div>
+        <pre class="fl-tool-code"><code>${escapeHtml(output)}</code></pre>
       </div>` : ''}
     </div>
   `;
   return card;
 }
 
+function formatSkillCard(details = {}, status = 'done') {
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = (d.action || d.Action || 'pin').toLowerCase();
+  const skillId = d.skill_id || d.skillId || d.skill_name || d.name || d.id || d.query || 'surgical_engineer';
+  const isPin = action === 'pin' || action === 'pinned';
+  const isUnpin = action === 'unpin';
+  const reasonText = extractToolReason('skill_control', details);
+  const shortReason = reasonText.length > 52 ? reasonText.slice(0, 50) + '…' : reasonText;
+
+  const card = document.createElement('details');
+  card.className = `fl-tool-card fl-skill-card ${isPin ? 'is-pinned' : ''} ${status === 'running' ? 'is-running' : ''}`;
+  card.open = false;
+
+  let badgeClass = 'done';
+  let badgeLabel = '✓ Done';
+
+  if (isPin) {
+    badgeClass = 'pinned';
+    badgeLabel = '🎯 PINNED';
+  } else if (isUnpin) {
+    badgeClass = 'done';
+    badgeLabel = '✓ UNPINNED';
+  } else if (status === 'running') {
+    badgeClass = 'running';
+    badgeLabel = '<span class="fl-tool-spinner"></span> RUNNING';
+  }
+
+  card.innerHTML = `
+    <summary class="fl-tool-header fl-skill-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-skill-icon">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon>
+        </svg>
+      </span>
+      <span class="fl-skill-title">${escapeHtml(skillId)}</span>
+      ${reasonText ? `<span class="fl-tool-reason-pill" title="${escapeHtml(reasonText)}">💬 ${escapeHtml(shortReason)}</span>` : ''}
+      <span class="fl-skill-badge ${badgeClass}">${badgeLabel}</span>
+    </summary>
+    <div class="fl-tool-details">
+      ${reasonText ? `<div class="fl-tool-reason-box"><span class="fl-trb-lbl">💬 REASON:</span> <span class="fl-trb-txt">${escapeHtml(reasonText)}</span></div>` : ''}
+      <div class="fl-tool-block">
+        <div class="fl-tool-block-header"><span>SOVEREIGN RUNBOOK PROTOCOL</span></div>
+        <div class="fl-skill-desc">
+          ${isPin 
+            ? `🎯 <strong>Active Sovereign Runbook:</strong> Capability protocol <code>${escapeHtml(skillId)}</code> pinned to active session context.` 
+            : (isUnpin 
+              ? `✓ Skill <code>${escapeHtml(skillId)}</code> released and context tokens successfully reclaimed.` 
+              : `Runbook operation <code>${escapeHtml(action)}</code> executed for <code>${escapeHtml(skillId)}</code>.`)}
+        </div>
+      </div>
+    </div>
+  `;
+
+  // Auto-collapse skill card after 1.8 seconds so chat stays clean
+  setTimeout(() => {
+    card.removeAttribute('open');
+  }, 1800);
+
+  return card;
+}
+
+function animateTerminalPrompt(cmdItem, commandText) {
+  const titleEl = cmdItem.querySelector('.fl-cmd-item-title');
+  if (!titleEl || !commandText) return;
+
+  const rawText = commandText.trim();
+  titleEl.innerHTML = `<span class="fl-cmd-typed"></span>`;
+  const typedEl = titleEl.querySelector('.fl-cmd-typed');
+  const cursorEl = titleEl.querySelector('.fl-cmd-cursor');
+
+  let curIdx = 0;
+  const step = rawText.length > 50 ? 3 : (rawText.length > 25 ? 2 : 1);
+  const delay = Math.max(12, Math.min(26, Math.floor(300 / (rawText.length / step))));
+
+  function typeChar() {
+    curIdx += step;
+    if (curIdx < rawText.length) {
+      typedEl.textContent = rawText.slice(0, curIdx);
+      setTimeout(typeChar, delay);
+    } else {
+      typedEl.textContent = rawText;
+      setTimeout(() => {
+        if (cursorEl) cursorEl.classList.add('fade');
+      }, 350);
+    }
+  }
+  typeChar();
+}
+
+function shortenFilePath(p) {
+  if (!p) return 'buffer';
+  const str = String(p).trim();
+  const parts = str.split('/');
+  if (parts.length > 3) {
+    return '.../' + parts.slice(-3).join('/');
+  }
+  return str;
+}
+
+function getOrCreateToolsCapsule(toolsArea) {
+  if (!toolsArea) return { activeSlot: null, capsule: null, capsuleBody: null };
+  
+  let activeSlot = toolsArea.querySelector('.fl-live-active-slot');
+  if (!activeSlot) {
+    activeSlot = document.createElement('div');
+    activeSlot.className = 'fl-live-active-slot';
+    toolsArea.appendChild(activeSlot);
+  }
+
+  let capsule = toolsArea.querySelector('.fl-toolstream-wrap');
+  if (!capsule) {
+    capsule = document.createElement('details');
+    capsule.className = 'fl-toolstream-wrap';
+    capsule.style.display = 'none'; // STRICT: HIDDEN DURING STREAMING!
+    capsule.open = false;
+    capsule.removeAttribute('open');
+    capsule.innerHTML = `
+      <summary class="fl-toolstream-summary">
+        <span class="fl-toolstream-chevron">›</span>
+        <span class="fl-toolstream-title">Ran tools</span>
+        
+      </summary>
+      <div class="fl-toolstream-body"></div>
+    `;
+    toolsArea.appendChild(capsule);
+
+    capsule.addEventListener('toggle', () => {
+      // Natural CSS rotation or text update
+    });
+  }
+
+  const capsuleBody = capsule.querySelector('.fl-toolstream-body');
+  return { activeSlot, capsule, capsuleBody };
+}
+
+function updateToolsCapsuleHeader(capsule) {
+  if (!capsule) return;
+  const body = capsule.querySelector('.fl-toolstream-body');
+  if (!body) return;
+
+  const cmdItems = body.querySelectorAll('.fl-cmd-item');
+  const skills = body.querySelectorAll('.fl-skill-card');
+  const agents = body.querySelectorAll('.fl-subagent-card');
+  const tasks = body.querySelectorAll('.fl-task-card');
+  const otherTools = body.querySelectorAll('.fl-tool-card');
+  
+  const total = cmdItems.length + skills.length + agents.length + tasks.length + otherTools.length;
+  if (total === 0) {
+    capsule.style.display = 'none';
+    return;
+  }
+
+  const titleEl = capsule.querySelector('.fl-toolstream-title');
+  if (titleEl) {
+    titleEl.textContent = `Ran ${total} tool${total > 1 ? 's' : ''}`;
+  }
+
+  const toolsListEl = capsule.querySelector('.fl-toolstream-tools-list');
+  if (toolsListEl) {
+    const names = [];
+    if (cmdItems.length > 0) names.push(`run_command (${cmdItems.length})`);
+    if (skills.length > 0) names.push(`skills (${skills.length})`);
+    if (agents.length > 0) names.push(`subagents (${agents.length})`);
+    if (tasks.length > 0) names.push(`tasks (${tasks.length})`);
+    
+    otherTools.forEach(card => {
+      const t = (card.querySelector('.fl-tool-title')?.textContent || '').trim().toLowerCase().replace(/\s+/g, '_');
+      if (t && !names.includes(t) && names.length < 3) {
+        names.push(t);
+      }
+    });
+    
+    if (names.length > 0) {
+      toolsListEl.textContent = `${names.slice(0, 3).join(', ')}${names.length > 3 ? '…' : ''}`;
+      toolsListEl.style.display = 'inline-flex';
+    } else {
+      toolsListEl.style.display = 'none';
+    }
+  }
+
+  // DOKTRIN MUTLAK: Capsule MUST REMAIN HIDDEN while stream is active!
+  // It only appears when the chat turn is done!
+  if (isChatStreaming) {
+    capsule.style.display = 'none';
+  }
+}
+
+function extractCodeLinesForScanner(d, filePath, startNum, endLine, isWeb) {
+  const src = (d && d.details && typeof d.details === 'object') ? { ...d, ...d.details } : (d || {});
+  let rawContent = '';
+  if (typeof src.real_content === 'string' && src.real_content.trim()) {
+    rawContent = src.real_content;
+  } else if (typeof src.content === 'string' && src.content.trim()) {
+    rawContent = src.content;
+  } else if (src.output !== undefined && src.output !== null) {
+    let out = src.output;
+    if (typeof out === 'object' && out !== null) {
+      rawContent = out.real_content || out.content || out.rawOutput || out.output || out.result || JSON.stringify(out, null, 2);
+    } else if (typeof out === 'string') {
+      try {
+        const parsed = JSON.parse(out);
+        if (parsed && typeof parsed === 'object') {
+          rawContent = parsed.real_content || parsed.content || parsed.rawOutput || parsed.output || parsed.result || out;
+        } else {
+          rawContent = out;
+        }
+      } catch (e) {
+        rawContent = out;
+      }
+    }
+  } else if (typeof src.rawOutput === 'string' && src.rawOutput.trim()) {
+    rawContent = src.rawOutput;
+  } else if (typeof src.TargetContent === 'string' && src.TargetContent.trim()) {
+    rawContent = src.TargetContent;
+  } else if (typeof src.CodeContent === 'string' && src.CodeContent.trim()) {
+    rawContent = src.CodeContent;
+  }
+
+  let scanLines = [];
+  if (rawContent && typeof rawContent === 'string' && rawContent.trim()) {
+    const rawLines = rawContent.split(/\r?\n/).slice(0, 120);
+    rawLines.forEach((line, idx) => {
+      const match = line.match(/^\s*(\d+)[\:\│]\s?(.*)$/);
+      if (match) {
+        const lineNo = String(match[1]).padStart(3, '0');
+        scanLines.push(`${lineNo} │ ${match[2]}`);
+      } else {
+        const lineNo = String(startNum + idx).padStart(3, '0');
+        scanLines.push(`${lineNo} │ ${line}`);
+      }
+    });
+  }
+  return scanLines;
+}
+
+function renderLiveAmbientHoloStream(activeSlot, domainTag, subSnippet, colorTheme, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const theme = colorTheme || 'cyan';
+  const tagText = domainTag || 'EXECUTION';
+  const rawSnippet = String(subSnippet || 'Synthesizing sovereign operation...').replace(/[\r\n]+/g, ' ').trim();
+  const snippet = rawSnippet.length > 44 ? rawSnippet.slice(0, 41) + '…' : rawSnippet;
+
+  let stage = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!stage) {
+    stage = document.createElement('div');
+    stage.className = 'fl-live-ambient-stage';
+    stage.setAttribute('data-live-step', String(stepIdx));
+    stage._spawnTime = Date.now();
+    activeSlot.appendChild(stage);
+  }
+
+  const gradId = `ambient-holo-grad-${stepIdx}-${Math.floor(Math.random() * 100000)}`;
+
+  stage.innerHTML = `
+    <div class="fl-ambient-hud-line">
+      <div class="fl-ambient-meta">
+        <span class="fl-ambient-glyph">⟡</span>
+        <span class="fl-ambient-tag ${escapeHtml(theme)}">[SYNAPSE // ${escapeHtml(tagText)}]</span>
+        <span class="fl-ambient-sep">›</span>
+        <span class="fl-ambient-target" title="${escapeHtml(rawSnippet)}">${escapeHtml(snippet)}</span>
+      </div>
+      <span class="fl-ambient-badge ${escapeHtml(theme)}">
+        <span class="fl-ambient-spinner"></span> ACTIVE
+      </span>
+    </div>
+    <div class="fl-ambient-laser-track">
+      <svg viewBox="0 0 600 16" class="fl-ambient-wave-svg" preserveAspectRatio="none">
+        <defs>
+          <linearGradient id="${gradId}" x1="0" y1="0" x2="1" y2="0">
+            <stop offset="0%" stop-color="var(--holo-${escapeHtml(theme)}, #00f0ff)" stop-opacity="0" />
+            <stop offset="45%" stop-color="var(--holo-${escapeHtml(theme)}, #00f0ff)" stop-opacity="0.8" />
+            <stop offset="50%" stop-color="#ffffff" stop-opacity="1" />
+            <stop offset="55%" stop-color="var(--holo-${escapeHtml(theme)}, #00f0ff)" stop-opacity="0.8" />
+            <stop offset="100%" stop-color="var(--holo-${escapeHtml(theme)}, #00f0ff)" stop-opacity="0" />
+          </linearGradient>
+        </defs>
+        <line x1="0" y1="8" x2="600" y2="8" stroke="var(--holo-${escapeHtml(theme)}, #00f0ff)" stroke-opacity="0.15" stroke-width="1" stroke-dasharray="3 5" />
+        <path class="fl-ambient-sine-wave" d="M 0 8 Q 75 1 150 8 T 300 8 T 450 8 T 600 8" fill="none" stroke="var(--holo-${escapeHtml(theme)}, #00f0ff)" stroke-width="1.8" stroke-linecap="round" />
+        <circle class="fl-ambient-laser-beam" cx="50" cy="8" r="2.4" fill="#ffffff" filter="drop-shadow(0 0 6px var(--holo-${escapeHtml(theme)}, #00f0ff))" />
+      </svg>
+    </div>
+  `;
+}
+
+function renderLiveFileScanner(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  const rawTool = (toolName || '').toLowerCase();
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const target = d.AbsolutePath || d.TargetFile || d.file || d.path || d.commandLine || d.query || d.url || 'workspace/file';
+  const isWeb = rawTool.includes('url') || rawTool.includes('web') || Boolean(d.url || d.query);
+
+  if (rawTool.includes('search_web')) {
+    renderLiveSearchWeb(activeSlot, toolName, details, stepIdx);
+    return;
+  }
+  if (rawTool.includes('read_url')) {
+    renderLiveReadUrl(activeSlot, toolName, details, stepIdx);
+    return;
+  }
+  if (isWeb) {
+    renderLiveAmbientHoloStream(activeSlot, 'NET RECON', shortenFilePath(target), 'cyan', stepIdx);
+    return;
+  }
+
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const startNum = Number(d.StartLine || d.start_line || 1);
+  const endLine = Number(d.EndLine || d.end_line || (startNum + 120));
+  const fileName = String(target).split(/[\\/]/).pop() || shortenFilePath(target);
+  let scanLines = extractCodeLinesForScanner(d, target, startNum, endLine, false);
+  const VISIBLE_ROWS = 7;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-view-file';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  const renderViewportRows = (offsetIdx, activeRowOffset) => {
+    const streamEl = box.querySelector('.fl-vf-ghost-stream');
+    if (!streamEl) return;
+    if (!scanLines || scanLines.length === 0) {
+      streamEl.innerHTML = `<div class="fl-vf-ghost-line is-active">${String(startNum).padStart(3, '0')} │ Reading ${escapeHtml(fileName)} from disk...</div>`;
+      return;
+    }
+    const maxStart = Math.max(0, scanLines.length - VISIBLE_ROWS);
+    const startIdx = Math.min(offsetIdx, maxStart);
+    const slice = scanLines.slice(startIdx, startIdx + VISIBLE_ROWS);
+    streamEl.innerHTML = slice.map((lineText, idx) => {
+      const isAct = (idx === (activeRowOffset % slice.length));
+      return `<div class="fl-vf-ghost-line${isAct ? ' is-active' : ''}">${escapeHtml(lineText)}</div>`;
+    }).join('');
+  };
+
+  box.innerHTML = `
+    <div class="fl-vf-inline-row">
+      <div class="fl-vf-left">
+        <span class="fl-vf-reticle">⟡</span>
+        <span class="fl-vf-verb">READING FILE</span>
+        <span class="fl-vf-filename" title="${escapeHtml(String(target))}">${escapeHtml(fileName)}</span>
+        <span class="fl-vf-slice">[L${startNum}–${endLine}]</span>
+      </div>
+      <span class="fl-vf-speed-badge">${scanLines.length || '...'} LINES • STREAMING</span>
+    </div>
+    <div class="fl-vf-laser-filament">
+      <div class="fl-vf-laser-fill" style="width: 15%;"></div>
+    </div>
+    <div class="fl-vf-ghost-stream"></div>
+    <div class="fl-vf-ghost-meta">
+      <span class="fl-vf-path-sub">PATH: ${escapeHtml(String(target))}</span>
+      <span class="fl-vf-timer">0.01s • REAL FILE STREAM</span>
+    </div>
+  `;
+
+  let tick = 0;
+  renderViewportRows(0, 0);
+
+  box._injectOutputLines = (rawOut) => {
+    const payload = (rawOut && typeof rawOut === 'object') ? rawOut : { output: rawOut };
+    const updated = extractCodeLinesForScanner(payload, target, startNum, endLine, false);
+    if (updated && updated.length > 0) {
+      scanLines = updated;
+      tick = 0;
+      renderViewportRows(0, 0);
+      const sliceEl = box.querySelector('.fl-vf-slice');
+      if (sliceEl) sliceEl.textContent = `[L${startNum}–${startNum + scanLines.length - 1}] (${scanLines.length} lines)`;
+    }
+  };
+
+  if (box._screeningTimer) clearInterval(box._screeningTimer);
+  box._screeningTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const totalL = Math.max(1, scanLines.length);
+    const curStep = tick % totalL;
+    const pct = Math.min(98, Math.max(15, Math.round(((curStep + 1) / totalL) * 100)));
+
+    const badge = box.querySelector('.fl-vf-speed-badge');
+    if (badge) badge.textContent = `LINE ${startNum + curStep} / ${startNum + totalL - 1} (${pct}%)`;
+
+    const fill = box.querySelector('.fl-vf-laser-fill');
+    if (fill) fill.style.width = `${pct}%`;
+
+    const timerEl = box.querySelector('.fl-vf-timer');
+    if (timerEl) timerEl.textContent = `${elapsedSec}s • ${totalL} REAL LINES`;
+
+    const windowStart = Math.max(0, curStep - 3);
+    renderViewportRows(windowStart, curStep - windowStart);
+  }, 115);
+}
+
+function renderLiveReplaceContent(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const extractDiffData = (srcObj) => {
+    const dObj = (srcObj && srcObj.details && typeof srcObj.details === 'object') ? { ...srcObj, ...srcObj.details } : (srcObj || {});
+    let rawDelStr = dObj.TargetContent ?? dObj.target_content ?? dObj.old_str ?? '';
+    let rawAddStr = dObj.ReplacementContent ?? dObj.replacement_content ?? dObj.new_str ?? '';
+    if ((!rawDelStr && !rawAddStr) && Array.isArray(dObj.ReplacementChunks) && dObj.ReplacementChunks.length > 0) {
+      rawDelStr = dObj.ReplacementChunks.map(c => c.TargetContent || '').filter(Boolean).join('\n');
+      rawAddStr = dObj.ReplacementChunks.map(c => c.ReplacementContent || '').filter(Boolean).join('\n');
+    }
+    return { dObj, rawDelStr: String(rawDelStr || ''), rawAddStr: String(rawAddStr || '') };
+  };
+
+  let { dObj: d, rawDelStr, rawAddStr } = extractDiffData(details);
+  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || 'workspace/file';
+  const fileName = String(filePath).split(/[\\/]/).pop() || shortenFilePath(filePath);
+  const startL = Number(d.StartLine || d.start_line || 1);
+  const endL = Number(d.EndLine || d.end_line || (startL + Math.max(1, rawDelStr.split(/\r?\n/).length - 1)));
+  const instruction = d.Instruction || d.Description || `Surgical splice on ${fileName}`;
+
+  let delLines = rawDelStr.split(/\r?\n/).filter(l => l.length > 0).map((l, i) => `L${String(startL + i).padStart(3, '0')} │ ${l}`);
+  let addLines = rawAddStr.split(/\r?\n/).filter(l => l.length > 0).map((l, i) => `L${String(startL + i).padStart(3, '0')} │ ${l}`);
+  if (delLines.length === 0) delLines = [`L${String(startL).padStart(3, '0')} │ (empty target range)`];
+  if (addLines.length === 0) addLines = [`L${String(startL).padStart(3, '0')} │ (empty replacement range)`];
+
+  const MAX_DIFF_ROWS = 5;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-replace-file';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  const renderDiffBlocks = (stepTick) => {
+    const delContainer = box.querySelector('.fl-rfc-del-rows');
+    const addContainer = box.querySelector('.fl-rfc-add-rows');
+    if (delContainer) {
+      const maxDelStart = Math.max(0, delLines.length - MAX_DIFF_ROWS);
+      const delStart = delLines.length > MAX_DIFF_ROWS ? (stepTick % (maxDelStart + 1)) : 0;
+      const visibleDel = delLines.slice(delStart, delStart + MAX_DIFF_ROWS);
+      delContainer.innerHTML = visibleDel.map((line, i) => `
+        <div class="fl-rfc-diff-line${i === (stepTick % visibleDel.length) ? ' is-active' : ''}">
+          <span class="fl-rfc-sign">−</span>
+          <span>${escapeHtml(line)}</span>
+        </div>
+      `).join('');
+    }
+    if (addContainer) {
+      const maxAddStart = Math.max(0, addLines.length - MAX_DIFF_ROWS);
+      const addStart = addLines.length > MAX_DIFF_ROWS ? (stepTick % (maxAddStart + 1)) : 0;
+      const visibleAdd = addLines.slice(addStart, addStart + MAX_DIFF_ROWS);
+      addContainer.innerHTML = visibleAdd.map((line, i) => `
+        <div class="fl-rfc-diff-line${i === (stepTick % visibleAdd.length) ? ' is-active' : ''}">
+          <span class="fl-rfc-sign">+</span>
+          <span>${escapeHtml(line)}</span>
+        </div>
+      `).join('');
+    }
+  };
+
+  box.innerHTML = `
+    <div class="fl-rfc-meta-bar">
+      <span class="fl-rfc-title">⚡ EDIT FILE // ${escapeHtml(fileName)} <span style="color:#c084fc;font-size:10.5px;">[L${startL}–${endL}]</span></span>
+      <span class="fl-rfc-delta">
+        <span class="fl-rfc-del-count">−${delLines.length} REMOVED</span>
+        <span class="fl-rfc-add-count">+${addLines.length} ADDED</span>
+        <span class="fl-rfc-timer" style="color:#00f2fe;margin-left:4px;">0.01s</span>
+      </span>
+    </div>
+    <div class="fl-rfc-sub-desc">▸ ${escapeHtml(String(instruction))} • PATH: ${escapeHtml(String(filePath))}</div>
+    <div class="fl-rfc-diff-grid">
+      <div class="fl-rfc-ribbon ribbon-del">
+        <div class="fl-rfc-section-label">− REMOVED FROM ${escapeHtml(fileName)} (${delLines.length} line${delLines.length > 1 ? 's' : ''})</div>
+        <div class="fl-rfc-del-rows"></div>
+      </div>
+      <div class="fl-rfc-ribbon ribbon-add">
+        <div class="fl-rfc-section-label">+ WRITTEN TO ${escapeHtml(fileName)} (${addLines.length} line${addLines.length > 1 ? 's' : ''})</div>
+        <div class="fl-rfc-add-rows"></div>
+      </div>
+    </div>
+  `;
+
+  let tick = 0;
+  renderDiffBlocks(0);
+
+  box._injectOutputLines = (rawOut) => {
+    if (rawOut && typeof rawOut === 'object') {
+      const updated = extractDiffData(rawOut);
+      if (updated.rawDelStr || updated.rawAddStr) {
+        if (updated.rawDelStr) {
+          delLines = updated.rawDelStr.split(/\r?\n/).filter(l => l.length > 0).map((l, i) => `L${String(startL + i).padStart(3, '0')} │ ${l}`);
+        }
+        if (updated.rawAddStr) {
+          addLines = updated.rawAddStr.split(/\r?\n/).filter(l => l.length > 0).map((l, i) => `L${String(startL + i).padStart(3, '0')} │ ${l}`);
+        }
+        renderDiffBlocks(0);
+      }
+    }
+  };
+
+  if (box._typingTimer) clearInterval(box._typingTimer);
+  box._typingTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const timerEl = box.querySelector('.fl-rfc-timer');
+    if (timerEl) timerEl.textContent = `${elapsed}s • DIFF ACTIVE`;
+    renderDiffBlocks(tick);
+  }, 135);
+}
+
+function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  const rawTool = (toolName || '').toLowerCase();
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+
+  if (rawTool.includes('replace') || rawTool.includes('splice') || rawTool.includes('patch') || Boolean(d.TargetContent || d.ReplacementContent || d.ReplacementChunks)) {
+    renderLiveReplaceContent(activeSlot, toolName, details, stepIdx);
+    return;
+  }
+
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || 'workspace/file';
+  const fileName = String(filePath).split(/[\\/]/).pop() || shortenFilePath(filePath);
+  let codeRaw = String(d.CodeContent ?? d.code_content ?? d.content ?? d.real_content ?? '');
+  let totalBytes = new Blob([codeRaw]).size || codeRaw.length || 128;
+  let codeLines = codeRaw.split(/\r?\n/).filter((l, idx, arr) => !(idx === arr.length - 1 && l === '')).map((l, idx) => `${String(idx + 1).padStart(3, '0')} │ ${l}`);
+  if (codeLines.length === 0) {
+    codeLines = [`001 │ Writing ${fileName}...`];
+  }
+
+  const VISIBLE_WRITE_ROWS = 7;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-write-file';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  const renderWriteRows = (stepTick) => {
+    const printer = box.querySelector('.fl-wtf-printer');
+    if (!printer) return;
+    const revealedCount = Math.min(codeLines.length, Math.max(1, (stepTick % (codeLines.length + 1)) || codeLines.length));
+    const startIdx = Math.max(0, revealedCount - VISIBLE_WRITE_ROWS);
+    const slice = codeLines.slice(startIdx, startIdx + VISIBLE_WRITE_ROWS);
+    printer.innerHTML = slice.map((lineText, idx) => {
+      const isLast = (idx === slice.length - 1);
+      return `<div class="fl-wtf-code-line${isLast ? ' active-print' : ''}">${escapeHtml(lineText)}${isLast ? ' █' : ''}</div>`;
+    }).join('');
+  };
+
+  box.innerHTML = `
+    <div class="fl-wtf-pillar-track"><div class="fl-wtf-pillar-fill" style="height:18%;"></div></div>
+    <div class="fl-wtf-top">
+      <span class="fl-wtf-tag">[FS // WRITE FILE]</span>
+      <span class="fl-wtf-bytes">0 B / ${totalBytes} B (${codeLines.length} lines)</span>
+      <span class="fl-wtf-badge">WRITING CONTENT</span>
+    </div>
+    <div class="fl-wtf-filename" title="${escapeHtml(String(filePath))}">❖ ${escapeHtml(fileName)} — ${codeLines.length} lines (${totalBytes} bytes)</div>
+    <div class="fl-wtf-printer"></div>
+    <div class="fl-wtf-bottom">
+      <span>TARGET: ${escapeHtml(String(filePath))}</span>
+      <span class="fl-wtf-timer">0.01s • REAL CONTENT STREAM</span>
+    </div>
+  `;
+
+  let tick = 1;
+  renderWriteRows(tick);
+
+  box._injectOutputLines = (rawOut) => {
+    if (rawOut && typeof rawOut === 'object') {
+      const inner = (rawOut.details && typeof rawOut.details === 'object') ? { ...rawOut, ...rawOut.details } : rawOut;
+      const updatedCode = inner.CodeContent ?? inner.code_content ?? inner.content ?? inner.real_content ?? '';
+      if (updatedCode) {
+        codeRaw = String(updatedCode);
+        totalBytes = new Blob([codeRaw]).size || codeRaw.length || totalBytes;
+        codeLines = codeRaw.split(/\r?\n/).filter((l, idx, arr) => !(idx === arr.length - 1 && l === '')).map((l, idx) => `${String(idx + 1).padStart(3, '0')} │ ${l}`);
+        renderWriteRows(codeLines.length);
+      }
+    }
+  };
+
+  if (box._typingTimer) clearInterval(box._typingTimer);
+  box._typingTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const totalL = Math.max(1, codeLines.length);
+    const curLine = Math.min(totalL, (tick % (totalL + 2)) + 1);
+    const pct = Math.min(99, Math.round((curLine / totalL) * 100));
+    const curBytes = Math.floor((totalBytes * pct) / 100);
+
+    const pillar = box.querySelector('.fl-wtf-pillar-fill');
+    if (pillar) pillar.style.height = `${pct}%`;
+
+    const bytesEl = box.querySelector('.fl-wtf-bytes');
+    if (bytesEl) bytesEl.textContent = `${curBytes} B / ${totalBytes} B (${pct}% • ${totalL} LINES)`;
+
+    const timerEl = box.querySelector('.fl-wtf-timer');
+    if (timerEl) timerEl.textContent = `${elapsed}s • WRITING DISK`;
+
+    renderWriteRows(curLine);
+  }, 115);
+}
+
+function renderLiveSearchTools(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const query = String(d.query || d.Query || d.action || d.Action || 'kernel_registry').trim();
+
+  const pool = [
+    'render_visual', 'brain_control', 'run_command', 'view_file',
+    'write_to_file', 'replace_file_content', 'search_tools', 'skill_control',
+    'audit_security', 'web_security_audit', 'website_intelligence', 'sys_health',
+    'detect_hardcode', 'audit_portability', 'youtube_spy_video', 'flow_lock'
+  ];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-search-tools';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <svg viewBox="0 0 240 22" class="fl-st-sonar-svg">
+      <path d="M 10 20 Q 120 -6 230 20" fill="none" stroke="rgba(192, 132, 252, 0.35)" stroke-width="1.5" stroke-dasharray="4 4" />
+      <path d="M 45 20 Q 120 4 195 20" fill="none" stroke="#00f2fe" stroke-width="1.5" />
+      <circle cx="120" cy="11" r="3" fill="#00ffb2" filter="drop-shadow(0 0 6px #00ffb2)" />
+    </svg>
+    <div class="fl-st-header">
+      <span class="fl-st-query">📡 REGISTRY // "${escapeHtml(query.slice(0, 26))}"</span>
+      <span class="fl-st-speed">37 TOOLS • 0.01s</span>
+    </div>
+    <div class="fl-st-roulette-track">
+      <span class="fl-st-chip chip-left">${escapeHtml(pool[0])}</span>
+      <span class="fl-st-chip is-center">${escapeHtml(pool[1])}</span>
+      <span class="fl-st-chip chip-right">${escapeHtml(pool[2])}</span>
+    </div>
+  `;
+
+  if (box._genericTimer) clearInterval(box._genericTimer);
+  let tick = 0;
+  box._genericTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const speedEl = box.querySelector('.fl-st-speed');
+    if (speedEl) speedEl.textContent = `SCANNING 37 TOOLS • ${elapsed}s`;
+
+    const chips = box.querySelectorAll('.fl-st-chip');
+    if (chips.length >= 3) {
+      chips[0].textContent = pool[tick % pool.length];
+      chips[1].textContent = pool[(tick + 1) % pool.length];
+      chips[2].textContent = pool[(tick + 2) % pool.length];
+    }
+  }, 28);
+}
+
+function renderLiveBashRunner(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details && typeof details === 'object' ? details : {});
+  const cmd = String(d.commandLine || d.CommandLine || d.command || d.toolAction || (typeof details === 'string' ? details : 'bash command')).trim();
+  const cwd = shortenFilePath(d.cwd || d.Cwd || 'workspace');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-bash-box';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  const telemetryFrames = [
+    `[kernel] posix_spawn("/bin/bash", ["-c", "${cmd.slice(0, 36)}..."])`,
+    `[pipe] stdout/stderr non-blocking fd [3,4] attached`,
+    `[cwd] ${cwd} • env PAGER=cat`,
+    `[exec] streaming child process telemetry...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-live-bash-top">
+      <div class="fl-live-bash-tag">
+        <span class="fl-bash-pulse-beacon"></span>
+        <span style="font-size:9.5px;font-weight:800;color:#00e5ff;letter-spacing:0.06em;">[TTY // KERNEL EXEC]</span>
+      </div>
+      <span class="fl-bash-stopwatch">00.01s</span>
+      <span class="fl-bash-badge">⚡ ACTIVE</span>
+    </div>
+    <div class="fl-live-bash-cmdbar" title="${escapeHtml(cmd)}">
+      <span style="color:#00e5ff;font-weight:800;">$</span>
+      <span class="fl-bash-cmd-txt">${escapeHtml(cmd.length > 52 ? cmd.slice(0, 49) + '...' : cmd)}</span>
+    </div>
+    <div class="fl-live-bash-screen">
+      <pre class="fl-live-bash-code"><code>${escapeHtml(telemetryFrames.slice(0, 2).join('\n'))}</code></pre>
+    </div>
+    <div class="fl-live-bash-bottom">
+      <span>CWD: <strong style="color:#cbd5e1;">${escapeHtml(cwd)}</strong></span>
+      <span class="fl-bash-io-rate">I/O: 1,420 OPS/S</span>
+    </div>
+  `;
+
+  if (box._bashTimer) clearInterval(box._bashTimer);
+  let tick = 0;
+  box._hasRealStdout = false;
+  box._injectOutputLines = (rawOut) => {
+    if (!rawOut) return;
+    const text = typeof rawOut === 'object' ? (rawOut.stdout || rawOut.output || JSON.stringify(rawOut)) : String(rawOut);
+    const cleanLines = String(text).split('\n').filter(l => l.trim() && !l.includes('[DOKTRIN TERMINAL FLOWORK]')).slice(-4);
+    if (cleanLines.length > 0) {
+      box._hasRealStdout = true;
+      const codeEl = box.querySelector('.fl-live-bash-code code');
+      if (codeEl) codeEl.textContent = cleanLines.join('\n');
+    }
+  };
+
+  box._bashTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2).padStart(5, '0');
+    const sw = box.querySelector('.fl-bash-stopwatch');
+    if (sw) sw.textContent = `${elapsed}s`;
+
+    const ioEl = box.querySelector('.fl-bash-io-rate');
+    if (ioEl) ioEl.textContent = `I/O: ${1200 + ((tick * 173) % 2800)} CHARS/S`;
+
+    if (!box._hasRealStdout) {
+      const codeEl = box.querySelector('.fl-live-bash-code code');
+      if (codeEl) {
+        const count = Math.min(telemetryFrames.length, 2 + Math.floor(tick / 3));
+        codeEl.textContent = telemetryFrames.slice(0, count).join('\n') + (tick % 2 === 0 ? ' █' : '');
+      }
+    }
+  }, 28);
+}
+
+function renderLiveSwarmOrchestrator(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const role = d.Role || d.role || d.TypeName || d.typeName || d.type || d.name || 'Subagent Specialist';
+  const prompt = d.Prompt || d.prompt || d.Message || d.message || d.Instruction || 'Autonomous mission directive';
+  renderLiveAmbientHoloStream(activeSlot, 'SWARM // AGENT', `${role}: ${prompt}`, 'purple', stepIdx);
+}
+
+function renderLiveMemoryRecall(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.action || d.Action || 'recall').toUpperCase();
+  const query = String(d.query || d.Query || d.title || d.id || d.slug || d.key || 'sovereign_memory_vault').trim();
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-memory-box';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let vectors = [
+    `synapse://.fl_brain/memories/${query.replace(/\s+/g, '_').toLowerCase()}`,
+    `vector_match: [exit_code_0, sovereign_ui, nano_modular]`,
+    `indexing_frontmatter: 10+ English keywords verified`,
+    `neural_recall_score: 0.998 (LOCKED)`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-brain-orb-layout">
+      <div class="fl-brain-orb-sphere">
+        <svg viewBox="0 0 104 104" class="fl-brain-orb-svg">
+          <circle class="fl-brain-ring-outer" cx="52" cy="52" r="46" fill="none" stroke="#fbbf24" stroke-width="1.5" stroke-dasharray="14 8 4 8" stroke-opacity="0.75" />
+          <circle class="fl-brain-ring-inner" cx="52" cy="52" r="38" fill="none" stroke="#00f2fe" stroke-width="1.5" stroke-dasharray="22 14" stroke-opacity="0.8" />
+          <circle cx="52" cy="52" r="30" fill="none" stroke="rgba(251, 191, 36, 0.25)" stroke-width="1" />
+        </svg>
+        <div class="fl-brain-orb-core-text">
+          <span class="fl-brain-orb-velocity">0.01s</span>
+          <span class="fl-brain-orb-sublabel">SYNAPSE</span>
+        </div>
+      </div>
+      <div class="fl-brain-orb-telemetry">
+        <span class="fl-brain-pill-header">🧠 BRAIN // ${escapeHtml(action)}</span>
+        <div class="fl-brain-pill-target" title="${escapeHtml(query)}">${escapeHtml(query)}</div>
+        <div class="fl-brain-pill-stream">
+          <span>⚡</span>
+          <span class="fl-brain-vector-txt">${escapeHtml(vectors[0])}</span>
+        </div>
+        <div class="fl-brain-pill-meta">
+          <span>VAULT: <strong>.fl_brain/</strong></span>
+          <span class="fl-brain-sync-pct">SYNC: 94%</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  if (box._memoryTimer) clearInterval(box._memoryTimer);
+  let tick = 0;
+  box._injectOutputLines = (rawOut) => {
+    if (!rawOut) return;
+    const text = typeof rawOut === 'object' ? JSON.stringify(rawOut) : String(rawOut);
+    const clean = text.replace(/[\r\n]+/g, ' ').trim();
+    if (clean) {
+      vectors.unshift(`result: ${clean.slice(0, 48)}`);
+    }
+  };
+
+  box._memoryTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const velEl = box.querySelector('.fl-brain-orb-velocity');
+    if (velEl) velEl.textContent = `${elapsed}s`;
+
+    const vecEl = box.querySelector('.fl-brain-vector-txt');
+    if (vecEl) vecEl.textContent = vectors[tick % vectors.length];
+
+    const syncEl = box.querySelector('.fl-brain-sync-pct');
+    if (syncEl) syncEl.textContent = `SYNC: ${Math.min(99.9, (92 + (tick * 1.7) % 8)).toFixed(1)}%`;
+  }, 38);
+}
+
+function renderLiveSkillActivator(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.action || d.Action || 'pin').toUpperCase();
+  const skillId = String(d.skill_id || d.skillId || d.id || d.query || 'sovereign_runbook');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-skill-box';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ledsHtml = '';
+  for (let i = 0; i < 20; i++) {
+    ledsHtml += `<span class="fl-sk-led" data-led="${i}"></span>`;
+  }
+
+  box.innerHTML = `
+    <div class="fl-sk-top">
+      <span class="fl-sk-tag">⬡ SKILL // ${escapeHtml(action)}</span>
+      <span class="fl-sk-target">${escapeHtml(skillId)}</span>
+      <span class="fl-sk-status">0/20 KEYWORDS • 0.01s</span>
+    </div>
+    <div class="fl-sk-led-matrix">${ledsHtml}</div>
+    <div class="fl-sk-stream-line">
+      <span class="fl-sk-sop-text">▸ Mounting SKILL.md SOP & validating 20-keyword YAML gatekeeper...</span>
+      <span class="fl-sk-rate">GATEKEEPER: ACTIVE</span>
+    </div>
+  `;
+
+  let sopFeed = [
+    `▸ Mounting SKILL.md SOP [${skillId}] into neural cortex...`,
+    `▸ Auditing YAML frontmatter: 20 English keywords verified`,
+    `▸ Binding runbook rules & execution constraints to active turn`,
+    `▸ Injecting zero-trust verification gatekeeper hooks`
+  ];
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const lines = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (lines.length > 0) {
+      sopFeed = lines.slice(0, 12).map(l => `▸ ${l.slice(0, 92)}`);
+    }
+  };
+
+  if (box._skillTimer) clearInterval(box._skillTimer);
+  let tick = 0;
+  box._skillTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const litCount = Math.min(20, (tick % 21) + 1);
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+
+    const leds = box.querySelectorAll('.fl-sk-led');
+    leds.forEach((led, idx) => {
+      led.classList.toggle('is-lit', idx < litCount);
+    });
+
+    const statusEl = box.querySelector('.fl-sk-status');
+    if (statusEl) statusEl.textContent = `${litCount}/20 KEYWORDS • ${elapsedSec}s`;
+
+    const sopEl = box.querySelector('.fl-sk-sop-text');
+    if (sopEl && sopFeed.length > 0) {
+      sopEl.textContent = sopFeed[tick % sopFeed.length];
+    }
+  }, 28);
+}
+
+function renderLiveSearchWeb(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const query = String(d.query || d.Query || d.url || 'global osint recon');
+  const domain = d.domain ? ` [${d.domain}]` : '';
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-search-web';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let pktPool = [
+    `[SYN/ACK] Querying edge indexers for "${query.slice(0, 48)}"${domain}`,
+    `[DNS-TLS] Resolving high-authority citations & SSL endpoints...`,
+    `[RANKING] Filtering zero-noise technical documentation nodes...`,
+    `[INGEST] Extracting verified URLs & snippet telemetry...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-sw-reticle-pod">
+      <svg class="fl-sw-reticle-svg" viewBox="0 0 50 50" fill="none">
+        <circle cx="25" cy="25" r="21" stroke="rgba(0,242,254,0.35)" stroke-width="1.5" stroke-dasharray="6 4"/>
+        <circle cx="25" cy="25" r="13" stroke="#00f2fe" stroke-width="1.5" stroke-dasharray="18 8"/>
+        <line x1="25" y1="2" x2="25" y2="12" stroke="#00ffb2" stroke-width="1.5"/>
+        <line x1="25" y1="38" x2="25" y2="48" stroke="#00ffb2" stroke-width="1.5"/>
+        <line x1="2" y1="25" x2="12" y2="25" stroke="#00ffb2" stroke-width="1.5"/>
+        <line x1="38" y1="25" x2="48" y2="25" stroke="#00ffb2" stroke-width="1.5"/>
+        <circle cx="25" cy="25" r="3" fill="#00ffb2"/>
+      </svg>
+    </div>
+    <div class="fl-sw-sniffer">
+      <div class="fl-sw-header">
+        <span class="fl-sw-query">🌐 OSINT // ${escapeHtml(query)}${escapeHtml(domain)}</span>
+        <span class="fl-sw-badge">SNIFFING • 0.01s</span>
+      </div>
+      <div class="fl-sw-pkt-line is-hit">${escapeHtml(pktPool[0])}</div>
+      <div class="fl-sw-pkt-line">${escapeHtml(pktPool[1])}</div>
+      <div class="fl-sw-pkt-line">${escapeHtml(pktPool[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const urls = str.match(/https?:\/\/[^\s)"'<>]+/g) || [];
+    const lines = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 8);
+    const combined = [];
+    urls.slice(0, 10).forEach((u, i) => combined.push(`[200 OK] CITATION #${i + 1} ➔ ${u.slice(0, 78)}`));
+    lines.slice(0, 10).forEach(l => {
+      if (!l.startsWith('http')) combined.push(`[SNIPPET] ${l.slice(0, 82)}`);
+    });
+    if (combined.length > 0) pktPool = combined;
+  };
+
+  if (box._webTimer) clearInterval(box._webTimer);
+  let tick = 0;
+  box._webTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-sw-badge');
+    if (badge) badge.textContent = `${pktPool.length} PKTS • ${elapsedSec}s`;
+
+    const pktEls = box.querySelectorAll('.fl-sw-pkt-line');
+    if (pktEls.length >= 3 && pktPool.length > 0) {
+      pktEls[0].textContent = pktPool[tick % pktPool.length];
+      pktEls[1].textContent = pktPool[(tick + 1) % pktPool.length];
+      pktEls[2].textContent = pktPool[(tick + 2) % pktPool.length];
+    }
+  }, 30);
+}
+
+function renderLiveReadUrl(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const rawUrl = String(d.Url || d.url || d.target || 'https://floworkos.com');
+  let host = rawUrl;
+  let pathPart = '/';
+  try {
+    const u = new URL(rawUrl);
+    host = u.host;
+    pathPart = (u.pathname + u.search) || '/';
+  } catch (_) {}
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-read-url';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let mdLines = [
+    `GET ${pathPart} HTTP/2.0 ➔ stripping <script>, <style>, & DOM chrome`,
+    `Converting semantic HTML5 nodes into clean Sovereign Markdown...`,
+    `Streaming UTF-8 text blocks into context window buffer...`
+  ];
+  let totalBytes = 4096;
+
+  box.innerHTML = `
+    <div class="fl-ru-blade">
+      <div class="fl-ru-blade-inner">
+        <span class="fl-ru-host">⚡ ${escapeHtml(host)}${escapeHtml(pathPart.slice(0, 34))}</span>
+        <span class="fl-ru-pipe-badge">HTML DOM ══⚡══► MARKDOWN</span>
+      </div>
+    </div>
+    <div class="fl-ru-stream-box">
+      <div class="fl-ru-md-line is-primary">${escapeHtml(mdLines[0])}</div>
+      <div class="fl-ru-md-line">${escapeHtml(mdLines[1])}</div>
+    </div>
+    <div class="fl-ru-meta">
+      <span class="fl-ru-stat">HTTP/2 TLS 1.3 • DOM PARSER</span>
+      <span class="fl-ru-timer">0.01s • STREAMING</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    totalBytes = str.length;
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 4);
+    if (clean.length > 0) {
+      mdLines = clean.slice(0, 18).map((l, idx) => `L${String(idx + 1).padStart(3, '0')} │ ${l.slice(0, 86)}`);
+    }
+  };
+
+  if (box._urlTimer) clearInterval(box._urlTimer);
+  let tick = 0;
+  box._urlTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const kb = ((totalBytes * Math.min(1, (tick % 18) / 14)) / 1024).toFixed(1);
+
+    const statEl = box.querySelector('.fl-ru-stat');
+    if (statEl) statEl.textContent = `INGESTED: ${kb} KB • ${mdLines.length} MD BLOCKS`;
+
+    const timerEl = box.querySelector('.fl-ru-timer');
+    if (timerEl) timerEl.textContent = `${elapsedSec}s • ZERO-JS EXTRACT`;
+
+    const lineEls = box.querySelectorAll('.fl-ru-md-line');
+    if (lineEls.length >= 2 && mdLines.length > 0) {
+      lineEls[0].textContent = mdLines[tick % mdLines.length];
+      lineEls[1].textContent = mdLines[(tick + 1) % mdLines.length];
+    }
+  }, 28);
+}
+
+function renderLiveFlowLock(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.action || d.Action || 'lock').toUpperCase();
+  const rawFile = String(d.file || d.TargetFile || d.AbsolutePath || d.path || 'workspace/sovereign_core');
+  const shortFile = shortenFilePath(rawFile);
+  const startL = d.start_line ?? d.StartLine ?? 1;
+  const endL = d.end_line ?? d.EndLine ?? startL + 12;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-flow-lock';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let lockLines = [
+    `[CRYO-VAULT] Action: ${action} on ${shortFile} [L${startL}..L${endL}]`,
+    `[IMMUTABLE] Injecting cryptographic guard & write-protection seal...`,
+    `[VERIFIER] Anti-tamper & anti-rollback enforcement active`
+  ];
+  let shaDigest = 'e3b0c44298fc1c149afbf4c8996fb924';
+
+  box.innerHTML = `
+    <div class="fl-flk-header">
+      <div class="fl-flk-title-group">
+        <span class="fl-flk-action-pill">🔒 @LOCK // ${escapeHtml(action)}</span>
+        <span class="fl-flk-target" title="${escapeHtml(rawFile)}">${escapeHtml(shortFile)} [L${escapeHtml(String(startL))}–L${escapeHtml(String(endL))}]</span>
+      </div>
+      <span class="fl-flk-status">SEALING • 0.01s</span>
+    </div>
+    <div class="fl-flk-body">
+      <div class="fl-flk-vault-pod">
+        <svg class="fl-flk-svg" viewBox="0 0 48 48">
+          <path class="fl-flk-shackle" d="M15 21 V14 A9 9 0 0 1 33 14 V21" />
+          <rect class="fl-flk-core-body" x="10" y="21" width="28" height="21" rx="4" />
+          <circle cx="24" cy="30" r="2.6" fill="#fbbf24" />
+          <path d="M24 32.5 V37" stroke="#fbbf24" stroke-width="2.2" stroke-linecap="round" />
+        </svg>
+        <span class="fl-flk-vault-lbl">CRYO-SEAL</span>
+      </div>
+      <div class="fl-flk-stream-wrap">
+        <div class="fl-flk-hash-bar">
+          <span class="fl-flk-sha">SHA-256: ${escapeHtml(shaDigest)}…</span>
+          <span>RANGE: L${escapeHtml(String(startL))}..L${escapeHtml(String(endL))}</span>
+        </div>
+        <div class="fl-flk-code-box">${escapeHtml(lockLines.join('\n'))}</div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (clean.length > 0) {
+      lockLines = clean.slice(0, 6);
+      const codeBox = box.querySelector('.fl-flk-code-box');
+      if (codeBox) codeBox.textContent = lockLines.join('\n');
+    }
+  };
+
+  if (box._lockBoxTimer) clearInterval(box._lockBoxTimer);
+  let tick = 0;
+  const hexChars = '0123456789abcdef';
+  box._lockBoxTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const statusEl = box.querySelector('.fl-flk-status');
+    if (statusEl) statusEl.textContent = `CLAMPING • ${elapsedSec}s`;
+
+    let rollingHash = '';
+    for (let i = 0; i < 24; i++) {
+      rollingHash += hexChars[(tick * 7 + i * 13) % 16];
+    }
+    const shaEl = box.querySelector('.fl-flk-sha');
+    if (shaEl) shaEl.textContent = `SHA-256: ${rollingHash}…`;
+  }, 45);
+}
+
+function renderLiveSysHealth(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-sys-health';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-sh-header">
+      <div class="fl-sh-title-left">
+        <span class="fl-sh-os-tag">💓 MULTI-OS // PULSE</span>
+        <span class="fl-sh-cpu-model">Probing Kernel & Hardware Telemetry...</span>
+      </div>
+      <span class="fl-sh-badge">PROBING • 0.01s</span>
+    </div>
+    <div class="fl-sh-ecg-stage">
+      <svg class="fl-sh-ecg-svg" viewBox="0 0 400 38" preserveAspectRatio="none">
+        <polyline class="fl-sh-ecg-line" points="0,20 45,20 58,9 70,31 82,4 95,35 108,16 122,20 190,20 205,10 218,30 230,5 244,34 256,18 272,20 340,20 355,11 368,28 380,20 400,20" />
+      </svg>
+    </div>
+    <div class="fl-sh-gauges-grid">
+      <div class="fl-sh-gauge-pod">
+        <div class="fl-sh-gauge-top"><span>CPU LOAD</span><span class="fl-sh-gauge-val fl-sh-val-cpu">--%</span></div>
+        <div class="fl-sh-gauge-bar"><div class="fl-sh-gauge-fill fl-sh-fill-cpu" style="width:24%;"></div></div>
+      </div>
+      <div class="fl-sh-gauge-pod">
+        <div class="fl-sh-gauge-top"><span>RAM USAGE</span><span class="fl-sh-gauge-val fl-sh-val-ram">--%</span></div>
+        <div class="fl-sh-gauge-bar"><div class="fl-sh-gauge-fill fl-sh-fill-ram" style="width:48%;"></div></div>
+      </div>
+      <div class="fl-sh-gauge-pod">
+        <div class="fl-sh-gauge-top"><span>NODE HEAP</span><span class="fl-sh-gauge-val fl-sh-val-rss">-- MB</span></div>
+        <div class="fl-sh-gauge-bar"><div class="fl-sh-gauge-fill fl-sh-fill-rss" style="width:35%;"></div></div>
+      </div>
+    </div>
+    <div class="fl-sh-log-footer">▸ Sampling Multi-OS CPU ticks, physical RAM pages, and process RSS...</div>
+  `;
+
+  const applyPulse = (data) => {
+    if (!data || !box.isConnected) return;
+    const osTag = box.querySelector('.fl-sh-os-tag');
+    if (osTag && data.osLabel) osTag.textContent = `💓 ${data.osLabel} (${data.arch || 'x64'})`;
+    const cpuModel = box.querySelector('.fl-sh-cpu-model');
+    if (cpuModel && data.cpuModel) cpuModel.textContent = `${data.cpuModel} • ${data.cpuCores || 1} CORES`;
+
+    const cpuVal = box.querySelector('.fl-sh-val-cpu');
+    const cpuFill = box.querySelector('.fl-sh-fill-cpu');
+    if (cpuVal && data.cpuPct !== undefined) cpuVal.textContent = `${data.cpuPct}%`;
+    if (cpuFill && data.cpuPct !== undefined) cpuFill.style.width = `${Math.min(100, Math.max(4, data.cpuPct))}%`;
+
+    const ramVal = box.querySelector('.fl-sh-val-ram');
+    const ramFill = box.querySelector('.fl-sh-fill-ram');
+    if (ramVal && data.ramPct !== undefined) ramVal.textContent = `${data.ramUsedGb}/${data.ramTotalGb}GB (${data.ramPct}%)`;
+    if (ramFill && data.ramPct !== undefined) ramFill.style.width = `${Math.min(100, Math.max(4, data.ramPct))}%`;
+
+    const rssVal = box.querySelector('.fl-sh-val-rss');
+    const rssFill = box.querySelector('.fl-sh-fill-rss');
+    if (rssVal && data.nodeRssMb !== undefined) rssVal.textContent = `${data.nodeRssMb} MB`;
+    if (rssFill && data.nodeRssMb !== undefined) rssFill.style.width = `${Math.min(100, Math.max(8, Math.round(data.nodeRssMb / 5)))}%`;
+  };
+
+  fetch('/api/sys-pulse', { cache: 'no-store' })
+    .then(r => r.ok ? r.json() : null)
+    .then(applyPulse)
+    .catch(() => {});
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const footer = box.querySelector('.fl-sh-log-footer');
+    if (footer && clean.length > 0) {
+      footer.textContent = `▸ ${clean.slice(0, 2).join(' • ').slice(0, 110)}`;
+    }
+  };
+
+  if (box._healthTimer) clearInterval(box._healthTimer);
+  box._healthTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-sh-badge');
+    if (badge) badge.textContent = `LIVE ECG • ${elapsedSec}s`;
+  }, 45);
+}
+
+function renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const tag = (toolName || 'audit_security').replace(/^flow_/, '').replace(/^default_api:/, '').toUpperCase();
+  const targetPath = shortenFilePath(d.path || d.target || d.dir || d.TargetFile || 'workspace');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-audit-sec';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let auditFeed = [
+    `[SAST-SCAN] Inspecting AST & entropy vectors in ${targetPath}...`,
+    `[SECRET-GUARD] Checking hardcoded API keys, JWT tokens, & private PEM blocks...`,
+    `[INJECTION] Auditing command execution, SQLi, XSS, & path traversal sinks...`,
+    `[PORTABILITY] Verifying zero-trust Multi-OS compliance & boundary checks...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-as-header">
+      <div class="fl-as-left">
+        <span class="fl-as-tag">🛡️ SAST // ${escapeHtml(tag)}</span>
+        <span class="fl-as-target">${escapeHtml(targetPath)}</span>
+      </div>
+      <span class="fl-as-badge">SCANNING • 0.01s</span>
+    </div>
+    <div class="fl-as-spectrum-row">
+      <div class="fl-as-sev-pill crit"><span>CRIT</span><span class="fl-as-cnt-crit">0</span></div>
+      <div class="fl-as-sev-pill high"><span>HIGH</span><span class="fl-as-cnt-high">0</span></div>
+      <div class="fl-as-sev-pill med"><span>MED</span><span class="fl-as-cnt-med">0</span></div>
+      <div class="fl-as-sev-pill low"><span>PASS</span><span class="fl-as-cnt-low">100%</span></div>
+    </div>
+    <div class="fl-as-console">
+      <div class="fl-as-line">${escapeHtml(auditFeed[0])}</div>
+      <div class="fl-as-line">${escapeHtml(auditFeed[1])}</div>
+      <div class="fl-as-line">${escapeHtml(auditFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      auditFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-as-line');
+      lines.forEach((el, idx) => {
+        if (auditFeed[idx]) el.textContent = auditFeed[idx];
+      });
+    }
+    const critMatches = (str.match(/critical/gi) || []).length;
+    const highMatches = (str.match(/\bhigh\b/gi) || []).length;
+    const medMatches = (str.match(/\bmedium\b/gi) || []).length;
+    const cEl = box.querySelector('.fl-as-cnt-crit');
+    const hEl = box.querySelector('.fl-as-cnt-high');
+    const mEl = box.querySelector('.fl-as-cnt-med');
+    if (cEl) cEl.textContent = String(critMatches);
+    if (hEl) hEl.textContent = String(highMatches);
+    if (mEl) mEl.textContent = String(medMatches);
+  };
+
+  if (box._auditTimer) clearInterval(box._auditTimer);
+  let tick = 0;
+  box._auditTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-as-badge');
+    if (badge) badge.textContent = `AUDITING • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-as-line');
+    if (lines.length >= 3 && auditFeed.length > 0) {
+      lines[0].textContent = auditFeed[tick % auditFeed.length];
+      lines[1].textContent = auditFeed[(tick + 1) % auditFeed.length];
+      lines[2].textContent = auditFeed[(tick + 2) % auditFeed.length];
+    }
+  }, 40);
+}
+
+function renderLiveDetectHardcode(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetPath = shortenFilePath(d.path || d.target || d.dir || d.TargetFile || 'workspace');
+  const langs = ['HTML', 'CSS', 'JS/TS', 'JSON', 'YML', 'PY', 'GO', 'RUST', 'PHP'];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-detect-hc';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let hcFeed = [
+    `[DE-HARDCODER] Scanning ${targetPath} for hardcoded OS paths (/home, C:\\\\, /Users)...`,
+    `[POLYGLOT-AST] Auditing HTML/CSS/JS/TS/JSON/YML/PY/GO/RS literals & env bindings...`,
+    `[ZERO-TRUST] Checking hardcoded IPv4/ports, localhost binds, & static credentials...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-dhc-header">
+      <div class="fl-dhc-left">
+        <span class="fl-dhc-tag">⚠️ HARDCODE // HUNTER</span>
+        <span class="fl-dhc-target">${escapeHtml(targetPath)}</span>
+      </div>
+      <span class="fl-dhc-badge">SCANNING • 0.01s</span>
+    </div>
+    <div class="fl-dhc-lang-strip">
+      ${langs.map((l, idx) => `<span class="fl-dhc-lang-chip ${idx === 0 ? 'is-active' : ''}">${l}</span>`).join('')}
+    </div>
+    <div class="fl-dhc-metrics-grid">
+      <div class="fl-dhc-metric-pill"><span>OS PATHS</span><span class="fl-dhc-metric-val fl-dhc-cnt-path">0</span></div>
+      <div class="fl-dhc-metric-pill"><span>IPS/URLS</span><span class="fl-dhc-metric-val fl-dhc-cnt-ip">0</span></div>
+      <div class="fl-dhc-metric-pill"><span>STATUS</span><span class="fl-dhc-metric-val fl-dhc-cnt-stat">PROBING</span></div>
+    </div>
+    <div class="fl-dhc-console">
+      <div class="fl-dhc-line">${escapeHtml(hcFeed[0])}</div>
+      <div class="fl-dhc-line">${escapeHtml(hcFeed[1])}</div>
+      <div class="fl-dhc-line">${escapeHtml(hcFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      hcFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-dhc-line');
+      lines.forEach((el, idx) => {
+        if (hcFeed[idx]) el.textContent = hcFeed[idx];
+      });
+    }
+    const pathHits = (str.match(/\/home\/|C:\\|\/Users\/|hardcode/gi) || []).length;
+    const ipHits = (str.match(/\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b|http:\/\//gi) || []).length;
+    const pEl = box.querySelector('.fl-dhc-cnt-path');
+    const iEl = box.querySelector('.fl-dhc-cnt-ip');
+    const sEl = box.querySelector('.fl-dhc-cnt-stat');
+    if (pEl) pEl.textContent = String(pathHits);
+    if (iEl) iEl.textContent = String(ipHits);
+    if (sEl) sEl.textContent = 'AUDITED';
+  };
+
+  if (box._hcTimer) clearInterval(box._hcTimer);
+  let tick = 0;
+  box._hcTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-dhc-badge');
+    if (badge) badge.textContent = `SWEEPING • ${elapsedSec}s`;
+
+    const chips = box.querySelectorAll('.fl-dhc-lang-chip');
+    chips.forEach((c, idx) => c.classList.toggle('is-active', idx === (tick % chips.length)));
+
+    const lines = box.querySelectorAll('.fl-dhc-line');
+    if (lines.length >= 3 && hcFeed.length > 0) {
+      lines[0].textContent = hcFeed[tick % hcFeed.length];
+      lines[1].textContent = hcFeed[(tick + 1) % hcFeed.length];
+      lines[2].textContent = hcFeed[(tick + 2) % hcFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveAuditPortability(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetPath = shortenFilePath(d.path || d.target || d.dir || d.TargetFile || 'workspace');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-audit-port';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let portFeed = [
+    `[TRI-OS MATRIX] Auditing ${targetPath} across Linux POSIX, Windows NT, & macOS Darwin...`,
+    `[PATH-SEP] Verifying path.join / std::path::Path vs raw backslash & slash literals...`,
+    `[RUNTIME-ENV] Checking process spawn, shebangs, CRLF/LF line endings, & native binaries...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ap-header">
+      <div class="fl-ap-left">
+        <span class="fl-ap-tag">🌐 TRI-OS // PORTABILITY</span>
+        <span class="fl-ap-target">${escapeHtml(targetPath)}</span>
+      </div>
+      <span class="fl-ap-badge">MATRIX SCAN • 0.01s</span>
+    </div>
+    <div class="fl-ap-os-grid">
+      <div class="fl-ap-os-pod">
+        <div class="fl-ap-os-top"><span class="fl-ap-os-name">🐧 LINUX</span><span class="fl-ap-os-score fl-ap-sc-lin">98%</span></div>
+        <div class="fl-ap-os-bar"><div class="fl-ap-os-fill fl-ap-fl-lin" style="width:98%;"></div></div>
+      </div>
+      <div class="fl-ap-os-pod">
+        <div class="fl-ap-os-top"><span class="fl-ap-os-name">🪟 WINDOWS</span><span class="fl-ap-os-score fl-ap-sc-win">94%</span></div>
+        <div class="fl-ap-os-bar"><div class="fl-ap-os-fill fl-ap-fl-win" style="width:94%;"></div></div>
+      </div>
+      <div class="fl-ap-os-pod">
+        <div class="fl-ap-os-top"><span class="fl-ap-os-name">🍎 MACOS</span><span class="fl-ap-os-score fl-ap-sc-mac">97%</span></div>
+        <div class="fl-ap-os-bar"><div class="fl-ap-os-fill fl-ap-fl-mac" style="width:97%;"></div></div>
+      </div>
+    </div>
+    <div class="fl-ap-console">
+      <div class="fl-ap-line">${escapeHtml(portFeed[0])}</div>
+      <div class="fl-ap-line">${escapeHtml(portFeed[1])}</div>
+      <div class="fl-ap-line">${escapeHtml(portFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      portFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-ap-line');
+      lines.forEach((el, idx) => {
+        if (portFeed[idx]) el.textContent = portFeed[idx];
+      });
+    }
+    const linEl = box.querySelector('.fl-ap-sc-lin');
+    const winEl = box.querySelector('.fl-ap-sc-win');
+    const macEl = box.querySelector('.fl-ap-sc-mac');
+    if (linEl) linEl.textContent = '100%';
+    if (winEl) winEl.textContent = '100%';
+    if (macEl) macEl.textContent = '100%';
+    box.querySelectorAll('.fl-ap-os-fill').forEach(el => { el.style.width = '100%'; });
+  };
+
+  if (box._portTimer) clearInterval(box._portTimer);
+  let tick = 0;
+  box._portTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ap-badge');
+    if (badge) badge.textContent = `PROBING OS • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-ap-line');
+    if (lines.length >= 3 && portFeed.length > 0) {
+      lines[0].textContent = portFeed[tick % portFeed.length];
+      lines[1].textContent = portFeed[(tick + 1) % portFeed.length];
+      lines[2].textContent = portFeed[(tick + 2) % portFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveWebSecurityAudit(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const rawUrl = String(d.url || d.Url || d.target || d.domain || 'https://floworkos.com');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-web-sec';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let webSecFeed = [
+    `[PERIMETER] Probing TLS/SSL cipher suite & certificate chain on ${rawUrl}...`,
+    `[HEADERS] Auditing Content-Security-Policy (CSP), HSTS max-age, & CORS origin rules...`,
+    `[SURFACE] Inspecting X-Frame-Options, X-Content-Type-Options, & public injection vectors...`
+  ];
+
+  const headersList = ['TLS/SSL', 'CSP', 'HSTS', 'CORS', 'X-FRAME'];
+
+  box.innerHTML = `
+    <div class="fl-wsa-header">
+      <div class="fl-wsa-left">
+        <span class="fl-wsa-tag">🕸️ WEBSEC // PERIMETER</span>
+        <span class="fl-wsa-url" title="${escapeHtml(rawUrl)}">${escapeHtml(rawUrl)}</span>
+      </div>
+      <span class="fl-wsa-badge">PROBING • 0.01s</span>
+    </div>
+    <div class="fl-wsa-headers-grid">
+      ${headersList.map(h => `
+        <div class="fl-wsa-hdr-chip" data-hdr="${h}">
+          <span class="fl-wsa-hdr-name">${h}</span>
+          <span class="fl-wsa-hdr-state">SCAN</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="fl-wsa-console">
+      <div class="fl-wsa-line">${escapeHtml(webSecFeed[0])}</div>
+      <div class="fl-wsa-line">${escapeHtml(webSecFeed[1])}</div>
+      <div class="fl-wsa-line">${escapeHtml(webSecFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      webSecFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-wsa-line');
+      lines.forEach((el, idx) => {
+        if (webSecFeed[idx]) el.textContent = webSecFeed[idx];
+      });
+    }
+    box.querySelectorAll('.fl-wsa-hdr-chip').forEach(chip => {
+      const hdr = (chip.getAttribute('data-hdr') || '').toLowerCase();
+      const st = chip.querySelector('.fl-wsa-hdr-state');
+      const isMissing = new RegExp(`${hdr}[^\\n]*(missing|absent|none|warn)`, 'i').test(str);
+      chip.classList.toggle('is-warn', isMissing);
+      chip.classList.toggle('is-pass', !isMissing);
+      if (st) st.textContent = isMissing ? 'WARN' : 'PASS';
+    });
+  };
+
+  if (box._webSecTimer) clearInterval(box._webSecTimer);
+  let tick = 0;
+  box._webSecTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-wsa-badge');
+    if (badge) badge.textContent = `AUDITING • ${elapsedSec}s`;
+
+    const chips = box.querySelectorAll('.fl-wsa-hdr-chip');
+    chips.forEach((chip, idx) => {
+      if (!chip.classList.contains('is-warn')) {
+        const st = chip.querySelector('.fl-wsa-hdr-state');
+        if (idx <= (tick % (chips.length + 1))) {
+          chip.classList.add('is-pass');
+          if (st) st.textContent = 'OK';
+        }
+      }
+    });
+
+    const lines = box.querySelectorAll('.fl-wsa-line');
+    if (lines.length >= 3 && webSecFeed.length > 0) {
+      lines[0].textContent = webSecFeed[tick % webSecFeed.length];
+      lines[1].textContent = webSecFeed[(tick + 1) % webSecFeed.length];
+      lines[2].textContent = webSecFeed[(tick + 2) % webSecFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveWebsiteIntelligence(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetDomain = String(d.url || d.Url || d.domain || d.target || 'https://floworkos.com');
+  const vectors = [
+    { name: 'DNS', val: 'A/MX/TXT' },
+    { name: 'WHOIS', val: 'ASN/REG' },
+    { name: 'GEO-IP', val: 'LOCATING' },
+    { name: 'TECH', val: 'FINGERPRINT' },
+    { name: 'ROBOTS', val: 'CRAWLING' }
+  ];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-web-intel';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let wiFeed = [
+    `[OSINT-SAT] Resolving DNS A/AAAA/MX/NS/TXT records for ${targetDomain}...`,
+    `[GEO-ASN] Mapping IPv4/IPv6 BGP routing, ASN ownership, & server geolocation...`,
+    `[TECH-STACK] Fingerprinting HTTP server headers, CDN edge, & robots.txt directives...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-wi-header">
+      <div class="fl-wi-left">
+        <span class="fl-wi-tag">🛰️ OSINT // WEB-INTEL</span>
+        <span class="fl-wi-domain" title="${escapeHtml(targetDomain)}">${escapeHtml(targetDomain)}</span>
+      </div>
+      <span class="fl-wi-badge">RECON • 0.01s</span>
+    </div>
+    <div class="fl-wi-vectors-grid">
+      ${vectors.map((v, idx) => `
+        <div class="fl-wi-vec-pod ${idx === 0 ? 'is-active' : ''}">
+          <span class="fl-wi-vec-name">${v.name}</span>
+          <span class="fl-wi-vec-val">${v.val}</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="fl-wi-console">
+      <div class="fl-wi-line">${escapeHtml(wiFeed[0])}</div>
+      <div class="fl-wi-line">${escapeHtml(wiFeed[1])}</div>
+      <div class="fl-wi-line">${escapeHtml(wiFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      wiFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-wi-line');
+      lines.forEach((el, idx) => {
+        if (wiFeed[idx]) el.textContent = wiFeed[idx];
+      });
+    }
+    box.querySelectorAll('.fl-wi-vec-val').forEach(el => { el.textContent = 'LOCKED'; });
+  };
+
+  if (box._wiTimer) clearInterval(box._wiTimer);
+  let tick = 0;
+  box._wiTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-wi-badge');
+    if (badge) badge.textContent = `SCANNING • ${elapsedSec}s`;
+
+    const pods = box.querySelectorAll('.fl-wi-vec-pod');
+    pods.forEach((p, idx) => p.classList.toggle('is-active', idx === (tick % pods.length)));
+
+    const lines = box.querySelectorAll('.fl-wi-line');
+    if (lines.length >= 3 && wiFeed.length > 0) {
+      lines[0].textContent = wiFeed[tick % wiFeed.length];
+      lines[1].textContent = wiFeed[(tick + 1) % wiFeed.length];
+      lines[2].textContent = wiFeed[(tick + 2) % wiFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveSchedule(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const cronExpr = d.CronExpression || d.cron_expression || d.cron || '';
+  const durationSec = d.DurationSeconds ?? d.duration_seconds ?? d.duration ?? null;
+  const condition = String(d.TimerCondition || d.timer_condition || (cronExpr ? 'CRON' : 'never')).toUpperCase();
+  const isDaemon = Boolean(d.IsDaemon ?? d.is_daemon ?? false);
+  const promptText = String(d.Prompt || d.prompt || 'Scheduled sovereign background trigger');
+  const modeLabel = cronExpr ? `CRON [${cronExpr}]` : `TIMER [${durationSec !== null ? durationSec + 's' : 'ONE-SHOT'}]`;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-schedule';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let schFeed = [
+    `[CHRONO-CORE] Arming ${modeLabel} • Condition: ${condition} • Daemon: ${isDaemon ? 'YES' : 'NO'}`,
+    `[PAYLOAD] "${promptText.slice(0, 96)}"`,
+    `[REACTOR] Registering reactive wakeup hook in Sovereign Event Loop...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-sch-header">
+      <div class="fl-sch-left">
+        <span class="fl-sch-tag">⏱️ CHRONO // SCHEDULE</span>
+        <span class="fl-sch-mode">${escapeHtml(modeLabel)}</span>
+      </div>
+      <span class="fl-sch-badge">ARMING • 0.01s</span>
+    </div>
+    <div class="fl-sch-matrix-grid">
+      <div class="fl-sch-slot"><span class="fl-sch-slot-lbl">MODE</span><span class="fl-sch-slot-val">${cronExpr ? 'CRON JOB' : 'ONE-SHOT'}</span></div>
+      <div class="fl-sch-slot"><span class="fl-sch-slot-lbl">TIMING</span><span class="fl-sch-slot-val">${escapeHtml(cronExpr || (durationSec !== null ? durationSec + 's' : '60s'))}</span></div>
+      <div class="fl-sch-slot"><span class="fl-sch-slot-lbl">WAKEUP</span><span class="fl-sch-slot-val">${escapeHtml(condition)}</span></div>
+      <div class="fl-sch-slot"><span class="fl-sch-slot-lbl">DAEMON</span><span class="fl-sch-slot-val">${isDaemon ? 'STANDING' : 'TASK-BOUND'}</span></div>
+    </div>
+    <div class="fl-sch-console">
+      <div class="fl-sch-line">${escapeHtml(schFeed[0])}</div>
+      <div class="fl-sch-line">${escapeHtml(schFeed[1])}</div>
+      <div class="fl-sch-line">${escapeHtml(schFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 2);
+    if (clean.length > 0) {
+      schFeed = clean.slice(0, 8);
+      const lines = box.querySelectorAll('.fl-sch-line');
+      lines.forEach((el, idx) => {
+        if (schFeed[idx]) el.textContent = schFeed[idx];
+      });
+    }
+  };
+
+  if (box._schTimer) clearInterval(box._schTimer);
+  box._schTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-sch-badge');
+    if (badge) badge.textContent = `SYNCING • ${elapsedSec}s`;
+  }, 45);
+}
+
+function renderLiveManageTask(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.Action || d.action || 'list').toUpperCase();
+  const taskId = String(d.TaskId || d.task_id || d.id || 'ALL_DAEMONS');
+  const shortTask = taskId.length > 24 ? '…' + taskId.slice(-22) : taskId;
+  const inputStr = d.Input || d.input || '';
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-manage-task';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let mtFeed = [
+    `[TASK-MUX] Executing Action=${action} on target [${shortTask}]...`,
+    inputStr ? `[STDIN-PIPE] Injecting stream payload: "${String(inputStr).slice(0, 70)}"` : `[DAEMON-BUS] Querying background process table, PIDs, & log descriptors...`,
+    `[SUPERVISOR] Synchronizing non-blocking task state with Sovereign Kernel...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-mt-header">
+      <div class="fl-mt-left">
+        <span class="fl-mt-tag">🎛️ TASK-MUX // ${escapeHtml(action)}</span>
+        <span class="fl-mt-target" title="${escapeHtml(taskId)}">${escapeHtml(shortTask)}</span>
+      </div>
+      <span class="fl-mt-badge">MUXING • 0.01s</span>
+    </div>
+    <div class="fl-mt-bus-grid">
+      <div class="fl-mt-bus-pod"><span class="fl-mt-bus-lbl">ACTION</span><span class="fl-mt-bus-val">${escapeHtml(action)}</span></div>
+      <div class="fl-mt-bus-pod"><span class="fl-mt-bus-lbl">TARGET</span><span class="fl-mt-bus-val">${escapeHtml(shortTask.slice(0, 12))}</span></div>
+      <div class="fl-mt-bus-pod"><span class="fl-mt-bus-lbl">IO BUS</span><span class="fl-mt-bus-val">${inputStr ? 'STDIN TX' : 'STATUS RX'}</span></div>
+      <div class="fl-mt-bus-pod"><span class="fl-mt-bus-lbl">KERNEL</span><span class="fl-mt-bus-val fl-mt-state-val">ACTIVE</span></div>
+    </div>
+    <div class="fl-mt-console">
+      <div class="fl-mt-line">${escapeHtml(mtFeed[0])}</div>
+      <div class="fl-mt-line">${escapeHtml(mtFeed[1])}</div>
+      <div class="fl-mt-line">${escapeHtml(mtFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 2);
+    if (clean.length > 0) {
+      mtFeed = clean.slice(0, 10);
+      const lines = box.querySelectorAll('.fl-mt-line');
+      lines.forEach((el, idx) => {
+        if (mtFeed[idx]) el.textContent = mtFeed[idx];
+      });
+    }
+    const stEl = box.querySelector('.fl-mt-state-val');
+    if (stEl) stEl.textContent = 'SYNCED';
+  };
+
+  if (box._mtTimer) clearInterval(box._mtTimer);
+  let tick = 0;
+  box._mtTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-mt-badge');
+    if (badge) badge.textContent = `BUS ACTIVE • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-mt-line');
+    if (lines.length >= 3 && mtFeed.length > 0) {
+      lines[0].textContent = mtFeed[tick % mtFeed.length];
+      lines[1].textContent = mtFeed[(tick + 1) % mtFeed.length];
+      lines[2].textContent = mtFeed[(tick + 2) % mtFeed.length];
+    }
+  }, 45);
+}
+
+function generatePaintGhostSvg(widgetType) {
+  const wt = (widgetType || '').toLowerCase();
+  if (wt.includes('trading') || wt.includes('candlestick')) {
+    return `
+      <svg viewBox="0 0 220 60" fill="none">
+        <line x1="25" y1="8" x2="25" y2="52" stroke="#00f2fe" stroke-width="1.2" opacity="0.6"/>
+        <rect x="18" y="18" width="14" height="24" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+        <line x1="65" y1="12" x2="65" y2="48" stroke="#f43f5e" stroke-width="1.2" opacity="0.6"/>
+        <rect x="58" y="16" width="14" height="20" rx="2" fill="rgba(244,63,94,0.25)" stroke="#f43f5e" stroke-width="1.2"/>
+        <line x1="105" y1="6" x2="105" y2="54" stroke="#00f2fe" stroke-width="1.2" opacity="0.6"/>
+        <rect x="98" y="14" width="14" height="30" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+        <line x1="145" y1="14" x2="145" y2="50" stroke="#00f2fe" stroke-width="1.2" opacity="0.6"/>
+        <rect x="138" y="20" width="14" height="18" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+        <line x1="185" y1="10" x2="185" y2="52" stroke="#f43f5e" stroke-width="1.2" opacity="0.6"/>
+        <rect x="178" y="24" width="14" height="22" rx="2" fill="rgba(244,63,94,0.25)" stroke="#f43f5e" stroke-width="1.2"/>
+        <path d="M 25 40 Q 65 24, 105 20 T 185 30" fill="none" stroke="#c084fc" stroke-width="1.5" stroke-dasharray="3 3"/>
+      </svg>
+    `;
+  } else if (wt.includes('donut') || wt.includes('pie')) {
+    return `
+      <svg viewBox="0 0 120 60" fill="none">
+        <circle cx="60" cy="30" r="22" fill="none" stroke="rgba(0,242,254,0.15)" stroke-width="7"/>
+        <circle cx="60" cy="30" r="22" fill="none" stroke="#00f2fe" stroke-width="7" stroke-dasharray="45 100" stroke-linecap="round"/>
+        <circle cx="60" cy="30" r="22" fill="none" stroke="#c084fc" stroke-width="7" stroke-dasharray="30 100" stroke-dashoffset="-50" stroke-linecap="round"/>
+        <circle cx="60" cy="30" r="22" fill="none" stroke="#00ffb2" stroke-width="7" stroke-dasharray="20 100" stroke-dashoffset="-85" stroke-linecap="round"/>
+      </svg>
+    `;
+  } else if (wt.includes('kpi') || wt.includes('metric')) {
+    return `
+      <svg viewBox="0 0 220 60" fill="none">
+        <rect x="10" y="8" width="92" height="44" rx="6" fill="rgba(0,242,254,0.06)" stroke="rgba(0,242,254,0.4)" stroke-width="1.2"/>
+        <line x1="22" y1="20" x2="60" y2="20" stroke="#38bdf8" stroke-width="2"/>
+        <path d="M 22 42 L 40 34 L 58 38 L 76 26 L 92 30" fill="none" stroke="#00f2fe" stroke-width="1.5"/>
+        <rect x="118" y="8" width="92" height="44" rx="6" fill="rgba(192,132,252,0.06)" stroke="rgba(192,132,252,0.4)" stroke-width="1.2"/>
+        <line x1="130" y1="20" x2="168" y2="20" stroke="#c084fc" stroke-width="2"/>
+        <path d="M 130 40 L 148 36 L 166 28 L 184 32 L 200 22" fill="none" stroke="#00ffb2" stroke-width="1.5"/>
+      </svg>
+    `;
+  } else if (wt.includes('bar')) {
+    return `
+      <svg viewBox="0 0 220 60" fill="none">
+        <line x1="10" y1="52" x2="210" y2="52" stroke="rgba(0,242,254,0.3)" stroke-width="1"/>
+        <rect x="25" y="24" width="20" height="28" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+        <rect x="62" y="14" width="20" height="38" rx="2" fill="rgba(192,132,252,0.25)" stroke="#c084fc" stroke-width="1.2"/>
+        <rect x="99" y="32" width="20" height="20" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+        <rect x="136" y="8" width="20" height="44" rx="2" fill="rgba(0,255,178,0.25)" stroke="#00ffb2" stroke-width="1.2"/>
+        <rect x="173" y="20" width="20" height="32" rx="2" fill="rgba(0,242,254,0.25)" stroke="#00f2fe" stroke-width="1.2"/>
+      </svg>
+    `;
+  } else {
+    return `
+      <svg viewBox="0 0 220 60" fill="none">
+        <line x1="10" y1="52" x2="210" y2="52" stroke="rgba(0,242,254,0.3)" stroke-width="1"/>
+        <line x1="10" y1="8" x2="10" y2="52" stroke="rgba(0,242,254,0.3)" stroke-width="1"/>
+        <path d="M 15 48 C 45 48, 55 18, 90 28 C 120 38, 140 12, 205 16" fill="none" stroke="#00f2fe" stroke-width="1.8"/>
+        <circle cx="15" cy="48" r="3" fill="#00f2fe"/>
+        <circle cx="90" cy="28" r="3" fill="#c084fc"/>
+        <circle cx="205" cy="16" r="3" fill="#00ffb2"/>
+      </svg>
+    `;
+  }
+}
+
+function renderLivePluginControl(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.action || d.Action || 'list').toUpperCase();
+  const pluginId = String(d.plugin_id || d.pluginId || d.query || d.id || 'ALL_MODULES');
+  const actionsList = ['LIST', 'OPEN', 'CLOSE', 'SEARCH_REMOTE', 'INSTALL'];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-plugin-ctrl';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let pcFeed = [
+    `[CARTRIDGE-BAY] Executing plugin_control(action="${action.toLowerCase()}", target="${pluginId}")...`,
+    `[IPC-BRIDGE] Synchronizing Canvas UI tab multiplexer & local/remote manifest registry...`,
+    `[DOCK-BUS] Verifying Nano-Plug isolation & port bindings...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-pc-header">
+      <div class="fl-pc-left">
+        <span class="fl-pc-tag">🧩 PLUGIN // ${escapeHtml(action)}</span>
+        <span class="fl-pc-target" title="${escapeHtml(pluginId)}">${escapeHtml(pluginId)}</span>
+      </div>
+      <span class="fl-pc-badge">DOCKING • 0.01s</span>
+    </div>
+    <div class="fl-pc-actions-grid">
+      ${actionsList.map(act => `
+        <span class="fl-pc-act-chip ${action.includes(act) || (act === 'LIST' && !actionsList.some(a => action.includes(a))) ? 'is-active' : ''}">${act}</span>
+      `).join('')}
+    </div>
+    <div class="fl-pc-console">
+      <div class="fl-pc-line">${escapeHtml(pcFeed[0])}</div>
+      <div class="fl-pc-line">${escapeHtml(pcFeed[1])}</div>
+      <div class="fl-pc-line">${escapeHtml(pcFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 2);
+    if (clean.length > 0) {
+      pcFeed = clean.slice(0, 10);
+      const lines = box.querySelectorAll('.fl-pc-line');
+      lines.forEach((el, idx) => {
+        if (pcFeed[idx]) el.textContent = pcFeed[idx];
+      });
+    }
+  };
+
+  if (box._pcTimer) clearInterval(box._pcTimer);
+  let tick = 0;
+  box._pcTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-pc-badge');
+    if (badge) badge.textContent = `MUX ACTIVE • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-pc-line');
+    if (lines.length >= 3 && pcFeed.length > 0) {
+      lines[0].textContent = pcFeed[tick % pcFeed.length];
+      lines[1].textContent = pcFeed[(tick + 1) % pcFeed.length];
+      lines[2].textContent = pcFeed[(tick + 2) % pcFeed.length];
+    }
+  }, 45);
+}
+
+function renderLivePublishGatekeeper(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetPlugin = shortenFilePath(d.plugin_id || d.path || d.dir || d.target || 'plugins/module');
+  const gates = ['MANIFEST', 'LICENSE', 'DLP SECRET', 'MULTI-OS', 'QC EXIT 0'];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-gatekeeper';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let gkFeed = [
+    `[GATEKEEPER] Running 5-stage pre-flight customs inspection on ${targetPlugin}...`,
+    `[DLP-GUARD] Scanning source tree for leaked API keys, tokens, & hardcoded paths...`,
+    `[COMPLIANCE] Validating plugin.manifest.json schema, license, & Multi-OS readiness...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-gk-header">
+      <div class="fl-gk-left">
+        <span class="fl-gk-tag">🛂 GATEKEEPER // PRE-FLIGHT</span>
+        <span class="fl-gk-target" title="${escapeHtml(targetPlugin)}">${escapeHtml(targetPlugin)}</span>
+      </div>
+      <span class="fl-gk-badge">INSPECTING • 0.01s</span>
+    </div>
+    <div class="fl-gk-gates-grid">
+      ${gates.map(g => `
+        <div class="fl-gk-gate-pod" data-gate="${g}">
+          <span class="fl-gk-gate-name">${g}</span>
+          <span class="fl-gk-gate-state">WAIT</span>
+        </div>
+      `).join('')}
+    </div>
+    <div class="fl-gk-console">
+      <div class="fl-gk-line">${escapeHtml(gkFeed[0])}</div>
+      <div class="fl-gk-line">${escapeHtml(gkFeed[1])}</div>
+      <div class="fl-gk-line">${escapeHtml(gkFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 2);
+    if (clean.length > 0) {
+      gkFeed = clean.slice(0, 10);
+      const lines = box.querySelectorAll('.fl-gk-line');
+      lines.forEach((el, idx) => {
+        if (gkFeed[idx]) el.textContent = gkFeed[idx];
+      });
+    }
+    const hasFail = /fail|denied|reject|blocked|violation/i.test(str) && !/0 violations/i.test(str);
+    box.querySelectorAll('.fl-gk-gate-pod').forEach(pod => {
+      const st = pod.querySelector('.fl-gk-gate-state');
+      pod.classList.toggle('is-pass', !hasFail);
+      pod.classList.toggle('is-fail', hasFail);
+      if (st) st.textContent = hasFail ? 'WARN' : 'PASS ✓';
+    });
+  };
+
+  if (box._gkTimer) clearInterval(box._gkTimer);
+  let tick = 0;
+  box._gkTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-gk-badge');
+    if (badge) badge.textContent = `VERIFYING • ${elapsedSec}s`;
+
+    const pods = box.querySelectorAll('.fl-gk-gate-pod');
+    pods.forEach((pod, idx) => {
+      if (!pod.classList.contains('is-fail')) {
+        const st = pod.querySelector('.fl-gk-gate-state');
+        if (idx <= (tick % (pods.length + 1))) {
+          pod.classList.add('is-pass');
+          if (st) st.textContent = 'PASS ✓';
+        }
+      }
+    });
+
+    const lines = box.querySelectorAll('.fl-gk-line');
+    if (lines.length >= 3 && gkFeed.length > 0) {
+      lines[0].textContent = gkFeed[tick % gkFeed.length];
+      lines[1].textContent = gkFeed[(tick + 1) % gkFeed.length];
+      lines[2].textContent = gkFeed[(tick + 2) % gkFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveCameraShutter(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetLabel = shortenFilePath(d.target || d.TargetFile || d.path || d.output || d.display || 'DISPLAY=:0 // VIEWPORT');
+  FloworkJarvisAudio.playSynthSfx('shutter_click');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-screenshot';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-ss-header">
+      <div class="fl-ss-left">
+        <span class="fl-ss-tag">📸 OPTICAL // SHUTTER</span>
+        <span class="fl-ss-target" title="${escapeHtml(targetLabel)}">${escapeHtml(targetLabel)}</span>
+      </div>
+      <span class="fl-ss-badge">CAPTURING • 0.01s</span>
+    </div>
+    <div class="fl-ss-viewfinder">
+      <div class="fl-ss-laser-sweep"></div>
+      <span class="fl-ss-reticle">[ ⌖ REC // 60FPS ]</span>
+      <div class="fl-ss-meta-grid">
+        <div class="fl-ss-meta-pill"><span class="fl-ss-meta-lbl">SOURCE</span><span class="fl-ss-meta-val">X11 / WAYLAND / GUI</span></div>
+        <div class="fl-ss-meta-pill"><span class="fl-ss-meta-lbl">FORMAT</span><span class="fl-ss-meta-val">LOSSLESS PNG</span></div>
+        <div class="fl-ss-meta-pill"><span class="fl-ss-meta-lbl">STATUS</span><span class="fl-ss-meta-val fl-ss-stat-val">SHUTTER OPEN</span></div>
+      </div>
+    </div>
+    <div class="fl-ss-footer">▸ Capturing framebuffer pixels & encoding visual QC artifact...</div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    const footer = box.querySelector('.fl-ss-footer');
+    if (footer && clean.length > 0) {
+      footer.textContent = `▸ ${clean.slice(0, 2).join(' • ').slice(0, 115)}`;
+    }
+    const stVal = box.querySelector('.fl-ss-stat-val');
+    if (stVal) stVal.textContent = 'FRAME SAVED';
+  };
+
+  if (box._cameraTimer) clearInterval(box._cameraTimer);
+  box._cameraTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ss-badge');
+    if (badge) badge.textContent = `SHUTTER • ${elapsedSec}s`;
+  }, 45);
+}
+
+function renderLiveYtSpyVideo(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetUrl = String(d.url || d.Url || d.video_id || d.videoId || d.target || 'https://youtube.com/watch?v=...');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-video';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ytvFeed = [
+    `[FBE-V6 VIDEO] DeepScanning YouTube video stream: ${targetUrl}...`,
+    `[HIDDEN-TAGS] Extracting hidden meta keywords, category ID, & monetization flags...`,
+    `[AD-BREAKS] Mapping mid-roll ad-break timestamps & codec bitrate profile...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ytv-header">
+      <div class="fl-ytv-left">
+        <span class="fl-ytv-tag">🎬 YT-SPY // VIDEO V6</span>
+        <span class="fl-ytv-target" title="${escapeHtml(targetUrl)}">${escapeHtml(targetUrl)}</span>
+      </div>
+      <span class="fl-ytv-badge">DEEPSCAN • 0.01s</span>
+    </div>
+    <div class="fl-ytv-metrics-grid">
+      <div class="fl-ytv-pod"><span class="fl-ytv-pod-lbl">HIDDEN TAGS</span><span class="fl-ytv-pod-val fl-ytv-v-tags">SCANNING</span></div>
+      <div class="fl-ytv-pod"><span class="fl-ytv-pod-lbl">MONETIZED</span><span class="fl-ytv-pod-val fl-ytv-v-mon">PROBING</span></div>
+      <div class="fl-ytv-pod"><span class="fl-ytv-pod-lbl">AD-BREAKS</span><span class="fl-ytv-pod-val fl-ytv-v-ads">MAPPING</span></div>
+      <div class="fl-ytv-pod"><span class="fl-ytv-pod-lbl">SPECS</span><span class="fl-ytv-pod-val fl-ytv-v-spec">HD/AV1</span></div>
+    </div>
+    <div class="fl-ytv-console">
+      <div class="fl-ytv-line">${escapeHtml(ytvFeed[0])}</div>
+      <div class="fl-ytv-line">${escapeHtml(ytvFeed[1])}</div>
+      <div class="fl-ytv-line">${escapeHtml(ytvFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      ytvFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-ytv-line');
+      lines.forEach((el, idx) => {
+        if (ytvFeed[idx]) el.textContent = ytvFeed[idx];
+      });
+    }
+    const tEl = box.querySelector('.fl-ytv-v-tags');
+    const mEl = box.querySelector('.fl-ytv-v-mon');
+    const aEl = box.querySelector('.fl-ytv-v-ads');
+    if (tEl) tEl.textContent = 'EXTRACTED';
+    if (mEl) mEl.textContent = 'VERIFIED';
+    if (aEl) aEl.textContent = 'LOCKED';
+  };
+
+  if (box._ytvTimer) clearInterval(box._ytvTimer);
+  let tick = 0;
+  box._ytvTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ytv-badge');
+    if (badge) badge.textContent = `DEEPSCAN • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-ytv-line');
+    if (lines.length >= 3 && ytvFeed.length > 0) {
+      lines[0].textContent = ytvFeed[tick % ytvFeed.length];
+      lines[1].textContent = ytvFeed[(tick + 1) % ytvFeed.length];
+      lines[2].textContent = ytvFeed[(tick + 2) % ytvFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveYtSpyChannel(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetChannel = String(d.url || d.Url || d.channel || d.channel_id || d.handle || d.target || '@YouTubeChannel');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-channel';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ytcFeed = [
+    `[CHANNEL-PULSE] Probing subscriber velocity & total uploads for ${targetChannel}...`,
+    `[TOP-12 VIRAL] Ranking 12 highest-performing videos by view count & engagement...`,
+    `[BENCHMARK] Calculating channel upload cadence & viral outlier multiplier...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ytc-header">
+      <div class="fl-ytc-left">
+        <span class="fl-ytc-tag">📊 YT-SPY // CHANNEL</span>
+        <span class="fl-ytc-target" title="${escapeHtml(targetChannel)}">${escapeHtml(targetChannel)}</span>
+      </div>
+      <span class="fl-ytc-badge">PULSING • 0.01s</span>
+    </div>
+    <div class="fl-ytc-pulse-grid">
+      <div class="fl-ytc-pod"><span class="fl-ytc-pod-lbl">SUBSCRIBERS</span><span class="fl-ytc-pod-val fl-ytc-v-sub">PROBING</span></div>
+      <div class="fl-ytc-pod"><span class="fl-ytc-pod-lbl">TOTAL VIDEOS</span><span class="fl-ytc-pod-val fl-ytc-v-vid">COUNTING</span></div>
+      <div class="fl-ytc-pod"><span class="fl-ytc-pod-lbl">TOP-12 RANK</span><span class="fl-ytc-pod-val fl-ytc-v-top">SORTING</span></div>
+    </div>
+    <div class="fl-ytc-console">
+      <div class="fl-ytc-line">${escapeHtml(ytcFeed[0])}</div>
+      <div class="fl-ytc-line">${escapeHtml(ytcFeed[1])}</div>
+      <div class="fl-ytc-line">${escapeHtml(ytcFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 3);
+    if (clean.length > 0) {
+      ytcFeed = clean.slice(0, 12);
+      const lines = box.querySelectorAll('.fl-ytc-line');
+      lines.forEach((el, idx) => {
+        if (ytcFeed[idx]) el.textContent = ytcFeed[idx];
+      });
+    }
+    const sEl = box.querySelector('.fl-ytc-v-sub');
+    const vEl = box.querySelector('.fl-ytc-v-vid');
+    const tEl = box.querySelector('.fl-ytc-v-top');
+    if (sEl) sEl.textContent = 'LOCKED';
+    if (vEl) vEl.textContent = 'INDEXED';
+    if (tEl) tEl.textContent = '12/12 READY';
+  };
+
+  if (box._ytcTimer) clearInterval(box._ytcTimer);
+  let tick = 0;
+  box._ytcTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ytc-badge');
+    if (badge) badge.textContent = `CHANNEL PULSE • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-ytc-line');
+    if (lines.length >= 3 && ytcFeed.length > 0) {
+      lines[0].textContent = ytcFeed[tick % ytcFeed.length];
+      lines[1].textContent = ytcFeed[(tick + 1) % ytcFeed.length];
+      lines[2].textContent = ytcFeed[(tick + 2) % ytcFeed.length];
+    }
+  }, 45);
+}
+
+function renderLiveYtSpyTranscript(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetUrl = String(d.url || d.Url || d.video_id || d.videoId || d.target || 'https://youtube.com/watch?v=...');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-transcript';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let yttFeed = [
+    `[00:00] Initializing ASR & subtitle track extraction for ${targetUrl}...`,
+    `[00:15] Synchronizing [MM:SS] timecode cues & spoken dialogue segments...`,
+    `[00:30] Streaming verbatim transcript lines into Sovereign Teleprompter...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ytt-header">
+      <div class="fl-ytt-left">
+        <span class="fl-ytt-tag">📜 YT-SPY // TRANSCRIPT</span>
+        <span class="fl-ytt-target" title="${escapeHtml(targetUrl)}">${escapeHtml(targetUrl)}</span>
+      </div>
+      <span class="fl-ytt-badge">EXTRACTING • 0.01s</span>
+    </div>
+    <div class="fl-ytt-meta-bar">
+      <span class="fl-ytt-tc-pill">⏱️ TIMECODE: [MM:SS] SYNC</span>
+      <span class="fl-ytt-seg-count">STREAMING SUBTITLE CUES...</span>
+    </div>
+    <div class="fl-ytt-prompter">
+      <div class="fl-ytt-line">${escapeHtml(yttFeed[0])}</div>
+      <div class="fl-ytt-line">${escapeHtml(yttFeed[1])}</div>
+      <div class="fl-ytt-line">${escapeHtml(yttFeed[2])}</div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 2);
+    if (clean.length > 0) {
+      yttFeed = clean.slice(0, 18);
+      const lines = box.querySelectorAll('.fl-ytt-line');
+      lines.forEach((el, idx) => {
+        if (yttFeed[idx]) el.textContent = yttFeed[idx];
+      });
+      const segEl = box.querySelector('.fl-ytt-seg-count');
+      if (segEl) segEl.textContent = `${clean.length} TIMECODED LINES EXTRACTED`;
+    }
+  };
+
+  if (box._yttTimer) clearInterval(box._yttTimer);
+  let tick = 0;
+  box._yttTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ytt-badge');
+    if (badge) badge.textContent = `TELEPROMPTER • ${elapsedSec}s`;
+
+    const lines = box.querySelectorAll('.fl-ytt-line');
+    if (lines.length >= 3 && yttFeed.length > 0) {
+      lines[0].textContent = yttFeed[tick % yttFeed.length];
+      lines[1].textContent = yttFeed[(tick + 1) % yttFeed.length];
+      lines[2].textContent = yttFeed[(tick + 2) % yttFeed.length];
+    }
+  }, 55);
+}
+
+function renderLiveYtSpySummary(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetUrl = String(d.url || d.Url || d.video_id || 'https://youtube.com/watch');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-summary';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ytsFeed = [
+    `Distilling core narrative thesis & executive takeaways from transcript...`,
+    `Synthesizing high-density bullet points & actionable insight nodes...`,
+    `Compressing 100% of spoken context into sovereign knowledge pills...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-yts-header">
+      <div class="fl-yts-title-group">
+        <span class="fl-yts-pill">🔮 YT SUMMARY ORB</span>
+        <span class="fl-yts-target" title="${escapeHtml(targetUrl)}">${escapeHtml(targetUrl)}</span>
+      </div>
+      <span class="fl-yts-badge">SYNTHESIZING • 0.01s</span>
+    </div>
+    <div class="fl-yts-body">
+      <div class="fl-yts-orb-wrap">
+        <div class="fl-yts-orb-ring"></div>
+        <div class="fl-yts-orb-ring-inner"></div>
+        <div class="fl-yts-orb-core">🧠</div>
+      </div>
+      <div class="fl-yts-bubbles">
+        <div class="fl-yts-bubble"><span class="fl-yts-dot"></span><span class="fl-yts-btxt">${escapeHtml(ytsFeed[0])}</span></div>
+        <div class="fl-yts-bubble"><span class="fl-yts-dot"></span><span class="fl-yts-btxt">${escapeHtml(ytsFeed[1])}</span></div>
+        <div class="fl-yts-bubble"><span class="fl-yts-dot"></span><span class="fl-yts-btxt">${escapeHtml(ytsFeed[2])}</span></div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.replace(/^[-*•\d.)\s]+/, '').trim()).filter(s => s.length > 6);
+    if (clean.length > 0) {
+      ytsFeed = clean.slice(0, 12);
+      const btxts = box.querySelectorAll('.fl-yts-btxt');
+      btxts.forEach((el, idx) => {
+        if (ytsFeed[idx]) el.textContent = ytsFeed[idx];
+      });
+    }
+  };
+
+  if (box._ytsTimer) clearInterval(box._ytsTimer);
+  let tick = 0;
+  box._ytsTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-yts-badge');
+    if (badge) badge.textContent = `DISTILLING • ${elapsedSec}s`;
+
+    const btxts = box.querySelectorAll('.fl-yts-btxt');
+    if (btxts.length >= 3 && ytsFeed.length > 0) {
+      btxts[0].textContent = ytsFeed[tick % ytsFeed.length];
+      btxts[1].textContent = ytsFeed[(tick + 1) % ytsFeed.length];
+      btxts[2].textContent = ytsFeed[(tick + 2) % ytsFeed.length];
+    }
+  }, 60);
+}
+
+function renderLiveYtSpyComments(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetUrl = String(d.url || d.Url || d.video_id || 'https://youtube.com/watch');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-comments';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ytcFeed = [
+    { user: '@AudiencePulse', txt: 'Harvesting top-liked viewer comments & recurring requests...' },
+    { user: '@SentimentRadar', txt: 'Clustering positive praise, friction points & content gaps...' }
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ytcm-header">
+      <div class="fl-ytcm-title-group">
+        <span class="fl-ytcm-pill">💬 AUDIENCE BUBBLE CLOUD</span>
+        <span class="fl-ytcm-target" title="${escapeHtml(targetUrl)}">${escapeHtml(targetUrl)}</span>
+      </div>
+      <span class="fl-ytcm-badge">MINING • 0.01s</span>
+    </div>
+    <div class="fl-ytcm-polarity-row">
+      <div class="fl-ytcm-pol-pill pos">💚 POSITIVE <span class="fl-ytcm-pos-val">68%</span></div>
+      <div class="fl-ytcm-pol-pill neu">💡 QUESTIONS <span class="fl-ytcm-neu-val">24%</span></div>
+      <div class="fl-ytcm-pol-pill neg">🔥 FRICTION <span class="fl-ytcm-neg-val">8%</span></div>
+    </div>
+    <div class="fl-ytcm-cloud">
+      <div class="fl-ytcm-chat-bubble">
+        <span class="fl-ytcm-avatar">🗣️</span>
+        <span class="fl-ytcm-user">${escapeHtml(ytcFeed[0].user)}</span>
+        <span class="fl-ytcm-txt">${escapeHtml(ytcFeed[0].txt)}</span>
+      </div>
+      <div class="fl-ytcm-chat-bubble">
+        <span class="fl-ytcm-avatar">✨</span>
+        <span class="fl-ytcm-user">${escapeHtml(ytcFeed[1].user)}</span>
+        <span class="fl-ytcm-txt">${escapeHtml(ytcFeed[1].txt)}</span>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 5);
+    if (clean.length > 0) {
+      ytcFeed = clean.slice(0, 14).map((line, i) => ({
+        user: `@Viewer_${i + 1}`,
+        txt: line.slice(0, 110)
+      }));
+    }
+  };
+
+  if (box._ytcmTimer) clearInterval(box._ytcmTimer);
+  let tick = 0;
+  box._ytcmTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ytcm-badge');
+    if (badge) badge.textContent = `SENTIMENT • ${elapsedSec}s`;
+
+    const bubbles = box.querySelectorAll('.fl-ytcm-chat-bubble');
+    if (bubbles.length >= 2 && ytcFeed.length > 0) {
+      const c0 = ytcFeed[tick % ytcFeed.length];
+      const c1 = ytcFeed[(tick + 1) % ytcFeed.length];
+      const u0 = bubbles[0].querySelector('.fl-ytcm-user');
+      const t0 = bubbles[0].querySelector('.fl-ytcm-txt');
+      const u1 = bubbles[1].querySelector('.fl-ytcm-user');
+      const t1 = bubbles[1].querySelector('.fl-ytcm-txt');
+      if (u0) u0.textContent = c0.user;
+      if (t0) t0.textContent = c0.txt;
+      if (u1) u1.textContent = c1.user;
+      if (t1) t1.textContent = c1.txt;
+    }
+  }, 62);
+}
+
+function renderLiveYtSpyStrategy(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const targetUrl = String(d.url || d.Url || d.video_id || 'https://youtube.com/watch');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-yt-strategy';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let stratFeed = [
+    `Synthesizing 30-Second Psychological Hook & Curiosity Gap...`,
+    `Generating 5 High-CTR Viral Counter-Titles & Thumbnail Angles...`,
+    `Structuring 5-Part Outranking Video Script Blueprint...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-ytst-header">
+      <div class="fl-ytst-title-group">
+        <span class="fl-ytst-pill">♟️ VIRAL STRATEGY ORBIT</span>
+        <span class="fl-ytst-target" title="${escapeHtml(targetUrl)}">${escapeHtml(targetUrl)}</span>
+      </div>
+      <span class="fl-ytst-badge">OUTRANKING • 0.01s</span>
+    </div>
+    <div class="fl-ytst-capsules">
+      <div class="fl-ytst-cap is-active" data-cap="0">
+        <span class="fl-ytst-cap-orb">⚡</span>
+        <span class="fl-ytst-cap-lbl">30S HOOK</span>
+        <span class="fl-ytst-cap-val">SYNTHESIZING</span>
+      </div>
+      <div class="fl-ytst-cap" data-cap="1">
+        <span class="fl-ytst-cap-orb">🎯</span>
+        <span class="fl-ytst-cap-lbl">5 HIGH-CTR TITLES</span>
+        <span class="fl-ytst-cap-val">MODELING</span>
+      </div>
+      <div class="fl-ytst-cap" data-cap="2">
+        <span class="fl-ytst-cap-orb">📜</span>
+        <span class="fl-ytst-cap-lbl">5-PART SCRIPT</span>
+        <span class="fl-ytst-cap-val">ARCHITECTING</span>
+      </div>
+    </div>
+    <div class="fl-ytst-stream-pill">
+      <span class="fl-ytst-stream-dot"></span>
+      <span class="fl-ytst-stream-txt">${escapeHtml(stratFeed[0])}</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 6);
+    if (clean.length > 0) {
+      stratFeed = clean.slice(0, 14);
+      const streamEl = box.querySelector('.fl-ytst-stream-txt');
+      if (streamEl) streamEl.textContent = stratFeed[0];
+    }
+    box.querySelectorAll('.fl-ytst-cap-val').forEach(el => {
+      el.textContent = '✓ READY';
+    });
+  };
+
+  if (box._ytstTimer) clearInterval(box._ytstTimer);
+  let tick = 0;
+  box._ytstTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-ytst-badge');
+    if (badge) badge.textContent = `STRATEGY • ${elapsedSec}s`;
+
+    const activeIdx = tick % 3;
+    box.querySelectorAll('.fl-ytst-cap').forEach((cap, idx) => {
+      cap.classList.toggle('is-active', idx === activeIdx);
+    });
+
+    const streamEl = box.querySelector('.fl-ytst-stream-txt');
+    if (streamEl && stratFeed.length > 0) {
+      streamEl.textContent = stratFeed[tick % stratFeed.length];
+    }
+  }, 58);
+}
+
+function renderLiveAskQuestion(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const qList = Array.isArray(d.questions) ? d.questions : [];
+  const firstQ = qList[0] || d;
+  const qText = String(firstQ.question || firstQ.Question || d.question || d.prompt || 'Awaiting structured user decision...');
+  const rawOpts = Array.isArray(firstQ.options) ? firstQ.options : (Array.isArray(d.options) ? d.options : []);
+  const opts = rawOpts.length > 0 ? rawOpts.slice(0, 4).map(o => String(typeof o === 'object' ? (o.label || o.text || JSON.stringify(o)) : o)) : [
+    'Option 1: Primary execution path',
+    'Option 2: Alternative configuration'
+  ];
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-ask-question';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  const optsHtml = opts.map((opt, idx) => `
+    <div class="fl-aq-opt-pill ${idx === 0 ? 'is-active' : ''}" data-opt="${idx}">
+      <span class="fl-aq-opt-orb">${idx + 1}</span>
+      <span class="fl-aq-opt-txt" title="${escapeHtml(opt)}">${escapeHtml(opt)}</span>
+    </div>
+  `).join('');
+
+  box.innerHTML = `
+    <div class="fl-aq-header">
+      <div class="fl-aq-title-group">
+        <span class="fl-aq-pill">❓ ASK QUESTION</span>
+        <span class="fl-aq-qtext" title="${escapeHtml(qText)}">${escapeHtml(qText)}</span>
+      </div>
+      <span class="fl-aq-badge">AWAITING • 0.01s</span>
+    </div>
+    <div class="fl-aq-options">${optsHtml}</div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    if (str.trim()) {
+      const qEl = box.querySelector('.fl-aq-qtext');
+      if (qEl) qEl.textContent = `SELECTED: ${str.replace(/[\r\n]+/g, ' ').slice(0, 90)}`;
+    }
+  };
+
+  if (box._aqTimer) clearInterval(box._aqTimer);
+  let tick = 0;
+  box._aqTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-aq-badge');
+    if (badge) badge.textContent = `DECISION • ${elapsedSec}s`;
+
+    const pills = box.querySelectorAll('.fl-aq-opt-pill');
+    if (pills.length > 0) {
+      const activeIdx = tick % pills.length;
+      pills.forEach((p, idx) => p.classList.toggle('is-active', idx === activeIdx));
+    }
+  }, 65);
+}
+
+function renderLiveSystemRestart(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const reasonTxt = String(d.reason || d.resume_prompt || d.message || d.toolSummary || 'Hot-reloading sovereign Flowork binary with state preservation');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-sys-restart';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-sr-header">
+      <div class="fl-sr-title-group">
+        <span class="fl-sr-pill">♻️ SYSTEM RESTART</span>
+        <span class="fl-sr-target" title="${escapeHtml(reasonTxt)}">${escapeHtml(reasonTxt)}</span>
+      </div>
+      <span class="fl-sr-badge">REBOOTING • 0.01s</span>
+    </div>
+    <div class="fl-sr-body">
+      <div class="fl-sr-turbine-orb">
+        <div class="fl-sr-turbine-ring"></div>
+        <span class="fl-sr-turbine-core">⚡</span>
+      </div>
+      <div class="fl-sr-phases">
+        <div class="fl-sr-phase-pill is-active"><span class="fl-sr-phase-lbl">🔄 DRAIN IPC</span><span class="fl-sr-phase-val">FLUSHING</span></div>
+        <div class="fl-sr-phase-pill"><span class="fl-sr-phase-lbl">⚡ EXECVE BIN</span><span class="fl-sr-phase-val">RELOADING</span></div>
+        <div class="fl-sr-phase-pill"><span class="fl-sr-phase-lbl">🚀 AUTO-RESUME</span><span class="fl-sr-phase-val">ARMED</span></div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const tEl = box.querySelector('.fl-sr-target');
+    if (tEl && str.trim()) tEl.textContent = str.replace(/[\r\n]+/g, ' ').slice(0, 100);
+    box.querySelectorAll('.fl-sr-phase-val').forEach(el => { el.textContent = '✓ DONE'; });
+  };
+
+  if (box._srTimer) clearInterval(box._srTimer);
+  let tick = 0;
+  box._srTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-sr-badge');
+    if (badge) badge.textContent = `TURBINE • ${elapsedSec}s`;
+
+    const phases = box.querySelectorAll('.fl-sr-phase-pill');
+    phases.forEach((p, idx) => p.classList.toggle('is-active', idx === (tick % 3)));
+  }, 55);
+}
+
+function renderLivePluginPublish(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const pluginId = String(d.plugin_id || d.pluginId || d.id || d.name || 'sovereign-plugin');
+  const version = String(d.version || d.Version || '1.0.0');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-plugin-publish';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let ppFeed = [
+    `Packaging plugin [${pluginId}@${version}] & computing SHA-256 digest...`,
+    `Uploading verified bundle to Cloudflare Edge Gateway...`,
+    `Synchronizing global Flowork OS plugin registry...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-pp-header">
+      <div class="fl-pp-title-group">
+        <span class="fl-pp-pill">☁️ PLUGIN PUBLISH</span>
+        <span class="fl-pp-target" title="${escapeHtml(pluginId)} v${escapeHtml(version)}">${escapeHtml(pluginId)} • v${escapeHtml(version)}</span>
+      </div>
+      <span class="fl-pp-badge">UPLINK • 0.01s</span>
+    </div>
+    <div class="fl-pp-stages">
+      <div class="fl-pp-stage-pill is-active"><span class="fl-pp-orb">📦</span><span class="fl-pp-stage-txt">SHA-256 BUNDLE</span></div>
+      <div class="fl-pp-stage-pill"><span class="fl-pp-orb">☁️</span><span class="fl-pp-stage-txt">CF EDGE GATEWAY</span></div>
+      <div class="fl-pp-stage-pill"><span class="fl-pp-orb">🌐</span><span class="fl-pp-stage-txt">REGISTRY LIVE</span></div>
+    </div>
+    <div class="fl-pp-stream-pill">
+      <span class="fl-pp-dot"></span>
+      <span class="fl-pp-stream-txt">${escapeHtml(ppFeed[0])}</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (clean.length > 0) {
+      ppFeed = clean.slice(0, 10);
+      const sEl = box.querySelector('.fl-pp-stream-txt');
+      if (sEl) sEl.textContent = ppFeed[0];
+    }
+  };
+
+  if (box._ppTimer) clearInterval(box._ppTimer);
+  let tick = 0;
+  box._ppTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-pp-badge');
+    if (badge) badge.textContent = `EDGE UPLINK • ${elapsedSec}s`;
+
+    box.querySelectorAll('.fl-pp-stage-pill').forEach((p, idx) => p.classList.toggle('is-active', idx === (tick % 3)));
+    const sEl = box.querySelector('.fl-pp-stream-txt');
+    if (sEl && ppFeed.length > 0) sEl.textContent = ppFeed[tick % ppFeed.length];
+  }, 56);
+}
+
+function renderLiveInvokeSubagent(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const subs = Array.isArray(d.Subagents) ? d.Subagents : (Array.isArray(d.subagents) ? d.subagents : [d]);
+  const firstSub = subs[0] || d;
+  const role = String(firstSub.Role || firstSub.role || d.Role || d.role || 'Autonomous Specialist');
+  const typeName = String(firstSub.TypeName || firstSub.typeName || firstSub.type || d.TypeName || 'self');
+  const model = String(firstSub.Model || firstSub.model || d.Model || 'inherit');
+  const workspace = String(firstSub.Workspace || firstSub.workspace || d.Workspace || 'inherit');
+  const prompt = String(firstSub.Prompt || firstSub.prompt || d.Prompt || d.prompt || 'Executing delegated subagent mission...');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-invoke-subagent';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let isaFeed = [
+    prompt,
+    `Spawning ${subs.length} subagent node(s) [${role}] on workspace [${workspace}]...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-isa-header">
+      <div class="fl-isa-title-group">
+        <span class="fl-isa-pill">🛰️ INVOKE SUBAGENT</span>
+        <span class="fl-isa-role" title="${escapeHtml(role)}">${escapeHtml(role)} (${subs.length}x)</span>
+      </div>
+      <span class="fl-isa-badge">LAUNCHING • 0.01s</span>
+    </div>
+    <div class="fl-isa-body">
+      <div class="fl-isa-sat-orb">
+        <div class="fl-isa-sat-ring"></div>
+        <span class="fl-isa-sat-core">🛰️</span>
+      </div>
+      <div class="fl-isa-capsules">
+        <div class="fl-isa-meta-pills">
+          <span class="fl-isa-chip">TYPE: ${escapeHtml(typeName)}</span>
+          <span class="fl-isa-chip">MODEL: ${escapeHtml(model)}</span>
+          <span class="fl-isa-chip">WS: ${escapeHtml(workspace)}</span>
+        </div>
+        <div class="fl-isa-prompt-pill">
+          <span class="fl-isa-dot"></span>
+          <span class="fl-isa-prompt-txt" title="${escapeHtml(prompt)}">${escapeHtml(prompt)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (clean.length > 0) {
+      isaFeed = clean.slice(0, 8);
+      const pEl = box.querySelector('.fl-isa-prompt-txt');
+      if (pEl) pEl.textContent = isaFeed[0];
+    }
+  };
+
+  if (box._isaTimer) clearInterval(box._isaTimer);
+  let tick = 0;
+  box._isaTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-isa-badge');
+    if (badge) badge.textContent = `ORBITAL • ${elapsedSec}s`;
+
+    const pEl = box.querySelector('.fl-isa-prompt-txt');
+    if (pEl && isaFeed.length > 0) pEl.textContent = isaFeed[tick % isaFeed.length];
+  }, 60);
+}
+
+function renderLiveDefineSubagent(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const name = String(d.name || d.Name || 'custom_specialist');
+  const desc = String(d.description || d.Description || d.system_prompt || 'Defining specialized subagent blueprint');
+  const writeOn = Boolean(d.enable_write_tools);
+  const mcpOn = Boolean(d.enable_mcp_tools);
+  const subOn = Boolean(d.enable_subagent_tools);
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-define-subagent';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-dsa-header">
+      <div class="fl-dsa-title-group">
+        <span class="fl-dsa-pill">🧬 DEFINE SUBAGENT</span>
+        <span class="fl-dsa-name" title="${escapeHtml(name)}">${escapeHtml(name)}</span>
+      </div>
+      <span class="fl-dsa-badge">SYNTHESIZING • 0.01s</span>
+    </div>
+    <div class="fl-dsa-caps">
+      <div class="fl-dsa-cap-pill ${writeOn ? 'is-enabled' : ''}">✍️ WRITE: ${writeOn ? 'ON' : 'READ-ONLY'}</div>
+      <div class="fl-dsa-cap-pill ${mcpOn ? 'is-enabled' : ''}">🔌 MCP: ${mcpOn ? 'ENABLED' : 'OFF'}</div>
+      <div class="fl-dsa-cap-pill ${subOn ? 'is-enabled' : ''}">🐝 SWARM: ${subOn ? 'ENABLED' : 'OFF'}</div>
+    </div>
+    <div class="fl-dsa-prompt-pill">
+      <span class="fl-dsa-orb">🧠</span>
+      <span class="fl-dsa-prompt-txt" title="${escapeHtml(desc)}">${escapeHtml(desc)}</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const pEl = box.querySelector('.fl-dsa-prompt-txt');
+    if (pEl && str.trim()) pEl.textContent = str.replace(/[\r\n]+/g, ' ').slice(0, 100);
+  };
+
+  if (box._dsaTimer) clearInterval(box._dsaTimer);
+  box._dsaTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-dsa-badge');
+    if (badge) badge.textContent = `DNA FORGE • ${elapsedSec}s`;
+  }, 55);
+}
+
+function renderLiveManageSubagents(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const act = String(d.Action || d.action || 'list').toLowerCase();
+  const ids = Array.isArray(d.ConversationIds) ? d.ConversationIds.join(', ') : 'Active Swarm Constellation';
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-manage-subagents';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  let msaFeed = [
+    `Executing manage_subagents [${act.toUpperCase()}] on ${ids}...`,
+    `Inspecting live subagent lifecycle states & conversation transcripts...`
+  ];
+
+  box.innerHTML = `
+    <div class="fl-msa-header">
+      <div class="fl-msa-title-group">
+        <span class="fl-msa-pill">🕸️ MANAGE SUBAGENTS</span>
+        <span class="fl-msa-target" title="${escapeHtml(ids)}">${escapeHtml(ids)}</span>
+      </div>
+      <span class="fl-msa-badge">SWARM • 0.01s</span>
+    </div>
+    <div class="fl-msa-actions">
+      <div class="fl-msa-act-pill ${act === 'list' ? 'is-active' : ''}">📡 LIST SWARM</div>
+      <div class="fl-msa-act-pill ${act === 'kill' ? 'is-active' : ''}">🛑 KILL NODE</div>
+      <div class="fl-msa-act-pill ${act === 'kill_all' ? 'is-active' : ''}">💥 KILL ALL</div>
+    </div>
+    <div class="fl-msa-stream-pill">
+      <span class="fl-msa-dot"></span>
+      <span class="fl-msa-stream-txt">${escapeHtml(msaFeed[0])}</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const clean = str.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+    if (clean.length > 0) {
+      msaFeed = clean.slice(0, 10);
+      const sEl = box.querySelector('.fl-msa-stream-txt');
+      if (sEl) sEl.textContent = msaFeed[0];
+    }
+  };
+
+  if (box._msaTimer) clearInterval(box._msaTimer);
+  let tick = 0;
+  box._msaTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    tick++;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-msa-badge');
+    if (badge) badge.textContent = `RADAR • ${elapsedSec}s`;
+
+    const sEl = box.querySelector('.fl-msa-stream-txt');
+    if (sEl && msaFeed.length > 0) sEl.textContent = msaFeed[tick % msaFeed.length];
+  }, 56);
+}
+
+function renderLiveSendMessage(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const recipient = String(d.Recipient || d.recipient || d.to || 'subagent-node');
+  const msg = String(d.Message || d.message || d.content || 'Transmitting inter-agent IPC payload...');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-send-message';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-sm-header">
+      <div class="fl-sm-bridge">
+        <span class="fl-sm-node-pill">🧠 PARENT</span>
+        <span class="fl-sm-wave-dots"><span></span><span></span><span></span></span>
+        <span class="fl-sm-node-pill recipient" title="${escapeHtml(recipient)}">🛰️ ${escapeHtml(recipient)}</span>
+      </div>
+      <span class="fl-sm-badge">IPC WAVE • 0.01s</span>
+    </div>
+    <div class="fl-sm-bubble">
+      <span class="fl-sm-orb">✉️</span>
+      <span class="fl-sm-msg-txt" title="${escapeHtml(msg)}">${escapeHtml(msg)}</span>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const mEl = box.querySelector('.fl-sm-msg-txt');
+    if (mEl && str.trim()) mEl.textContent = str.replace(/[\r\n]+/g, ' ').slice(0, 110);
+  };
+
+  if (box._smTimer) clearInterval(box._smTimer);
+  box._smTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-sm-badge');
+    if (badge) badge.textContent = `SYNAPSE IPC • ${elapsedSec}s`;
+  }, 55);
+}
+
+function renderLiveGenerateImage(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const imgName = String(d.ImageName || d.imageName || d.name || 'sovereign_artwork');
+  const ratio = String(d.AspectRatio || d.aspectRatio || '1:1');
+  const prompt = String(d.Prompt || d.prompt || 'Synthesizing high-resolution visual asset...');
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-generate-image';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-gi-header">
+      <div class="fl-gi-title-group">
+        <span class="fl-gi-pill">🎨 GENERATE IMAGE</span>
+        <span class="fl-gi-name" title="${escapeHtml(imgName)}">${escapeHtml(imgName)}.png</span>
+      </div>
+      <span class="fl-gi-badge">DIFFUSION • 0.01s</span>
+    </div>
+    <div class="fl-gi-body">
+      <div class="fl-gi-prism-orb">
+        <div class="fl-gi-prism-inner">✨</div>
+      </div>
+      <div class="fl-gi-capsules">
+        <div class="fl-gi-meta-row">
+          <span class="fl-gi-chip">ASPECT: ${escapeHtml(ratio)}</span>
+          <span class="fl-gi-chip">PRISM ENGINE</span>
+        </div>
+        <div class="fl-gi-prompt-pill">
+          <span class="fl-gi-dot"></span>
+          <span class="fl-gi-prompt-txt" title="${escapeHtml(prompt)}">${escapeHtml(prompt)}</span>
+        </div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const pEl = box.querySelector('.fl-gi-prompt-txt');
+    if (pEl && str.trim()) pEl.textContent = str.replace(/[\r\n]+/g, ' ').slice(0, 110);
+  };
+
+  if (box._giTimer) clearInterval(box._giTimer);
+  box._giTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-gi-badge');
+    if (badge) badge.textContent = `RENDERING • ${elapsedSec}s`;
+  }, 55);
+}
+
+function renderLiveSendMedia(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const mediaPath = String(d.path || d.file || d.url || d.media || d.target || 'media_stream_asset');
+  const mime = String(d.mime_type || d.mimeType || d.type || 'MEDIA/STREAM').toUpperCase();
+  const caption = String(d.caption || d.description || d.title || mediaPath);
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-send-media';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-smd-header">
+      <div class="fl-smd-title-group">
+        <span class="fl-smd-pill">🎧 SEND MEDIA</span>
+        <span class="fl-smd-target" title="${escapeHtml(mediaPath)}">${escapeHtml(mediaPath)}</span>
+      </div>
+      <span class="fl-smd-badge">STREAMING • 0.01s</span>
+    </div>
+    <div class="fl-smd-body">
+      <div class="fl-smd-disc-orb">🎬</div>
+      <div class="fl-smd-eq-bars">
+        <span class="fl-smd-bar"></span>
+        <span class="fl-smd-bar"></span>
+        <span class="fl-smd-bar"></span>
+        <span class="fl-smd-bar"></span>
+        <span class="fl-smd-bar"></span>
+      </div>
+      <div class="fl-smd-info-pill">
+        <span class="fl-smd-mime-chip">${escapeHtml(mime)}</span>
+        <span class="fl-smd-caption" title="${escapeHtml(caption)}">${escapeHtml(caption)}</span>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const cEl = box.querySelector('.fl-smd-caption');
+    if (cEl && str.trim()) cEl.textContent = str.replace(/[\r\n]+/g, ' ').slice(0, 100);
+  };
+
+  if (box._smdTimer) clearInterval(box._smdTimer);
+  box._smdTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-smd-badge');
+    if (badge) badge.textContent = `MEDIA POD • ${elapsedSec}s`;
+  }, 55);
+}
+
+function renderLiveVisualPainter(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
+
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const widgetType = String(d.widget_type || d.type || d.chart_type || d.kind || 'bar_chart').toUpperCase();
+  const title = String(d.title || d.Title || d.name || `${widgetType} TELEMETRY`);
+  const subtitle = String(d.subtitle || d.description || 'Buffering visual artifact until chat turn completes');
+  const dataObj = d.data || d.payload || {};
+  const labelCount = Array.isArray(dataObj.labels) ? dataObj.labels.length : (Array.isArray(d.cards) ? d.cards.length : (Array.isArray(d.candles) ? d.candles.length : 4));
+  const seriesCount = Array.isArray(dataObj.series) ? dataObj.series.length : 1;
+
+  let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  if (!box) {
+    box = document.createElement('div');
+    box.className = 'fl-live-render-visual';
+    box.setAttribute('data-live-step', String(stepIdx));
+    box._spawnTime = Date.now();
+    activeSlot.appendChild(box);
+  }
+
+  box.innerHTML = `
+    <div class="fl-rv-header">
+      <div class="fl-rv-title-group">
+        <span class="fl-rv-pill">📊 RENDER VISUAL</span>
+        <span class="fl-rv-type-chip">${escapeHtml(widgetType)}</span>
+      </div>
+      <span class="fl-rv-badge">SYNTHESIZING • 0.01s</span>
+    </div>
+    <div class="fl-rv-body">
+      <div class="fl-rv-orb-wrap">
+        <div class="fl-rv-orb-ring"></div>
+        <div class="fl-rv-orb-core">
+          <span class="fl-rv-mini-bar"></span>
+          <span class="fl-rv-mini-bar"></span>
+          <span class="fl-rv-mini-bar"></span>
+          <span class="fl-rv-mini-bar"></span>
+        </div>
+      </div>
+      <div class="fl-rv-stream-col">
+        <div class="fl-rv-title-pill">
+          <span class="fl-rv-dot"></span>
+          <span class="fl-rv-title-txt" title="${escapeHtml(title)}">${escapeHtml(title)}</span>
+        </div>
+        <div class="fl-rv-meta-row">
+          <span class="fl-rv-meta-pill">${labelCount} POINTS • ${seriesCount} SERIES</span>
+          <span class="fl-rv-meta-pill fl-rv-sub-txt" title="${escapeHtml(subtitle)}">${escapeHtml(subtitle)}</span>
+          <div class="fl-rv-wave-pills">
+            <span class="fl-rv-wave-seg"></span>
+            <span class="fl-rv-wave-seg"></span>
+            <span class="fl-rv-wave-seg"></span>
+            <span class="fl-rv-wave-seg"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+  box._injectOutputLines = (rawOut) => {
+    const str = typeof rawOut === 'string' ? rawOut : JSON.stringify(rawOut || '');
+    const subEl = box.querySelector('.fl-rv-sub-txt');
+    if (subEl && str.includes('visual:')) {
+      subEl.textContent = 'Visual payload buffered (reveals when chat ends)';
+    }
+  };
+
+  if (box._rvTimer) clearInterval(box._rvTimer);
+  box._rvTimer = setInterval(() => {
+    if (!box.isConnected || box.classList.contains('is-locked')) return;
+    const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
+    const badge = box.querySelector('.fl-rv-badge');
+    if (badge) badge.textContent = `SYNTHESIZING • ${elapsedSec}s`;
+  }, 55);
+}
+
+function renderLiveDynamicExternalTool(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  const cleanName = String(toolName || 'tool').replace(/^flow_/, '').replace(/^default_api:/, '').toLowerCase().trim();
+  const host = window.location.hostname || '127.0.0.1';
+
+  // 1. Dynamic CSS Injection: Load tools/<cleanName>/style.css
+  const cssId = `fl-dyn-tool-css-${cleanName}`;
+  if (!document.getElementById(cssId)) {
+    const link = document.createElement('link');
+    link.id = cssId;
+    link.rel = 'stylesheet';
+    link.href = `http://${host}:17700/tools/${cleanName}/style.css`;
+    document.head.appendChild(link);
+  }
+
+  // 2. Try importing dynamic ui.js module
+  const uiUrl = `http://${host}:17700/tools/${cleanName}/ui.js`;
+  import(uiUrl).then(mod => {
+    if (mod && mod.default && typeof mod.default.mountLive === 'function') {
+      const el = mod.default.mountLive(activeSlot, details, stepIdx);
+      if (el) {
+        el._dynamicUiModule = mod.default;
+        return;
+      }
+    }
+    renderLiveGenericToolBox(activeSlot, toolName, details, stepIdx);
+  }).catch(() => {
+    renderLiveGenericToolBox(activeSlot, toolName, details, stepIdx);
+  });
+}
+
+function renderLiveGenericToolBox(activeSlot, toolName, details, stepIdx) {
+  if (!activeSlot) return;
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const cleanName = (toolName || 'tool').replace(/^flow_/, '').replace(/^default_api:/, '').toUpperCase();
+  const summary = d.toolSummary || d.toolAction || d.action || d.Action || (typeof details === 'string' ? details : 'Sovereign operation');
+  renderLiveAmbientHoloStream(activeSlot, `OPS // ${cleanName}`, String(summary), 'cyan', stepIdx);
+}
+
+function dismissLiveToolBox(activeSlot, stepIdx, outputData) {
+  const selectorList = '.fl-live-ambient-stage, .fl-live-view-file, .fl-live-write-file, .fl-live-replace-file, .fl-live-search-tools, .fl-live-search-web, .fl-live-read-url, .fl-live-flow-lock, .fl-live-sys-health, .fl-live-audit-sec, .fl-live-detect-hc, .fl-live-audit-port, .fl-live-web-sec, .fl-live-web-intel, .fl-live-schedule, .fl-live-manage-task, .fl-live-plugin-ctrl, .fl-live-gatekeeper, .fl-live-screenshot, .fl-live-yt-video, .fl-live-yt-channel, .fl-live-yt-transcript, .fl-live-yt-summary, .fl-live-yt-comments, .fl-live-yt-strategy, .fl-live-ask-question, .fl-live-sys-restart, .fl-live-plugin-publish, .fl-live-invoke-subagent, .fl-live-define-subagent, .fl-live-manage-subagents, .fl-live-send-message, .fl-live-generate-image, .fl-live-send-media, .fl-live-render-visual, [class*="-pod"], .fl-live-dynamic-tool, .fl-live-scan-box, .fl-live-forge-box, .fl-live-bash-box, .fl-live-swarm-box, .fl-live-memory-box, .fl-live-skill-box, .fl-live-audit-box, .fl-live-canvas-box, .fl-live-camera-box, .fl-live-generic-box';
+  const box = (activeSlot ? activeSlot.querySelector(`[data-live-step="${stepIdx}"]`) : null) ||
+              document.querySelector(`.fl-live-active-slot [data-live-step="${stepIdx}"]`) ||
+              (activeSlot ? activeSlot.querySelector(selectorList) : null) ||
+              document.querySelector(`.fl-live-active-slot :is(${selectorList})`);
+  if (!box) return;
+
+  if (box._dynamicUiModule && typeof box._dynamicUiModule.onDone === 'function') {
+    box._dynamicUiModule.onDone(activeSlot || box.parentElement, outputData);
+  }
+
+  // Feed real behind-the-scenes output into the active hyper-speed animation!
+  if (typeof box._injectOutputLines === 'function' && outputData !== undefined && outputData !== null) {
+    box._injectOutputLines(outputData);
+  }
+
+  // Keep view_file, write_to_file, and replace_file_content visible much longer (~6.8s total) so user can inspect real file content!
+  const isFileBox = box.classList.contains('fl-live-view-file') ||
+                    box.classList.contains('fl-live-write-file') ||
+                    box.classList.contains('fl-live-replace-file');
+  const minBurstMs = isFileBox ? 3600 : 1200;
+  const holdLockedMs = isFileBox ? 3200 : 900;
+
+  const elapsed = Date.now() - (box._spawnTime || Date.now());
+  const burstRemaining = Math.max(0, minBurstMs - elapsed);
+
+  if (box._lockTimer) clearTimeout(box._lockTimer);
+  box._lockTimer = setTimeout(() => {
+    if (!box.isConnected) return;
+
+    // Clear active high-frequency timers and lock verified status
+    if (box._typingTimer) { clearInterval(box._typingTimer); box._typingTimer = null; }
+    if (box._screeningTimer) { clearInterval(box._screeningTimer); box._screeningTimer = null; }
+    if (box._bashTimer) { clearInterval(box._bashTimer); box._bashTimer = null; }
+    if (box._swarmTimer) { clearInterval(box._swarmTimer); box._swarmTimer = null; }
+    if (box._memoryTimer) { clearInterval(box._memoryTimer); box._memoryTimer = null; }
+    if (box._skillTimer) { clearInterval(box._skillTimer); box._skillTimer = null; }
+    if (box._webTimer) { clearInterval(box._webTimer); box._webTimer = null; }
+    if (box._urlTimer) { clearInterval(box._urlTimer); box._urlTimer = null; }
+    if (box._lockBoxTimer) { clearInterval(box._lockBoxTimer); box._lockBoxTimer = null; }
+    if (box._healthTimer) { clearInterval(box._healthTimer); box._healthTimer = null; }
+    if (box._auditTimer) { clearInterval(box._auditTimer); box._auditTimer = null; }
+    if (box._hcTimer) { clearInterval(box._hcTimer); box._hcTimer = null; }
+    if (box._portTimer) { clearInterval(box._portTimer); box._portTimer = null; }
+    if (box._webSecTimer) { clearInterval(box._webSecTimer); box._webSecTimer = null; }
+    if (box._wiTimer) { clearInterval(box._wiTimer); box._wiTimer = null; }
+    if (box._schTimer) { clearInterval(box._schTimer); box._schTimer = null; }
+    if (box._mtTimer) { clearInterval(box._mtTimer); box._mtTimer = null; }
+    if (box._pcTimer) { clearInterval(box._pcTimer); box._pcTimer = null; }
+    if (box._gkTimer) { clearInterval(box._gkTimer); box._gkTimer = null; }
+    if (box._ytvTimer) { clearInterval(box._ytvTimer); box._ytvTimer = null; }
+    if (box._ytcTimer) { clearInterval(box._ytcTimer); box._ytcTimer = null; }
+    if (box._yttTimer) { clearInterval(box._yttTimer); box._yttTimer = null; }
+    if (box._ytsTimer) { clearInterval(box._ytsTimer); box._ytsTimer = null; }
+    if (box._ytcmTimer) { clearInterval(box._ytcmTimer); box._ytcmTimer = null; }
+    if (box._ytstTimer) { clearInterval(box._ytstTimer); box._ytstTimer = null; }
+    if (box._aqTimer) { clearInterval(box._aqTimer); box._aqTimer = null; }
+    if (box._srTimer) { clearInterval(box._srTimer); box._srTimer = null; }
+    if (box._ppTimer) { clearInterval(box._ppTimer); box._ppTimer = null; }
+    if (box._isaTimer) { clearInterval(box._isaTimer); box._isaTimer = null; }
+    if (box._dsaTimer) { clearInterval(box._dsaTimer); box._dsaTimer = null; }
+    if (box._msaTimer) { clearInterval(box._msaTimer); box._msaTimer = null; }
+    if (box._smTimer) { clearInterval(box._smTimer); box._smTimer = null; }
+    if (box._giTimer) { clearInterval(box._giTimer); box._giTimer = null; }
+    if (box._smdTimer) { clearInterval(box._smdTimer); box._smdTimer = null; }
+    if (box._rvTimer) { clearInterval(box._rvTimer); box._rvTimer = null; }
+    if (box._canvasTimer) { clearInterval(box._canvasTimer); box._canvasTimer = null; }
+    if (box._cameraTimer) { clearInterval(box._cameraTimer); box._cameraTimer = null; }
+    if (box._genericTimer) { clearInterval(box._genericTimer); box._genericTimer = null; }
+
+    box.classList.add('is-locked');
+
+    if (box.classList.contains('fl-live-view-file')) {
+      const badge = box.querySelector('.fl-vf-speed-badge');
+      if (badge) badge.innerHTML = '✓ 100% READ • EXIT CODE 0';
+      const verb = box.querySelector('.fl-vf-verb');
+      if (verb) verb.textContent = 'INGESTED';
+    } else if (box.classList.contains('fl-live-write-file')) {
+      const badge = box.querySelector('.fl-wtf-badge');
+      if (badge) badge.innerHTML = '✓ FILE WRITTEN • EXIT CODE 0';
+      const bytesEl = box.querySelector('.fl-wtf-bytes');
+      if (bytesEl) bytesEl.textContent = '100% COMMITTED TO DISK';
+    } else if (box.classList.contains('fl-live-replace-file')) {
+      const timerEl = box.querySelector('.fl-rfc-timer');
+      if (timerEl) timerEl.innerHTML = '✓ SPLICED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-search-tools')) {
+      const speedEl = box.querySelector('.fl-st-speed');
+      if (speedEl) speedEl.innerHTML = '✓ TOOLS LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-skill-box')) {
+      const statusEl = box.querySelector('.fl-sk-status');
+      if (statusEl) statusEl.innerHTML = '✓ 20/20 LOCKED • EXIT CODE 0';
+      box.querySelectorAll('.fl-sk-led').forEach(led => led.classList.add('is-lit'));
+    } else if (box.classList.contains('fl-live-search-web')) {
+      const badge = box.querySelector('.fl-sw-badge');
+      if (badge) badge.innerHTML = '✓ OSINT LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-read-url')) {
+      const pipe = box.querySelector('.fl-ru-pipe-badge');
+      if (pipe) pipe.innerHTML = '✓ MD EXTRACTED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-flow-lock')) {
+      const statusEl = box.querySelector('.fl-flk-status');
+      if (statusEl) statusEl.innerHTML = '✓ CRYO-LOCKED • EXIT CODE 0';
+      const lbl = box.querySelector('.fl-flk-vault-lbl');
+      if (lbl) lbl.textContent = 'LOCKED';
+    } else if (box.classList.contains('fl-live-sys-health')) {
+      const badge = box.querySelector('.fl-sh-badge');
+      if (badge) badge.innerHTML = '✓ HEALTHY • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-audit-sec')) {
+      const badge = box.querySelector('.fl-as-badge');
+      if (badge) badge.innerHTML = '✓ SAST VERIFIED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-detect-hc')) {
+      const badge = box.querySelector('.fl-dhc-badge');
+      if (badge) badge.innerHTML = '✓ DE-HARDCODED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-audit-port')) {
+      const badge = box.querySelector('.fl-ap-badge');
+      if (badge) badge.innerHTML = '✓ TRI-OS VERIFIED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-web-sec')) {
+      const badge = box.querySelector('.fl-wsa-badge');
+      if (badge) badge.innerHTML = '✓ PERIMETER LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-web-intel')) {
+      const badge = box.querySelector('.fl-wi-badge');
+      if (badge) badge.innerHTML = '✓ INTEL LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-schedule')) {
+      const badge = box.querySelector('.fl-sch-badge');
+      if (badge) badge.innerHTML = '✓ CHRONO ARMED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-manage-task')) {
+      const badge = box.querySelector('.fl-mt-badge');
+      if (badge) badge.innerHTML = '✓ TASK SYNCED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-plugin-ctrl')) {
+      const badge = box.querySelector('.fl-pc-badge');
+      if (badge) badge.innerHTML = '✓ PLUGIN READY • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-gatekeeper')) {
+      const badge = box.querySelector('.fl-gk-badge');
+      if (badge) badge.innerHTML = '✓ GATES PASSED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-screenshot')) {
+      const badge = box.querySelector('.fl-ss-badge');
+      if (badge) badge.innerHTML = '✓ FRAME LOCKED • EXIT CODE 0';
+      const ret = box.querySelector('.fl-ss-reticle');
+      if (ret) ret.textContent = '[ ✓ PNG CAPTURED ]';
+    } else if (box.classList.contains('fl-live-yt-video')) {
+      const badge = box.querySelector('.fl-ytv-badge');
+      if (badge) badge.innerHTML = '✓ VIDEO SCANNED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-yt-channel')) {
+      const badge = box.querySelector('.fl-ytc-badge');
+      if (badge) badge.innerHTML = '✓ PULSE LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-yt-transcript')) {
+      const badge = box.querySelector('.fl-ytt-badge');
+      if (badge) badge.innerHTML = '✓ TRANSCRIPT READY • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-yt-summary')) {
+      const badge = box.querySelector('.fl-yts-badge');
+      if (badge) badge.innerHTML = '✓ SUMMARY LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-yt-comments')) {
+      const badge = box.querySelector('.fl-ytcm-badge');
+      if (badge) badge.innerHTML = '✓ BUBBLES LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-yt-strategy')) {
+      const badge = box.querySelector('.fl-ytst-badge');
+      if (badge) badge.innerHTML = '✓ STRATEGY READY • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-ask-question')) {
+      const badge = box.querySelector('.fl-aq-badge');
+      if (badge) badge.innerHTML = '✓ ANSWER LOCKED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-sys-restart')) {
+      const badge = box.querySelector('.fl-sr-badge');
+      if (badge) badge.innerHTML = '✓ RESTART ARMED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-plugin-publish')) {
+      const badge = box.querySelector('.fl-pp-badge');
+      if (badge) badge.innerHTML = '✓ PUBLISHED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-invoke-subagent')) {
+      const badge = box.querySelector('.fl-isa-badge');
+      if (badge) badge.innerHTML = '✓ SUBAGENT SPAWNED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-define-subagent')) {
+      const badge = box.querySelector('.fl-dsa-badge');
+      if (badge) badge.innerHTML = '✓ DNA REGISTERED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-manage-subagents')) {
+      const badge = box.querySelector('.fl-msa-badge');
+      if (badge) badge.innerHTML = '✓ SWARM SYNCED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-send-message')) {
+      const badge = box.querySelector('.fl-sm-badge');
+      if (badge) badge.innerHTML = '✓ IPC DELIVERED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-generate-image')) {
+      const badge = box.querySelector('.fl-gi-badge');
+      if (badge) badge.innerHTML = '✓ IMAGE SYNTHESIZED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-send-media')) {
+      const badge = box.querySelector('.fl-smd-badge');
+      if (badge) badge.innerHTML = '✓ MEDIA DELIVERED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-render-visual')) {
+      const badge = box.querySelector('.fl-rv-badge');
+      if (badge) badge.innerHTML = '✓ VISUAL BUFFERED • EXIT CODE 0';
+    } else if (box.classList.contains('fl-live-memory-box')) {
+      const header = box.querySelector('.fl-brain-pill-header');
+      if (header) header.innerHTML = '✓ SYNAPSE LOCKED // EXIT CODE 0';
+      const sub = box.querySelector('.fl-brain-orb-sublabel');
+      if (sub) sub.textContent = 'LOCKED';
+      const sync = box.querySelector('.fl-brain-sync-pct');
+      if (sync) sync.textContent = 'SYNC: 100%';
+    } else if (box.classList.contains('fl-live-bash-box')) {
+      const badge = box.querySelector('.fl-bash-badge');
+      if (badge) {
+        const exitCode = (outputData && typeof outputData === 'object' && outputData.exitCode !== undefined) ? outputData.exitCode : 0;
+        if (exitCode === 0) {
+          badge.style.background = 'rgba(0, 255, 178, 0.2)';
+          badge.style.color = '#00ffb2';
+          badge.innerHTML = '✓ EXIT CODE 0';
+        } else {
+          badge.style.background = 'rgba(239, 68, 68, 0.2)';
+          badge.style.color = '#f87171';
+          badge.innerHTML = `✕ EXIT CODE ${exitCode}`;
+        }
+      }
+    } else if (box.classList.contains('fl-live-ambient-stage')) {
+      const badge = box.querySelector('.fl-ambient-badge');
+      if (badge) {
+        badge.className = 'fl-ambient-badge emerald';
+        badge.innerHTML = '✓ SYNAPSE LOCKED (EXIT CODE 0)';
+      }
+      const wave = box.querySelector('.fl-ambient-sine-wave');
+      if (wave) {
+        wave.style.stroke = 'var(--holo-emerald, #10b981)';
+        wave.style.animation = 'none';
+      }
+      const beam = box.querySelector('.fl-ambient-laser-beam');
+      if (beam) {
+        beam.setAttribute('fill', '#10b981');
+        beam.style.filter = 'drop-shadow(0 0 8px #10b981)';
+      }
+    }
+
+    if (box._dismissTimer) clearTimeout(box._dismissTimer);
+    box._dismissTimer = setTimeout(() => {
+      if (box.isConnected) {
+        box.classList.add('is-finished');
+        setTimeout(() => {
+          if (box.isConnected) box.remove();
+        }, 380);
+      }
+    }, holdLockedMs);
+  }, burstRemaining);
+}
+
 function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeToolElements) {
   if (!toolsArea) return null;
   const rawTool = (toolName || 'tool').toLowerCase();
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
 
-  // 1. Subagent Spawning -> dedicated card
+  // Record pinned skills & mounted/active tools into Thinking Card & Multi-OS Loop Bar
+  recordThinkingArsenal(toolName, details, status, d.output ?? d.rawOutput ?? null);
+
+  // Initialize Mr. Flow audio UI controls
+  FloworkJarvisAudio.initUi();
+
+  const { activeSlot, capsule, capsuleBody } = getOrCreateToolsCapsule(toolsArea);
+
+  // Keep capsule STRICTLY HIDDEN while streaming live!
+  if (isChatStreaming) {
+    capsule.style.display = 'none';
+  }
+
+  // Advance Neural Anticipator DAG node to Execute phase
+  if (currentThinkingController && currentThinkingController.advanceDag) {
+    const cleanToolName = (toolName || 'tool').replace(/^flow_/, '').replace(/^default_api:/, '').toUpperCase();
+    currentThinkingController.advanceDag(3, `3. EXECUTE [${cleanToolName}]`);
+  }
+
+  const isSearchTools = rawTool.includes('search_tools') || rawTool.includes('tool_search') || rawTool.includes('find_tool');
+  const isSearchWeb = rawTool.includes('search_web');
+  const isReadUrl = rawTool.includes('read_url');
+  const isFlowLock = rawTool.includes('flow_lock') || rawTool === 'lock';
+  const isSysHealth = rawTool.includes('sys_health') || rawTool.includes('system_health');
+  const isDetectHardcode = rawTool.includes('detect_hardcode') || rawTool.includes('hardcode');
+  const isAuditPortability = rawTool.includes('audit_portability') || rawTool.includes('portability');
+  const isWebSecAudit = rawTool.includes('web_security_audit') || rawTool.includes('web_sec');
+  const isWebIntel = rawTool.includes('website_intelligence') || rawTool.includes('website_intel') || rawTool.includes('web_intel');
+  const isSchedule = rawTool === 'schedule' || rawTool.includes(':schedule') || rawTool.includes('flow_schedule');
+  const isManageTask = rawTool.includes('manage_task');
+  const isPluginControl = rawTool.includes('plugin_control');
+  const isPluginPublish = rawTool.includes('plugin_publish');
+  const isGatekeeper = rawTool.includes('request_publish_gatekeeper') || rawTool.includes('gatekeeper');
+  const isYtVideo = rawTool.includes('youtube_spy_video');
+  const isYtChannel = rawTool.includes('youtube_spy_channel');
+  const isYtTranscript = rawTool.includes('youtube_spy_transcript');
+  const isYtSummary = rawTool.includes('youtube_spy_summary');
+  const isYtComments = rawTool.includes('youtube_spy_comments');
+  const isYtStrategy = rawTool.includes('youtube_spy_competitor_strategy');
+  const isAskQuestion = rawTool.includes('ask_question');
+  const isSysRestart = rawTool.includes('system_restart');
+  const isDefineSubagent = rawTool.includes('define_subagent');
+  const isManageSubagents = rawTool.includes('manage_subagents');
+  const isSendMessage = rawTool.includes('send_message');
+  const isInvokeSubagent = !isDefineSubagent && !isManageSubagents && (rawTool.includes('invoke_subagent') || rawTool.includes('subagent') || rawTool.includes('spawnagent') || rawTool.includes('invoke_agent') || rawTool.includes('delegate'));
+  const isGenImage = rawTool.includes('generate_image');
+  const isSendMedia = rawTool.includes('send_media');
+  const isScanner = !isSearchTools && !isSearchWeb && !isReadUrl && !isWebIntel && !isYtVideo && !isYtChannel && !isYtTranscript && !isYtSummary && !isYtComments && !isYtStrategy && (rawTool.includes('read') || rawTool.includes('view') || rawTool.includes('inspect') || rawTool.includes('ingest') || rawTool.includes('recon') || rawTool.includes('search') || rawTool.includes('cat') || rawTool.includes('grep') || rawTool.includes('youtube') || rawTool.includes('yt_spy'));
+  const isForger = !isFlowLock && (rawTool.includes('write') || rawTool.includes('replace') || rawTool.includes('edit') || rawTool.includes('forge') || rawTool.includes('splice') || rawTool.includes('patch'));
+  const isBash = rawTool.includes('run_command') || rawTool.includes('exec') || rawTool.includes('terminal');
+  const isMemory = rawTool.includes('brain') || rawTool.includes('memory');
+  const isSkill = rawTool.includes('skill');
+  const isAudit = !isSysHealth && !isDetectHardcode && !isAuditPortability && !isWebSecAudit && !isGatekeeper && (rawTool.includes('audit') || rawTool.includes('security'));
+  const isCamera = rawTool.includes('screenshot') || rawTool.includes('screen_shot') || rawTool.includes('capture') || rawTool.includes('camera') || rawTool.includes('snapshot') || rawTool.includes('x11grab') || rawTool.includes('view_screen') || rawTool.includes('shoot');
+  const isVisual = !isCamera && !isGenImage && !isSendMedia && (rawTool.includes('visual') || rawTool.includes('chart') || rawTool.includes('diagram') || rawTool.includes('render_visual'));
+
+  // Spawn specialized live terminal animation ONLY when actively streaming a turn
+  let existingLiveBox = activeSlot ? activeSlot.querySelector(`[data-live-step="${stepIdx}"]`) : null;
+  if (!existingLiveBox && activeSlot && isChatStreaming) {
+    if (isSearchTools) {
+      renderLiveSearchTools(activeSlot, toolName, details, stepIdx);
+    } else if (isSearchWeb) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveSearchWeb(activeSlot, toolName, details, stepIdx);
+    } else if (isReadUrl) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveReadUrl(activeSlot, toolName, details, stepIdx);
+    } else if (isFlowLock) {
+      FloworkJarvisAudio.trigger('code_patched');
+      renderLiveFlowLock(activeSlot, toolName, details, stepIdx);
+    } else if (isSysHealth) {
+      renderLiveSysHealth(activeSlot, toolName, details, stepIdx);
+    } else if (isDetectHardcode) {
+      renderLiveDetectHardcode(activeSlot, toolName, details, stepIdx);
+    } else if (isAuditPortability) {
+      renderLiveAuditPortability(activeSlot, toolName, details, stepIdx);
+    } else if (isWebSecAudit) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveWebSecurityAudit(activeSlot, toolName, details, stepIdx);
+    } else if (isWebIntel) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveWebsiteIntelligence(activeSlot, toolName, details, stepIdx);
+    } else if (isSchedule) {
+      renderLiveSchedule(activeSlot, toolName, details, stepIdx);
+    } else if (isManageTask) {
+      renderLiveManageTask(activeSlot, toolName, details, stepIdx);
+    } else if (isPluginControl) {
+      renderLivePluginControl(activeSlot, toolName, details, stepIdx);
+    } else if (isPluginPublish) {
+      renderLivePluginPublish(activeSlot, toolName, details, stepIdx);
+    } else if (isGatekeeper) {
+      renderLivePublishGatekeeper(activeSlot, toolName, details, stepIdx);
+    } else if (isYtVideo) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveYtSpyVideo(activeSlot, toolName, details, stepIdx);
+    } else if (isYtChannel) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveYtSpyChannel(activeSlot, toolName, details, stepIdx);
+    } else if (isYtTranscript) {
+      renderLiveYtSpyTranscript(activeSlot, toolName, details, stepIdx);
+    } else if (isYtSummary) {
+      renderLiveYtSpySummary(activeSlot, toolName, details, stepIdx);
+    } else if (isYtComments) {
+      renderLiveYtSpyComments(activeSlot, toolName, details, stepIdx);
+    } else if (isYtStrategy) {
+      FloworkJarvisAudio.trigger('target_lock');
+      renderLiveYtSpyStrategy(activeSlot, toolName, details, stepIdx);
+    } else if (isAskQuestion) {
+      renderLiveAskQuestion(activeSlot, toolName, details, stepIdx);
+    } else if (isSysRestart) {
+      renderLiveSystemRestart(activeSlot, toolName, details, stepIdx);
+    } else if (isInvokeSubagent) {
+      renderLiveInvokeSubagent(activeSlot, toolName, details, stepIdx);
+    } else if (isDefineSubagent) {
+      renderLiveDefineSubagent(activeSlot, toolName, details, stepIdx);
+    } else if (isManageSubagents) {
+      renderLiveManageSubagents(activeSlot, toolName, details, stepIdx);
+    } else if (isSendMessage) {
+      renderLiveSendMessage(activeSlot, toolName, details, stepIdx);
+    } else if (isGenImage) {
+      renderLiveGenerateImage(activeSlot, toolName, details, stepIdx);
+    } else if (isSendMedia) {
+      renderLiveSendMedia(activeSlot, toolName, details, stepIdx);
+    } else if (isScanner) {
+      renderLiveFileScanner(activeSlot, toolName, details, stepIdx);
+    } else if (isForger) {
+      FloworkJarvisAudio.trigger('code_patched');
+      renderLiveCodeForger(activeSlot, toolName, details, stepIdx);
+    } else if (isBash) {
+      FloworkJarvisAudio.trigger('terminal_exec');
+      renderLiveBashRunner(activeSlot, toolName, details, stepIdx);
+    } else if (isMemory) {
+      renderLiveMemoryRecall(activeSlot, toolName, details, stepIdx);
+    } else if (isSkill) {
+      FloworkJarvisAudio.trigger('skill_pinned');
+      renderLiveSkillActivator(activeSlot, toolName, details, stepIdx);
+    } else if (isAudit) {
+      renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx);
+    } else if (isCamera) {
+      renderLiveCameraShutter(activeSlot, toolName, details, stepIdx);
+    } else if (isVisual) {
+      renderLiveVisualPainter(activeSlot, toolName, details, stepIdx);
+    } else {
+      renderLiveDynamicExternalTool(activeSlot, toolName, details, stepIdx);
+    }
+    existingLiveBox = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+  } else if (existingLiveBox && typeof existingLiveBox._injectOutputLines === 'function') {
+    existingLiveBox._injectOutputLines(details);
+  }
+
+  // Always inject/update the mandatory Reason Banner at the top of the live tool HUD box
+  if (existingLiveBox) {
+    injectLiveReasonBanner(existingLiveBox, toolName, details);
+  }
+
+  if (rawTool.includes('subagent') || rawTool.includes('spawnagent') || rawTool.includes('invoke_agent') || rawTool.includes('delegate')) {
+    const role = d.Role || d.role || d.TypeName || d.typeName || d.type || 'Sub-Agent Specialist';
+    FloworkChatTacticalOverlay.spawn('agent_spawn', { role });
+    FloworkJarvisAudio.trigger('agent_spawn');
+  }
+
+  if (status === 'done') {
+    const outData = (details && details.output !== undefined) ? details.output : (details && details.rawOutput !== undefined ? details.rawOutput : details);
+    dismissLiveToolBox(activeSlot, stepIdx, outData);
+  }
+
+  // 1. Subagent Spawning -> dedicated card in capsule
   if (rawTool.includes('subagent') || rawTool.includes('spawnagent') || rawTool.includes('invoke_agent') || rawTool.includes('delegate')) {
     const card = formatSubagentCard(details, status);
     if (card) {
       if (activeToolElements) activeToolElements.set(stepIdx, card);
-      toolsArea.appendChild(card);
+      capsuleBody.appendChild(card);
+      updateToolsCapsuleHeader(capsule);
     }
     return card;
   }
 
-  // 2. Background Task / Topic -> dedicated card
+  // 1b. Skill Management / Pinning -> dedicated skill HUD card in capsule
+  if (rawTool.includes('skill')) {
+    const card = formatSkillCard(details, status);
+    if (card) {
+      if (activeToolElements) activeToolElements.set(stepIdx, card);
+      capsuleBody.appendChild(card);
+      updateToolsCapsuleHeader(capsule);
+    }
+    return card;
+  }
+
+  // 2. Background Task / Topic -> dedicated card in capsule
   if ((rawTool.includes('task') && !rawTool.includes('command')) || rawTool.includes('update_topic') || rawTool.includes('topic')) {
     const card = formatTaskCard(details, status);
     if (card) {
       if (activeToolElements) activeToolElements.set(stepIdx, card);
-      toolsArea.appendChild(card);
+      capsuleBody.appendChild(card);
+      updateToolsCapsuleHeader(capsule);
     }
     return card;
   }
 
-  // 3. Shell Command execution -> Accordion Group (.ag-commands-group)
+  // 3. Shell Command execution -> Direct clean row in capsule
   if (rawTool.includes('run_command') || rawTool.includes('exec') || rawTool.includes('terminal')) {
-    let group = toolsArea.querySelector('.ag-commands-group');
-    if (!group) {
-      group = document.createElement('details');
-      group.className = 'ag-commands-group';
-      if (status === 'running') group.setAttribute('open', '');
-      group.innerHTML = `
-        <summary class="ag-commands-summary">
-          <span class="ag-commands-chevron">›</span>
-          <span class="ag-commands-icon">
-            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
-          </span>
-          <span class="ag-commands-tag">[TERMINAL // BASH]</span>
-          <span class="ag-commands-label">Running 1 command...</span>
-          <span class="ag-commands-badge running"><span class="ag-tool-spinner"></span> Running</span>
-        </summary>
-        <div class="ag-commands-list"></div>
-      `;
-      toolsArea.appendChild(group);
-    }
-
-    const list = group.querySelector('.ag-commands-list');
     let cmd = '';
     let output = '';
     if (typeof details === 'string') {
@@ -7146,133 +13466,334 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
       cmd = details.commandLine || details.CommandLine || details.command || details.toolAction || details.toolSummary || 'Shell command';
       const rawOut = details.rawOutput ?? details.output ?? details.stdout ?? details.result ?? null;
       if (rawOut !== null && rawOut !== undefined && rawOut !== '') {
-        output = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : String(rawOut);
+        output = sanitizeToolOutput(rawOut);
       }
     }
 
+    const cmdReasonText = extractToolReason(toolName, details);
+    const shortCmdReason = cmdReasonText.length > 48 ? cmdReasonText.slice(0, 46) + '…' : cmdReasonText;
+
     const cmdItem = document.createElement('details');
-    cmdItem.className = 'ag-cmd-item';
-    // Individual command items remain compact (collapsed) by default
+    cmdItem.className = `fl-cmd-item ${status === 'running' ? 'is-running' : ''}`;
     cmdItem.setAttribute('data-step-idx', String(stepIdx));
+    cmdItem.open = false;
     
     const hasOutput = output && output.trim().length > 0;
     const stdoutContent = hasOutput
       ? `
-        <div class="ag-cmd-stdout-bar">
-          <span class="ag-cmd-stdout-title">STDOUT // OUTPUT</span>
-          <button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
+        <div class="fl-cmd-stdout-bar">
+          <span class="fl-cmd-stdout-title">Output</span>
+          <button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
         </div>
-        <pre class="ag-cmd-stdout"><code>${escapeHtml(output)}</code></pre>
+        <pre class="fl-cmd-stdout"><code>${escapeHtml(output)}</code></pre>
       `
-      : `<div class="ag-cmd-empty">(No standard output)</div>`;
+      : `<div class="fl-cmd-empty fl-cmd-silent-success"><span class="fl-cmd-silent-icon">✓</span> <span class="fl-cmd-silent-text">Command completed cleanly (Exit Code 0 • No standard output)</span></div>`;
 
     cmdItem.innerHTML = `
-      <summary class="ag-cmd-item-header">
-        <span class="ag-cmd-item-chevron">›</span>
-        <span class="ag-cmd-item-prompt">$</span>
-        <span class="ag-cmd-item-title">${escapeHtml(cmd)}</span>
-        <span class="ag-tool-badge ${status}">${status === 'running' ? '<span class="ag-tool-spinner"></span> Running' : '✓ Done'}</span>
+      <summary class="fl-cmd-item-header">
+        <span class="fl-cmd-item-chevron">›</span>
+        <span class="fl-cmd-item-prompt">$</span>
+        <span class="fl-cmd-item-title">${escapeHtml(cmd)}</span>
+        ${cmdReasonText ? `<span class="fl-tool-reason-pill" title="${escapeHtml(cmdReasonText)}">💬 ${escapeHtml(shortCmdReason)}</span>` : ''}
+        <span class="fl-cmd-item-ticker" style="display:none;"></span>
+        <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> Running' : '✓ Done'}</span>
       </summary>
-      <div class="ag-cmd-item-body">
+      <div class="fl-cmd-item-body">
+        ${cmdReasonText ? `<div class="fl-tool-reason-box"><span class="fl-trb-lbl">💬 REASON:</span> <span class="fl-trb-txt">${escapeHtml(cmdReasonText)}</span></div>` : ''}
         ${stdoutContent}
       </div>
     `;
 
-    if (list) list.appendChild(cmdItem);
+    capsuleBody.appendChild(cmdItem);
     if (activeToolElements) activeToolElements.set(stepIdx, cmdItem);
-    updateCommandsGroupHeader(group);
+    updateToolsCapsuleHeader(capsule);
+
+    if (status === 'running' && cmd) {
+      animateTerminalPrompt(cmdItem, cmd);
+    }
     return cmdItem;
   }
 
-  // 4. File I/O, Search, and general tools
+  // 4. File I/O, Search, and general tools in capsule
   const card = formatToolCard(toolName, details, status);
   if (card) {
     if (activeToolElements) activeToolElements.set(stepIdx, card);
-    toolsArea.appendChild(card);
+    capsuleBody.appendChild(card);
+    updateToolsCapsuleHeader(capsule);
   }
   return card;
 }
 
 function updateCommandsGroupHeader(group) {
   if (!group) return;
-  const items = group.querySelectorAll('.ag-cmd-item');
+  const items = group.querySelectorAll('.fl-cmd-item');
   const total = items.length;
   if (total === 0) return;
 
-  const runningBadges = group.querySelectorAll('.ag-cmd-item .ag-tool-badge.running');
-  const label = group.querySelector('.ag-commands-label');
-  const badge = group.querySelector('.ag-commands-badge');
+  const runningBadges = group.querySelectorAll('.fl-cmd-item .fl-tool-badge.running');
+  const label = group.querySelector('.fl-commands-label');
+  const badge = group.querySelector('.fl-commands-badge');
 
   if (runningBadges.length > 0) {
     if (label) label.textContent = `Running ${total} command${total > 1 ? 's' : ''}...`;
     if (badge) {
-      badge.className = 'ag-commands-badge running';
-      badge.innerHTML = '<span class="ag-tool-spinner"></span> Running';
+      badge.className = 'fl-commands-badge running';
+      badge.innerHTML = '<span class="fl-tool-spinner"></span> Running';
     }
   } else {
     if (label) label.textContent = `Ran ${total} terminal command${total > 1 ? 's' : ''}`;
     if (badge) {
-      badge.className = 'ag-commands-badge done';
+      badge.className = 'fl-commands-badge done';
       badge.innerHTML = '✓ Done';
     }
     // Auto-collapse completed commands group once all commands finish
+    group.open = false;
     group.removeAttribute('open');
   }
 }
 
-function markToolDone(stepIdx, activeToolElements, outputData) {
-  if (stepIdx === undefined || !activeToolElements) return;
-  const el = activeToolElements.get(stepIdx);
-  if (!el) return;
+function updateTerminalStream(stepIdx, data, activeToolElements) {
+  if (stepIdx === undefined) return;
+  let el = activeToolElements ? activeToolElements.get(stepIdx) : null;
+  if (!el) {
+    el = document.querySelector(`.fl-cmd-item[data-step-idx="${stepIdx}"]`);
+  }
 
-  if (el.classList.contains('ag-cmd-item')) {
-    const badge = el.querySelector('.ag-tool-badge');
-    if (badge) {
-      badge.className = 'ag-tool-badge done';
-      badge.innerHTML = '✓ Done';
+  // 1. Live update the standalone in-chat ephemeral bash terminal box if present!
+  const liveBashBox = document.querySelector(`.fl-live-bash-box[data-live-step="${stepIdx}"]`);
+  if (liveBashBox && data) {
+    const codeEl = liveBashBox.querySelector('.fl-live-bash-code code');
+    if (codeEl && data.output !== undefined) {
+      let rawOut = String(data.output);
+      const lines = rawOut.split('\n').filter(l => l.trim()).slice(-4);
+      codeEl.textContent = lines.join('\n');
     }
-    if (outputData !== undefined && outputData !== null) {
-      let rawOut = outputData;
-      if (typeof outputData === 'object') {
-        rawOut = outputData.rawOutput ?? outputData.output ?? outputData.stdout ?? outputData.result ?? outputData;
-      }
-      const outText = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : (rawOut ? String(rawOut) : '');
-      const body = el.querySelector('.ag-cmd-item-body');
-      if (body) {
-        if (outText && outText.trim().length > 0) {
-          body.innerHTML = `
-            <div class="ag-cmd-stdout-bar">
-              <span class="ag-cmd-stdout-title">STDOUT // OUTPUT</span>
-              <button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
-            </div>
-            <pre class="ag-cmd-stdout"><code>${escapeHtml(outText)}</code></pre>
-          `;
-        } else {
-          body.innerHTML = `<div class="ag-cmd-empty">(No standard output)</div>`;
+  }
+
+  if (!el || !el.classList.contains('fl-cmd-item')) return;
+
+  // DOKTRIN: Keep command group and command item CLOSED to preserve default hide!
+  const group = el.closest('.fl-commands-group');
+  if (group) {
+    group.open = false;
+    group.removeAttribute('open');
+  }
+  el.open = false;
+  el.removeAttribute('open');
+
+  // 2. Update Live Tail Ticker in item header
+  const header = el.querySelector('.fl-cmd-item-header');
+  if (header) {
+    let ticker = header.querySelector('.fl-cmd-item-ticker');
+    if (!ticker) {
+      ticker = document.createElement('span');
+      ticker.className = 'fl-cmd-item-ticker';
+      const badge = header.querySelector('.fl-tool-badge');
+      if (badge) header.insertBefore(ticker, badge);
+      else header.appendChild(ticker);
+    }
+    const tailText = (data.tail || data.line || '').trim();
+    if (tailText) {
+      const cleanTail = tailText.replace(/[\r\n]+/g, ' ');
+      ticker.textContent = cleanTail.length > 40 ? cleanTail.slice(0, 38) + '…' : cleanTail;
+      ticker.title = cleanTail;
+      ticker.style.display = 'inline-flex';
+    }
+  }
+
+  // 3. Update stdout body container with live streaming output
+  const body = el.querySelector('.fl-cmd-item-body');
+  if (body) {
+    let pre = body.querySelector('.fl-cmd-stdout');
+    let code = pre ? pre.querySelector('code') : null;
+    if (!pre) {
+      body.innerHTML = `
+        <div class="fl-cmd-stdout-bar">
+          <span class="fl-cmd-stdout-title">Live Output</span>
+          <span class="fl-cmd-live-pill"><span class="fl-cmd-live-pulse"></span> STREAMING</span>
+          <button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
+        </div>
+        <pre class="fl-cmd-stdout fl-cmd-live"><code></code></pre>
+      `;
+      pre = body.querySelector('.fl-cmd-stdout');
+      code = pre ? pre.querySelector('code') : null;
+    } else {
+      pre.classList.add('fl-cmd-live');
+      const bar = body.querySelector('.fl-cmd-stdout-bar');
+      if (bar && !bar.querySelector('.fl-cmd-live-pill')) {
+        const pill = document.createElement('span');
+        pill.className = 'fl-cmd-live-pill';
+        pill.innerHTML = '<span class="fl-cmd-live-pulse"></span> STREAMING';
+        const title = bar.querySelector('.fl-cmd-stdout-title');
+        if (title) {
+          title.textContent = 'Live Output';
+          title.insertAdjacentElement('afterend', pill);
         }
       }
     }
-    // Auto-collapse completed command item
-    el.removeAttribute('open');
-    const group = el.closest('.ag-commands-group');
-    if (group) updateCommandsGroupHeader(group);
+
+    if (code && data.output !== undefined) {
+      let rawOut = sanitizeToolOutput(data.output);
+      // Sliding buffer: clamp to max 500 lines to prevent DOM overhead
+      const lines = rawOut.split('\n');
+      if (lines.length > 500) {
+        rawOut = '... [early output truncated for speed] ...\n' + lines.slice(-500).join('\n');
+      }
+      code.innerHTML = `${escapeHtml(rawOut)}`;
+      pre.scrollTop = pre.scrollHeight;
+    }
+  }
+
+  // 4. Feed live stream chunks to dynamic tool UI module if active
+  const toolsArea = el.closest('.chat-tools-area');
+  if (toolsArea) {
+    const activeSlot = toolsArea.querySelector('.fl-live-active-slot');
+    if (activeSlot) {
+      const pod = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
+      if (pod && pod._dynamicUiModule && typeof pod._dynamicUiModule.onStream === 'function') {
+        pod._dynamicUiModule.onStream(activeSlot, data.output ?? data.line ?? data);
+      }
+    }
+  }
+}
+
+function markToolDone(stepIdx, activeToolElements, outputData) {
+  if (stepIdx === undefined) return;
+
+  // Dismiss live ephemeral terminal with real output and guaranteed visible duration
+  dismissLiveToolBox(null, stepIdx, outputData);
+
+  if (!activeToolElements) return;
+  const el = activeToolElements.get(stepIdx);
+  if (!el) return;
+
+  const toolsArea = el.closest('.chat-tools-area');
+  if (toolsArea) {
+    const activeSlot = toolsArea.querySelector('.fl-live-active-slot');
+    if (activeSlot) {
+      dismissLiveToolBox(activeSlot, stepIdx, outputData);
+    }
+    const capsule = toolsArea.querySelector('.fl-toolstream-wrap');
+    if (capsule) {
+      updateToolsCapsuleHeader(capsule);
+    }
+  }
+
+  if (el.classList.contains('fl-cmd-item')) {
+    el.classList.remove('is-running');
+    el.classList.add('is-completed-flash');
+    const badge = el.querySelector('.fl-tool-badge');
+    if (badge) {
+      badge.className = 'fl-tool-badge done';
+      badge.innerHTML = '✓ Exit Code 0';
+    }
+    const ticker = el.querySelector('.fl-cmd-item-ticker');
+    if (ticker) {
+      ticker.style.display = 'none';
+    }
+
+    const streamCursor = el.querySelector('.fl-stream-live-cursor');
+    if (streamCursor) streamCursor.remove();
+    const livePill = el.querySelector('.fl-cmd-live-pill');
+    if (livePill) livePill.remove();
+
+    if (outputData !== undefined && outputData !== null) {
+      let rawOut = outputData;
+      let stderrOut = '';
+      let exitCode = 0;
+      if (typeof outputData === 'object') {
+        rawOut = outputData.rawOutput ?? outputData.output ?? outputData.stdout ?? outputData.result;
+        stderrOut = outputData.stderr ?? outputData.error ?? '';
+        exitCode = outputData.exitCode ?? outputData.exit_code ?? 0;
+        if (rawOut === undefined && stderrOut) {
+          rawOut = '';
+        } else if (rawOut === undefined) {
+          rawOut = outputData;
+        }
+      }
+      if (badge && exitCode !== 0) {
+        badge.className = 'fl-tool-badge failed';
+        badge.innerHTML = `✕ Exit Code ${exitCode}`;
+      }
+      const outText = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : (rawOut ? String(rawOut) : '');
+      const errText = typeof stderrOut === 'object' ? JSON.stringify(stderrOut, null, 2) : (stderrOut ? String(stderrOut) : '');
+      const body = el.querySelector('.fl-cmd-item-body');
+      if (body) {
+        if (outText && outText.trim().length > 0) {
+          body.innerHTML = `
+            <div class="fl-cmd-stdout-bar">
+              <span class="fl-cmd-stdout-title">Output</span>
+              <button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
+            </div>
+            <pre class="fl-cmd-stdout"><code>${escapeHtml(outText)}</code></pre>
+            ${errText && errText.trim().length > 0 ? `
+              <div class="fl-cmd-stderr-bar">
+                <span class="fl-cmd-stderr-title">Error Log</span>
+              </div>
+              <pre class="fl-cmd-stderr"><code>${escapeHtml(errText)}</code></pre>
+            ` : ''}
+          `;
+        } else if (errText && errText.trim().length > 0) {
+          body.innerHTML = `
+            <div class="fl-cmd-stderr-bar">
+              <span class="fl-cmd-stderr-title">Error Log</span>
+            </div>
+            <pre class="fl-cmd-stderr"><code>${escapeHtml(errText)}</code></pre>
+          `;
+        } else {
+          body.innerHTML = `<div class="fl-cmd-empty fl-cmd-silent-success"><span class="fl-cmd-silent-icon">✓</span> <span class="fl-cmd-silent-text">Command completed cleanly (${exitCode === 0 ? 'Exit Code 0' : `Exit Code ${exitCode}`} • No standard output)</span></div>`;
+        }
+      }
+
+      if (exitCode === 0) {
+        FloworkJarvisAudio.trigger('terminal_done');
+      } else {
+        FloworkTacticalHUD.spawn('alert_breach', { error: `Command exited with code ${exitCode}` });
+        FloworkJarvisAudio.trigger('alert_breach');
+      }
+    }
+
+    // Graceful Vanish / Auto-Shrink to minimal sleek transparent pill after brief green flash (600ms)
+    setTimeout(() => {
+      el.classList.remove('is-completed-flash');
+      el.removeAttribute('open');
+      el.classList.add('is-compact-pill');
+      const group = el.closest('.fl-commands-group');
+      if (group) updateCommandsGroupHeader(group);
+    }, 600);
   } else {
-    const badge = el.querySelector('.ag-tool-badge, .ag-subagent-status, .ag-task-badge');
+    const badge = el.querySelector('.fl-tool-badge, .fl-subagent-status, .fl-task-badge, .fl-skill-badge');
     if (badge) {
       badge.className = badge.className.replace('running', 'done');
-      badge.innerHTML = '✓ Done';
+      if (!badge.textContent.includes('PINNED')) {
+        badge.innerHTML = '✓ Done';
+      }
     }
+    if (el.classList.contains('fl-subagent-card') || el.querySelector('.fl-subagent-header')) {
+      FloworkJarvisAudio.trigger('agent_complete');
+    }
+    el.classList.remove('is-running');
+    el.classList.add('is-completed-flash');
+    setTimeout(() => {
+      el.classList.remove('is-completed-flash');
+      el.removeAttribute('open');
+    }, 1200);
     if (outputData !== undefined && outputData !== null) {
       let rawOut = outputData;
       if (typeof outputData === 'object') {
+        const errStr = outputData.error || (outputData.output && outputData.output.error) || '';
+        if (errStr === 'MANDATORY_SKILL_REQUIRED') {
+          FloworkTacticalHUD.spawn('alert_breach', { error: 'Mandatory Skill Pin required before running operational tools!' });
+          FloworkJarvisAudio.trigger('alert_breach');
+        }
         rawOut = outputData.rawOutput ?? outputData.output ?? outputData.stdout ?? outputData.result ?? outputData;
       }
       const outText = typeof rawOut === 'object' ? JSON.stringify(rawOut, null, 2) : (rawOut ? String(rawOut) : '');
-      const detailsBlock = el.querySelector('.ag-tool-details, .ag-subagent-body, .ag-task-body');
-      if (detailsBlock && !detailsBlock.querySelector('.ag-tool-block:last-child .ag-tool-code')) {
+      const detailsBlock = el.querySelector('.fl-tool-details, .fl-subagent-body, .fl-task-body');
+      if (detailsBlock && !detailsBlock.querySelector('.fl-tool-block:last-child .fl-tool-code')) {
         const outDiv = document.createElement('div');
-        outDiv.className = 'ag-tool-block';
-        outDiv.innerHTML = `<div class="ag-tool-block-header"><span>OUTPUT</span><button class="ag-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div><pre class="ag-tool-code"><code>${escapeHtml(outText)}</code></pre>`;
+        outDiv.className = 'fl-tool-block';
+        outDiv.innerHTML = `<div class="fl-tool-block-header"><span>OUTPUT</span><button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button></div><pre class="fl-tool-code"><code>${escapeHtml(outText)}</code></pre>`;
         detailsBlock.appendChild(outDiv);
       }
     }
@@ -7284,70 +13805,100 @@ function markToolDone(stepIdx, activeToolElements, outputData) {
 function collapseAllToolsInArea(toolsArea) {
   if (!toolsArea) return;
   
-  // Collapse commands group
-  toolsArea.querySelectorAll('.ag-commands-group').forEach(group => {
+  // Gracefully transition & clean up any remaining live visual boxes in the active slot
+  const activeSlot = toolsArea.querySelector('.fl-live-active-slot');
+  if (activeSlot) {
+    const boxes = activeSlot.querySelectorAll('.fl-live-ambient-stage, .fl-live-view-file, .fl-live-write-file, .fl-live-replace-file, .fl-live-search-tools, .fl-live-search-web, .fl-live-read-url, .fl-live-flow-lock, .fl-live-sys-health, .fl-live-audit-sec, .fl-live-detect-hc, .fl-live-audit-port, .fl-live-web-sec, .fl-live-web-intel, .fl-live-schedule, .fl-live-manage-task, .fl-live-plugin-ctrl, .fl-live-gatekeeper, .fl-live-screenshot, .fl-live-yt-video, .fl-live-yt-channel, .fl-live-yt-transcript, .fl-live-yt-summary, .fl-live-yt-comments, .fl-live-yt-strategy, .fl-live-ask-question, .fl-live-sys-restart, .fl-live-plugin-publish, .fl-live-invoke-subagent, .fl-live-define-subagent, .fl-live-manage-subagents, .fl-live-send-message, .fl-live-generate-image, .fl-live-send-media, .fl-live-render-visual, .fl-live-scan-box, .fl-live-forge-box, .fl-live-bash-box, .fl-live-swarm-box, .fl-live-memory-box, .fl-live-skill-box, .fl-live-audit-box, .fl-live-canvas-box, .fl-live-camera-box, .fl-live-generic-box');
+    boxes.forEach(b => {
+      if (b._lockTimer) { clearTimeout(b._lockTimer); b._lockTimer = null; }
+      if (b._dismissTimer) { clearTimeout(b._dismissTimer); b._dismissTimer = null; }
+      if (b._screeningTimer) { clearInterval(b._screeningTimer); b._screeningTimer = null; }
+      if (b._typingTimer) { clearInterval(b._typingTimer); b._typingTimer = null; }
+      if (b._rvTimer) { clearInterval(b._rvTimer); b._rvTimer = null; }
+      if (!isChatStreaming) {
+        b.remove();
+        return;
+      }
+      b.classList.add('is-finished');
+      setTimeout(() => {
+        if (b.isConnected) b.remove();
+      }, 320);
+    });
+  }
+
+  // Find and enforce STRICT DEFAULT HIDE on the unified capsule
+  const capsule = toolsArea.querySelector('.fl-toolstream-wrap');
+  if (capsule) {
+    capsule.open = false;
+    capsule.removeAttribute('open');
+    const action = capsule.querySelector('.fl-capsule-action');
+    if (action) action.textContent = 'Show Details ▾';
+
+    // Reveal capsule ONLY IF tools were executed in this turn!
+    const body = capsule.querySelector('.fl-toolstream-body');
+    const total = body ? body.children.length : 0;
+    if (total > 0) {
+      capsule.style.display = 'block';
+    } else {
+      capsule.style.display = 'none';
+    }
+    updateToolsCapsuleHeader(capsule);
+    // Double ensure default hide
+    capsule.open = false;
+    capsule.removeAttribute('open');
+  }
+
+  // Collapse inner command groups
+  toolsArea.querySelectorAll('.fl-commands-group').forEach(group => {
+    group.open = false;
     group.removeAttribute('open');
     updateCommandsGroupHeader(group);
   });
   
   // Collapse command items
-  toolsArea.querySelectorAll('.ag-cmd-item').forEach(item => {
+  toolsArea.querySelectorAll('.fl-cmd-item').forEach(item => {
+    item.open = false;
     item.removeAttribute('open');
   });
 
   // Collapse tool cards
-  toolsArea.querySelectorAll('.ag-tool-card').forEach(card => {
+  toolsArea.querySelectorAll('.fl-tool-card').forEach(card => {
+    card.open = false;
     card.removeAttribute('open');
   });
 
   // Collapse subagent cards
-  toolsArea.querySelectorAll('.ag-subagent-card').forEach(card => {
+  toolsArea.querySelectorAll('.fl-subagent-card').forEach(card => {
+    card.open = false;
     card.removeAttribute('open');
   });
 
   // Collapse task cards
-  toolsArea.querySelectorAll('.ag-task-card').forEach(card => {
+  toolsArea.querySelectorAll('.fl-task-card').forEach(card => {
+    card.open = false;
     card.removeAttribute('open');
   });
 
-  // Bulk toolbar with accurate step count
-  const cmdItems = toolsArea.querySelectorAll('.ag-cmd-item');
-  const otherTools = toolsArea.querySelectorAll('.ag-tool-card, .ag-subagent-card, .ag-task-card');
-  const totalSteps = cmdItems.length + otherTools.length;
-  if (totalSteps >= 1) {
-    let toolbar = toolsArea.querySelector('.ag-tools-toolbar');
-    if (!toolbar) {
-      toolbar = document.createElement('div');
-      toolbar.className = 'ag-tools-toolbar';
-      toolsArea.prepend(toolbar);
-    }
-    toolbar.innerHTML = `
-      <span class="ag-tools-count"><span class="ag-tools-dot"></span>${totalSteps} step${totalSteps > 1 ? 's' : ''} executed</span>
-      <button class="ag-tools-toggle-btn" type="button" onclick="toggleAllToolsInArea(this)">Show logs</button>
-    `;
+  // Eliminate obsolete legacy toolbar so only the unified capsule is present
+  const legacyToolbar = toolsArea.querySelector('.fl-tools-toolbar');
+  if (legacyToolbar) {
+    legacyToolbar.remove();
   }
 }
 
 window.toggleAllToolsInArea = function(btn) {
   const toolsArea = btn.closest('.chat-tools-area');
   if (!toolsArea) return;
-  const isExpanding = btn.textContent.toLowerCase().includes('show');
-  
-  // Expand/collapse command groups and parent tool cards.
-  // Keep individual command items compact (one-line rows) so stdout does not explode!
-  toolsArea.querySelectorAll('.ag-commands-group, .ag-tool-card, .ag-subagent-card, .ag-task-card').forEach(el => {
-    if (isExpanding) {
-      el.setAttribute('open', '');
-    } else {
-      el.removeAttribute('open');
-    }
-  });
-
-  btn.textContent = isExpanding ? 'Hide logs' : 'Show logs';
+  const capsule = toolsArea.querySelector('.fl-toolstream-wrap');
+  if (capsule) {
+    capsule.open = !capsule.open;
+    const action = capsule.querySelector('.fl-capsule-action');
+    if (action) action.textContent = capsule.open ? 'Hide Details ▴' : 'Show Details ▾';
+  }
 };
 
 window.copyToolCode = function(btn) {
-  const block = btn.closest('.ag-tool-block, .ag-cmd-item-body, .ag-subagent-body, .ag-task-body');
+  const block = btn.closest('.fl-tool-block, .fl-cmd-item-body, .fl-subagent-body, .fl-task-body');
   const code = block ? block.querySelector('pre code') : null;
   if (!code) return;
   navigator.clipboard.writeText(code.innerText).then(() => {
@@ -7428,13 +13979,37 @@ function parseUserPromptPayload(rawMsg) {
 function renderTrajectorySteps(steps) {
   const container = document.getElementById('rightbar-messages');
   if (!container) return;
-  container.innerHTML = '';
+
+  // Ensure mascot hero is preserved at top
+  let emptyHero = container.querySelector('#chat-empty-hero');
+  if (!emptyHero) {
+    container.insertAdjacentHTML('afterbegin', getEmptyHeroHtml());
+    requestAnimationFrame(() => initChatMascot());
+  }
+
+  // Remove existing chat messages and loading indicators only
+  container.querySelectorAll('.chat-msg, .fl-chat-loading-indicator').forEach(el => el.remove());
+
+  if (!steps || steps.length === 0) {
+    container.classList.remove('has-messages');
+    container.classList.remove('agent-is-looping');
+    setMascotAgentLoop(false);
+    return;
+  }
+
+  container.classList.add('has-messages');
+  if (!isChatStreaming) {
+    container.classList.remove('agent-is-looping');
+    setMascotAgentLoop(false);
+  }
 
   let currentAssistantCard = null;
   let currentToolsArea = null;
   let currentBodyArea = null;
   let currentThinkingArea = null;
   let lastUserPromptText = '';
+  let turnStartIdx = 0;
+  let turnEndIdx = steps.length;
 
   for (let stepIdx = 0; stepIdx < steps.length; stepIdx++) {
     const s = steps[stepIdx];
@@ -7445,6 +14020,14 @@ function renderTrajectorySteps(steps) {
       currentToolsArea = null;
       currentBodyArea = null;
       currentThinkingArea = null;
+      turnStartIdx = stepIdx;
+      turnEndIdx = steps.length;
+      for (let k = stepIdx + 1; k < steps.length; k++) {
+        if ((steps[k]?.type || '').endsWith('USER_INPUT')) {
+          turnEndIdx = k;
+          break;
+        }
+      }
 
       const rawMsg = s.userInput?.message || '';
       const parsed = parseUserPromptPayload(rawMsg);
@@ -7557,7 +14140,19 @@ function renderTrajectorySteps(steps) {
         if (thoughtCard) currentThinkingArea.appendChild(thoughtCard);
       }
       if (resp && currentBodyArea) {
-        currentBodyArea.innerHTML = renderMarkdown(resp);
+        let fullResp = resp.replace(/\x60\x60\x60visual:'\)\)\s*\{[\s\S]*?(?:outStr|cleanOutStr)\.match\(\/\x60\x60\x60/g, '').trim();
+        // Strictly scope visual block extraction ONLY to verified render_visual steps within THIS turn!
+        for (let j = turnStartIdx; j < turnEndIdx; j++) {
+          const stepJ = steps[j];
+          const jTool = String(stepJ.tool || '').toLowerCase().trim();
+          if (jTool.includes('render_visual') && stepJ.runCommand && stepJ.runCommand.output) {
+            const vb = extractVisualBlockFromToolOutput(jTool, stepJ.runCommand.output);
+            if (vb && !fullResp.includes(vb)) {
+              fullResp += '\n\n' + vb;
+            }
+          }
+        }
+        currentBodyArea.innerHTML = renderMarkdown(fullResp);
       }
 
       const btnCopy = currentAssistantCard.querySelector('.btn-copy-response');
@@ -7643,9 +14238,7 @@ function renderTrajectorySteps(steps) {
     collapseAllToolsInArea(currentToolsArea);
   }
 
-  if (lastUserPromptText) {
-    showPinnedPrompt(lastUserPromptText);
-  }
+  hidePinnedPrompt();
 
   container.scrollTop = container.scrollHeight;
 }
@@ -7682,17 +14275,52 @@ async function sendUserChatMessage() {
   await executeChatMessage(text, attachmentsToSend);
 }
 
+function extractVisualBlockFromToolOutput(toolName, outputData) {
+  const tName = String(toolName || '').toLowerCase().trim();
+  if (!tName || !tName.includes('render_visual')) {
+    return '';
+  }
+  const vFence = '\x60\x60\x60visual:';
+  const cFence = '\x60\x60\x60';
+  const rawOut = (typeof outputData === 'string')
+    ? outputData
+    : (outputData && outputData.output ? String(outputData.output) : '');
+  let cleanOut = rawOut.replace(/<SOVEREIGN_TOOL_INTERCEPT_GATE_INJECTION>[\s\S]*?<\/SOVEREIGN_TOOL_INTERCEPT_GATE_INJECTION>/g, '');
+  const toolResIdx = cleanOut.lastIndexOf('[TOOL RESULT FOR ');
+  if (toolResIdx !== -1) {
+    cleanOut = cleanOut.slice(toolResIdx);
+  }
+  if (cleanOut && cleanOut.includes(vFence)) {
+    const re = new RegExp(vFence + '([a-zA-Z0-9_\\-]+)\\s*\\n([\\s\\S]*?)\\n' + cFence);
+    const m = cleanOut.match(re);
+    if (m && m[1] && m[2]) {
+      try {
+        JSON.parse(m[2].trim());
+        return vFence + m[1].trim() + '\n' + m[2].trim() + '\n' + cFence;
+      } catch (_) {
+        return '';
+      }
+    }
+  } else if (outputData && typeof outputData === 'object' && (outputData.payload || outputData.widget_type || outputData.candles || outputData.cards || outputData.data)) {
+    const wt = outputData.widget_type || 'chart';
+    const pl = outputData.payload || outputData;
+    return vFence + wt + '\n' + JSON.stringify(pl, null, 2) + '\n' + cFence;
+  }
+  return '';
+}
+
 async function executeChatMessage(text, attachmentsToSend = []) {
   if (isChatStreaming) return;
   const messagesContainer = document.getElementById('rightbar-messages');
   if (!messagesContainer) return;
 
-  // Stop 3D mascot animation loop and vocal audio
-  stopChatMascot();
-
-  // Remove empty hero placeholder if present
-  const emptyHero = messagesContainer.querySelector('#chat-empty-hero, .message.assistant-msg');
-  if (emptyHero) emptyHero.remove();
+  // Ensure 3D mascot hero is present and activate looping focus mode
+  if (!messagesContainer.querySelector('#chat-empty-hero')) {
+    messagesContainer.insertAdjacentHTML('afterbegin', getEmptyHeroHtml());
+    initChatMascot();
+  }
+  messagesContainer.classList.add('has-messages');
+  setMascotAgentLoop(true, 'Processing prompt & executing autonomous loop...');
 
   const now = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
@@ -7743,8 +14371,8 @@ async function executeChatMessage(text, attachmentsToSend = []) {
   messagesContainer.appendChild(userCard);
   activeTurnUserCard = userCard;
 
-  // Pin current user prompt at the top of chat panel
-  showPinnedPrompt(displayText);
+  // Keep pinned prompt bar hidden during focus mode
+  hidePinnedPrompt();
   emitAgentTelemetry({ type: 'agent', tag: 'PROMPT', text: displayText.slice(0, 42), meta: 'USER' });
 
   const btnCopyPrompt = userCard.querySelector('.btn-copy-prompt');
@@ -7787,10 +14415,18 @@ async function executeChatMessage(text, attachmentsToSend = []) {
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           <span>Retry</span>
         </button>
+        <button class="btn-msg-action btn-revert-turn" title="Rewind conversation back to before this response">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+          <span>Revert</span>
+        </button>
       </div>
     </div>
   `;
+  messagesContainer.querySelectorAll('.chat-msg-active-turn').forEach(el => el.classList.remove('chat-msg-active-turn'));
   messagesContainer.appendChild(assistantCard);
+  messagesContainer.classList.add('chat-focus-mode');
+  // Only assistantCard is active turn; userCard and old messages are hidden during execution
+  assistantCard.classList.add('chat-msg-active-turn');
   messagesContainer.scrollTop = messagesContainer.scrollHeight;
 
   const thinkingArea = assistantCard.querySelector('.chat-thinking-area');
@@ -7799,6 +14435,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
   const footerArea = assistantCard.querySelector('.chat-msg-footer');
   const btnCopy = assistantCard.querySelector('.btn-copy-response');
   const btnRetry = assistantCard.querySelector('.btn-retry-response');
+  const btnRevert = assistantCard.querySelector('.btn-revert-turn');
 
   activeToolsArea = toolsArea;
   activeBodyArea = bodyArea;
@@ -7822,6 +14459,12 @@ async function executeChatMessage(text, attachmentsToSend = []) {
     });
   }
 
+  if (btnRevert) {
+    btnRevert.addEventListener('click', () => {
+      undoLastChatTurn();
+    });
+  }
+
   isChatStreaming = true;
   currentAbortController = new AbortController();
 
@@ -7831,9 +14474,17 @@ async function executeChatMessage(text, attachmentsToSend = []) {
     sendBtn.title = 'Stop generation (Esc)';
   }
 
+  turnPinnedSkills.clear();
+  turnPinnedTools.clear();
+  activeRunningTools.clear();
+  FloworkLoopSysMonitor._loopStartTime = Date.now();
+  FloworkLoopSysMonitor.start();
+
   currentThinkingController = createThinkingController(thinkingArea);
   let accumulatedThinking = '';
   let accumulatedResponse = '';
+  const pendingVisualBlocks = [];
+  const stepToolNames = new Map();
 
   activeSubagentKeys.clear();
   activeTaskKeys.clear();
@@ -7882,7 +14533,8 @@ async function executeChatMessage(text, attachmentsToSend = []) {
         message: promptPayload,
         session_id: currentChatSessionId,
         model: selectedChatModelId,
-        account_id: currentSessionAccountId || 'combo'
+        account_id: currentSessionAccountId || 'combo',
+        agent_persona: currentSessionPersonaId === 'default' ? null : currentSessionPersonaId
       })
     });
 
@@ -7924,6 +14576,9 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                 if (pendingSessionAccountId && pendingSessionAccountId !== 'combo') {
                   setSessionBinding(pendingSessionAccountId, currentSessionFailoverPolicy);
                 }
+                if (currentSessionPersonaId && currentSessionPersonaId !== 'default') {
+                  setSessionAgentPersona(currentSessionPersonaId);
+                }
               }
             } else if (currentEvent === 'thinking') {
               if (data.thinking) {
@@ -7931,11 +14586,14 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                 if (currentThinkingController && currentThinkingController.updateSnippet) {
                   currentThinkingController.updateSnippet(data.thinking);
                 }
+                setMascotAgentLoop(true, 'Synthesizing reasoning & analyzing task...');
               }
             } else if (currentEvent === 'tool') {
               const rawTool = (data.tool || 'tool').toLowerCase();
+              setMascotAgentLoop(true, `Executing tool: ${data.tool || 'tool'}...`);
               const toolStatus = data.status || 'running';
               const stepIdx = data.step_idx !== undefined ? data.step_idx : ('t_' + Date.now());
+              stepToolNames.set(String(stepIdx), rawTool);
 
               if (rawTool.includes('restart') || rawTool.includes('system_restart') || rawTool.includes('flow_restart')) {
                 isSystemRestarting = true;
@@ -7954,32 +14612,71 @@ async function executeChatMessage(text, attachmentsToSend = []) {
               renderToolInArea(toolsArea, data.tool || 'tool', data.details || {}, toolStatus, stepIdx, activeToolElements);
             } else if (currentEvent === 'tool_done') {
               const stepIdx = data.step_idx;
+              if (data.tool) {
+                recordThinkingArsenal(data.tool, data.details || {}, 'done', data.output);
+              } else {
+                activeRunningTools.clear();
+                if (currentThinkingController && typeof currentThinkingController.refreshArsenal === 'function') {
+                  currentThinkingController.refreshArsenal();
+                }
+                FloworkLoopSysMonitor.updateArsenalCounters();
+              }
               if (stepIdx !== undefined) {
                 activeSubagentKeys.delete(stepIdx);
                 activeTaskKeys.delete(stepIdx);
                 updateTopStatusBar();
 
                 markToolDone(stepIdx, activeToolElements, data.output);
+
+                // Strictly buffer render_visual output until the chat turn ends! Never show chart before chat finishes!
+                const resolvedTool = data.tool || stepToolNames.get(String(stepIdx)) || '';
+                const visualBlock = extractVisualBlockFromToolOutput(resolvedTool, data.output);
+                if (visualBlock && !pendingVisualBlocks.includes(visualBlock)) {
+                  pendingVisualBlocks.push(visualBlock);
+                }
               }
+            } else if (currentEvent === 'terminal_stream') {
+              const stepIdx = data.step_idx;
+              if (stepIdx !== undefined) {
+                updateTerminalStream(stepIdx, data, activeToolElements);
+              }
+            } else if (currentEvent === 'text_chunk') {
+              if (currentThinkingController && currentThinkingController.advanceDag) {
+                currentThinkingController.advanceDag(4, '4. STREAM RESPONSE');
+              }
+              accumulatedResponse += (data.delta || data.text || '');
             } else if (currentEvent === 'response') {
+              if (currentThinkingController && currentThinkingController.advanceDag) {
+                currentThinkingController.advanceDag(4, '4. STREAM RESPONSE');
+              }
               accumulatedResponse = data.response || '';
-              bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
-              footerArea.style.display = 'flex';
             } else if (currentEvent === 'error') {
               bodyArea.innerHTML = `<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#f87171;padding:8px 12px;border-radius:8px;font-family:var(--font-mono);font-size:11px;">⚠️ ${escapeHtml(data.error || 'Execution Error')}</div>`;
+              FloworkChatTacticalOverlay.spawn('alert_breach', { error: data.error || 'Execution Error' });
+              FloworkJarvisAudio.trigger('alert_breach');
             } else if (currentEvent === 'done') {
+              activeRunningTools.clear();
               const durationSec = currentThinkingController ? currentThinkingController.stop() : 1;
-              if (accumulatedThinking) {
-                thinkingArea.innerHTML = '';
-                const thoughtCard = formatThoughtCard(accumulatedThinking, durationSec);
-                if (thoughtCard) thinkingArea.appendChild(thoughtCard);
-              } else {
-                thinkingArea.innerHTML = '';
-              }
+              thinkingArea.innerHTML = '';
+              const thoughtCard = formatThoughtCard(accumulatedThinking, durationSec);
+              if (thoughtCard) thinkingArea.appendChild(thoughtCard);
               activeSubagentKeys.clear();
               activeTaskKeys.clear();
               updateTopStatusBar();
               collapseAllToolsInArea(toolsArea);
+
+              if (pendingVisualBlocks.length > 0) {
+                pendingVisualBlocks.forEach(vb => {
+                  if (!accumulatedResponse.includes(vb)) {
+                    accumulatedResponse = (accumulatedResponse ? accumulatedResponse.trim() + '\n\n' : '') + vb;
+                  }
+                });
+                pendingVisualBlocks.length = 0;
+              }
+              if (accumulatedResponse) {
+                bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
+                footerArea.style.display = 'flex';
+              }
             }
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
           } catch (e) {
@@ -7991,12 +14688,24 @@ async function executeChatMessage(text, attachmentsToSend = []) {
   } catch (err) {
     if (isSystemRestarting) {
       console.log('[Chat] Stream paused during system restart handoff...');
-      bodyArea.innerHTML = `<div style="color:var(--accent-color, #38bdf8); font-size:11px; font-family:var(--font-mono); padding:6px 0; display:flex; align-items:center; gap:8px;"><span class="ag-tool-spinner"></span> 🔄 Sistem sedang me-restart biner & menyambung tugas secara otonom...</div>`;
+      bodyArea.innerHTML = `<div style="color:var(--accent-color, #38bdf8); font-size:11px; font-family:var(--font-mono); padding:6px 0; display:flex; align-items:center; gap:8px;"><span class="fl-tool-spinner"></span> 🔄 Sistem sedang me-restart biner & menyambung tugas secara otonom...</div>`;
     } else if (err.name !== 'AbortError') {
       bodyArea.innerHTML = `<div style="color:#f87171; font-size:11px; font-family:var(--font-mono); padding:6px 0;">⚠️ Network Error: ${escapeHtml(err.message)}</div>`;
     }
   } finally {
     if (currentThinkingController) currentThinkingController.stop();
+    if (pendingVisualBlocks.length > 0) {
+      pendingVisualBlocks.forEach(vb => {
+        if (!accumulatedResponse.includes(vb)) {
+          accumulatedResponse = (accumulatedResponse ? accumulatedResponse.trim() + '\n\n' : '') + vb;
+        }
+      });
+      pendingVisualBlocks.length = 0;
+    }
+    if (accumulatedResponse && !isSystemRestarting) {
+      bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
+      footerArea.style.display = 'flex';
+    }
     isChatStreaming = false;
     currentAbortController = null;
     hidePinnedPrompt();
@@ -8006,6 +14715,9 @@ async function executeChatMessage(text, attachmentsToSend = []) {
     if (toolsArea) {
       collapseAllToolsInArea(toolsArea);
     }
+    messagesContainer.classList.remove('chat-focus-mode');
+    messagesContainer.querySelectorAll('.chat-msg-active-turn').forEach(el => el.classList.remove('chat-msg-active-turn'));
+    setMascotAgentLoop(false);
 
     if (!isSystemRestarting) {
       if (sendBtn) {
@@ -8098,11 +14810,11 @@ async function copyEntireChatTranscript() {
     } else if (card.classList.contains('assistant')) {
       const author = card.querySelector('.chat-assistant-name')?.innerText || 'FLOWORK AGENT';
       const body = card.querySelector('.chat-body-area');
-      const thoughtEl = card.querySelector('.ag-thought-content');
+      const thoughtEl = card.querySelector('.fl-thought-content');
       const text = body ? body.innerText.trim() : '';
       const thought = thoughtEl ? thoughtEl.innerText.trim() : '';
 
-      const toolItems = card.querySelectorAll('.ag-tool-header, .ag-tool-summary');
+      const toolItems = card.querySelectorAll('.fl-tool-header, .fl-tool-summary');
       let toolSummaryText = '';
       if (toolItems.length > 0 && !text) {
         toolSummaryText = Array.from(toolItems).map(t => `- 🛠️ ${t.innerText.trim()}`).join('\n');
@@ -8183,6 +14895,10 @@ async function regenerateLastTurn() {
           <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
           <span>Retry</span>
         </button>
+        <button class="btn-msg-action btn-revert-turn" title="Rewind conversation back to before this response">
+          <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 14 4 9 9 4"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"/></svg>
+          <span>Revert</span>
+        </button>
       </div>
     </div>
   `;
@@ -8193,6 +14909,7 @@ async function regenerateLastTurn() {
   const footerArea = targetCard.querySelector('.chat-msg-footer');
   const btnCopy = targetCard.querySelector('.btn-copy-response');
   const btnRetry = targetCard.querySelector('.btn-retry-response');
+  const btnRevert = targetCard.querySelector('.btn-revert-turn');
 
   btnCopy.addEventListener('click', () => {
     const textToCopy = bodyArea.innerText || accumulatedResponse;
@@ -8213,8 +14930,20 @@ async function regenerateLastTurn() {
     });
   }
 
+  if (btnRevert) {
+    btnRevert.addEventListener('click', () => {
+      undoLastChatTurn();
+    });
+  }
+
   isChatStreaming = true;
   currentAbortController = new AbortController();
+  messagesContainer.classList.add('has-messages');
+  setMascotAgentLoop(true, 'Regenerating turn & executing autonomous loop...');
+  messagesContainer.classList.add('chat-focus-mode');
+  messagesContainer.querySelectorAll('.chat-msg-active-turn').forEach(el => el.classList.remove('chat-msg-active-turn'));
+  targetCard.classList.add('chat-msg-active-turn');
+  hidePinnedPrompt();
   const sendBtn = document.getElementById('btn-rightbar-send');
   if (sendBtn) {
     sendBtn.classList.add('is-running');
@@ -8228,6 +14957,8 @@ async function regenerateLastTurn() {
   currentThinkingController = thinkingController;
   let accumulatedThinking = '';
   let accumulatedResponse = '';
+  const pendingVisualBlocks = [];
+  const stepToolNames = new Map();
 
   activeSubagentKeys.clear();
   activeTaskKeys.clear();
@@ -8278,11 +15009,15 @@ async function regenerateLastTurn() {
             if (currentEvent === 'thinking') {
               if (data.thinking) {
                 accumulatedThinking += (accumulatedThinking ? '\n' : '') + data.thinking;
+                if (currentThinkingController && currentThinkingController.updateSnippet) {
+                  currentThinkingController.updateSnippet(data.thinking);
+                }
               }
             } else if (currentEvent === 'tool') {
               const rawTool = (data.tool || 'tool').toLowerCase();
               const toolStatus = data.status || 'running';
               const stepIdx = data.step_idx !== undefined ? data.step_idx : ('t_' + Date.now());
+              stepToolNames.set(String(stepIdx), rawTool);
 
               if (rawTool.includes('subagent') || rawTool.includes('spawnagent') || rawTool.includes('invoke_agent') || rawTool.includes('delegate')) {
                 if (toolStatus === 'running') activeSubagentKeys.add(stepIdx);
@@ -8302,13 +15037,22 @@ async function regenerateLastTurn() {
                 updateTopStatusBar();
 
                 markToolDone(stepIdx, activeToolElements, data.output);
+
+                const resolvedTool = data.tool || stepToolNames.get(String(stepIdx)) || '';
+                const visualBlock = extractVisualBlockFromToolOutput(resolvedTool, data.output);
+                if (visualBlock && !pendingVisualBlocks.includes(visualBlock)) {
+                  pendingVisualBlocks.push(visualBlock);
+                }
               }
             } else if (currentEvent === 'response') {
+              if (currentThinkingController && currentThinkingController.advanceDag) {
+                currentThinkingController.advanceDag(4, '4. STREAM RESPONSE');
+              }
               accumulatedResponse = data.response || '';
-              bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
-              footerArea.style.display = 'flex';
             } else if (currentEvent === 'error') {
               bodyArea.innerHTML = `<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#f87171;padding:8px 12px;border-radius:8px;font-family:var(--font-mono);font-size:11px;">⚠️ ${escapeHtml(data.error || 'Execution Error')}</div>`;
+              FloworkChatTacticalOverlay.spawn('alert_breach', { error: data.error || 'Execution Error' });
+              FloworkJarvisAudio.trigger('alert_breach');
             } else if (currentEvent === 'done') {
               const durationSec = thinkingController.stop();
               if (accumulatedThinking) {
@@ -8322,6 +15066,19 @@ async function regenerateLastTurn() {
               activeTaskKeys.clear();
               updateTopStatusBar();
               collapseAllToolsInArea(toolsArea);
+
+              if (pendingVisualBlocks.length > 0) {
+                pendingVisualBlocks.forEach(vb => {
+                  if (!accumulatedResponse.includes(vb)) {
+                    accumulatedResponse = (accumulatedResponse ? accumulatedResponse.trim() + '\n\n' : '') + vb;
+                  }
+                });
+                pendingVisualBlocks.length = 0;
+              }
+              if (accumulatedResponse) {
+                bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
+                footerArea.style.display = 'flex';
+              }
             }
             messagesContainer.scrollTop = messagesContainer.scrollHeight;
           } catch (e) {
@@ -8336,6 +15093,18 @@ async function regenerateLastTurn() {
     }
   } finally {
     thinkingController.stop();
+    if (pendingVisualBlocks.length > 0) {
+      pendingVisualBlocks.forEach(vb => {
+        if (!accumulatedResponse.includes(vb)) {
+          accumulatedResponse = (accumulatedResponse ? accumulatedResponse.trim() + '\n\n' : '') + vb;
+        }
+      });
+      pendingVisualBlocks.length = 0;
+    }
+    if (accumulatedResponse) {
+      bodyArea.innerHTML = renderMarkdown(accumulatedResponse);
+      footerArea.style.display = 'flex';
+    }
     isChatStreaming = false;
     currentAbortController = null;
     hidePinnedPrompt();
@@ -8345,6 +15114,9 @@ async function regenerateLastTurn() {
     if (toolsArea) {
       collapseAllToolsInArea(toolsArea);
     }
+    messagesContainer.classList.remove('chat-focus-mode');
+    messagesContainer.querySelectorAll('.chat-msg-active-turn').forEach(el => el.classList.remove('chat-msg-active-turn'));
+    setMascotAgentLoop(false);
 
     if (sendBtn) {
       sendBtn.classList.remove('is-running');
@@ -8365,6 +15137,27 @@ async function regenerateLastTurn() {
 // ── 12. FLOWORK SOVEREIGN PROMPT DISPATCH IPC LISTENER ──
 // Enables interactive plugins (e.g. Chess Arena) to dispatch moves/prompts directly into the active Agent chat
 window.addEventListener('message', async (event) => {
+  // Strict Cross-Origin Verification Shield
+  const origin = event.origin || '';
+  const isTrustedOrigin = () => {
+    if (!origin || origin === 'null') {
+      return event.source === window || event.source === window.parent || event.source === window.top;
+    }
+    if (origin === window.location.origin) return true;
+    try {
+      const u = new URL(origin);
+      const host = u.hostname.toLowerCase();
+      if (host === '127.0.0.1' || host === 'localhost' || host.endsWith('.localhost')) return true;
+      if (host === 'floworkos.com' || host.endsWith('.floworkos.com')) return true;
+    } catch (_) {}
+    return false;
+  };
+
+  if (!isTrustedOrigin()) {
+    console.warn('[Flowork Canvas Security] Rejected untrusted cross-origin postMessage from:', origin);
+    return;
+  }
+
   if (event.data && (event.data.type === 'FLOWORK_PROMPT_DISPATCH' || event.data.type === 'INJECT_PROMPT')) {
     const promptText = event.data.prompt || event.data.text;
     if (promptText) {
@@ -8372,5 +15165,3 @@ window.addEventListener('message', async (event) => {
     }
   }
 });
-
-

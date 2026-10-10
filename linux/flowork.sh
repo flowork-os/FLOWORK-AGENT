@@ -23,7 +23,7 @@ if command -v curl >/dev/null 2>&1; then
 fi
 
 NEEDS_UPDATE=false
-if [ ! -f "$APP_DIR/run.sh" ] || [ ! -d "$APP_DIR/connection" ] || [ -z "$LOCAL_VER" ]; then
+if [ ! -f "$APP_DIR/run.sh" ] || [ ! -d "$APP_DIR/connection" ] || [ ! -d "$APP_DIR/Persona" ] || [ -z "$LOCAL_VER" ]; then
   NEEDS_UPDATE=true
 elif [ -n "$REMOTE_VER" ] && [ "$REMOTE_VER" != "$LOCAL_VER" ]; then
   NEEDS_UPDATE=true
