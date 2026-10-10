@@ -409,6 +409,29 @@ if [ ! -f "$AUTH_VAULT" ] || grep -q '"is_logged_out": true' "$AUTH_VAULT" 2>/de
   fi
 fi
 
+# Sovereign Accelerated Browser Shim: Enable WebGL & SwiftShader unblock on any GPU
+mkdir -p "$SCRIPT_DIR/.FL_BIN"
+cat << 'EOF_BROWSER_WRAPPER' > "$SCRIPT_DIR/.FL_BIN/google-chrome"
+#!/usr/bin/env bash
+REAL_BIN=""
+for c in /opt/google/chrome/chrome /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+  if [ -x "$c" ] && [ "$(readlink -f "$c" 2>/dev/null)" != "$(readlink -f "$0" 2>/dev/null)" ]; then
+    REAL_BIN="$c"
+    break
+  fi
+done
+if [ -n "$REAL_BIN" ]; then
+  exec "$REAL_BIN" --ignore-gpu-blocklist --enable-webgl --enable-unsafe-swiftshader --enable-accelerated-2d-canvas "$@"
+else
+  exec /usr/bin/google-chrome "$@"
+fi
+EOF_BROWSER_WRAPPER
+chmod +x "$SCRIPT_DIR/.FL_BIN/google-chrome" 2>/dev/null || true
+cp -f "$SCRIPT_DIR/.FL_BIN/google-chrome" "$SCRIPT_DIR/.FL_BIN/google-chrome-stable" 2>/dev/null || true
+cp -f "$SCRIPT_DIR/.FL_BIN/google-chrome" "$SCRIPT_DIR/.FL_BIN/chromium" 2>/dev/null || true
+cp -f "$SCRIPT_DIR/.FL_BIN/google-chrome" "$SCRIPT_DIR/.FL_BIN/chromium-browser" 2>/dev/null || true
+export PATH="$SCRIPT_DIR/.FL_BIN:$PATH"
+
 echo "[X-Flow] Starting Sovereign Canvas Host on http://127.0.0.1:19890..."
 exec ./x-flow "$@"
 
