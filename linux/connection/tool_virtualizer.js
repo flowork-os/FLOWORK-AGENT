@@ -252,6 +252,10 @@ class FloworkOSToolVirtualizer {
                             if (!decl.parameters.required.includes('reason')) {
                                 decl.parameters.required.push('reason');
                             }
+
+                            // Prune non-spec root attributes on function declarations that cause Upstream Protobuf Schema Rejection
+                            if (decl.keywords !== undefined) delete decl.keywords;
+                            if (decl.exclude_keywords !== undefined) delete decl.exclude_keywords;
                         }
                     }
                 }
