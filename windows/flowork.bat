@@ -8,6 +8,13 @@ setlocal enabledelayedexpansion
 set "SCRIPT_DIR=%~dp0"
 cd /d "%SCRIPT_DIR%"
 
+REM Prepend portable Node.js to PATH if present
+if exist "%SCRIPT_DIR%node\node.exe" (
+    set "PATH=%SCRIPT_DIR%node;%PATH%"
+) else if exist "C:\flowork\node\node.exe" (
+    set "PATH=C:\flowork\node;%PATH%"
+)
+
 set "UPSTREAM_REPO=flowork-os/FLOWORK-AGENT"
 set "RAW_VERSION_URL=https://raw.githubusercontent.com/%UPSTREAM_REPO%/main/windows/VERSION"
 set "ARCHIVE_URL=https://github.com/%UPSTREAM_REPO%/archive/refs/heads/main.zip"

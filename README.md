@@ -150,7 +150,7 @@ Our official installers are lightweight net-bootstrappers that stream and verify
 
 | Platform | Installer File | How to Launch | Direct Download |
 | :--- | :--- | :--- | :---: |
-| 🪟 **Windows** | **`Flowork-Agent-Installer.exe`** | Place in your chosen folder and double-click | [**Download .exe**](https://github.com/flowork-os/FLOWORK-AGENT/releases/latest/download/Flowork-Agent-Installer.exe) |
+| 🪟 **Windows** | **`Flowork-Agent-Installer.exe`** | Double-click to auto-install Flowork OS & Node.js to C:\flowork | [**Download .exe**](https://github.com/flowork-os/FLOWORK-AGENT/releases/latest/download/Flowork-Agent-Installer.exe) |
 | 🐧 **Linux** | **`Flowork-Agent-Installer.desktop`** | Double-click from Desktop or File Manager | [**Download .desktop**](https://github.com/flowork-os/FLOWORK-AGENT/releases/latest/download/Flowork-Agent-Installer.desktop) |
 
 #### Terminal 1-Liner (Linux):

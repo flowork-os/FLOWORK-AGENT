@@ -48,6 +48,32 @@ Get-Process -Name "x-flow" -ErrorAction SilentlyContinue | Stop-Process -Force -
 # 2.5 Ensure Sovereign Router Switchboard (:9099) is running
 $flBin = Join-Path $ScriptDir ".FL_BIN"
 if (-not (Test-Path $flBin)) { New-Item -ItemType Directory -Path $flBin -Force | Out-Null }
+
+$NodeDir = Join-Path $ScriptDir "node"
+if (Test-Path (Join-Path $NodeDir "node.exe")) {
+    $env:PATH = "$NodeDir;" + $env:PATH
+} elseif (Test-Path "C:\flowork\node\node.exe") {
+    $env:PATH = "C:\flowork\node;" + $env:PATH
+} else {
+    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
+        Write-Host "[X-Flow] ⚡ Node.js not found in PATH. Auto-installing portable Node.js LTS..." -ForegroundColor Yellow
+        $nodeZip = Join-Path $env:TEMP "node_temp.zip"
+        $nodeExt = Join-Path $env:TEMP "node_temp_ext"
+        try {
+            Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-win-x64.zip" -OutFile $nodeZip -UseBasicParsing
+            Expand-Archive -Path $nodeZip -DestinationPath $nodeExt -Force
+            $srcFolder = Get-ChildItem -Path $nodeExt -Directory | Select-Object -First 1
+            Move-Item -Path $srcFolder.FullName -Destination $NodeDir -Force
+            Remove-Item -Path $nodeExt -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -Path $nodeZip -Force -ErrorAction SilentlyContinue
+            $env:PATH = "$NodeDir;" + $env:PATH
+            Write-Host "[X-Flow] ✅ Portable Node.js installed successfully." -ForegroundColor Green
+        } catch {
+            Write-Warning "[X-Flow] Could not auto-download Node.js: $_"
+        }
+    }
+}
+
 $routerPortListening = $false
 try {
     $conns = Get-NetTCPConnection -LocalPort 9099 -ErrorAction SilentlyContinue
