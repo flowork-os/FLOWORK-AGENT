@@ -1,84 +1,79 @@
 @echo off
-REM X-Flow Desktop Canvas Launcher — Windows Multi-OS Architecture
+REM =============================================================================
+REM 🚀 FLOWORK OS — NATIVE CANVAS LAUNCHER & POLYGLOT ENGINE (WINDOWS)
+REM Target: C:\flowork
 REM Co-authored-by: Flowork OS <agent@floworkos.com>
+REM =============================================================================
 
-cd /d "%~dp0"
-set SCRIPT_DIR=%~dp0
+set "SCRIPT_DIR=C:\flowork"
+cd /d "%SCRIPT_DIR%"
 
-REM Ensure portable or system Node.js is accessible in PATH
-if exist "%SCRIPT_DIR%node\node.exe" (
-    set "PATH=%SCRIPT_DIR%node;%PATH%"
-) else if exist "C:\flowork\node\node.exe" (
-    set "PATH=C:\flowork\node;%PATH%"
+REM 1. Detect or Fallback Node.js Runtime
+set "NODE_BIN=node"
+where node >nul 2>&1
+if errorlevel 1 goto :FIND_NODE
+if exist "%SCRIPT_DIR%\node\node.exe" set "NODE_BIN=%SCRIPT_DIR%\node\node.exe"
+goto :NODE_DONE
+
+:FIND_NODE
+if exist "%SCRIPT_DIR%\node\node.exe" (
+    set "NODE_BIN=%SCRIPT_DIR%\node\node.exe"
+    goto :NODE_DONE
 )
-
-REM Flowork Sovereign Cloud-Native Self-Healer (GitHub Upstream Restore)
-if not exist "%SCRIPT_DIR%connection" (
-    echo [X-Flow] Vital ecosystem component(s) missing. Restoring from GitHub upstream...
-    powershell -NoProfile -Command "$zip = Join-Path $env:TEMP 'flowork_agent.zip'; Invoke-WebRequest -Uri 'https://github.com/flowork-os/FLOWORK-AGENT/archive/refs/heads/main.zip' -OutFile $zip; Expand-Archive -Path $zip -DestinationPath (Join-Path $env:TEMP 'flw_ext') -Force; Copy-Item -Path (Join-Path $env:TEMP 'flw_ext\FLOWORK-AGENT-main\WINDOWS\*') -Destination '%SCRIPT_DIR%' -Recurse -Force; Remove-Item -Path (Join-Path $env:TEMP 'flw_ext') -Recurse -Force; Remove-Item -Path $zip -Force" >nul 2>&1
+if exist "C:\Program Files\nodejs\node.exe" (
+    set "NODE_BIN=C:\Program Files\nodejs\node.exe"
+    goto :NODE_DONE
 )
+echo [X-Flow] Node.js runtime not found. Fetching standalone runtime into %SCRIPT_DIR%\node...
+if not exist "%SCRIPT_DIR%\node" mkdir "%SCRIPT_DIR%\node"
+powershell -NoProfile -Command "try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('https://nodejs.org/dist/v20.18.0/win-x64/node.exe', '%SCRIPT_DIR%\node\node.exe') } catch {}"
+if exist "%SCRIPT_DIR%\node\node.exe" set "NODE_BIN=%SCRIPT_DIR%\node\node.exe"
 
+:NODE_DONE
 echo ========================================================
 echo [X-Flow] Starting Sovereign Canvas Host on Windows...
+echo [X-Flow] Target Directory: %SCRIPT_DIR%
 echo ========================================================
 
-REM 1. Set Portable Environment
-set "FLOWORK_PORTABLE_ROOT=%SCRIPT_DIR%portable-home"
-set "FLOWAI_CLI_HOME=%SCRIPT_DIR%portable-home"
+REM 2. Set Portable Environment
+set "FLOWORK_PORTABLE_ROOT=%SCRIPT_DIR%\portable-home"
+set "FLOWAI_CLI_HOME=%SCRIPT_DIR%\portable-home"
 
 REM Dynamic Portability Shield: purge stale cross-OS or non-existent workspace path
-set "WS_CFG=%SCRIPT_DIR%.flowork\config\active_workspace.json"
+set "WS_CFG=%SCRIPT_DIR%\.flowork\config\active_workspace.json"
 if exist "%WS_CFG%" (
     findstr /C:"/home/" "%WS_CFG%" >nul 2>&1 && del /F /Q "%WS_CFG%" >nul 2>&1
     findstr /C:"/Users/" "%WS_CFG%" >nul 2>&1 && del /F /Q "%WS_CFG%" >nul 2>&1
 )
 
-REM 2. Terminate stale x-flow instances
-taskkill /F /IM x-flow.exe >nul 2>&1
+REM 3. Terminate stale x-flow instances
+taskkill /F /IM x-flow.exe >nul 2>&1 || (call )
 
-REM 2.5 Ensure Sovereign Router Switchboard (:9099) is running
-if not exist "%SCRIPT_DIR%.FL_BIN" mkdir "%SCRIPT_DIR%.FL_BIN"
+REM 4. Ensure Sovereign Router Switchboard (:9099) is running
+if not exist "%SCRIPT_DIR%\.FL_BIN" mkdir "%SCRIPT_DIR%\.FL_BIN"
 netstat -ano | findstr /C:":9099 " >nul 2>&1
-if errorlevel 1 (
-    where node >nul 2>&1
-    if errorlevel 1 (
-        if exist "%SCRIPT_DIR%node\node.exe" (
-            set "PATH=%SCRIPT_DIR%node;%PATH%"
-        ) else if exist "C:\flowork\node\node.exe" (
-            set "PATH=C:\flowork\node;%PATH%"
-        ) else (
-            echo [X-Flow] ⚡ Node.js not detected in PATH. Auto-installing portable Node.js LTS...
-            powershell -NoProfile -Command "$zip=Join-Path $env:TEMP 'node_temp.zip'; $ext=Join-Path $env:TEMP 'node_temp_ext'; try { Invoke-WebRequest -Uri 'https://nodejs.org/dist/v20.18.0/node-v20.18.0-win-x64.zip' -OutFile $zip -UseBasicParsing; Expand-Archive -Path $zip -DestinationPath $ext -Force; $src = Get-ChildItem -Path $ext -Directory | Select-Object -First 1; Move-Item -Path $src.FullName -Destination '%SCRIPT_DIR%node' -Force; Remove-Item -Path $ext -Recurse -Force; Remove-Item -Path $zip -Force; Write-Host '[X-Flow] ✅ Portable Node.js installed successfully.' -ForegroundColor Green } catch { Write-Warning '[X-Flow] Could not auto-download Node.js: $_' }"
-            if exist "%SCRIPT_DIR%node\node.exe" set "PATH=%SCRIPT_DIR%node;%PATH%"
-        )
-    )
-    where node >nul 2>&1
-    if not errorlevel 1 (
-        echo [X-Flow] Launching Sovereign Router Switchboard on port 9099...
-        start /B "" node "%SCRIPT_DIR%connection\router.js" >> "%SCRIPT_DIR%.FL_BIN\conector.log" 2>&1
-    )
-)
+if not errorlevel 1 goto :ROUTER_OK
 
-REM 3. Check if x-flow.exe exists
-if exist "x-flow.exe" (
-    echo [X-Flow] Launching native Windows binary (x-flow.exe)...
-    start "" "x-flow.exe" %*
-) else if exist "flowork\flowork.exe" (
-    echo [X-Flow] Copying native Windows binary from flowork\flowork.exe...
-    copy /Y "flowork\flowork.exe" "x-flow.exe" >nul 2>&1
-    start "" "x-flow.exe" %*
-) else (
-    echo [X-Flow] Binary not found. Building release binary with Cargo...
-    if exist "core\Cargo.toml" (
-        cargo build --release --manifest-path core\Cargo.toml
-        copy /Y "core\target\release\x-flow.exe" ".\x-flow.exe"
-        start "" "x-flow.exe" %*
-    ) else if exist "..\core\Cargo.toml" (
-        cargo build --release --manifest-path ..\core\Cargo.toml
-        copy /Y "..\core\target\release\x-flow.exe" ".\x-flow.exe"
-        start "" "x-flow.exe" %*
-    ) else (
-        echo [ERROR] Neither binary nor core source code found.
-        pause
-    )
-)
+echo [X-Flow] Launching Sovereign Router Switchboard on port 9099...
+start /MIN "Flowork Router (:9099)" "%NODE_BIN%" "%SCRIPT_DIR%\connection\router.js"
+timeout /t 2 /nobreak >nul 2>&1
+
+:ROUTER_OK
+REM 5. Native binary x-flow will launch Canvas UI in standalone App Mode
+echo [X-Flow] Sovereign Canvas Host ready on http://127.0.0.1:19890
+
+REM 6. Launch native x-flow binary in foreground
+if exist "%SCRIPT_DIR%\x-flow.exe" goto :RUN_XFLOW
+if exist "%SCRIPT_DIR%\flowork\flowork.exe" goto :COPY_XFLOW
+
+echo [ERROR] Neither x-flow.exe nor core binary found in %SCRIPT_DIR%.
+pause
+exit /b 1
+
+:COPY_XFLOW
+echo [X-Flow] Copying native Windows binary from flowork\flowork.exe...
+copy /Y "%SCRIPT_DIR%\flowork\flowork.exe" "%SCRIPT_DIR%\x-flow.exe" >nul 2>&1
+
+:RUN_XFLOW
+echo [X-Flow] Launching native Windows binary: x-flow.exe
+"%SCRIPT_DIR%\x-flow.exe" %*

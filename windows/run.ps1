@@ -1,38 +1,47 @@
-# X-Flow Desktop Canvas Launcher — Windows PowerShell Multi-OS Architecture
+# =============================================================================
+# 🚀 FLOWORK OS — NATIVE CANVAS LAUNCHER & POLYGLOT ENGINE (POWERSHELL)
+# Target: C:\flowork
 # Co-authored-by: Flowork OS <agent@floworkos.com>
+# =============================================================================
 
-$ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $ScriptDir
+$TargetDir = "C:\flowork"
+if (-not (Test-Path $TargetDir)) { New-Item -ItemType Directory -Path $TargetDir -Force | Out-Null }
+Set-Location $TargetDir
 
-# Flowork Sovereign Cloud-Native Self-Healer (GitHub Upstream Restore)
-$ConectionDir = Join-Path $ScriptDir "connection"
-$CanvasDir = Join-Path $ScriptDir "canvas-ui"
-if ((-not (Test-Path $ConectionDir)) -or (-not (Test-Path $CanvasDir))) {
-    Write-Host "[X-Flow] 🌐 Vital ecosystem component(s) missing. Restoring from GitHub upstream..." -ForegroundColor Cyan
-    $zipPath = Join-Path $env:TEMP "flowork_agent.zip"
-    $extPath = Join-Path $env:TEMP "flw_ext"
+# 1. Resolve Node.js runtime
+$NodeBin = "node"
+if (Test-Path (Join-Path $TargetDir "node\node.exe")) {
+    $NodeBin = Join-Path $TargetDir "node\node.exe"
+} elseif (Get-Command "node" -ErrorAction SilentlyContinue) {
+    $NodeBin = "node"
+} elseif (Test-Path "C:\Program Files\nodejs\node.exe") {
+    $NodeBin = "C:\Program Files\nodejs\node.exe"
+} else {
+    Write-Host "[X-Flow] ⚡ Fetching standalone Node.js runtime into $TargetDir\node..." -ForegroundColor Yellow
+    $nodeDir = Join-Path $TargetDir "node"
+    if (-not (Test-Path $nodeDir)) { New-Item -ItemType Directory -Path $nodeDir -Force | Out-Null }
     try {
-        Invoke-WebRequest -Uri "https://github.com/flowork-os/FLOWORK-AGENT/archive/refs/heads/main.zip" -OutFile $zipPath
-        Expand-Archive -Path $zipPath -DestinationPath $extPath -Force
-        Copy-Item -Path (Join-Path $extPath "FLOWORK-AGENT-main\WINDOWS\*") -Destination $ScriptDir -Recurse -Force
-        Remove-Item -Path $extPath -Recurse -Force -ErrorAction SilentlyContinue
-        Remove-Item -Path $zipPath -Force -ErrorAction SilentlyContinue
-        Write-Host "[X-Flow] ✅ Ecosystem components restored successfully." -ForegroundColor Green
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        $wc = New-Object System.Net.WebClient
+        $wc.DownloadFile("https://nodejs.org/dist/v20.18.0/win-x64/node.exe", (Join-Path $nodeDir "node.exe"))
+        $NodeBin = Join-Path $nodeDir "node.exe"
+        Write-Host "[X-Flow] ✅ Node.js runtime ready." -ForegroundColor Green
     } catch {
-        Write-Warning "[X-Flow] Cloud self-healing notice: $_"
+        Write-Warning "[X-Flow] Could not download standalone Node.js: $_"
     }
 }
 
 Write-Host "========================================================" -ForegroundColor Cyan
 Write-Host "[X-Flow] Starting Sovereign Canvas Host (PowerShell)..." -ForegroundColor Cyan
+Write-Host "[X-Flow] Root Path: $TargetDir" -ForegroundColor Cyan
 Write-Host "========================================================" -ForegroundColor Cyan
 
-# 1. Set Portable Environment
-$env:FLOWORK_PORTABLE_ROOT = Join-Path $ScriptDir "portable-home"
-$env:FLOWAI_CLI_HOME = Join-Path $ScriptDir "portable-home"
+# 2. Set Portable Environment
+$env:FLOWORK_PORTABLE_ROOT = Join-Path $TargetDir "portable-home"
+$env:FLOWAI_CLI_HOME = Join-Path $TargetDir "portable-home"
 
 # Dynamic Portability Shield: purge stale cross-OS or non-existent workspace path
-$WsCfg = Join-Path $ScriptDir ".flowork\config\active_workspace.json"
+$WsCfg = Join-Path $TargetDir ".flowork\config\active_workspace.json"
 if (Test-Path $WsCfg) {
     try {
         $cfg = Get-Content $WsCfg -Raw | ConvertFrom-Json
@@ -42,68 +51,32 @@ if (Test-Path $WsCfg) {
     } catch {}
 }
 
-# 2. Kill previous stale instances if running
+# 3. Kill previous stale instances if running
 Get-Process -Name "x-flow" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
 
-# 2.5 Ensure Sovereign Router Switchboard (:9099) is running
-$flBin = Join-Path $ScriptDir ".FL_BIN"
+# 4. Ensure Sovereign Router Switchboard (:9099) is running
+$flBin = Join-Path $TargetDir ".FL_BIN"
 if (-not (Test-Path $flBin)) { New-Item -ItemType Directory -Path $flBin -Force | Out-Null }
-
-$NodeDir = Join-Path $ScriptDir "node"
-if (Test-Path (Join-Path $NodeDir "node.exe")) {
-    $env:PATH = "$NodeDir;" + $env:PATH
-} elseif (Test-Path "C:\flowork\node\node.exe") {
-    $env:PATH = "C:\flowork\node;" + $env:PATH
-} else {
-    if (-not (Get-Command "node" -ErrorAction SilentlyContinue)) {
-        Write-Host "[X-Flow] ⚡ Node.js not found in PATH. Auto-installing portable Node.js LTS..." -ForegroundColor Yellow
-        $nodeZip = Join-Path $env:TEMP "node_temp.zip"
-        $nodeExt = Join-Path $env:TEMP "node_temp_ext"
-        try {
-            Invoke-WebRequest -Uri "https://nodejs.org/dist/v20.18.0/node-v20.18.0-win-x64.zip" -OutFile $nodeZip -UseBasicParsing
-            Expand-Archive -Path $nodeZip -DestinationPath $nodeExt -Force
-            $srcFolder = Get-ChildItem -Path $nodeExt -Directory | Select-Object -First 1
-            Move-Item -Path $srcFolder.FullName -Destination $NodeDir -Force
-            Remove-Item -Path $nodeExt -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item -Path $nodeZip -Force -ErrorAction SilentlyContinue
-            $env:PATH = "$NodeDir;" + $env:PATH
-            Write-Host "[X-Flow] ✅ Portable Node.js installed successfully." -ForegroundColor Green
-        } catch {
-            Write-Warning "[X-Flow] Could not auto-download Node.js: $_"
-        }
-    }
-}
-
 $routerPortListening = $false
 try {
     $conns = Get-NetTCPConnection -LocalPort 9099 -ErrorAction SilentlyContinue
     if ($conns) { $routerPortListening = $true }
 } catch {}
 if (-not $routerPortListening) {
-    if (Get-Command "node" -ErrorAction SilentlyContinue) {
-        Write-Host "[X-Flow] Launching Sovereign Router Switchboard on port 9099..." -ForegroundColor Cyan
-        Start-Process "node" -ArgumentList @((Join-Path $ScriptDir "connection\router.js")) -WorkingDirectory $ScriptDir -WindowStyle Hidden
-    }
+    Write-Host "[X-Flow] Launching Sovereign Router Switchboard on port 9099..." -ForegroundColor Cyan
+    Start-Process -FilePath $NodeBin -ArgumentList @((Join-Path $TargetDir "connection\router.js")) -WorkingDirectory $TargetDir -WindowStyle Hidden
+    Start-Sleep -Milliseconds 800
 }
 
-# 3. Launch native binary
-if (Test-Path ".\x-flow.exe") {
-    Start-Process ".\x-flow.exe" -ArgumentList $args
-} elseif (Test-Path "flowork\flowork.exe") {
-    Write-Host "[X-Flow] Copying native Windows binary from flowork\flowork.exe..." -ForegroundColor Cyan
-    Copy-Item "flowork\flowork.exe" ".\x-flow.exe" -Force
-    Start-Process ".\x-flow.exe" -ArgumentList $args
+# 5. Native binary x-flow will launch Canvas UI in standalone App Mode
+Write-Host "[X-Flow] Sovereign Canvas Host ready on http://127.0.0.1:19890" -ForegroundColor Green
+
+# 6. Launch native binary
+if (Test-Path (Join-Path $TargetDir "x-flow.exe")) {
+    Start-Process (Join-Path $TargetDir "x-flow.exe") -ArgumentList $args
+} elseif (Test-Path (Join-Path $TargetDir "flowork\flowork.exe")) {
+    Copy-Item (Join-Path $TargetDir "flowork\flowork.exe") (Join-Path $TargetDir "x-flow.exe") -Force
+    Start-Process (Join-Path $TargetDir "x-flow.exe") -ArgumentList $args
 } else {
-    Write-Host "[X-Flow] Binary not found. Building release binary with Cargo..." -ForegroundColor Yellow
-    if (Test-Path "core\Cargo.toml") {
-        cargo build --release --manifest-path core\Cargo.toml
-        Copy-Item "core\target\release\x-flow.exe" ".\x-flow.exe" -Force
-        Start-Process ".\x-flow.exe" -ArgumentList $args
-    } elseif (Test-Path "..\core\Cargo.toml") {
-        cargo build --release --manifest-path ..\core\Cargo.toml
-        Copy-Item "..\core\target\release\x-flow.exe" ".\x-flow.exe" -Force
-        Start-Process ".\x-flow.exe" -ArgumentList $args
-    } else {
-        Write-Error "[ERROR] Neither binary nor core source code found."
-    }
+    Write-Error "[ERROR] Native x-flow.exe binary not found."
 }

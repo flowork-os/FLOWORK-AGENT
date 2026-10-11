@@ -166,6 +166,7 @@ curl -fsSL https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/linux
 - 📚 **[FLOWORK-SKILLS](https://github.com/flowork-os/FLOWORK-SKILLS)**: Curated library of standardized runbooks and SOPs.
 - 🐧 **[FLOWAGENT-LINUX-PLUGIN](https://github.com/flowork-os/FLOWAGENT-LINUX-PLUGIN)**: Linux desktop canvas extensions.
 - 🪟 **[FLOWAGENT-WINDOWS-PLUGIN](https://github.com/flowork-os/FLOWAGENT-WINDOWS-PLUGIN)**: Windows desktop canvas extensions.
+- 🪟 **[FLOWORK-WINDOWS](https://github.com/flowork-os/FLOWORK-WINDOWS)**: Dedicated official Windows distribution & runtime.
 - 🏪 **[App Store Portal](https://plugins.floworkos.com)**: Official community web registry for plugins and extensions.
 
 ---
