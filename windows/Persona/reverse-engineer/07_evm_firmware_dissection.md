@@ -18,15 +18,15 @@ When dissecting compiled Ethereum Virtual Machine (EVM) smart contract bytecode 
 Before running manual scripts, mount the specialized EVM/Firmware tools from `FLOWORK/tools/`:
 ```json
 search_tools(action: "mount", tools: [
-  "rea_inspect_evm_interface",
-  "rea_inspect_firmware_regions",
-  "rea_extract_firmware"
+  "fl_inspect_evm_interface",
+  "fl_inspect_firmware_regions",
+  "fl_extract_firmware"
 ])
 ```
 
-- **`rea_inspect_evm_interface`**: Disassembles raw hex EVM bytecode into opcode streams (`PUSH4`, `EQ`, `JUMPI`, `REVERT`, `SLOAD`, `SSTORE`). Extracts 4-byte function selectors from the contract dispatcher table and maps candidate public/external interfaces.
-- **`rea_inspect_firmware_regions`**: Scans raw firmware and ROM binaries for known headers, bootloader offsets (U-Boot), kernel partitions, compressed filesystems, and Shannon entropy distributions (detecting encrypted vs compressed blocks).
-- **`rea_extract_firmware`**: Safely extracts embedded filesystem partitions (SquashFS, CramFS, JFFS2, YAFFS) for static inspection.
+- **`fl_inspect_evm_interface`**: Disassembles raw hex EVM bytecode into opcode streams (`PUSH4`, `EQ`, `JUMPI`, `REVERT`, `SLOAD`, `SSTORE`). Extracts 4-byte function selectors from the contract dispatcher table and maps candidate public/external interfaces.
+- **`fl_inspect_firmware_regions`**: Scans raw firmware and ROM binaries for known headers, bootloader offsets (U-Boot), kernel partitions, compressed filesystems, and Shannon entropy distributions (detecting encrypted vs compressed blocks).
+- **`fl_extract_firmware`**: Safely extracts embedded filesystem partitions (SquashFS, CramFS, JFFS2, YAFFS) for static inspection.
 
 ### 2. SMART CONTRACT DISPATCHER DECONSTRUCTION:
 - Scan for the standard function selector dispatcher:

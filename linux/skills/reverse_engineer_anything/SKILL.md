@@ -12,7 +12,7 @@ Defensive, multi-target reverse engineering SOP for extracting underlying archit
 ### Trigger Boundaries:
 - User requests extracting or understanding a feature from a binary executable, closed application, or compiled package without available source code.
 - Decompiling, disassembling, and inspecting PE (Windows), ELF (Linux), Mach-O (macOS), APK (Android), or ASAR (Electron) files.
-- Bridging REA (`morluto/rea`) tools via CLI or integrating native reverse engineering engines (Ghidra, Hopper, IDA Pro, JADX, Binwalk).
+- Native Flowork Reverse Engineering tools via CLI or integrating engines (Ghidra, Hopper, IDA Pro, JADX, Binwalk).
 - Reconstructing closed-source functionality into clean-room, unencumbered implementation code adhering to sovereign specifications.
 
 ## 2. Standard Operating Procedures
@@ -33,17 +33,17 @@ Defensive, multi-target reverse engineering SOP for extracting underlying archit
      ```
    - **Android APK**: Inspect package manifest, DEX pools, and export topologies:
      ```bash
-     node tools/rea_inspect_android_package/main.mjs --target_path /path/to/app.apk
+     node tools/fl_inspect_android_package/main.mjs --target_path /path/to/app.apk
      ```
-   - **Firmware Blob**: Perform entropy calculation and partition carving via `rea_extract_firmware`.
+   - **Firmware Blob**: Perform entropy calculation and partition carving via `fl_extract_firmware`.
 
 ### Phase 2: Engine Selection & Hybrid Decompilation
 1. **Engine Selection Protocol:**
-   - For native binaries (Linux/Windows/macOS): Route to `rea_decompile` featuring Hybrid Socket Bridge detection with graceful POSIX fallback:
+   - For native binaries (Linux/Windows/macOS): Route to `fl_decompile` featuring Hybrid Socket Bridge detection with graceful POSIX fallback:
      ```bash
-     node tools/rea_decompile/main.mjs --target_path /path/to/binary --symbol main
+     node tools/fl_decompile/main.mjs --target_path /path/to/binary --symbol main
      ```
-   - If local Ghidra / Hopper / IDA socket bridge is active, `rea_decompile` queries high-level pseudocode.
+   - If local Ghidra / Hopper / IDA socket bridge is active, `fl_decompile` queries high-level pseudocode.
    - If daemons are offline, it falls back seamlessly to Intel disassembly under Exit Code 0.
 2. **Deterministic Binary Decomposition:**
    - Extract symbol tables, exported functions, and imported dynamic link libraries:
@@ -74,6 +74,6 @@ Defensive, multi-target reverse engineering SOP for extracting underlying archit
 ## 4. Verification & Exit Code 0 Proof
 1. Verify static parsing output or CLI tool invocation:
    ```bash
-   npx -y rea-agents@latest doctor --json
+   node tools/fl_doctor/main.mjs --json
    ```
 2. For extracted code or clean-room implementation, execute test suite and confirm Exit Code 0 across all verification steps.

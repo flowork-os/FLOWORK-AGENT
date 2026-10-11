@@ -20,7 +20,7 @@ LOCAL_VER=""
 [ -f "$LOCAL_VER_FILE" ] && LOCAL_VER="$(cat "$LOCAL_VER_FILE" | tr -d '\r\n ')"
 REMOTE_VER=""
 if command -v curl >/dev/null 2>&1; then
-  REMOTE_VER="$(curl -fsSL --max-time 2 "https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/LINUX/VERSION" 2>/dev/null | tr -d '\r\n ' || true)"
+  REMOTE_VER="$(curl -fsSL --max-time 2 "https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/linux/VERSION" 2>/dev/null | tr -d '\r\n ' || true)"
 fi
 
 NEEDS_SYNC=false
@@ -40,9 +40,9 @@ if [ "$NEEDS_SYNC" = true ] && [ -n "$REMOTE_VER" ]; then
         tar -xzf "$TMP_SYNC_TAR" \
           --strip-components=2 \
           -C "$SCRIPT_DIR" \
-          --exclude="FLOWORK-AGENT-main/LINUX/portable-home/.flowork/*" \
-          --exclude="FLOWORK-AGENT-main/LINUX/.env" \
-          "FLOWORK-AGENT-main/LINUX" 2>/dev/null || true
+          --exclude="FLOWORK-AGENT-main/linux/portable-home/.flowork/*" \
+          --exclude="FLOWORK-AGENT-main/linux/.env" \
+          "FLOWORK-AGENT-main/linux" 2>/dev/null || true
         echo "$REMOTE_VER" > "$LOCAL_VER_FILE"
       else
         echo "[X-Flow] ⚠️ Corrupted update archive detected; aborting extraction."
@@ -220,7 +220,7 @@ cd "$TARGET_DIR"
 # Cloud-Native Self-Healer fallback if launcher clicked on fresh/clean directory
 if [ ! -f "$TARGET_DIR/run.sh" ] || [ ! -d "$TARGET_DIR/connection" ] || [ ! -d "$TARGET_DIR/canvas-ui" ] || [ ! -f "$TARGET_DIR/models.json" ]; then
   if command -v curl >/dev/null 2>&1 && command -v tar >/dev/null 2>&1; then
-    curl -sL "https://github.com/flowork-os/FLOWORK-AGENT/archive/refs/heads/main.tar.gz" | tar -xzf - --strip-components=2 -C "$TARGET_DIR" "FLOWORK-AGENT-main/LINUX" 2>/dev/null || true
+    curl -sL "https://github.com/flowork-os/FLOWORK-AGENT/archive/refs/heads/main.tar.gz" | tar -xzf - --strip-components=2 -C "$TARGET_DIR" "FLOWORK-AGENT-main/linux" 2>/dev/null || true
   fi
 fi
 

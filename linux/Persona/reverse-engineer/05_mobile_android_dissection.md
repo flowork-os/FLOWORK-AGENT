@@ -18,21 +18,21 @@ When dissecting Android packages (`.apk`, `.xapk`, `.aab`, `.dex`), execute stru
 Before attempting manual decompilation, mount the Android reverse engineering nano-plugs from `FLOWORK/tools/`:
 ```json
 search_tools(action: "mount", tools: [
-  "rea_inspect_android_package",
-  "rea_search_android_classes",
-  "rea_inspect_android_class",
-  "rea_inspect_android_method",
-  "rea_trace_android_references",
-  "rea_project_android_application_graph"
+  "fl_inspect_android_package",
+  "fl_search_android_classes",
+  "fl_inspect_android_class",
+  "fl_inspect_android_method",
+  "fl_trace_android_references",
+  "fl_project_android_application_graph"
 ])
 ```
 
-- **`rea_inspect_android_package`**: Unpacks and audits APK structure, identifying `classes.dex`, `resources.arsc`, `AndroidManifest.xml`, native libraries (`lib/armeabi-v7a`, `lib/arm64-v8a`), and signature metadata.
-- **`rea_search_android_classes`**: High-speed search for specific package hierarchies, class declarations, and interface names within DEX pools.
-- **`rea_inspect_android_class`**: Dissects target class structures (fields, methods, superclasses, interfaces, and annotations).
-- **`rea_inspect_android_method`**: Disassembles method bytecode into Dalvik/Smali representation, identifying parameters, return types, and invocation targets.
-- **`rea_trace_android_references`**: Cross-references sensitive API invocations (e.g., cryptographic keys, SharedPreferences, HTTP clients, TelephonyManager).
-- **`rea_project_android_application_graph`**: Constructs complete topological graphs of Android components (Activities, Services, BroadcastReceivers, ContentProviders, and Intent filters).
+- **`fl_inspect_android_package`**: Unpacks and audits APK structure, identifying `classes.dex`, `resources.arsc`, `AndroidManifest.xml`, native libraries (`lib/armeabi-v7a`, `lib/arm64-v8a`), and signature metadata.
+- **`fl_search_android_classes`**: High-speed search for specific package hierarchies, class declarations, and interface names within DEX pools.
+- **`fl_inspect_android_class`**: Dissects target class structures (fields, methods, superclasses, interfaces, and annotations).
+- **`fl_inspect_android_method`**: Disassembles method bytecode into Dalvik/Smali representation, identifying parameters, return types, and invocation targets.
+- **`fl_trace_android_references`**: Cross-references sensitive API invocations (e.g., cryptographic keys, SharedPreferences, HTTP clients, TelephonyManager).
+- **`fl_project_android_application_graph`**: Constructs complete topological graphs of Android components (Activities, Services, BroadcastReceivers, ContentProviders, and Intent filters).
 
 ### 2. ANDROID ATTACK SURFACE AUDIT:
 - **Exported Component Check**: Inspect `AndroidManifest.xml` for components with `android:exported="true"` without permission guards.

@@ -17,19 +17,19 @@ To guarantee that reconstructed features behave identically to the original bina
 Before closing an investigation or publishing findings, mount the evidence tools from `FLOWORK/tools/`:
 ```json
 search_tools(action: "mount", tools: [
-  "rea_build_reconstruction_obligation_ledger",
-  "rea_evaluate_reconstruction_coverage",
-  "rea_compare_artifacts",
-  "rea_evidence_export",
-  "rea_evidence_import"
+  "fl_build_reconstruction_obligation_ledger",
+  "fl_evaluate_reconstruction_coverage",
+  "fl_compare_artifacts",
+  "fl_evidence_export",
+  "fl_evidence_import"
 ])
 ```
 
-- **`rea_build_reconstruction_obligation_ledger`**: Compiles an explicit requirement ledger of behaviors, invariants, and boundaries observed in the binary.
-- **`rea_evaluate_reconstruction_coverage`**: Computes mathematical coverage metrics between observed binary routines and reconstructed source modules.
-- **`rea_compare_artifacts`**: Performs deterministic diffs across two binary artifacts or reconstructed source files.
-- **`rea_evidence_export`**: Exports cryptographically sealed evidence bundles with SHA-256 integrity proofs.
-- **`rea_evidence_import`**: Validates and imports external evidence bundles for verification.
+- **`fl_build_reconstruction_obligation_ledger`**: Compiles an explicit requirement ledger of behaviors, invariants, and boundaries observed in the binary.
+- **`fl_evaluate_reconstruction_coverage`**: Computes mathematical coverage metrics between observed binary routines and reconstructed source modules.
+- **`fl_compare_artifacts`**: Performs deterministic diffs across two binary artifacts or reconstructed source files.
+- **`fl_evidence_export`**: Exports cryptographically sealed evidence bundles with SHA-256 integrity proofs.
+- **`fl_evidence_import`**: Validates and imports external evidence bundles for verification.
 
 ### 2. THE OBLIGATION LEDGER PROTOCOL:
 Before closing any investigation, compile an **Obligation Ledger** listing every functional requirement extracted from the binary:

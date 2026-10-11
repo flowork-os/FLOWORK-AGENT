@@ -550,7 +550,7 @@ async function main() {
   } else if (peCli.is_pe) {
     response.message = `Target is a native PE binary (${peCli.architecture}), not a managed .NET assembly.`;
   } else {
-    response.message = `Target is a non-PE binary (${path.extname(resolved)}). Run rea_decompile or fl_bin_inspect for native/ELF/Mach-O triage.`;
+    response.message = `Target is a non-PE binary (${path.extname(resolved)}). Run fl_decompile or fl_bin_inspect for native/ELF/Mach-O triage.`;
   }
 
   console.log(JSON.stringify(response, null, 2));
