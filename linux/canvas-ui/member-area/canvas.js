@@ -2533,7 +2533,7 @@ function renderDock() {
 }
 
 // =============================================================================
-// FLOWORK OS — SOVEREIGN DYNAMIC HYPER-WARP STARFIELD ENGINE
+// FLOWORK OS — SOVEREIGN STATIC COSMIC BACKDROP (ZERO-CPU / ZERO-GPU OVERHEAD)
 // =============================================================================
 let cosmicStarfieldController = null;
 
@@ -2544,132 +2544,56 @@ function initStarfieldBackground() {
   const ctx = canvas.getContext('2d');
   if (!ctx) return;
 
-  let width = (canvas.width = window.innerWidth);
-  let height = (canvas.height = window.innerHeight);
+  function renderStaticStars() {
+    const width = (canvas.width = window.innerWidth);
+    const height = (canvas.height = window.innerHeight);
 
-  const STAR_COUNT = 300;
-  const stars = [];
+    ctx.clearRect(0, 0, width, height);
 
-  for (let i = 0; i < STAR_COUNT; i++) {
-    stars.push({
-      x: (Math.random() - 0.5) * width * 2,
-      y: (Math.random() - 0.5) * height * 2,
-      z: Math.random() * width,
-      pz: 0,
-      size: Math.random() * 1.6 + 0.4,
-      color: i % 4 === 0 ? '#00f2fe' : (i % 4 === 1 ? '#c084fc' : (i % 4 === 2 ? '#38bdf8' : '#ffffff'))
-    });
+    // Subtle, static, elegant stars drawn once — zero CPU, zero GPU, no loops
+    const STAR_COUNT = 160;
+    for (let i = 0; i < STAR_COUNT; i++) {
+      const seed1 = (i * 9301 + 49297) % 233280;
+      const seed2 = (seed1 * 9301 + 49297) % 233280;
+      const seed3 = (seed2 * 9301 + 49297) % 233280;
+      const x = (seed1 / 233280) * width;
+      const y = (seed2 / 233280) * height;
+      const size = (seed3 / 233280) * 1.3 + 0.3;
+      const alpha = 0.12 + (seed1 % 100) / 180;
+
+      const colors = ['#ffffff', '#38bdf8', '#00f2fe', '#c084fc'];
+      const color = colors[i % colors.length];
+
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.arc(x, y, size, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Subtle diamond cross for a few prominent stars
+      if (size > 1.2 && alpha > 0.35) {
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 0.5;
+        ctx.beginPath();
+        ctx.moveTo(x - 2.5, y); ctx.lineTo(x + 2.5, y);
+        ctx.moveTo(x, y - 2.5); ctx.lineTo(x, y + 2.5);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
   }
 
-  let currentSpeed = 0.5;
-  let targetSpeed = 0.5;
-  let shockwave = null;
-  let animId = null;
+  // Draw once immediately
+  renderStaticStars();
 
-  function renderFrame() {
-    currentSpeed += (targetSpeed - currentSpeed) * 0.08;
-
-    const messagesEl = document.getElementById('rightbar-messages');
-    const isWarpActive = messagesEl && messagesEl.classList.contains('chat-focus-mode');
-    targetSpeed = isWarpActive ? 16.0 : 0.5;
-
-    const cx = width / 2;
-    const cy = height / 2;
-
-    if (currentSpeed > 2.5) {
-      ctx.fillStyle = 'rgba(5, 11, 20, 0.32)';
-      ctx.fillRect(0, 0, width, height);
-    } else {
-      ctx.clearRect(0, 0, width, height);
-    }
-
-    for (let i = 0; i < stars.length; i++) {
-      const s = stars[i];
-      s.pz = s.z;
-      s.z -= currentSpeed;
-
-      if (s.z <= 0) {
-        s.z = width;
-        s.pz = width;
-        s.x = (Math.random() - 0.5) * width * 2;
-        s.y = (Math.random() - 0.5) * height * 2;
-      }
-
-      const k = 280 / s.z;
-      const px = s.x * (280 / s.pz) + cx;
-      const py = s.y * (280 / s.pz) + cy;
-      const x = s.x * k + cx;
-      const y = s.y * k + cy;
-
-      if (x < 0 || x > width || y < 0 || y > height) continue;
-
-      const alpha = Math.min(1, Math.max(0.12, (1 - s.z / width) * (currentSpeed > 2.5 ? 1.4 : 0.85)));
-
-      if (currentSpeed > 2.5) {
-        ctx.strokeStyle = s.color;
-        ctx.globalAlpha = alpha;
-        ctx.lineWidth = Math.min(2.4, (1 - s.z / width) * 2.0);
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(x, y);
-        ctx.stroke();
-      } else {
-        ctx.fillStyle = s.color;
-        ctx.globalAlpha = alpha;
-        ctx.beginPath();
-        ctx.arc(x, y, s.size * (1 - s.z / width + 0.3), 0, Math.PI * 2);
-        ctx.fill();
-
-        if (s.size > 1.3 && alpha > 0.45) {
-          ctx.strokeStyle = s.color;
-          ctx.lineWidth = 0.7;
-          ctx.beginPath();
-          ctx.moveTo(x - 3, y); ctx.lineTo(x + 3, y);
-          ctx.moveTo(x, y - 3); ctx.lineTo(x, y + 3);
-          ctx.stroke();
-        }
-      }
-    }
-
-    if (shockwave) {
-      shockwave.r += (shockwave.maxR - shockwave.r) * 0.12 + 6;
-      shockwave.alpha *= 0.93;
-      if (shockwave.alpha < 0.02 || shockwave.r >= shockwave.maxR) {
-        shockwave = null;
-      } else {
-        ctx.save();
-        ctx.beginPath();
-        ctx.arc(shockwave.x, shockwave.y, shockwave.r, 0, Math.PI * 2);
-        ctx.strokeStyle = `rgba(0, 242, 254, ${shockwave.alpha})`;
-        ctx.lineWidth = 3.5 * shockwave.alpha;
-        ctx.shadowColor = '#00f2fe';
-        ctx.shadowBlur = 16;
-        ctx.stroke();
-        ctx.restore();
-      }
-    }
-
-    ctx.globalAlpha = 1.0;
-    animId = requestAnimationFrame(renderFrame);
-  }
-
-  animId = requestAnimationFrame(renderFrame);
-
+  // Re-draw once only on window resize
   window.addEventListener('resize', () => {
-    width = canvas.width = window.innerWidth;
-    height = canvas.height = window.innerHeight;
+    renderStaticStars();
   }, { passive: true });
 
   cosmicStarfieldController = {
-    triggerShockwave: () => {
-      shockwave = {
-        x: width / 2,
-        y: height / 2,
-        r: 15,
-        maxR: Math.max(width, height) * 0.85,
-        alpha: 0.85
-      };
-    }
+    triggerShockwave: () => {}
   };
   window.cosmicStarfieldController = cosmicStarfieldController;
 }
@@ -3007,7 +2931,9 @@ async function openPluginTab(plugin) {
   // Create Sandboxed Iframe Viewport
   const stage = document.getElementById('viewport-stage');
   const iframePanel = document.createElement('div');
-  iframePanel.className = 'view-panel';
+  iframePanel.className = 'view-panel view-panel-plugin';
+  iframePanel.style.padding = '0';
+  iframePanel.style.overflow = 'hidden';
   iframePanel.id = `view-${plugin.id}`;
 
   const iframe = document.createElement('iframe');
@@ -7433,7 +7359,7 @@ const FloworkLoopSysMonitor = {
 
     if (!this._pollTimer) {
       this.pollSysPulse();
-      this._pollTimer = setInterval(() => this.pollSysPulse(), 1000);
+      this._pollTimer = setInterval(() => this.pollSysPulse(), 5000);
     }
     if (!this._clockTimer) {
       this._clockTimer = setInterval(() => {
@@ -7444,7 +7370,7 @@ const FloworkLoopSysMonitor = {
         const elapsed = ((Date.now() - this._loopStartTime) / 1000).toFixed(1);
         const timerTxt = document.getElementById('fl-lsb-timer-txt');
         if (timerTxt) timerTxt.textContent = `LOOP ${elapsed}s`;
-      }, 100);
+      }, 250);
     }
   },
 
@@ -7644,7 +7570,7 @@ function mascotRenderLoop() {
   }
 
   const now = performance.now();
-  const targetInterval = (isAudioActive || isMascotAgentLooping) ? 33 : 60; // 30 FPS speaking/looping, 16 FPS hover
+  const targetInterval = isAudioActive ? 33 : (isMascotAgentLooping ? 80 : 120); // 30 FPS speaking, 12 FPS looping, 8 FPS hover
   if (now - lastMascotRenderTime >= targetInterval) {
     lastMascotRenderTime = now;
     if (mascotClock) {
@@ -8529,7 +8455,7 @@ function createThinkingController(container) {
     }
   }
 
-  // Hyper-speed terminal stream interval (~40ms) - feels incredibly fast!
+  // Optimized terminal stream interval (~120ms) - silky smooth without thread starvation!
   const streamTickerId = setInterval(() => {
     if (!logStreamEl || !container.isConnected) {
       clearInterval(streamTickerId);
@@ -8555,9 +8481,9 @@ function createThinkingController(container) {
     if (terminalViewport) {
       terminalViewport.scrollTop = terminalViewport.scrollHeight;
     }
-  }, 40);
+  }, 120);
 
-  // Precision elapsed timer every 100ms
+  // Precision elapsed timer every 250ms
   const timerId = setInterval(() => {
     if (!container.isConnected) {
       clearInterval(timerId);
@@ -8566,7 +8492,7 @@ function createThinkingController(container) {
     }
     const elapsedSec = ((Date.now() - startTime) / 1000).toFixed(1);
     if (timerEl) timerEl.textContent = `${elapsedSec}s`;
-  }, 100);
+  }, 250);
 
   const refreshArsenal = (logMessage = '') => {
     if (arsenalBarEl && container.isConnected) {
@@ -10157,7 +10083,7 @@ function renderLiveFileScanner(activeSlot, toolName, details, stepIdx) {
 
     const windowStart = Math.max(0, curStep - 3);
     renderViewportRows(windowStart, curStep - windowStart);
-  }, 115);
+  }, 180);
 }
 
 function renderLiveReplaceContent(activeSlot, toolName, details, stepIdx) {
@@ -10273,7 +10199,7 @@ function renderLiveReplaceContent(activeSlot, toolName, details, stepIdx) {
     const timerEl = box.querySelector('.fl-rfc-timer');
     if (timerEl) timerEl.textContent = `${elapsed}s • DIFF ACTIVE`;
     renderDiffBlocks(tick);
-  }, 135);
+  }, 180);
 }
 
 function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
@@ -10371,7 +10297,7 @@ function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
     if (timerEl) timerEl.textContent = `${elapsed}s • WRITING DISK`;
 
     renderWriteRows(curLine);
-  }, 115);
+  }, 180);
 }
 
 function renderLiveSearchTools(activeSlot, toolName, details, stepIdx) {
@@ -10429,7 +10355,7 @@ function renderLiveSearchTools(activeSlot, toolName, details, stepIdx) {
       chips[1].textContent = pool[(tick + 1) % pool.length];
       chips[2].textContent = pool[(tick + 2) % pool.length];
     }
-  }, 28);
+  }, 150);
 }
 
 function renderLiveBashRunner(activeSlot, toolName, details, stepIdx) {
@@ -10509,7 +10435,7 @@ function renderLiveBashRunner(activeSlot, toolName, details, stepIdx) {
         codeEl.textContent = telemetryFrames.slice(0, count).join('\n') + (tick % 2 === 0 ? ' █' : '');
       }
     }
-  }, 28);
+  }, 150);
 }
 
 function renderLiveSwarmOrchestrator(activeSlot, toolName, details, stepIdx) {
@@ -10595,7 +10521,7 @@ function renderLiveMemoryRecall(activeSlot, toolName, details, stepIdx) {
 
     const syncEl = box.querySelector('.fl-brain-sync-pct');
     if (syncEl) syncEl.textContent = `SYNC: ${Math.min(99.9, (92 + (tick * 1.7) % 8)).toFixed(1)}%`;
-  }, 38);
+  }, 150);
 }
 
 function renderLiveSkillActivator(activeSlot, toolName, details, stepIdx) {
@@ -10668,7 +10594,7 @@ function renderLiveSkillActivator(activeSlot, toolName, details, stepIdx) {
     if (sopEl && sopFeed.length > 0) {
       sopEl.textContent = sopFeed[tick % sopFeed.length];
     }
-  }, 28);
+  }, 150);
 }
 
 function renderLiveSearchWeb(activeSlot, toolName, details, stepIdx) {
@@ -10745,7 +10671,7 @@ function renderLiveSearchWeb(activeSlot, toolName, details, stepIdx) {
       pktEls[1].textContent = pktPool[(tick + 1) % pktPool.length];
       pktEls[2].textContent = pktPool[(tick + 2) % pktPool.length];
     }
-  }, 30);
+  }, 150);
 }
 
 function renderLiveReadUrl(activeSlot, toolName, details, stepIdx) {
@@ -10823,7 +10749,7 @@ function renderLiveReadUrl(activeSlot, toolName, details, stepIdx) {
       lineEls[0].textContent = mdLines[tick % mdLines.length];
       lineEls[1].textContent = mdLines[(tick + 1) % mdLines.length];
     }
-  }, 28);
+  }, 150);
 }
 
 function renderLiveFlowLock(activeSlot, toolName, details, stepIdx) {
@@ -10907,7 +10833,7 @@ function renderLiveFlowLock(activeSlot, toolName, details, stepIdx) {
     }
     const shaEl = box.querySelector('.fl-flk-sha');
     if (shaEl) shaEl.textContent = `SHA-256: ${rollingHash}…`;
-  }, 45);
+  }, 150);
 }
 
 function renderLiveSysHealth(activeSlot, toolName, details, stepIdx) {
@@ -10996,7 +10922,7 @@ function renderLiveSysHealth(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-sh-badge');
     if (badge) badge.textContent = `LIVE ECG • ${elapsedSec}s`;
-  }, 45);
+  }, 150);
 }
 
 function renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx) {
@@ -11080,7 +11006,7 @@ function renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = auditFeed[(tick + 1) % auditFeed.length];
       lines[2].textContent = auditFeed[(tick + 2) % auditFeed.length];
     }
-  }, 40);
+  }, 150);
 }
 
 function renderLiveDetectHardcode(activeSlot, toolName, details, stepIdx) {
@@ -11167,7 +11093,7 @@ function renderLiveDetectHardcode(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = hcFeed[(tick + 1) % hcFeed.length];
       lines[2].textContent = hcFeed[(tick + 2) % hcFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveAuditPortability(activeSlot, toolName, details, stepIdx) {
@@ -11255,7 +11181,7 @@ function renderLiveAuditPortability(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = portFeed[(tick + 1) % portFeed.length];
       lines[2].textContent = portFeed[(tick + 2) % portFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveWebSecurityAudit(activeSlot, toolName, details, stepIdx) {
@@ -11351,7 +11277,7 @@ function renderLiveWebSecurityAudit(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = webSecFeed[(tick + 1) % webSecFeed.length];
       lines[2].textContent = webSecFeed[(tick + 2) % webSecFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveWebsiteIntelligence(activeSlot, toolName, details, stepIdx) {
@@ -11437,7 +11363,7 @@ function renderLiveWebsiteIntelligence(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = wiFeed[(tick + 1) % wiFeed.length];
       lines[2].textContent = wiFeed[(tick + 2) % wiFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveSchedule(activeSlot, toolName, details, stepIdx) {
@@ -11506,7 +11432,7 @@ function renderLiveSchedule(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-sch-badge');
     if (badge) badge.textContent = `SYNCING • ${elapsedSec}s`;
-  }, 45);
+  }, 150);
 }
 
 function renderLiveManageTask(activeSlot, toolName, details, stepIdx) {
@@ -11584,7 +11510,7 @@ function renderLiveManageTask(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = mtFeed[(tick + 1) % mtFeed.length];
       lines[2].textContent = mtFeed[(tick + 2) % mtFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function generatePaintGhostSvg(widgetType) {
@@ -11721,7 +11647,7 @@ function renderLivePluginControl(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = pcFeed[(tick + 1) % pcFeed.length];
       lines[2].textContent = pcFeed[(tick + 2) % pcFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLivePublishGatekeeper(activeSlot, toolName, details, stepIdx) {
@@ -11815,7 +11741,7 @@ function renderLivePublishGatekeeper(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = gkFeed[(tick + 1) % gkFeed.length];
       lines[2].textContent = gkFeed[(tick + 2) % gkFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveCameraShutter(activeSlot, toolName, details, stepIdx) {
@@ -11872,7 +11798,7 @@ function renderLiveCameraShutter(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-ss-badge');
     if (badge) badge.textContent = `SHUTTER • ${elapsedSec}s`;
-  }, 45);
+  }, 150);
 }
 
 function renderLiveYtSpyVideo(activeSlot, toolName, details, stepIdx) {
@@ -11951,7 +11877,7 @@ function renderLiveYtSpyVideo(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = ytvFeed[(tick + 1) % ytvFeed.length];
       lines[2].textContent = ytvFeed[(tick + 2) % ytvFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveYtSpyChannel(activeSlot, toolName, details, stepIdx) {
@@ -12029,7 +11955,7 @@ function renderLiveYtSpyChannel(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = ytcFeed[(tick + 1) % ytcFeed.length];
       lines[2].textContent = ytcFeed[(tick + 2) % ytcFeed.length];
     }
-  }, 45);
+  }, 150);
 }
 
 function renderLiveYtSpyTranscript(activeSlot, toolName, details, stepIdx) {
@@ -12102,7 +12028,7 @@ function renderLiveYtSpyTranscript(activeSlot, toolName, details, stepIdx) {
       lines[1].textContent = yttFeed[(tick + 1) % yttFeed.length];
       lines[2].textContent = yttFeed[(tick + 2) % yttFeed.length];
     }
-  }, 55);
+  }, 150);
 }
 
 function renderLiveYtSpySummary(activeSlot, toolName, details, stepIdx) {
@@ -12176,7 +12102,7 @@ function renderLiveYtSpySummary(activeSlot, toolName, details, stepIdx) {
       btxts[1].textContent = ytsFeed[(tick + 1) % ytsFeed.length];
       btxts[2].textContent = ytsFeed[(tick + 2) % ytsFeed.length];
     }
-  }, 60);
+  }, 150);
 }
 
 function renderLiveYtSpyComments(activeSlot, toolName, details, stepIdx) {
@@ -12260,7 +12186,7 @@ function renderLiveYtSpyComments(activeSlot, toolName, details, stepIdx) {
       if (u1) u1.textContent = c1.user;
       if (t1) t1.textContent = c1.txt;
     }
-  }, 62);
+  }, 150);
 }
 
 function renderLiveYtSpyStrategy(activeSlot, toolName, details, stepIdx) {
@@ -12347,7 +12273,7 @@ function renderLiveYtSpyStrategy(activeSlot, toolName, details, stepIdx) {
     if (streamEl && stratFeed.length > 0) {
       streamEl.textContent = stratFeed[tick % stratFeed.length];
     }
-  }, 58);
+  }, 150);
 }
 
 function renderLiveAskQuestion(activeSlot, toolName, details, stepIdx) {
@@ -12413,7 +12339,7 @@ function renderLiveAskQuestion(activeSlot, toolName, details, stepIdx) {
       const activeIdx = tick % pills.length;
       pills.forEach((p, idx) => p.classList.toggle('is-active', idx === activeIdx));
     }
-  }, 65);
+  }, 150);
 }
 
 function renderLiveSystemRestart(activeSlot, toolName, details, stepIdx) {
@@ -12471,7 +12397,7 @@ function renderLiveSystemRestart(activeSlot, toolName, details, stepIdx) {
 
     const phases = box.querySelectorAll('.fl-sr-phase-pill');
     phases.forEach((p, idx) => p.classList.toggle('is-active', idx === (tick % 3)));
-  }, 55);
+  }, 150);
 }
 
 function renderLivePluginPublish(activeSlot, toolName, details, stepIdx) {
@@ -12538,7 +12464,7 @@ function renderLivePluginPublish(activeSlot, toolName, details, stepIdx) {
     box.querySelectorAll('.fl-pp-stage-pill').forEach((p, idx) => p.classList.toggle('is-active', idx === (tick % 3)));
     const sEl = box.querySelector('.fl-pp-stream-txt');
     if (sEl && ppFeed.length > 0) sEl.textContent = ppFeed[tick % ppFeed.length];
-  }, 56);
+  }, 150);
 }
 
 function renderLiveInvokeSubagent(activeSlot, toolName, details, stepIdx) {
@@ -12616,7 +12542,7 @@ function renderLiveInvokeSubagent(activeSlot, toolName, details, stepIdx) {
 
     const pEl = box.querySelector('.fl-isa-prompt-txt');
     if (pEl && isaFeed.length > 0) pEl.textContent = isaFeed[tick % isaFeed.length];
-  }, 60);
+  }, 150);
 }
 
 function renderLiveDefineSubagent(activeSlot, toolName, details, stepIdx) {
@@ -12670,7 +12596,7 @@ function renderLiveDefineSubagent(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-dsa-badge');
     if (badge) badge.textContent = `DNA FORGE • ${elapsedSec}s`;
-  }, 55);
+  }, 150);
 }
 
 function renderLiveManageSubagents(activeSlot, toolName, details, stepIdx) {
@@ -12735,7 +12661,7 @@ function renderLiveManageSubagents(activeSlot, toolName, details, stepIdx) {
 
     const sEl = box.querySelector('.fl-msa-stream-txt');
     if (sEl && msaFeed.length > 0) sEl.textContent = msaFeed[tick % msaFeed.length];
-  }, 56);
+  }, 150);
 }
 
 function renderLiveSendMessage(activeSlot, toolName, details, stepIdx) {
@@ -12782,7 +12708,7 @@ function renderLiveSendMessage(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-sm-badge');
     if (badge) badge.textContent = `SYNAPSE IPC • ${elapsedSec}s`;
-  }, 55);
+  }, 150);
 }
 
 function renderLiveGenerateImage(activeSlot, toolName, details, stepIdx) {
@@ -12840,7 +12766,7 @@ function renderLiveGenerateImage(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-gi-badge');
     if (badge) badge.textContent = `RENDERING • ${elapsedSec}s`;
-  }, 55);
+  }, 150);
 }
 
 function renderLiveSendMedia(activeSlot, toolName, details, stepIdx) {
@@ -12897,7 +12823,7 @@ function renderLiveSendMedia(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-smd-badge');
     if (badge) badge.textContent = `MEDIA POD • ${elapsedSec}s`;
-  }, 55);
+  }, 150);
 }
 
 function renderLiveVisualPainter(activeSlot, toolName, details, stepIdx) {
@@ -12972,7 +12898,7 @@ function renderLiveVisualPainter(activeSlot, toolName, details, stepIdx) {
     const elapsedSec = ((Date.now() - box._spawnTime) / 1000).toFixed(2);
     const badge = box.querySelector('.fl-rv-badge');
     if (badge) badge.textContent = `SYNTHESIZING • ${elapsedSec}s`;
-  }, 55);
+  }, 250);
 }
 
 function renderLiveDynamicExternalTool(activeSlot, toolName, details, stepIdx) {
