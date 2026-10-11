@@ -2,7 +2,233 @@ const https = require('https');
 const url = require('url');
 const path = require('path');
 const fs = require('fs');
-const crypto = require('crypto');
+const { spawn } = require('child_process');
+
+function openUrlInBrowser(targetUrl) {
+    if (!targetUrl || typeof targetUrl !== 'string') return false;
+    let parsed;
+    try { parsed = new url.URL(targetUrl.trim()); } catch (_) { return false; }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false;
+    if (/[&|^%"`$\r\n\t<>]/.test(targetUrl)) return false;
+    const safeUrl = parsed.href;
+    try {
+        if (process.platform === 'win32') {
+            spawn('explorer.exe', [safeUrl], { detached: true, stdio: 'ignore' }).unref();
+        } else if (process.platform === 'darwin') {
+            spawn('open', [safeUrl], { detached: true, stdio: 'ignore' }).unref();
+        } else {
+            const display = process.env.DISPLAY || ':0';
+            const env = { ...process.env, DISPLAY: display };
+            const child = spawn('xdg-open', [safeUrl], { detached: true, stdio: 'ignore', env });
+            child.on('error', () => {
+                try { spawn('gio', ['open', safeUrl], { detached: true, stdio: 'ignore', env }).unref(); } catch (_) {}
+            });
+            child.unref();
+        }
+        return true;
+    } catch (_) {
+        return false;
+    }
+}
+
+function renderBarcodeVerificationPage(accounts = [], targetId = '', serverPort = 9099) {
+    let selected = null;
+    if (targetId) {
+        selected = accounts.find(a => a.id === targetId || a.email.toLowerCase() === targetId.toLowerCase());
+    }
+    if (!selected) {
+        selected = accounts.find(a => a.status === 'validation_required' && a.validation_url);
+    }
+    if (!selected && accounts.length > 0) {
+        selected = accounts[0];
+    }
+
+    const valUrl = selected?.validation_url || '';
+    const email = selected?.email || 'Akun Google';
+    const qrApiUrl = valUrl ? `https://api.qrserver.com/v1/create-qr-code/?size=260x260&data=${encodeURIComponent(valUrl)}` : '';
+    const valAccounts = accounts.filter(a => a.status === 'validation_required' || a.validation_url);
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Antigravity — Verifikasi Identitas Google</title>
+  <style>
+    body {
+      margin: 0;
+      background: #080B11;
+      color: #F8FAFC;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      padding: 24px;
+      box-sizing: border-box;
+    }
+    .card {
+      background: #0F172A;
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      border-radius: 24px;
+      padding: 36px 32px;
+      text-align: center;
+      box-shadow: 0 16px 48px rgba(0, 0, 0, 0.8), 0 0 32px rgba(239, 68, 68, 0.15);
+      max-width: 480px;
+      width: 100%;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(239, 68, 68, 0.15);
+      border: 1px solid rgba(239, 68, 68, 0.4);
+      border-radius: 999px;
+      padding: 5px 14px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #FCA5A5;
+      margin-bottom: 16px;
+      letter-spacing: 0.5px;
+    }
+    h1 {
+      font-size: 20px;
+      font-weight: 800;
+      color: #FFFFFF;
+      margin: 0 0 8px;
+    }
+    .email {
+      color: #38BDF8;
+      font-weight: 700;
+      word-break: break-all;
+    }
+    p {
+      color: #94A3B8;
+      font-size: 13.5px;
+      line-height: 1.6;
+      margin: 0 0 20px;
+    }
+    .account-tabs {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      justify-content: center;
+      margin-bottom: 18px;
+    }
+    .account-tab {
+      background: #1E293B;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      color: #94A3B8;
+      padding: 4px 12px;
+      border-radius: 999px;
+      font-size: 11px;
+      text-decoration: none;
+      transition: all 0.2s;
+    }
+    .account-tab.active {
+      background: rgba(239, 68, 68, 0.2);
+      border-color: #EF4444;
+      color: #FCA5A5;
+      font-weight: 700;
+    }
+    .qr-container {
+      background: #FFFFFF;
+      padding: 16px;
+      border-radius: 16px;
+      display: inline-block;
+      margin: 0 auto 20px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+    }
+    .qr-container img {
+      display: block;
+      width: 220px;
+      height: 220px;
+    }
+    .instructions {
+      background: rgba(30, 41, 59, 0.7);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 14px;
+      padding: 14px 18px;
+      text-align: left;
+      font-size: 12.5px;
+      color: #CBD5E1;
+      line-height: 1.6;
+      margin-bottom: 24px;
+    }
+    .instructions ol {
+      margin: 0;
+      padding-left: 20px;
+    }
+    .instructions li {
+      margin-bottom: 6px;
+    }
+    .actions {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #EF4444, #DC2626);
+      color: #FFFFFF;
+      font-weight: 700;
+      text-decoration: none;
+      padding: 11px 20px;
+      border-radius: 999px;
+      font-size: 13px;
+      display: block;
+      border: none;
+      cursor: pointer;
+      text-align: center;
+    }
+    .btn-secondary {
+      background: #1E293B;
+      color: #94A3B8;
+      font-weight: 600;
+      text-decoration: none;
+      padding: 10px 20px;
+      border-radius: 999px;
+      font-size: 12.5px;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      cursor: pointer;
+      text-align: center;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">🔒 ANTYGRAVITY SECURITY GATE</div>
+    <h1>Verifikasi Identitas Google</h1>
+    <p>Akun <span class="email">${email}</span> memerlukan verifikasi keamanan dari Google.</p>
+
+    ${valAccounts.length > 1 ? `
+    <div class="account-tabs">
+      ${valAccounts.map(a => `<a href="?id=${encodeURIComponent(a.id)}" class="account-tab ${a.id === selected?.id ? 'active' : ''}">${a.email.split('@')[0]}</a>`).join('')}
+    </div>
+    ` : ''}
+
+    ${valUrl ? `
+    <div class="qr-container">
+      <img src="${qrApiUrl}" alt="Scan Barcode / QR Code dengan Kamera HP" />
+    </div>
+    ` : `<p style="color:#ef4444;">URL verifikasi belum tersedia atau akun sudah diverifikasi.</p>`}
+
+    <div class="instructions">
+      <ol>
+        <li>Buka <b>Kamera HP</b> Anda (atau scan barcode).</li>
+        <li>Arahkan kamera ke <b>Barcode / QR Code</b> di atas.</li>
+        <li>Buka link dan selesaikan verifikasi SMS/konfirmasi Google di HP.</li>
+      </ol>
+    </div>
+
+    <div class="actions">
+      ${valUrl ? `<a href="${valUrl}" target="_blank" class="btn-primary">Buka Link Verifikasi di Browser</a>` : ''}
+      <button class="btn-secondary" onclick="location.reload()">Cek Ulang Status Akun</button>
+    </div>
+  </div>
+</body>
+</html>`;
+}
 
 const googleServer = require('./google_server');
 const config = googleServer.loadConfig();
@@ -1924,13 +2150,32 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                             currentAccount.validation_url = valUrl;
                             currentAccount.error_message = 'Google requires phone/identity validation';
                             moveAccountToEnd(vault, currentAccount.id, '403 VALIDATION_REQUIRED');
+                            saveVault(vault);
+
+                            // Antigravity Barcode Verification Protocol:
+                            console.warn('\n' + '='.repeat(76));
+                            console.warn(`📱 [ANTYGRAVITY VERIFIKASI KEAMANAN DIPERLUKAN]`);
+                            console.warn(`   Akun  : ${currentAccount.email}`);
+                            console.warn(`   Google mendeteksi aktivitas baru & meminta verifikasi nomor telepon/identitas.`);
+                            console.warn(`   👉 SCAN BARCODE DENGAN KAMERA HP ANDA:`);
+                            console.warn(`      http://127.0.0.1:${serverPort}/auth/verify?id=${currentAccount.id}`);
+                            if (valUrl) {
+                                console.warn(`   👉 Link Langsung Google:`);
+                                console.warn(`      ${valUrl}`);
+                            }
+                            console.warn('='.repeat(76) + '\n');
+
+                            // Auto-open browser so user can immediately scan barcode on screen
+                            try {
+                                openUrlInBrowser(`http://127.0.0.1:${serverPort}/auth/verify?id=${currentAccount.id}`);
+                            } catch (_) {}
                         } else {
                             console.warn(`[Account Rotator] ⚠️ HTTP 403 on [${currentAccount.email}].`);
                             currentAccount.status = 'error';
                             currentAccount.error_message = 'HTTP 403 Forbidden';
                             moveAccountToEnd(vault, currentAccount.id, '403 Forbidden');
+                            saveVault(vault);
                         }
-                        saveVault(vault);
 
                         if (attemptCount < maxAttempts) {
                             const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
@@ -1941,7 +2186,10 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                                 return attemptForward(nextAccount, attemptCount + 1);
                             }
                         }
-                        return returnGracefulFallback('[Flowork Engine Notice] Akun memerlukan verifikasi. Silakan hubungi admin.');
+                        const fallbackMsg = isValReq
+                            ? `⚠️ [Antigravity Security Notice] Akun Google [${currentAccount.email}] memerlukan verifikasi identitas/nomor telepon.\n\n📱 Buka kamera HP & scan barcode di:\n👉 http://127.0.0.1:${serverPort}/auth/verify?id=${currentAccount.id}\n\nAtau buka link langsung:\n${valUrl || ''}`
+                            : '[Flowork Engine Notice] Akses API upstream ditolak (HTTP 403).';
+                        return returnGracefulFallback(fallbackMsg);
                     });
                     return;
                 }
@@ -2319,7 +2567,14 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
 // ── HTTP API Request Dispatcher for Multi-Account Router ──
 async function handleRouterRequest(req, res, parsedUrl, pathname, serverPort) {
     const isGet = req.method === 'GET';
-    const isPost = req.method === 'POST';
+    // 0. Antigravity Barcode / QR Code Verification Endpoint
+    if (pathname === '/auth/verify' || pathname === '/auth/validation' || pathname === '/auth/router/verify') {
+        const vault = loadVault();
+        const targetId = parsedUrl.query?.id || parsedUrl.query?.account_id || parsedUrl.query?.email || '';
+        const html = renderBarcodeVerificationPage(vault.accounts || [], targetId, serverPort);
+        res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+        return res.end(html);
+    }
 
     // 1. Get Accounts List & Matrix Status
     if (pathname === '/auth/router/accounts' || pathname === '/api/router/accounts' || pathname === '/auth/router/status' || pathname === '/api/router/status' || pathname === '/auth/router/refresh-pool' || pathname === '/api/router/refresh-pool') {

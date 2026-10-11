@@ -756,6 +756,11 @@ function syncStandaloneTokens() {
         // ========================================================
         // 2.5 MULTI-ACCOUNT ROUTER & TOKEN ROTATOR API
         // ========================================================
+        if (pathname === '/auth/verify' || pathname === '/auth/validation' || pathname === '/auth/router/verify') {
+            const handled = await accountRotator.handleRouterRequest(req, res, parsedUrl, pathname, port);
+            if (handled) return;
+        }
+
         if (pathname.startsWith('/auth/router/') || pathname.startsWith('/api/router/')) {
             const currentVault = loadVault();
             const gate = await ensureAuthenticatedGate(currentVault);
