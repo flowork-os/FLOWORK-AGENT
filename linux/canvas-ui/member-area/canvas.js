@@ -2361,21 +2361,36 @@ async function fetchPlugins() {
   }
 }
 
-const COPILOT_CACHE_KEY = 'xflow_copilot_registry_cache';
-const COPILOT_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours (sekali sehari)
+function getClientTargetOs() {
+  if (window.__XFLOW_TARGET_OS) return window.__XFLOW_TARGET_OS;
+  const platform = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || '';
+  if (/win/i.test(platform)) {
+    return 'windows';
+  }
+  return 'linux';
+}
 
-async function fetchCopilotRegistry(isManual = false) {
-  // 1. Check 24-hour localStorage cache if not manually requested
+const COPILOT_CACHE_KEY_PREFIX = 'xflow_copilot_registry_cache_';
+const COPILOT_CACHE_TTL = 5 * 60 * 1000; // 5 minutes cache to keep fresh
+
+async function fetchCopilotRegistry(isManual = false, targetOs = null) {
+  const currentOs = targetOs || getClientTargetOs();
+  const cacheKey = `${COPILOT_CACHE_KEY_PREFIX}${currentOs}`;
+
+  // 1. Check localStorage cache if not manually requested
   if (!isManual) {
     try {
-      const cachedStr = localStorage.getItem(COPILOT_CACHE_KEY);
+      const cachedStr = localStorage.getItem(cacheKey);
       if (cachedStr) {
         const cached = JSON.parse(cachedStr);
         const age = Date.now() - (cached.timestamp || 0);
         if (age < COPILOT_CACHE_TTL && cached.data && cached.data.status === 'ok') {
-          console.log(`[App Store] Using 24-hr cached registry (age: ${Math.round(age / 60000)}m)`);
-          applyCopilotRegistryData(cached.data, false);
-          return;
+          const plugins = cached.data.registry?.plugins || [];
+          if (plugins.length > 2 || age < 60000) {
+            console.log(`[App Store] Using cached ${currentOs} registry (age: ${Math.round(age / 60000)}m, ${plugins.length} plugins)`);
+            applyCopilotRegistryData(cached.data, false);
+            return;
+          }
         }
       }
     } catch (err) {
@@ -2385,11 +2400,11 @@ async function fetchCopilotRegistry(isManual = false) {
 
   // 2. Fetch from server endpoint (GitHub sync)
   try {
-    const res = await fetch('/api/copilot/registry');
+    const res = await fetch(`/api/copilot/registry?os=${encodeURIComponent(currentOs)}`);
     const data = await res.json();
     if (data.status === 'ok' && data.registry) {
       try {
-        localStorage.setItem(COPILOT_CACHE_KEY, JSON.stringify({
+        localStorage.setItem(cacheKey, JSON.stringify({
           timestamp: Date.now(),
           data: data
         }));
@@ -2406,15 +2421,16 @@ async function fetchCopilotRegistry(isManual = false) {
 function applyCopilotRegistryData(data, isManual) {
   copilotState = data.registry.plugins || [];
   copilotCommitSha = data.registry.commit_sha || '';
+  const targetOs = data.registry.target_os || 'linux';
   
   const statSha = document.getElementById('copilot-stat-sha');
   const statCount = document.getElementById('copilot-stat-count');
-  if (statSha) statSha.textContent = copilotCommitSha;
+  if (statSha) statSha.textContent = `${targetOs.toUpperCase()}: ${copilotCommitSha}`;
   if (statCount) statCount.textContent = copilotState.length;
 
   filterAndRenderCopilotCards();
   if (isManual) {
-    showToast(`App Store synced with registry (SHA ${copilotCommitSha})`);
+    showToast(`App Store (${targetOs}) synced with registry (${copilotState.length} plugins, ${copilotCommitSha})`);
   }
 }
 
@@ -2824,14 +2840,15 @@ function filterAndRenderCopilotCards() {
 
 // 8. Extension Install & Uninstall Operations
 async function installExtension(pluginId, pluginName, isUpdate = false) {
-  showToast(`${isUpdate ? 'Updating' : 'Installing'} ${pluginName} from GitHub...`);
+  const currentOs = getClientTargetOs();
+  showToast(`${isUpdate ? 'Updating' : 'Installing'} ${pluginName} from GitHub (${currentOs})...`);
   try {
-    const res = await fetch(`/api/copilot/install/${pluginId}`, { method: 'POST' });
+    const res = await fetch(`/api/copilot/install/${pluginId}?os=${encodeURIComponent(currentOs)}`, { method: 'POST' });
     const data = await res.json();
     if (data.status === 'ok') {
       showToast(`Success! ${pluginName} ${isUpdate ? 'updated' : 'installed'} cleanly.`);
       await fetchPlugins();
-      await fetchCopilotRegistry();
+      await fetchCopilotRegistry(true);
     } else {
       showToast(`Error: ${data.message}`);
     }
