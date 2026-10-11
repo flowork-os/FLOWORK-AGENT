@@ -1,31 +1,36 @@
 ---
 name: "coder_specialist"
-description: "Sovereign runbook for high-discipline software engineering enforcing Ousterhout deep modules, empirical red-green TDD, frontier grilling, DAG tracer-bullet task graphs, two-axis code review, and Exit Code 0 verification"
-keywords: ["software craftsmanship","deep modules","ousterhout design","seam architecture","empirical tdd","red green refactor","frontier grilling","two axis review","fowler code smells","tracer bullet dag","task graph scheduling","domain modeling","architecture decision record","glossary governance","deterministic debugging","probe diagnostics","interactive wizard","deletion test","anti vibe coding","exit code zero"]
+description: "Sovereign runbook for high-discipline software engineering enforcing Ousterhout deep modules, empirical red-green TDD, frontier alignment, DAG task graphs, two-axis review, and Exit Code 0 verification"
+keywords: ["software craftsmanship","deep modules","ousterhout design","seam architecture","empirical tdd","red green refactor","frontier alignment","two axis review","fowler code smells","tracer bullet dag","task graph scheduling","domain modeling","architecture decision record","glossary governance","deterministic debugging","probe diagnostics","interactive wizard","git guardrails","prototype spikes","exit code zero"]
 ---
 
-# ⚡ SKILL: Coder Specialist & Systems Craftsman
+# ⚡ SKILL: Sovereign Coder Specialist & Systems Craftsman
 
 ## 1. Intent & Trigger Boundaries
 High-discipline software craftsmanship and systems engineering SOP. Explicitly eliminates "vibe coding", hallucinated architectures, and guessing bugs in favor of deterministic engineering pipelines.
 
 ### Trigger Boundaries:
-- User requests designing new features, architecting modules, or refactoring existing codebases.
-- Executing systematic bug diagnosis requiring deterministic test loops.
-- Performing independent two-axis code reviews (Standards & Fowler Smells vs Spec Conformance).
-- Constructing DAG tracer-bullet task graphs with parallel ready frontiers.
-- Managing domain modeling, GLOSSARY.md updates, and 3-Gate Architectural Decision Records (ADRs).
-- Generating human-in-the-loop interactive setup wizards.
+- User requests designing new features, architecting modules, or refactoring existing codebases (`/fl-align`, `/fl-architect`).
+- Executing systematic bug diagnosis requiring deterministic test loops (`/fl-diagnose`, `/fl-red-green`).
+- Performing independent two-axis code reviews (`/fl-review`).
+- Constructing DAG tracer-bullet task graphs with parallel ready frontiers (`/fl-spec`, `/fl-task-graph`, `/fl-orchestrate`).
+- Enforcing git safety policies and blocking destructive commands (`/fl-guardrails`).
+- Testing hypotheses via throwaway logic/UI spike harnesses (`/fl-prototype`).
+- Challenging ambiguous or over-complex directions with technical clarity (`/fl-challenge`).
+- Managing domain modeling, GLOSSARY.md updates, and 3-Gate Architectural Decision Records (`/fl-domain`).
+- Generating human-in-the-loop interactive setup wizards (`/fl-provision`).
+- Preserving session context before degradation (`/fl-snapshot`).
+- Final verification of Exit Code 0 (`/fl-qc`).
 
 ---
 
 ## 2. Standard Operating Procedures
 
-### Phase 1: Frontier Alignment & Grilling
+### Phase 1: Frontier Alignment & Interrogation (`/fl-align`)
 1. **Frontier Interrogation:**
    - Traverse the Design Tree round-by-round. Never ask questions blocked by undecided upstream nodes.
    - Formulate recommendation-first options ("Recommendation: Option A because... Reply yes to proceed").
-2. **Domain Modeling & 3-Gate ADR Governance:**
+2. **Domain Modeling & 3-Gate ADR Governance (`/fl-domain`):**
    - Upsert domain vocabulary directly via `fl_domain_adr_manager`:
      ```bash
      node tools/fl_domain_adr_manager/main.mjs --params '{"action":"update_glossary","glossary_term":"Seam","glossary_definition":"An agreed interface boundary with >= 2 concrete adapters."}'
@@ -37,7 +42,7 @@ High-discipline software craftsmanship and systems engineering SOP. Explicitly e
 
 ---
 
-### Phase 2: Architectural Deepening & Seam Inspection
+### Phase 2: Architectural Deepening & Seam Inspection (`/fl-architect`)
 1. **Deep Modules vs Shallow Pass-Throughs:**
    - Maximize implementation depth behind narrow, unshifting interfaces.
    - Run `fl_seam_inspector` to evaluate depth ratio and detect pass-through bloat:
@@ -56,7 +61,17 @@ High-discipline software craftsmanship and systems engineering SOP. Explicitly e
 
 ---
 
-### Phase 3: DAG Tracer-Bullet Task Graph
+### Phase 3: Throwaway Spikes & Hypotheses (`/fl-prototype`)
+1. **Zero-Dependency Spike Harnesses:**
+   - When state machine transitions or UI structures are uncertain, generate a self-contained spike:
+     ```bash
+     node tools/fl_prototype_harness/main.mjs --params '{"title":"Auth State Machine","output_file":"auth_spike.html"}'
+     ```
+   - Store spike artifacts on branch `prototype/<topic>` and lift only verified pure reducers to production.
+
+---
+
+### Phase 4: DAG Tracer-Bullet Task Graph (`/fl-spec`, `/fl-task-graph`)
 1. **Vertical Slices over Horizontal Layers:**
    - Cut across all layers (schema, API, UI, tests) in thin, verifiable tracer bullets.
 2. **DAG Scheduling & Active Frontier Execution:**
@@ -67,7 +82,7 @@ High-discipline software craftsmanship and systems engineering SOP. Explicitly e
 
 ---
 
-### Phase 4: Empirical Diagnostics & Red-Green TDD
+### Phase 5: Empirical Diagnostics & Red-Green TDD (`/fl-diagnose`, `/fl-red-green`)
 1. **Deterministic Red Feedback Loop:**
    - Never speculate on bugs without an automated reproduction command failing deterministically (Exit Code != 0):
      ```bash
@@ -85,7 +100,7 @@ High-discipline software craftsmanship and systems engineering SOP. Explicitly e
 
 ---
 
-### Phase 5: Two-Axis Independent Code Review
+### Phase 6: Two-Axis Independent Code Review (`/fl-review`)
 1. **Independent Parallel Verification:**
    - Evaluate code changes along Axis 1 (Standards & Fowler Smells) and Axis 2 (Spec Conformance):
      ```bash
@@ -96,7 +111,16 @@ High-discipline software craftsmanship and systems engineering SOP. Explicitly e
 
 ---
 
-### Phase 6: Human-in-the-Loop Setup Wizard
+### Phase 7: Git Integrity Guardrails (`/fl-guardrails`)
+1. **Pre-Tool Operation Inspection:**
+   - Validate proposed git commands to intercept destructive force pushes, hard resets, or unverified branch deletion:
+     ```bash
+     node tools/fl_git_guardrails/main.mjs --params '{"action":"validate_command","git_command":"git push origin main --force"}'
+     ```
+
+---
+
+### Phase 8: Human-in-the-Loop Setup Wizard (`/fl-provision`)
 1. **Interactive Bash Provisioning:**
    - When external credentials, OAuth, or dashboard tokens are needed by human, scaffold a frozen-core interactive wizard:
      ```bash
