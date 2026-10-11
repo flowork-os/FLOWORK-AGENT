@@ -1016,7 +1016,7 @@ async function refreshAccountToken(account, force = false) {
                 'Content-Length': Buffer.byteLength(postData),
                 ...(floworkToken ? { 'Authorization': `Bearer ${floworkToken}` } : {})
             },
-            timeout: 15000
+            timeout: 7000
         }, (res) => {
             let body = '';
             res.on('data', chunk => body += chunk);
@@ -1045,6 +1045,11 @@ async function refreshAccountToken(account, force = false) {
                     resolve({ refreshed: false, error: e.message });
                 }
             });
+        });
+
+        req.on('timeout', () => {
+            req.destroy(new Error('TIMEOUT'));
+            resolve({ refreshed: false, error: 'Auth refresh request timed out after 7s' });
         });
 
         req.on('error', (err) => {
@@ -1255,14 +1260,39 @@ async function handleOAuthCallback(req, res, parsedUrl, serverPort) {
     return true;
 }
 
-// ── Move Rate-Limited / Cooldown Account to the Tail (Urutan Paling Belakang) ──
-function moveAccountToEnd(vault, accountId) {
+// ── Prioritize Healthy Accounts to Head, Push Limited / Verification to Tail ──
+function prioritizeHealthyAccounts(vault) {
     if (!vault || !Array.isArray(vault.accounts) || vault.accounts.length <= 1) return;
-    const idx = vault.accounts.findIndex(a => a.id === accountId);
-    if (idx !== -1 && idx < vault.accounts.length - 1) {
+    const now = Date.now();
+    const healthy = [];
+    const demoted = [];
+    for (const a of vault.accounts) {
+        const coolUntil = parseTimestamp(a.cooldown_until);
+        const isLimited = (coolUntil && coolUntil > now) || a.status === 'cooldown' || a.status === 'rate_limited';
+        const isBroken = a.status === 'validation_required' || a.status === 'error';
+        if (isLimited || isBroken) {
+            demoted.push(a);
+        } else {
+            healthy.push(a);
+        }
+    }
+    if (demoted.length > 0 && healthy.length > 0) {
+        vault.accounts = [...healthy, ...demoted];
+        if (!healthy.some(h => h.id === vault.active_account_id)) {
+            vault.active_account_id = healthy[0].id;
+        }
+    }
+}
+
+// ── Move Rate-Limited / Verification / Error Account to Tail (Urutan Paling Belakang) ──
+function moveAccountToEnd(vault, accountId, reason = 'limited') {
+    if (!vault || !Array.isArray(vault.accounts) || vault.accounts.length <= 1) return;
+    const idx = vault.accounts.findIndex(a => a.id === accountId || a.email === accountId);
+    if (idx !== -1) {
         const [limitedAcc] = vault.accounts.splice(idx, 1);
         vault.accounts.push(limitedAcc);
-        console.log(`[Account Rotator] ⏩ Akun limit [${limitedAcc.email || accountId}] digeser ke antrean paling belakang.`);
+        console.log(`[Account Rotator] ⏩ Akun [${limitedAcc.email || accountId}] (${reason}) digeser ke antrean paling belakang.`);
+        prioritizeHealthyAccounts(vault);
     }
 }
 
@@ -1282,12 +1312,14 @@ function getNextAvailableAccount(vault, excludeId = null) {
             a.cooldown_until = coolUntil;
         }
     }
+
+    prioritizeHealthyAccounts(vault);
     if (hasExpiredCooldown) {
         saveVault(vault);
     }
 
     const readyAccounts = vault.accounts.filter(a => {
-        if (excludeId && a.id === excludeId) return false;
+        if (excludeId && (a.id === excludeId || a.email === excludeId)) return false;
         if (a.status === 'error' || a.status === 'validation_required') return false;
         const coolUntil = parseTimestamp(a.cooldown_until);
         if (coolUntil > now) return false;
@@ -1534,19 +1566,22 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                     found.cooldown_until = 0;
                     found.status = 'active';
                 }
-                if (found.status === 'cooldown' || (coolUntil && coolUntil > now)) {
+                const isUnavailable = found.status === 'cooldown' || found.status === 'validation_required' || found.status === 'error' || (coolUntil && coolUntil > now);
+                if (isUnavailable) {
+                    moveAccountToEnd(vault, found.id, `Dedicated account status: ${found.status}`);
+                    saveVault(vault);
                     if (boundPolicy === 'strict') {
-                        console.warn(`[Account Rotator] 🔒 Dedicated pinned account [${found.email}] is on cooldown (strict policy).`);
+                        console.warn(`[Account Rotator] 🔒 Dedicated pinned account [${found.email}] is unavailable (${found.status}, strict policy).`);
                         res.writeHead(429, { 'Content-Type': 'application/json' });
                         return res.end(JSON.stringify({
                             error: {
                                 code: 429,
-                                message: `Dedicated Antigravity Pro account [${found.email}] is on quota cooldown until ${new Date(coolUntil).toLocaleTimeString()}. Strict policy is active.`,
+                                message: `Dedicated Antigravity Pro account [${found.email}] is unavailable (${found.status}). Strict policy is active.`,
                                 status: 'RESOURCE_EXHAUSTED'
                             }
                         }));
                     } else {
-                        console.warn(`[Account Rotator] 🔀 Dedicated account [${found.email}] is on cooldown. Falling back to pooled account...`);
+                        console.warn(`[Account Rotator] 🔀 Dedicated account [${found.email}] is unavailable (${found.status}). Digeser ke belakang, beralih otomatis ke akun aktif...`);
                     }
                 } else {
                     account = found;
@@ -1589,9 +1624,16 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
         let tokenCheck = await ensureAccountTokenValid(account, 3 * 60 * 1000);
         if (!tokenCheck.valid) {
             console.warn(`[Account Rotator] Initial account [${account.email}] token invalid/unrefreshable:`, tokenCheck.reason || tokenCheck.details?.error);
+            account.status = 'error';
+            account.error_message = tokenCheck.reason || tokenCheck.details?.error || 'Token unrefreshable';
+            moveAccountToEnd(vault, account.id, 'Pre-flight Token Invalid');
+            saveVault(vault);
             const fallback = getNextAvailableAccount(vault, account.id);
             if (fallback) {
+                console.log(`[Account Rotator] 🔀 Pre-flight Failover: Beralih otomatis ke [${fallback.email}]...`);
                 account = fallback;
+                vault.active_account_id = fallback.id;
+                saveVault(vault);
                 await ensureAccountTokenValid(account, 3 * 60 * 1000);
             }
         }
@@ -1699,7 +1741,7 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
         }
 
         const requestStartTime = Date.now();
-        const MAX_OVERALL_REQUEST_TIME_MS = 80000;
+        const MAX_OVERALL_REQUEST_TIME_MS = 60000;
 
         // Forward attempt function with failover
         const attemptForward = async (currentAccount, attemptCount = 0) => {
@@ -1726,6 +1768,22 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
             const tokenRes = await ensureAccountTokenValid(currentAccount, 2 * 60 * 1000);
             if (tokenRes && tokenRes.details && tokenRes.details.refreshed) {
                 saveVault(vault);
+            } else if (tokenRes && !tokenRes.valid) {
+                console.warn(`[Account Rotator] ⚠️ Token on [${currentAccount.email}] invalid before dispatch. Digeser ke belakang...`);
+                currentAccount.status = 'error';
+                currentAccount.error_message = tokenRes.reason || 'Token invalid';
+                moveAccountToEnd(vault, currentAccount.id, 'Token invalid before dispatch');
+                saveVault(vault);
+                const maxAttempts = Math.max(vault.accounts.length, 25);
+                if (attemptCount < maxAttempts) {
+                    const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
+                    if (nextAccount) {
+                        console.log(`[Account Rotator] 🔀 Pre-dispatch Failover: Beralih otomatis ke [${nextAccount.email}]...`);
+                        vault.active_account_id = nextAccount.id;
+                        saveVault(vault);
+                        return attemptForward(nextAccount, attemptCount + 1);
+                    }
+                }
             }
 
             // Flowork Sovereign Upstream Dispatcher:
@@ -1798,10 +1856,13 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                         console.error(`[Account Rotator] ❌ 401 Refresh failed for [${currentAccount.email}]:`, ref.error);
                         currentAccount.status = 'error';
                         currentAccount.error_message = ref.error || 'Token expired or revoked';
+                        moveAccountToEnd(vault, currentAccount.id, '401 Token Refresh Failed');
                         saveVault(vault);
                         const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
                         if (nextAccount) {
                             console.log(`[Account Rotator] 🔀 401 Failover: Rotating traffic to [${nextAccount.email}]...`);
+                            vault.active_account_id = nextAccount.id;
+                            saveVault(vault);
                             return attemptForward(nextAccount, attemptCount + 1);
                         } else {
                             return returnGracefulFallback('[Flowork Engine Notice] Sesi token perlu diperbarui. Silakan ulangi dalam beberapa saat.');
@@ -1812,28 +1873,22 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                 // 2. Check for HTTP 429 Rate Limit / Quota Exceeded
                 if (proxyRes.statusCode === 429) {
                     proxyRes.resume();
+                    currentAccount.cooldown_until = Date.now() + COOLDOWN_DURATION_MS;
+                    currentAccount.status = 'cooldown';
+                    currentAccount.errors_count = (currentAccount.errors_count || 0) + 1;
+                    notifyCloudCooldown(currentAccount.id, currentAccount.cooldown_until);
+                    moveAccountToEnd(vault, currentAccount.id, '429 Rate Limit / Quota Exceeded');
+                    saveVault(vault);
+
                     if (isPinnedAccount && boundPolicy === 'strict') {
                         console.warn(`[Account Rotator] 🔒 Dedicated pinned account [${currentAccount.email}] hit 429 quota limit.`);
-                        currentAccount.cooldown_until = Date.now() + COOLDOWN_DURATION_MS;
-                        currentAccount.status = 'cooldown';
-                        currentAccount.errors_count = (currentAccount.errors_count || 0) + 1;
-                        notifyCloudCooldown(currentAccount.id, currentAccount.cooldown_until);
-                        saveVault(vault);
                         return returnGracefulFallback(`Dedicated account [${currentAccount.email}] sedang dalam cooldown kuota.`);
                     }
 
                     if (attemptCount < maxAttempts) {
-                        console.warn(`[Account Rotator] ⚡ Quota limit (429) hit on [${currentAccount.email}]. Shifting to cooldown...`);
-                        currentAccount.cooldown_until = Date.now() + COOLDOWN_DURATION_MS;
-                        currentAccount.status = 'cooldown';
-                        currentAccount.errors_count = (currentAccount.errors_count || 0) + 1;
-                        notifyCloudCooldown(currentAccount.id, currentAccount.cooldown_until);
-                        moveAccountToEnd(vault, currentAccount.id);
-                        saveVault(vault);
-
                         const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
                         if (nextAccount) {
-                            console.log(`[Account Rotator] 🔀 Rotating traffic to [${nextAccount.email}] (Attempt #${attemptCount + 1})...`);
+                            console.log(`[Account Rotator] 🔀 429 Failover: Rotating traffic to [${nextAccount.email}] (Attempt #${attemptCount + 1})...`);
                             vault.active_account_id = nextAccount.id;
                             saveVault(vault);
                             return attemptForward(nextAccount, attemptCount + 1);
@@ -1868,10 +1923,12 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                             currentAccount.status = 'validation_required';
                             currentAccount.validation_url = valUrl;
                             currentAccount.error_message = 'Google requires phone/identity validation';
+                            moveAccountToEnd(vault, currentAccount.id, '403 VALIDATION_REQUIRED');
                         } else {
                             console.warn(`[Account Rotator] ⚠️ HTTP 403 on [${currentAccount.email}].`);
                             currentAccount.status = 'error';
                             currentAccount.error_message = 'HTTP 403 Forbidden';
+                            moveAccountToEnd(vault, currentAccount.id, '403 Forbidden');
                         }
                         saveVault(vault);
 
@@ -1879,6 +1936,8 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                             const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
                             if (nextAccount) {
                                 console.log(`[Account Rotator] 🔀 403 Failover: Rotating traffic to [${nextAccount.email}] (Attempt #${attemptCount + 1})...`);
+                                vault.active_account_id = nextAccount.id;
+                                saveVault(vault);
                                 return attemptForward(nextAccount, attemptCount + 1);
                             }
                         }
@@ -1895,13 +1954,16 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
                         const bodyStr = Buffer.concat(bodyChunks).toString('utf8');
                         if (bodyStr.includes('User location is not supported') || bodyStr.includes('FAILED_PRECONDITION')) {
                             if (attemptCount < maxAttempts) {
-                                console.warn(`[Account Rotator] ⚠️ HTTP 400 Egress Geo-block on [${currentAccount.email}]. Cooling down 30s...`);
-                                currentAccount.cooldown_until = Date.now() + 30000;
+                                console.warn(`[Account Rotator] ⚠️ HTTP 400 Egress Geo-block on [${currentAccount.email}]. Cooling down 60s...`);
+                                currentAccount.cooldown_until = Date.now() + 60000;
                                 currentAccount.status = 'cooldown';
+                                moveAccountToEnd(vault, currentAccount.id, '400 Egress Geo-block');
                                 saveVault(vault);
-                                await new Promise(r => setTimeout(r, 200));
                                 const nextAccount = getNextAvailableAccount(vault, currentAccount.id);
                                 if (nextAccount) {
+                                    console.log(`[Account Rotator] 🔀 400 Failover: Rotating traffic to [${nextAccount.email}]...`);
+                                    vault.active_account_id = nextAccount.id;
+                                    saveVault(vault);
                                     return attemptForward(nextAccount, attemptCount + 1);
                                 }
                             }
@@ -2220,10 +2282,20 @@ async function handleAiRequestWithFailover(req, res, parsedUrl, pathname, server
 
             proxyReq.on('error', (err) => {
                 console.error(`[Account Rotator] Upstream error on [${currentAccount.email}]:`, err.message);
+                currentAccount.errors_count = (currentAccount.errors_count || 0) + 1;
+                currentAccount.cooldown_until = Date.now() + 30000;
+                currentAccount.status = 'cooldown';
+                moveAccountToEnd(vault, currentAccount.id, `Upstream Socket Error: ${err.message}`);
+                saveVault(vault);
+
                 const elapsed = Date.now() - requestStartTime;
-                if (attemptCount < vault.accounts.length - 1 && elapsed < MAX_OVERALL_REQUEST_TIME_MS - 20000) {
+                const maxAttempts = Math.max(vault.accounts.length, 25);
+                if (attemptCount < maxAttempts && elapsed < MAX_OVERALL_REQUEST_TIME_MS - 15000) {
                     const fallback = getNextAvailableAccount(vault, currentAccount.id);
                     if (fallback) {
+                        console.log(`[Account Rotator] 🔀 Network Error Failover: Rotating traffic to [${fallback.email}]...`);
+                        vault.active_account_id = fallback.id;
+                        saveVault(vault);
                         return attemptForward(fallback, attemptCount + 1);
                     }
                 }
