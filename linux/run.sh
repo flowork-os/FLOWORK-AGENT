@@ -604,7 +604,9 @@ start_node_router_fallback() {
   fi
 
   local ROUTER_JS=""
-  if [ -f "$SCRIPT_DIR/connection/router.js" ]; then
+  if [ -f "$SCRIPT_DIR/portable-home/.flowork/sealed_connector/router.js" ]; then
+    ROUTER_JS="$SCRIPT_DIR/portable-home/.flowork/sealed_connector/router.js"
+  elif [ -f "$SCRIPT_DIR/connection/router.js" ]; then
     ROUTER_JS="$SCRIPT_DIR/connection/router.js"
   elif [ -f "$SCRIPT_DIR/connector/router.js" ]; then
     ROUTER_JS="$SCRIPT_DIR/connector/router.js"
