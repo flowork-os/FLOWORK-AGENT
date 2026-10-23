@@ -4023,6 +4023,33 @@ function initSSE() {
         }
         return;
       }
+      if (payload.SwarmWaveState) {
+        const wave = payload.SwarmWaveState;
+        console.log('[X-Flow SSE] 🌊 Swarm wave state received:', wave);
+        if (typeof window.dispatchSwarmWaveTo3D === 'function') {
+          window.dispatchSwarmWaveTo3D(wave);
+        } else if (window.office3DInstance && Array.isArray(wave.active_workers)) {
+          wave.active_workers.forEach(w => {
+            const agId = w.agent_id || w.role || w.task_id;
+            const isRunning = (wave.status === 'wave_started' || w.status === 'running');
+            const targetState = isRunning ? 'working' : 'idle';
+            window.office3DInstance.setAgentState(agId, targetState);
+            if (typeof window.setOfficeAgentThinking === 'function') {
+              const reason = isRunning ? `⚡ [Wave ${wave.wave_index}] ${w.role || w.task_id}` : 'Wave barrier verified (Exit Code 0)';
+              window.setOfficeAgentThinking(agId, reason, isRunning);
+            }
+          });
+        }
+        if (window.swarmTelemetry && typeof window.swarmTelemetry.emit === 'function') {
+          window.swarmTelemetry.emit({
+            event: 'swarm_wave',
+            wave_index: wave.wave_index,
+            status: wave.status,
+            active_workers: wave.active_workers
+          });
+        }
+        return;
+      }
       if (payload.PluginCommand) {
         const cmd = payload.PluginCommand;
         console.log('[X-Flow SSE] Plugin command received:', cmd);
@@ -20304,6 +20331,25 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                 });
               }
 
+              // Multi-Agent Concurrent Swarm Dispatcher for invoke_subagent
+              if (rawTool.includes('invoke_subagent') && data.details) {
+                const subList = data.details.Subagents || data.details.subagents || data.details.tasks || data.details.agents;
+                if (Array.isArray(subList) && subList.length > 0) {
+                  subList.forEach((sub) => {
+                    const subCandidate = sub.TypeName || sub.typeName || sub.role || sub.Role || sub.agent_id || sub.id;
+                    const subWorkerId = resolveWorkerAgentFromTool('invoke_subagent', { target_agent_id: subCandidate, role: sub.Role || sub.role });
+                    cancelAgentExitTimer(subWorkerId);
+                    if (window.office3DInstance) {
+                      window.office3DInstance.setAgentState(subWorkerId, 'working');
+                    }
+                    if (typeof window.setOfficeAgentThinking === 'function') {
+                      const subRole = sub.Role || sub.role || sub.TypeName || 'Swarm Worker';
+                      window.setOfficeAgentThinking(subWorkerId, `⚡ [Swarm Wave] ${subRole}`, true);
+                    }
+                  });
+                }
+              }
+
               if (rawTool.includes('restart') || rawTool.includes('system_restart') || rawTool.includes('flow_restart')) {
                 isSystemRestarting = true;
                 startRestartPolling(currentChatSessionId);
@@ -20338,6 +20384,24 @@ async function executeChatMessage(text, attachmentsToSend = []) {
 
               if (typeof window.setOfficeAgentThinking === 'function') {
                 window.setOfficeAgentThinking(workerAgentId, 'Task phase verified (Exit Code 0)', false);
+              }
+
+              // Multi-Agent Swarm Wave Barrier Sync for invoke_subagent
+              if (String(data.tool || '').toLowerCase().includes('invoke_subagent') && data.details) {
+                const subList = data.details.Subagents || data.details.subagents || data.details.tasks || data.details.agents;
+                if (Array.isArray(subList) && subList.length > 0) {
+                  subList.forEach((sub) => {
+                    const subCandidate = sub.TypeName || sub.typeName || sub.role || sub.Role || sub.agent_id || sub.id;
+                    const subWorkerId = resolveWorkerAgentFromTool('invoke_subagent', { target_agent_id: subCandidate, role: sub.Role || sub.role });
+                    if (window.office3DInstance) {
+                      window.office3DInstance.setAgentState(subWorkerId, 'idle');
+                    }
+                    if (typeof window.setOfficeAgentThinking === 'function') {
+                      window.setOfficeAgentThinking(subWorkerId, 'Wave completed (Exit Code 0)', false);
+                    }
+                    scheduleAgentExit(subWorkerId, 2500);
+                  });
+                }
               }
 
               // If this worker agent has no more tools running, schedule dynamic departure

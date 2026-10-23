@@ -3482,24 +3482,49 @@ class SovereignOffice3D {
     this.camPosTarget.copy(this.camTarget).addScaledVector(dir, newDist);
   }
 
-  setAgentState(agentId, newState) {
-    if (!agentId) return;
+  findAgentMatching(agentId) {
+    if (!agentId) return null;
     const target = String(agentId).trim().toLowerCase();
-    const ag = this.agents.find((a) => {
+    let ag = this.agents.find((a) => {
       const p = (a.data.persona || '').toLowerCase();
       const aid = (a.data.id || '').toLowerCase();
       const sid = (a.data.sessionId || '').toLowerCase();
+      const r = (a.data.role || '').toLowerCase();
+      const nm = (a.data.name || '').toLowerCase();
       return (
         aid === target ||
         sid === target ||
         p === target ||
+        r === target ||
+        nm === target ||
         ('agent-' + p) === target ||
         ('session-' + p) === target ||
         ((target === 'default' || target === 'mrflow' || target === 'agent-default') && (p === 'default' || aid === 'agent-default')) ||
         (p && target.includes(p)) ||
-        (aid && target.includes(aid))
+        (aid && target.includes(aid)) ||
+        (r && target.includes(r)) ||
+        (nm && target.includes(nm))
       );
     });
+
+    // Fallback: Keyword-based specialist agent resolution for Swarm DAG tasks
+    if (!ag && this.agents.length > 0) {
+      if (target.includes('code') || target.includes('arch') || target.includes('dev') || target.includes('soft') || target.includes('engineer')) {
+        ag = this.agents.find(a => (a.data.persona || '').includes('coder') || (a.data.id || '').includes('coder') || (a.data.role || '').toLowerCase().includes('engineer'));
+      } else if (target.includes('recon') || target.includes('market') || target.includes('web') || target.includes('intel') || target.includes('search') || target.includes('research')) {
+        ag = this.agents.find(a => (a.data.persona || '').includes('recon') || (a.data.id || '').includes('recon') || (a.data.persona || '').includes('research') || (a.data.role || '').toLowerCase().includes('analyst'));
+      } else if (target.includes('qa') || target.includes('test') || target.includes('audit') || target.includes('sec')) {
+        ag = this.agents.find(a => (a.data.persona || '').includes('qa') || (a.data.id || '').includes('qa') || (a.data.role || '').toLowerCase().includes('qa'));
+      } else if (target.includes('biz') || target.includes('copy') || target.includes('writer') || target.includes('marketing')) {
+        ag = this.agents.find(a => (a.data.persona || '').includes('biz') || (a.data.id || '').includes('biz') || (a.data.role || '').toLowerCase().includes('writer'));
+      }
+    }
+    return ag || null;
+  }
+
+  setAgentState(agentId, newState) {
+    if (!agentId) return;
+    const ag = this.findAgentMatching(agentId);
 
     if (ag) {
       ag.data.state = newState;
@@ -3531,22 +3556,7 @@ class SovereignOffice3D {
 
   setAgentThinkingReason(agentId, reasonText, isThinking = true) {
     if (!agentId) return;
-    const target = String(agentId).trim().toLowerCase();
-    const ag = this.agents.find((a) => {
-      const p = (a.data.persona || '').toLowerCase();
-      const aid = (a.data.id || '').toLowerCase();
-      const sid = (a.data.sessionId || '').toLowerCase();
-      return (
-        aid === target ||
-        sid === target ||
-        p === target ||
-        ('agent-' + p) === target ||
-        ('session-' + p) === target ||
-        ((target === 'default' || target === 'mrflow' || target === 'agent-default') && (p === 'default' || aid === 'agent-default')) ||
-        (p && target.includes(p)) ||
-        (aid && target.includes(aid))
-      );
-    });
+    const ag = this.findAgentMatching(agentId);
 
     if (ag) {
       ag.data.thinkingReason = reasonText || '';
@@ -3562,22 +3572,7 @@ class SovereignOffice3D {
 
   setAgentActiveTool(agentId, toolName, toolAction, isRunning = true) {
     if (!agentId) return;
-    const target = String(agentId).trim().toLowerCase();
-    const ag = this.agents.find((a) => {
-      const p = (a.data.persona || '').toLowerCase();
-      const aid = (a.data.id || '').toLowerCase();
-      const sid = (a.data.sessionId || '').toLowerCase();
-      return (
-        aid === target ||
-        sid === target ||
-        p === target ||
-        ('agent-' + p) === target ||
-        ('session-' + p) === target ||
-        ((target === 'default' || target === 'mrflow' || target === 'agent-default') && (p === 'default' || aid === 'agent-default')) ||
-        (p && target.includes(p)) ||
-        (aid && target.includes(aid))
-      );
-    });
+    const ag = this.findAgentMatching(agentId);
 
     if (ag) {
       if (isRunning && toolName) {
@@ -3924,6 +3919,46 @@ window.setOfficeAgentTool = function(agentId, toolName, toolAction, isRunning = 
   const office = window.office3DInstance || window.Flowork3DSolo || window._sovereignOffice3DInstance;
   if (office && typeof office.setAgentActiveTool === 'function') {
     office.setAgentActiveTool(agentId, toolName, toolAction, isRunning);
+  }
+};
+
+// Bridge helper to dispatch Swarm Wave parallel states to all 3D office avatars
+window.dispatchSwarmWaveTo3D = function(waveState) {
+  const office = window.office3DInstance || window.Flowork3DSolo || window._sovereignOffice3DInstance;
+  if (!office || !waveState) return;
+  const workers = Array.isArray(waveState.active_workers) ? waveState.active_workers : [];
+  const isRunning = waveState.status === 'wave_started' || waveState.status === 'running';
+
+  workers.forEach(w => {
+    const agId = w.agent_id || w.role || w.task_id;
+    const isWorkerActive = isRunning && w.status !== 'succeeded' && w.status !== 'failed' && w.status !== 'timed_out';
+    const st = isWorkerActive ? 'working' : 'idle';
+    office.setAgentState(agId, st);
+    if (typeof office.setAgentThinkingReason === 'function') {
+      const reason = isWorkerActive ? `[Wave ${waveState.wave_index || 1}] ${w.role || w.task_id}` : 'Wave task verified (Exit Code 0)';
+      office.setAgentThinkingReason(agId, reason, isWorkerActive);
+    }
+    if (typeof office.setAgentActiveTool === 'function') {
+      const targets = Array.isArray(w.targets) ? w.targets.join(', ') : '';
+      office.setAgentActiveTool(agId, 'swarm_dag_worker', targets, isWorkerActive);
+    }
+  });
+
+  if (waveState.status === 'wave_finished') {
+    // Revert lingering workers to idle
+    if (Array.isArray(office.agents)) {
+      office.agents.forEach(ag => {
+        if (ag.data && !ag.data.isBoss && ag.data.state === 'working') {
+          office.setAgentState(ag.data.id, 'idle');
+          if (typeof office.setAgentThinkingReason === 'function') {
+            office.setAgentThinkingReason(ag.data.id, '', false);
+          }
+          if (typeof office.setAgentActiveTool === 'function') {
+            office.setAgentActiveTool(ag.data.id, '', '', false);
+          }
+        }
+      });
+    }
   }
 };
 
