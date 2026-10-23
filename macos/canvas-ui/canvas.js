@@ -81,11 +81,62 @@ document.addEventListener('DOMContentLoaded', () => {
   initWorkspaceSystem();
   initScheduleSystem();
   initRouterSwitchboardSystem();
-  // Pre-boot tab guard: If active tab is non-office, prepare UI immediately to prevent 3D flicker
-  const preSavedActiveTab = localStorage.getItem('xflow_active_tab');
+  // Pre-boot tab guard: Validate saved tab, normalize stale/invalid tabs to 'office'
+  let preSavedActiveTab = localStorage.getItem('xflow_active_tab');
+  if (preSavedActiveTab === 'group' || preSavedActiveTab === 'canvas-stage' || !preSavedActiveTab) {
+    preSavedActiveTab = 'office';
+    try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
+  }
+
+  let savedOpenTabIds = [];
+  try {
+    const raw = localStorage.getItem('xflow_open_plugin_tabs');
+    if (raw) savedOpenTabIds = JSON.parse(raw);
+  } catch (_) {}
+
+  // If saved tab is neither standard (office, copilot, home) nor an open plugin tab, fallback immediately
+  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home') {
+    if (!Array.isArray(savedOpenTabIds) || !savedOpenTabIds.includes(preSavedActiveTab)) {
+      preSavedActiveTab = 'office';
+      try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
+    }
+  }
+
   if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot') {
     switchTab(preSavedActiveTab);
-  } else if (preSavedActiveTab && preSavedActiveTab !== 'office') {
+  } else if (preSavedActiveTab === 'office') {
+    const layout = document.querySelector('.canvas-layout');
+    if (layout) {
+      layout.classList.add('solo-studio-glass');
+      layout.classList.remove('app-mode');
+    }
+    const officePanel = document.getElementById('view-office');
+    if (officePanel) {
+      officePanel.classList.add('active');
+      officePanel.style.removeProperty('display');
+      officePanel.style.contentVisibility = 'visible';
+    }
+    const tabOffice = document.getElementById('tab-office');
+    if (tabOffice) tabOffice.classList.add('active');
+
+    const rightbarChat = document.getElementById('rightbar-chat');
+    if (rightbarChat) {
+      const isCollapsed = localStorage.getItem('xflow_rightbar_collapsed') === 'true';
+      if (!isCollapsed) {
+        rightbarChat.classList.remove('collapsed');
+        rightbarChat.style.removeProperty('display');
+      }
+    }
+    const resizerRight = document.getElementById('resizer-right');
+    if (resizerRight) {
+      const isCollapsed = localStorage.getItem('xflow_rightbar_collapsed') === 'true';
+      if (!isCollapsed) {
+        resizerRight.classList.remove('collapsed');
+        resizerRight.style.removeProperty('display');
+      }
+    }
+  } else {
+    // Valid open plugin tab
     const layout = document.querySelector('.canvas-layout');
     if (layout) {
       layout.classList.remove('solo-studio-glass');
@@ -112,11 +163,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Pre-mount skeleton tab capsules from saved tabs so the tab bar never blinks empty
-    let savedOpenTabIds = [];
-    try {
-      const raw = localStorage.getItem('xflow_open_plugin_tabs');
-      if (raw) savedOpenTabIds = JSON.parse(raw);
-    } catch (_) {}
     const tabStrip = document.getElementById('tab-strip');
     if (tabStrip && Array.isArray(savedOpenTabIds)) {
       savedOpenTabIds.forEach(id => {
@@ -4736,9 +4782,7 @@ async function restoreTabsState() {
       switchTab(savedActiveTab);
     } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot') {
       switchTab(savedActiveTab);
-    } else if (savedActiveTab === 'group') {
-      switchTab('group');
-    } else if (openTabs.size > 0 && savedActiveTab !== 'office') {
+    } else if (openTabs.size > 0 && savedActiveTab !== 'office' && savedActiveTab !== 'group' && savedActiveTab !== 'canvas-stage') {
       const firstTab = Array.from(openTabs.keys())[0];
       switchTab(firstTab);
     } else {
@@ -4862,7 +4906,9 @@ async function openPluginTab(plugin, options = {}) {
 }
 
 async function switchTab(tabId, options = {}) {
-  if (!tabId) return;
+  if (!tabId || tabId === 'group' || tabId === 'canvas-stage') {
+    tabId = 'office';
+  }
 
   // Unified App Store redirection: 'home' opens the Installed Apps subtab within App Store
   if (tabId === 'home') {
@@ -4871,6 +4917,12 @@ async function switchTab(tabId, options = {}) {
   } else if (tabId === 'copilot') {
     const saved = localStorage.getItem('xflow_store_subtab') || 'cloud';
     switchStoreSubtab(saved);
+  }
+
+  // Fail-safe view existence validation: NEVER switch to a non-existent panel
+  if (tabId !== 'office' && !document.getElementById(`view-${tabId}`)) {
+    console.warn(`[X-Flow] View panel for tab '${tabId}' not found. Falling back to 'office'.`);
+    tabId = 'office';
   }
 
   try {
@@ -4918,6 +4970,10 @@ async function switchTab(tabId, options = {}) {
     if (resizerRight) {
       resizerRight.classList.remove('collapsed');
       resizerRight.style.display = '';
+    }
+    const btnToggleChat = document.getElementById('btn-toggle-chat');
+    if (btnToggleChat) {
+      btnToggleChat.classList.add('active');
     }
     if (typeof window.__updateLayoutResizers === 'function') {
       window.__updateLayoutResizers();
@@ -5066,6 +5122,10 @@ async function switchTab(tabId, options = {}) {
         resizerRight.classList.remove('collapsed');
         resizerRight.style.display = '';
       }
+      const btnToggleChat = document.getElementById('btn-toggle-chat');
+      if (btnToggleChat) {
+        btnToggleChat.classList.add('active');
+      }
     } else {
       // For App Store (copilot) & Installed Apps (home), hide chat for clean full-width catalog
       if (typeof stopChatSyncEngine === 'function') {
@@ -5080,6 +5140,10 @@ async function switchTab(tabId, options = {}) {
       if (resizerRight) {
         resizerRight.classList.add('collapsed');
         resizerRight.style.display = 'none';
+      }
+      const btnToggleChat = document.getElementById('btn-toggle-chat');
+      if (btnToggleChat) {
+        btnToggleChat.classList.remove('active');
       }
     }
 
@@ -7395,15 +7459,15 @@ function initAccountSelector() {
 // ── Chat-Bound Persona & Specialist Selector ──
 let AVAILABLE_PERSONAS = [];
 window.AVAILABLE_PERSONAS = AVAILABLE_PERSONAS;
-const initialBootTab = (typeof localStorage !== 'undefined') ? (localStorage.getItem('xflow_active_tab') || 'office') : 'office';
+let initialBootTab = (typeof localStorage !== 'undefined') ? (localStorage.getItem('xflow_active_tab') || 'office') : 'office';
+if (initialBootTab === 'group' || initialBootTab === 'canvas-stage') {
+  initialBootTab = 'office';
+  try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
+}
 let currentSessionPersonaId = 'mr.flow';
-if (initialBootTab === 'group') {
-  currentSessionPersonaId = localStorage.getItem('xflow_group_persona') || 'leader';
-  if (currentSessionPersonaId === 'default' || currentSessionPersonaId === 'mr.flow' || currentSessionPersonaId === 'mrflow' || !currentSessionPersonaId) {
-    currentSessionPersonaId = 'leader';
-  }
-} else {
-  currentSessionPersonaId = 'mr.flow';
+const savedChatPersona = (typeof localStorage !== 'undefined') ? localStorage.getItem('xflow_chat_persona') : null;
+if (savedChatPersona && savedChatPersona !== 'default') {
+  currentSessionPersonaId = savedChatPersona;
 }
 let pendingSessionPersonaId = currentSessionPersonaId;
 let agentSelectorInitialized = false;
@@ -10639,16 +10703,24 @@ function initRightbarChat() {
   // Default Rightbar open
   if (rightbarChat) {
     rightbarChat.classList.remove('collapsed');
+    rightbarChat.style.removeProperty('display');
     localStorage.setItem('xflow_rightbar_collapsed', 'false');
+    if (btnToggleChat) btnToggleChat.classList.add('active');
   }
   if (window.__updateLayoutResizers) window.__updateLayoutResizers();
 
   // Toggle Rightbar panel
   if (btnToggleChat && rightbarChat) {
     btnToggleChat.addEventListener('click', () => {
+      // Clear any inline display: none applied by previous catalog views
+      rightbarChat.style.removeProperty('display');
+      const resizerRight = document.getElementById('resizer-right');
+      if (resizerRight) resizerRight.style.removeProperty('display');
+
       rightbarChat.classList.toggle('collapsed');
       const collapsed = rightbarChat.classList.contains('collapsed');
       localStorage.setItem('xflow_rightbar_collapsed', collapsed ? 'true' : 'false');
+      btnToggleChat.classList.toggle('active', !collapsed);
 
       // Fail-safe: If user collapses chat while workbench is also collapsed, auto-restore workbench!
       const workbench = document.querySelector('.workbench-main');
@@ -10669,6 +10741,7 @@ function initRightbarChat() {
     btnCloseRightbar.addEventListener('click', () => {
       rightbarChat.classList.add('collapsed');
       localStorage.setItem('xflow_rightbar_collapsed', 'true');
+      if (btnToggleChat) btnToggleChat.classList.remove('active');
 
       // Fail-safe: If user closes chat while workbench is also collapsed, auto-restore workbench!
       const workbench = document.querySelector('.workbench-main');
@@ -13143,6 +13216,27 @@ async function loadChatSession(sessionId, options = {}) {
   localStorage.removeItem('xflow_new_chat_explicit');
   lastKnownStepFingerprint = '';
   window.__renderAllChatSteps = false;
+
+  // Ensure rightbar chat is open, uncollapsed, and visible immediately
+  const rightbarChat = document.getElementById('rightbar-chat');
+  if (rightbarChat) {
+    rightbarChat.classList.remove('collapsed');
+    rightbarChat.style.removeProperty('display');
+    localStorage.setItem('xflow_rightbar_collapsed', 'false');
+  }
+  const resizerRight = document.getElementById('resizer-right');
+  if (resizerRight) {
+    resizerRight.classList.remove('collapsed');
+    resizerRight.style.removeProperty('display');
+  }
+  const btnToggleChat = document.getElementById('btn-toggle-chat');
+  if (btnToggleChat) {
+    btnToggleChat.classList.add('active');
+  }
+  if (typeof window.__updateLayoutResizers === 'function') {
+    window.__updateLayoutResizers();
+  }
+
   if (typeof window.__closeHistoryView === 'function') {
     window.__closeHistoryView();
   }
@@ -13322,10 +13416,8 @@ async function loadChatSession(sessionId, options = {}) {
       });
       if (!options || !options.isPersonaSwitch) {
         const activeTab = localStorage.getItem('xflow_active_tab') || 'office';
-        if (effectivePersona === 'mr.flow' && activeTab === 'group') {
+        if (activeTab === 'group' || activeTab === 'canvas-stage' || activeTab === 'copilot' || activeTab === 'home') {
           switchTab('office', { skipPersonaReload: true });
-        } else if (effectivePersona !== 'mr.flow' && activeTab === 'office') {
-          switchTab('group', { skipPersonaReload: true });
         }
       }
       return true;
@@ -13348,22 +13440,33 @@ window.loadChatSession = loadChatSession;
 // Co-authored-by: Flowork OS <agent@floworkos.com>
 // =============================================================================
 async function autoRestoreLatestChatSession() {
-  const activeTab = localStorage.getItem('xflow_active_tab') || 'office';
-  let targetPersona = 'mr.flow';
-  if (activeTab === 'group') {
-    targetPersona = localStorage.getItem('xflow_group_persona') || 'leader';
-    if (targetPersona === 'mr.flow' || targetPersona === 'mrflow' || targetPersona === 'default' || !targetPersona) {
-      targetPersona = 'leader';
-    }
-  } else {
-    targetPersona = 'mr.flow';
+  let activeTab = localStorage.getItem('xflow_active_tab') || 'office';
+  if (activeTab === 'group' || activeTab === 'canvas-stage') {
+    activeTab = 'office';
+    try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
   }
 
+  let targetPersona = 'mr.flow';
+  const savedLastPersona = localStorage.getItem('xflow_chat_persona');
+  if (savedLastPersona && savedLastPersona !== 'default') {
+    targetPersona = savedLastPersona;
+  }
+
+  const lastActiveSessionId = localStorage.getItem('xflow_active_session_id');
   const savedPersonaSessionId = localStorage.getItem('xflow_persona_session_' + targetPersona);
   let loaded = false;
 
-  // 1. First priority: restore saved active session for target persona if present
-  if (savedPersonaSessionId) {
+  // 1. First priority: restore explicitly active session across reloads
+  if (lastActiveSessionId) {
+    try {
+      loaded = await loadChatSession(lastActiveSessionId, { silent: true, isPersonaSwitch: true });
+    } catch (_) {
+      loaded = false;
+    }
+  }
+
+  // 2. Second priority: restore saved active session for target persona if present
+  if (!loaded && savedPersonaSessionId) {
     try {
       loaded = await loadChatSession(savedPersonaSessionId, { silent: true, isPersonaSwitch: true });
     } catch (_) {
@@ -13371,7 +13474,7 @@ async function autoRestoreLatestChatSession() {
     }
   }
 
-  // 2. Second priority / fallback: query latest session from server history ONLY if matching persona
+  // 3. Third priority / fallback: query latest session from server history
   if (!loaded) {
     try {
       const res = await fetch('/api/chat/history');
@@ -13382,9 +13485,9 @@ async function autoRestoreLatestChatSession() {
             const ag = s.agent_id || s.agent_persona || 'mr.flow';
             if (targetPersona === 'mr.flow') return ag === 'mr.flow' || ag === 'default' || !ag;
             return ag === targetPersona;
-          });
+          }) || data.sessions[0];
           if (matching && matching.id) {
-            console.log('[Chat] 🔄 Auto-restoring latest active chat session for persona:', targetPersona, matching.id);
+            console.log('[Chat] 🔄 Auto-restoring latest active chat session:', matching.id);
             loaded = await loadChatSession(matching.id, { silent: true, isPersonaSwitch: true });
           }
         }
@@ -13394,7 +13497,7 @@ async function autoRestoreLatestChatSession() {
     }
   }
 
-  // 3. Fallback: ensure clean state for target persona if no session loaded
+  // 4. Fallback: ensure clean state for target persona if no session loaded
   if (!loaded) {
     clearChatViewForPersona(targetPersona);
   }
