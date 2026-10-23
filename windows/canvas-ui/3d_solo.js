@@ -2961,9 +2961,11 @@ class SovereignOffice3D {
     ctx.lineWidth = isBoss ? 5 : (isToolRunning ? 6 : 4);
     ctx.strokeStyle = isBoss
       ? '#f59e0b'
-      : (isToolRunning
-        ? '#f43f5e'
-        : (isThinking ? '#a855f7' : (isWorking ? '#10b981' : '#475569')));
+      : (data.state === 'succeeded'
+        ? '#10b981'
+        : (isToolRunning
+          ? '#f43f5e'
+          : (isThinking ? '#a855f7' : (isWorking ? '#10b981' : '#475569'))));
     ctx.stroke();
 
     // 1. Agent Icon + Name & Authority Title
@@ -2989,6 +2991,9 @@ class SovereignOffice3D {
     } else if (isThinking) {
       statusText = '🧠 REASONING & ANALYSIS';
       statusColor = '#c084fc';
+    } else if (data.state === 'succeeded') {
+      statusText = '✅ VERIFIED (EXIT 0)';
+      statusColor = '#10b981';
     } else if (isWorking) {
       statusText = '🟢 EXECUTING TASK';
       statusColor = '#34d399';
@@ -3713,6 +3718,19 @@ class SovereignOffice3D {
             ag.legL.rotation.set(0, 0, 0);
             ag.legR.rotation.set(0, 0, 0);
           }
+        } else if (ag.data.state === 'succeeded') {
+          // Worker Completed: Raised hands celebration / emerald green illumination
+          ag.group.position.copy(ag.data.deskPos);
+          ag.group.rotation.y = ag.data.deskFacingAngle;
+          ag.armL.rotation.set(-2.2, 0.2, -0.3);
+          ag.armR.rotation.set(-2.2, -0.2, 0.3);
+          ag.head.rotation.set(-0.1, Math.sin(time * 3.0) * 0.1, 0);
+          ag.group.position.y = Math.sin(time * 4.0) * 0.02;
+          ag.legL.rotation.set(0, 0, 0);
+          ag.legR.rotation.set(0, 0, 0);
+          if (ag.faceMesh && ag.faceMesh.material) {
+            ag.faceMesh.material.opacity = 1.0;
+          }
         } else {
           // At desk working: Active typing bursts on keyboard
           ag.group.position.copy(ag.data.deskPos);
@@ -3932,11 +3950,16 @@ window.dispatchSwarmWaveTo3D = function(waveState) {
   workers.forEach(w => {
     const agId = w.agent_id || w.role || w.task_id;
     const isWorkerActive = isRunning && w.status !== 'succeeded' && w.status !== 'failed' && w.status !== 'timed_out';
-    const st = isWorkerActive ? 'working' : 'idle';
+    const isWorkerSucceeded = w.status === 'succeeded';
+    const st = isWorkerActive ? 'working' : (isWorkerSucceeded ? 'succeeded' : 'idle');
     office.setAgentState(agId, st);
     if (typeof office.setAgentThinkingReason === 'function') {
-      const reason = isWorkerActive ? `[Wave ${waveState.wave_index || 1}] ${w.role || w.task_id}` : 'Wave task verified (Exit Code 0)';
-      office.setAgentThinkingReason(agId, reason, isWorkerActive);
+      const reason = isWorkerActive
+        ? `[Wave ${waveState.wave_index || 1}] ⚡ Multi-Typing: ${w.role || w.task_id}`
+        : (isWorkerSucceeded
+          ? `✅ Task Verified (Exit Code 0 | ${w.execution_millis || 0}ms)`
+          : 'Wave task completed');
+      office.setAgentThinkingReason(agId, reason, isWorkerActive || isWorkerSucceeded);
     }
     if (typeof office.setAgentActiveTool === 'function') {
       const targets = Array.isArray(w.targets) ? w.targets.join(', ') : '';
@@ -3944,11 +3967,24 @@ window.dispatchSwarmWaveTo3D = function(waveState) {
     }
   });
 
+  if (waveState.status === 'barrier_sync') {
+    // Play gentle chime on wave barrier completion
+    if (typeof window.playFloworkTaskDoneSound === 'function') {
+      window.playFloworkTaskDoneSound();
+    } else {
+      try {
+        const audio = new Audio('/canvas/sounds/floworkTaskDone.mp3');
+        audio.volume = 0.25;
+        audio.play().catch(() => {});
+      } catch (_) {}
+    }
+  }
+
   if (waveState.status === 'wave_finished') {
     // Revert lingering workers to idle
     if (Array.isArray(office.agents)) {
       office.agents.forEach(ag => {
-        if (ag.data && !ag.data.isBoss && ag.data.state === 'working') {
+        if (ag.data && !ag.data.isBoss && (ag.data.state === 'working' || ag.data.state === 'succeeded')) {
           office.setAgentState(ag.data.id, 'idle');
           if (typeof office.setAgentThinkingReason === 'function') {
             office.setAgentThinkingReason(ag.data.id, '', false);

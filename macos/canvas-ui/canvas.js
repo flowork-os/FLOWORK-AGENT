@@ -4086,6 +4086,11 @@ function initSSE() {
             }
           });
         }
+        if (wave.status === 'barrier_sync' || wave.status === 'wave_finished') {
+          if (typeof playFloworkTaskDoneSound === 'function') {
+            playFloworkTaskDoneSound();
+          }
+        }
         if (window.swarmTelemetry && typeof window.swarmTelemetry.emit === 'function') {
           window.swarmTelemetry.emit({
             event: 'swarm_wave',
