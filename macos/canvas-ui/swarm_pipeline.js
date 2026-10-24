@@ -2989,6 +2989,7 @@
           currentStyle.accessories.cape = selCape?.value === "true";
 
           currentStyle.limbs.thruster_plasma_color = inpThrusterColor?.value || "#00f2fe";
+          node.styleData = currentStyle;
 
           if (styleSyncIndicator) {
             styleSyncIndicator.textContent = '○ Unsaved Changes';
@@ -3075,6 +3076,7 @@
               updateToolThemeUI(pCfg.tool_theme);
             }
 
+            node.styleData = currentStyle;
             syncInputsFromState();
             if (styleSyncIndicator) {
               styleSyncIndicator.textContent = '○ Unsaved Changes';
@@ -4156,6 +4158,16 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ task_content: inpTaskPrompt.value })
           }));
+        }
+        if (node.styleData) {
+          promises.push(fetch(`/api/subagents/${encodeURIComponent(effectiveAgentId)}/style`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ style_data: node.styleData })
+          }));
+          if (window.office3DInstance && typeof window.office3DInstance.updateAgentStyle === 'function') {
+            window.office3DInstance.updateAgentStyle(effectiveAgentId, node.styleData);
+          }
         }
 
         if (promises.length > 0) {

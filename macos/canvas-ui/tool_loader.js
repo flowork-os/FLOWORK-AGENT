@@ -1,3 +1,4 @@
+// [FL_INDEX: tool_loader, path_traversal, input_sanitization, security_hardening | COT: Sanitize cleanId with strict alphanumeric regex to mitigate path traversal vulnerability in dynamic module loading| AT: 2026-10-24T10:13:35Z]
 /**
  * FLOWORK OS — SOVEREIGN TOOL LOADER ARCHITECTURE
  * File: canvas-ui/tool_loader.js
@@ -671,7 +672,11 @@
         .replace(/^flow_/, '')
         .replace(/^default_api:/, '')
         .toLowerCase()
+        .replace(/[^a-z0-9_-]/g, '')
         .trim();
+      if (!cleanId) {
+        return this.defaultModule;
+      }
       if (cleanId === 'system_health') cleanId = 'sys_health';
       if (cleanId === 'render_visual_chart') cleanId = 'render_visual';
 
