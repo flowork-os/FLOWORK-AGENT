@@ -2330,6 +2330,49 @@ function _getFloworkRouterBase() {
 }
 window._getFloworkRouterBase = _getFloworkRouterBase;
 
+function _getFloworkCoreBase() {
+  let host = (typeof window !== 'undefined' && window.location && window.location.hostname) ? window.location.hostname : '127.0.0.1';
+  if (host && host.includes(':') && !host.startsWith('[')) {
+    host = `[${host}]`;
+  }
+  return `http://${host}:19890`;
+}
+window._getFloworkCoreBase = _getFloworkCoreBase;
+
+async function openSystemBrowser(targetUrl) {
+  if (!targetUrl || typeof targetUrl !== 'string') return false;
+  const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+  try {
+    const res = await fetch(`${routerBase}/auth/open-browser?url=${encodeURIComponent(targetUrl)}`);
+    if (res.ok) {
+      const data = await res.json();
+      if (data && data.success) return true;
+    }
+  } catch (err) {
+    console.warn('[Flowork] Router open-browser bridge failed on base:', routerBase, err);
+  }
+
+  try {
+    const rPort = (typeof _getFloworkRouterPort === 'function') ? _getFloworkRouterPort() : '9099';
+    const altBase = `http://127.0.0.1:${rPort}`;
+    if (altBase !== routerBase) {
+      const res = await fetch(`${altBase}/auth/open-browser?url=${encodeURIComponent(targetUrl)}`);
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success) return true;
+      }
+    }
+  } catch (_) {}
+
+  try {
+    const pop = window.open(targetUrl, '_blank', 'noopener,noreferrer');
+    if (pop) return true;
+  } catch (_) {}
+
+  return false;
+}
+window.openSystemBrowser = openSystemBrowser;
+
 // ==========================================================================
 // FLOWORK OPEN ECOSYSTEM AUTO-HEALER (ZERO HASH LOCK)
 // ==========================================================================
@@ -2820,7 +2863,7 @@ function initRouterSwitchboardSystem() {
         const res = await fetch(`${routerBase}/auth/router/login-url`);
         const data = await res.json();
         if (data && data.loginUrl) {
-          window.open(data.loginUrl, '_blank');
+          await openSystemBrowser(data.loginUrl);
           if (window._googleOAuthPollInterval) {
             clearInterval(window._googleOAuthPollInterval);
             window._googleOAuthPollInterval = null;
@@ -3031,6 +3074,37 @@ function renderAuthUI(data) {
           user.rank || user.role
         ].filter(Boolean);
         identityBox.title = parts.join(' • ');
+      }
+
+      // 7. Prominent Sovereign Logout Button
+      let btnLogout = document.getElementById('btn-topbar-logout');
+      if (!btnLogout && profileCapsule) {
+        btnLogout = document.createElement('button');
+        btnLogout.id = 'btn-topbar-logout';
+        btnLogout.className = 'btn-topbar-logout';
+        profileCapsule.appendChild(btnLogout);
+      }
+      if (btnLogout) {
+        btnLogout.title = 'Logout & Lock Session';
+        btnLogout.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span style="font-size:11px;font-weight:700;margin-left:5px;">Logout</span>`;
+        btnLogout.style.display = 'inline-flex';
+        btnLogout.style.alignItems = 'center';
+        btnLogout.style.justifyContent = 'center';
+        btnLogout.style.marginLeft = '8px';
+        btnLogout.style.padding = '4px 10px';
+        btnLogout.style.borderRadius = '6px';
+        btnLogout.style.background = 'rgba(239, 68, 68, 0.18)';
+        btnLogout.style.border = '1px solid rgba(239, 68, 68, 0.4)';
+        btnLogout.style.color = '#ff6b6b';
+        btnLogout.style.cursor = 'pointer';
+        btnLogout.style.transition = 'all 0.2s ease';
+        btnLogout.onmouseenter = () => { btnLogout.style.background = 'rgba(239, 68, 68, 0.35)'; btnLogout.style.borderColor = '#ef4444'; btnLogout.style.color = '#ffffff'; };
+        btnLogout.onmouseleave = () => { btnLogout.style.background = 'rgba(239, 68, 68, 0.18)'; btnLogout.style.borderColor = 'rgba(239, 68, 68, 0.4)'; btnLogout.style.color = '#ff6b6b'; };
+        btnLogout.onclick = (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          logoutSession();
+        };
       }
     }
 
@@ -5723,23 +5797,22 @@ function initSyncDriveUI() {
 
   if (btnAddAcc) {
     btnAddAcc.addEventListener('click', async () => {
-      showToast('Opening Google OAuth in browser...');
-      const popup = window.open('about:blank', '_blank');
+      showToast('🌐 Opening Google Drive OAuth in system browser...');
       try {
-        const res = await fetch('/api/sync-drive/auth/login-url');
+        const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
+        const res = await fetch(`${coreBase}/api/sync-drive/auth/login-url`);
         const data = await res.json();
         if (data && data.url) {
-          if (popup) {
-            popup.location.href = data.url;
+          const opened = await openSystemBrowser(data.url);
+          if (opened) {
+            showToast('✅ Google login opened in system browser! Sign in there.');
           } else {
-            window.location.href = data.url;
+            showToast('⚠️ Could not open browser. Link: ' + data.url);
           }
         } else {
-          if (popup) popup.close();
           showToast('Failed to get Google login URL');
         }
       } catch (err) {
-        if (popup) popup.close();
         showToast('Failed to get Google login URL: ' + err.message);
       }
     });
@@ -5748,8 +5821,9 @@ function initSyncDriveUI() {
   if (btnAddFolder) {
     btnAddFolder.addEventListener('click', async () => {
       let defaultPath = '';
+      const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
       try {
-        const res = await fetch('/api/dialog/default-dir');
+        const res = await fetch(`${coreBase}/api/dialog/default-dir`);
         const data = await res.json();
         defaultPath = data.path || '';
       } catch (_) {}
@@ -5757,7 +5831,7 @@ function initSyncDriveUI() {
       const chosen = prompt('Enter absolute path of folder to auto-backup & offload to Google Drive:', defaultPath);
       if (chosen && chosen.trim()) {
         try {
-          const res = await fetch('/api/sync-drive/folders/add', {
+          const res = await fetch(`${coreBase}/api/sync-drive/folders/add`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ folder: chosen.trim() })
@@ -5806,7 +5880,8 @@ function stopSyncDrivePolling() {
 async function fetchSyncDriveStatus() {
   if (document.hidden) return;
   try {
-    const res = await fetch('/api/sync-drive/status');
+    const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
+    const res = await fetch(`${coreBase}/api/sync-drive/status`);
     const data = await res.json();
     renderSyncDriveUI(data);
   } catch (err) {
@@ -5960,8 +6035,9 @@ function renderSyncDriveUI(data) {
 
 async function unlinkGoogleAccount(email) {
   if (!confirm(`Are you sure you want to disconnect ${email}?`)) return;
+  const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
   try {
-    const res = await fetch('/api/sync-drive/accounts/remove', {
+    const res = await fetch(`${coreBase}/api/sync-drive/accounts/remove`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ email })
@@ -5978,8 +6054,9 @@ async function unlinkGoogleAccount(email) {
 
 async function removeBackupFolder(folder) {
   if (!confirm(`Stop auto-backup for ${folder}?`)) return;
+  const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
   try {
-    const res = await fetch('/api/sync-drive/folders/remove', {
+    const res = await fetch(`${coreBase}/api/sync-drive/folders/remove`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ folder })
@@ -5996,8 +6073,9 @@ async function removeBackupFolder(folder) {
 
 async function restoreOffloadedFile(fileId) {
   showToast('📥 Downloading physical file back to PC...');
+  const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
   try {
-    const res = await fetch('/api/sync-drive/restore', {
+    const res = await fetch(`${coreBase}/api/sync-drive/restore`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ file_id: fileId })
@@ -6346,10 +6424,7 @@ function initConnectorUI() {
         }
         const data = await res.json();
         if (data && data.loginUrl) {
-          const pop = window.open(data.loginUrl, '_blank');
-          if (!pop) {
-            window.location.href = data.loginUrl;
-          }
+          await openSystemBrowser(data.loginUrl);
         } else {
           showToast('Failed to generate Google login URL');
         }
