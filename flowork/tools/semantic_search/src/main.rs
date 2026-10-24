@@ -205,7 +205,23 @@ fn main() -> Result<()> {
 
     let mut indexed_files: Vec<IndexedDoc> = Vec::new();
 
-    for entry in WalkDir::new(target_dir).into_iter().filter_map(|e| e.ok()) {
+    for entry in WalkDir::new(target_dir)
+        .into_iter()
+        .filter_entry(|e| {
+            if e.depth() == 0 {
+                return true;
+            }
+            let name = e.file_name().to_string_lossy();
+            if name == "target" || name == "node_modules" || name == "deps" || name == "build" || name == ".git" {
+                return false;
+            }
+            if e.file_type().is_dir() && name.starts_with('.') {
+                return false;
+            }
+            true
+        })
+        .filter_map(|e| e.ok())
+    {
         let path = entry.path();
         if path.is_file() {
             let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
