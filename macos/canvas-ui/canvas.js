@@ -2949,11 +2949,127 @@ function initRouterSwitchboardSystem() {
 }
 
 // 0. Flowork OS Sovereign Authentication & Gatekeeper
-async function initAuthSystem() {
-  const btnLogout = document.getElementById('btn-topbar-logout');
-  if (btnLogout) {
-    btnLogout.addEventListener('click', logoutSession);
+function mountChatHeaderLogoutButton() {
+  const actions = document.querySelector('.rightbar-chat-header .chat-header-actions');
+  if (!actions) return;
+  let btn = document.getElementById('btn-chat-header-logout');
+  if (!btn) {
+    btn = document.createElement('button');
+    btn.id = 'btn-chat-header-logout';
+    btn.className = 'chat-btn-action btn-chat-logout';
+    btn.title = 'Logout & Lock Session';
+    btn.style.color = '#ef4444';
+    btn.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+    btn.style.background = 'rgba(239, 68, 68, 0.15)';
+    btn.style.display = 'inline-flex';
+    btn.style.alignItems = 'center';
+    btn.style.justifyContent = 'center';
+    btn.style.cursor = 'pointer';
+    btn.style.transition = 'all 0.2s ease';
+    btn.innerHTML = `<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg>`;
+    btn.onmouseenter = () => {
+      btn.style.background = 'rgba(239, 68, 68, 0.35)';
+      btn.style.borderColor = '#ef4444';
+      btn.style.transform = 'scale(1.08)';
+      btn.style.boxShadow = '0 0 8px rgba(239, 68, 68, 0.4)';
+    };
+    btn.onmouseleave = () => {
+      btn.style.background = 'rgba(239, 68, 68, 0.15)';
+      btn.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+      btn.style.transform = 'scale(1)';
+      btn.style.boxShadow = 'none';
+    };
+    const closeBtn = document.getElementById('btn-close-rightbar');
+    if (closeBtn && closeBtn.parentNode === actions) {
+      actions.insertBefore(btn, closeBtn);
+    } else {
+      actions.appendChild(btn);
+    }
   }
+  btn.onclick = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    logoutSession();
+  };
+}
+
+function mountTopbarLogoutButton() {
+  const topbarRight = document.querySelector('.topbar-right');
+  const profileCapsule = document.getElementById('user-profile-capsule');
+  const isCapsuleVisible = profileCapsule && window.getComputedStyle(profileCapsule).display !== 'none';
+
+  // 1. Ensure inner logout button in profile capsule is wired
+  const innerLogout = document.getElementById('btn-topbar-logout');
+  if (innerLogout) {
+    innerLogout.title = 'Logout & Lock Session';
+    innerLogout.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      logoutSession();
+    };
+  }
+
+  // 2. Standalone Logout Pill Button directly in .topbar-right (always visible or fallback when capsule is hidden)
+  if (topbarRight) {
+    let standaloneBtn = document.getElementById('btn-topbar-standalone-logout');
+    if (!standaloneBtn) {
+      standaloneBtn = document.createElement('button');
+      standaloneBtn.id = 'btn-topbar-standalone-logout';
+      standaloneBtn.className = 'topbar-pill-btn btn-topbar-logout-standalone';
+      standaloneBtn.title = 'Logout & Lock Session';
+      standaloneBtn.style.color = '#ef4444';
+      standaloneBtn.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+      standaloneBtn.style.background = 'rgba(239, 68, 68, 0.15)';
+      standaloneBtn.style.display = 'inline-flex';
+      standaloneBtn.style.alignItems = 'center';
+      standaloneBtn.style.justifyContent = 'center';
+      standaloneBtn.style.gap = '6px';
+      standaloneBtn.style.padding = '4px 10px';
+      standaloneBtn.style.cursor = 'pointer';
+      standaloneBtn.style.transition = 'all 0.2s ease';
+      standaloneBtn.innerHTML = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path><polyline points="16 17 21 12 16 7"></polyline><line x1="21" y1="12" x2="9" y2="12"></line></svg><span style="font-size:11.5px;font-weight:700;">Logout</span>`;
+      standaloneBtn.onmouseenter = () => {
+        standaloneBtn.style.background = 'rgba(239, 68, 68, 0.35)';
+        standaloneBtn.style.borderColor = '#ef4444';
+        standaloneBtn.style.color = '#ffffff';
+      };
+      standaloneBtn.onmouseleave = () => {
+        standaloneBtn.style.background = 'rgba(239, 68, 68, 0.15)';
+        standaloneBtn.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+        standaloneBtn.style.color = '#ef4444';
+      };
+      const chatToggle = document.getElementById('btn-toggle-chat');
+      if (chatToggle && chatToggle.nextSibling) {
+        topbarRight.insertBefore(standaloneBtn, chatToggle.nextSibling);
+      } else {
+        topbarRight.appendChild(standaloneBtn);
+      }
+    }
+    standaloneBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      logoutSession();
+    };
+
+    if (isCapsuleVisible) {
+      standaloneBtn.style.display = 'none';
+    } else {
+      standaloneBtn.style.display = 'inline-flex';
+    }
+  }
+}
+
+function ensureAllLogoutButtons() {
+  mountTopbarLogoutButton();
+  mountChatHeaderLogoutButton();
+}
+window.__ensureAllLogoutButtons = ensureAllLogoutButtons;
+if (!window.__logoutButtonsHeartbeat) {
+  window.__logoutButtonsHeartbeat = setInterval(ensureAllLogoutButtons, 2000);
+}
+
+async function initAuthSystem() {
+  ensureAllLogoutButtons();
 
   const btnLogin = document.getElementById('btn-topbar-login');
   if (btnLogin) {
@@ -2970,6 +3086,7 @@ async function initAuthSystem() {
   }
 
   await fetchAuthStatus();
+  ensureAllLogoutButtons();
 }
 
 
@@ -3138,10 +3255,17 @@ async function logoutSession() {
 
   window.__isUserAuthenticated = false;
   try {
+    if (typeof authState !== 'undefined' && authState) {
+      authState.authorized = false;
+      authState.user = null;
+    }
     sessionStorage.removeItem('flowork_auth_verified');
     sessionStorage.removeItem('xflow_user_authenticated');
     sessionStorage.removeItem('xflow_gate_dismissed');
     sessionStorage.removeItem('xflow_offline_mode');
+    localStorage.removeItem('flowork_auth_verified');
+    localStorage.removeItem('xflow_user_authenticated');
+    localStorage.removeItem('flowork_token');
     document.documentElement.classList.remove('xflow-authenticated');
   } catch (_) {}
 
@@ -10794,6 +10918,7 @@ function initRightbarChat() {
     if (btnToggleChat) btnToggleChat.classList.add('active');
   }
   if (window.__updateLayoutResizers) window.__updateLayoutResizers();
+  ensureAllLogoutButtons();
 
   // Toggle Rightbar panel
   if (btnToggleChat && rightbarChat) {
@@ -10816,6 +10941,7 @@ function initRightbarChat() {
 
       if (window.__updateLayoutResizers) window.__updateLayoutResizers();
       if (!collapsed) {
+        ensureAllLogoutButtons();
         if (chatInput) chatInput.focus();
         if (typeof scrollChatToBottom === 'function') scrollChatToBottom({ force: true });
       }

@@ -89,6 +89,13 @@ if exist "%SCRIPT_DIR%\portable-home\.flowork\browser-profile\Singleton*" (
 )
 
 rem 3.8 Auto-Start Universal Router Switchboard on Sacred Port 9099
+set "ROUTER_BIN="
+if exist "%SCRIPT_DIR%\flowork\flowork-connector.exe" (
+    set "ROUTER_BIN=%SCRIPT_DIR%\flowork\flowork-connector.exe"
+) else if exist "%SCRIPT_DIR%\flowork-connector.exe" (
+    set "ROUTER_BIN=%SCRIPT_DIR%\flowork-connector.exe"
+)
+
 set "ROUTER_JS="
 if exist "%SCRIPT_DIR%\connection\router.js" (
     set "ROUTER_JS=%SCRIPT_DIR%\connection\router.js"
@@ -96,14 +103,22 @@ if exist "%SCRIPT_DIR%\connection\router.js" (
     set "ROUTER_JS=%SCRIPT_DIR%\connector\router.js"
 )
 
-if not "!NODE_BIN!"=="" if not "!ROUTER_JS!"=="" (
-    echo [Flowork] 🚀 Starting Universal Router Switchboard on port 9099...
-    set "LOG_OUT=%SCRIPT_DIR%\portable-home\.flowork\logs\connector.log"
-    set "LOG_ERR=%SCRIPT_DIR%\portable-home\.flowork\logs\connector_err.log"
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%NODE_BIN%' -ArgumentList '\"%ROUTER_JS%\"' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
+set "LOG_OUT=%SCRIPT_DIR%\portable-home\.flowork\logs\connector.log"
+set "LOG_ERR=%SCRIPT_DIR%\portable-home\.flowork\logs\connector_err.log"
+
+if not "!ROUTER_BIN!"=="" (
+    echo [Flowork] ⚡ Starting Native Router Connector on port 9099...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '!ROUTER_BIN!' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
+    if errorlevel 1 (
+        start "" /B cmd /c ""!ROUTER_BIN!" >> "%LOG_OUT%" 2>&1"
+    )
+) else if not "!NODE_BIN!"=="" if not "!ROUTER_JS!"=="" (
+    echo [Flowork] 🚀 Starting Universal Router Switchboard on port 9099 (Node.js fallback)...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%NODE_BIN%' -ArgumentList '"%ROUTER_JS%"' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
     if errorlevel 1 (
         start "" /B cmd /c ""%NODE_BIN%" "%ROUTER_JS%" >> "%LOG_OUT%" 2>&1"
     )
+)
 
     rem Verify port 9099 is listening
     set "ROUTER_ACTIVE=0"
