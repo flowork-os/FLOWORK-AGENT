@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# Flowork Sovereign Universal Multi-OS Launcher & Dynamic Path Resolver
+# Co-authored-by: Flowork OS <agent@floworkos.com>
+set -e
+
+# Priority 1: Self-relative location (Rock-solid multi-OS portability)
+# Since launcher resides in <FLOWORK_ROOT>/portable-home/bin/flowork-launcher
+SELF_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")")" 2>/dev/null && pwd)"
+TARGET_DIR=""
+
+is_flowork_dir() {
+  local dir="$1"
+  [ -n "$dir" ] && [ -d "$dir" ] && ([ -f "$dir/run.sh" ] || [ -f "$dir/flowork.sh" ] || [ -f "$dir/x-flow" ] || [ -f "$dir/flowork/flowork" ] || [ -f "$dir/flowork.exe" ])
+}
+
+if [ -n "$SELF_DIR" ]; then
+  CAND_ROOT="$(cd "$SELF_DIR/../.." 2>/dev/null && pwd)"
+  if is_flowork_dir "$CAND_ROOT"; then
+    TARGET_DIR="$CAND_ROOT"
+  fi
+fi
+
+# Priority 2: Resolve from desktop entry argument (%k or file path)
+if [ -z "$TARGET_DIR" ] && [ -n "$1" ]; then
+  RAW="$1"
+  RAW="${RAW#file://}"
+  CANDIDATE="$(readlink -m "$RAW" 2>/dev/null || echo "$RAW")"
+  if [ -f "$CANDIDATE" ]; then
+    CANDIDATE="$(dirname "$CANDIDATE")"
+  fi
+  if is_flowork_dir "$CANDIDATE"; then
+    TARGET_DIR="$CANDIDATE"
+  elif is_flowork_dir "$CANDIDATE/flowork"; then
+    TARGET_DIR="$CANDIDATE/flowork"
+  fi
+fi
+
+# Ignore .desktop metadata argument so child processes don't receive it
+if [[ "$1" == *.desktop ]]; then
+  shift
+fi
+
+# Priority 3: Resolve from saved active path
+CONFIG_FILE="${HOME}/.config/flowork/active_path"
+if [ -z "$TARGET_DIR" ] && [ -f "$CONFIG_FILE" ]; then
+  SAVED_DIR="$(cat "$CONFIG_FILE" 2>/dev/null | tr -d '\r\n')"
+  if is_flowork_dir "$SAVED_DIR"; then
+    TARGET_DIR="$SAVED_DIR"
+  elif is_flowork_dir "$SAVED_DIR/flowork"; then
+    TARGET_DIR="$SAVED_DIR/flowork"
+  fi
+fi
+
+# Priority 4: Current working directory
+if [ -z "$TARGET_DIR" ] && is_flowork_dir "$(pwd)"; then
+  TARGET_DIR="$(pwd)"
+fi
+
+# Priority 5: Resolve from standard path candidates
+if [ -z "$TARGET_DIR" ]; then
+  for CANDIDATE in \
+    "${HOME}/Desktop/project/flowork" \
+    "${HOME}/Desktop/flowork" \
+    "${HOME}/flowork" \
+    "${HOME}/FLOWORK" \
+    "${HOME}/Desktop/FLOWORK" \
+    "${HOME}/Desktop/xflow" \
+    "${HOME}/Music/flowork/linux" \
+    "${HOME}/Music/flowork/xflow" \
+    "${HOME}/Downloads/flowork" \
+    "${HOME}/Downloads/FLOWORK" \
+    "${HOME}/Documents/flowork" \
+    "${HOME}/Documents/FLOWORK" \
+    "/opt/flowork" \
+    "/opt/FLOWORK"; do
+    if is_flowork_dir "$CANDIDATE"; then
+      TARGET_DIR="$CANDIDATE"
+      break
+    fi
+  done
+fi
+
+# Priority 6: Fast scan fallback if moved to arbitrary location
+if [ -z "$TARGET_DIR" ]; then
+  while IFS= read -r f_candidate; do
+    if is_flowork_dir "$f_candidate"; then
+      TARGET_DIR="$f_candidate"
+      break
+    fi
+  done < <(find "$HOME" -maxdepth 4 -type d -name "flowork" 2>/dev/null)
+fi
+
+# Priority 7: Last resort: scan for run.sh
+if [ -z "$TARGET_DIR" ]; then
+  FOUND_RUN="$(find "$HOME" -maxdepth 4 -name "run.sh" -type f 2>/dev/null | grep -E "flowork|xflow" | head -n 1 || true)"
+  if [ -n "$FOUND_RUN" ]; then
+    r_cand="$(dirname "$FOUND_RUN")"
+    if is_flowork_dir "$r_cand"; then
+      TARGET_DIR="$r_cand"
+    fi
+  fi
+fi
+
+if [ -z "$TARGET_DIR" ] || ! is_flowork_dir "$TARGET_DIR"; then
+  command -v notify-send >/dev/null 2>&1 && notify-send "Flowork OS" "Cannot find valid FLOWORK directory." --icon=dialog-error || true
+  echo "[flowork-launcher:ERROR] Cannot find valid FLOWORK directory." >&2
+  exit 1
+fi
+
+echo "$TARGET_DIR" > "$CONFIG_FILE" 2>/dev/null || true
+cd "$TARGET_DIR"
+
+# Ensure x-flow binary link
+if [ -L "$TARGET_DIR/x-flow" ] && [ ! -e "$TARGET_DIR/x-flow" ]; then
+  rm -f "$TARGET_DIR/x-flow"
+fi
+if [ ! -f "$TARGET_DIR/x-flow" ]; then
+  if [ -f "$TARGET_DIR/flowork/flowork" ] && [ ! -L "$TARGET_DIR/flowork/flowork" ]; then
+    cp -f "$TARGET_DIR/flowork/flowork" "$TARGET_DIR/x-flow"
+  elif [ -f "$TARGET_DIR/flowork/x-flow" ] && [ ! -L "$TARGET_DIR/flowork/x-flow" ]; then
+    cp -f "$TARGET_DIR/flowork/x-flow" "$TARGET_DIR/x-flow"
+  fi
+  chmod +x "$TARGET_DIR/x-flow" 2>/dev/null || true
+fi
+
+if [ -f "$TARGET_DIR/run.sh" ]; then
+  chmod +x "$TARGET_DIR/run.sh" 2>/dev/null || true
+  exec "$TARGET_DIR/run.sh" "$@"
+elif [ -f "$TARGET_DIR/flowork.sh" ]; then
+  chmod +x "$TARGET_DIR/flowork.sh" 2>/dev/null || true
+  exec "$TARGET_DIR/flowork.sh" "$@"
+elif [ -f "$TARGET_DIR/x-flow" ]; then
+  exec "$TARGET_DIR/x-flow" "$@"
+elif [ -f "$TARGET_DIR/flowork/flowork" ]; then
+  exec "$TARGET_DIR/flowork/flowork" "$@"
+fi

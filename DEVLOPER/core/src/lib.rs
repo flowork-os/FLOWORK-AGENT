@@ -1,0 +1,39 @@
+//! Sovereign Flowork Core Library
+//! Co-authored-by: Flowork OS <agent@floworkos.com>
+
+pub mod agent;
+pub mod asset_server;
+pub mod auth;
+pub mod auth_callback;
+pub mod config;
+pub mod copilot;
+pub mod discovery;
+pub mod ipc_router;
+pub mod manifest;
+pub mod port_manager;
+pub mod prompt_seal;
+pub mod supervisor;
+pub mod sync_drive;
+pub mod sync_watcher;
+pub mod tools;
+pub mod viewport;
+pub mod window;
+pub mod workspace;
+pub mod scheduler;
+pub mod trigger;
+pub mod system_trigger;
+pub mod agents;
+pub mod persona;
+pub mod prompt_enclave;
+pub mod attestation;
+pub mod anti_tamper;
+pub mod anti_leak;
+pub mod connector_enclave;
+pub mod root_pillars;
+pub mod sealed_system;
+pub mod rea_enclave;
+pub mod engineering_enclave;
+pub mod native_tools;
+pub mod sealed_tools;
+pub mod sovereign_enclave;
+pub mod swarm_dag;
