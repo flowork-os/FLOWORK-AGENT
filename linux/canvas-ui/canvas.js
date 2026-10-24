@@ -3146,7 +3146,13 @@ async function logoutSession() {
   } catch (_) {}
 
   try {
-    await fetch('/api/auth/logout', { method: 'POST' });
+    const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+    await fetch(`${routerBase}/auth/logout`, { method: 'POST' });
+  } catch (_) {}
+
+  try {
+    const coreBase = (typeof _getFloworkCoreBase === 'function') ? _getFloworkCoreBase() : 'http://127.0.0.1:19890';
+    await fetch(`${coreBase}/api/auth/logout`, { method: 'POST' });
   } catch (err) {
     console.error('[X-Flow Auth] Logout error:', err);
   }
