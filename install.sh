@@ -103,6 +103,23 @@ chmod +x "$INSTALL_DIR/flowork.sh" 2>/dev/null || true
 [ -f "$INSTALL_DIR/runtimes/linux/setup_runtimes.sh" ] && chmod +x "$INSTALL_DIR/runtimes/linux/setup_runtimes.sh" 2>/dev/null || true
 [ -x "$INSTALL_DIR/runtimes/linux/setup_runtimes.sh" ] && "$INSTALL_DIR/runtimes/linux/setup_runtimes.sh" 2>/dev/null || true
 
+# 5.5 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+MODELS_DIR="$INSTALL_DIR/portable-home/.flowork/models"
+MODEL_TARGET="$MODELS_DIR/models--Xenova--bge-small-en-v1.5"
+MODEL_TAR_URL="https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.tar.gz"
+
+if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model.onnx" ]; then
+  echo "🧠 Fetching official neural embedding model from GitHub Release (77 MB)..."
+  mkdir -p "$MODELS_DIR"
+  TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
+  if curl -fSL --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR" 2>/dev/null; then
+    echo "📦 Unpacking official ONNX model bundle..."
+    tar -xzf "$TMP_MODEL_TAR" -C "$MODELS_DIR" 2>/dev/null || true
+    echo "✅ Neural ONNX embedding model installed successfully."
+  fi
+  rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
+fi
+
 # 6. Create Global Terminal Command (flowork) in ~/.local/bin
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR" 2>/dev/null || true

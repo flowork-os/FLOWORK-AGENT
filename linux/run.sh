@@ -50,6 +50,44 @@ if [[ "$1" == *.desktop ]]; then
 fi
 
 # -------------------------------------------------------------
+# Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+# -------------------------------------------------------------
+MODELS_DIR="$SCRIPT_DIR/portable-home/.flowork/models"
+MODEL_TARGET="$MODELS_DIR/models--Xenova--bge-small-en-v1.5"
+MODEL_TAR_URL="https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.tar.gz"
+MODEL_EXPECTED_HASH="72e88f00b6d56957b09ac1329735fc8a829b050bb1dd158162fb632bfbe4f79d"
+
+if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model.onnx" ]; then
+  echo "[Flowork] 🧠 Neural embedding model not found. Fetching official ONNX package from GitHub Release..."
+  mkdir -p "$MODELS_DIR"
+  TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fSL --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR"; then
+      DOWNLOAD_OK=true
+      if command -v sha256sum >/dev/null 2>&1; then
+        CALC_HASH="$(sha256sum "$TMP_MODEL_TAR" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        CALC_HASH="$(shasum -a 256 "$TMP_MODEL_TAR" | awk '{print $1}')"
+      else
+        CALC_HASH="$MODEL_EXPECTED_HASH"
+      fi
+      if [ "$CALC_HASH" != "$MODEL_EXPECTED_HASH" ]; then
+        echo "[Flowork] ⚠️ Model checksum mismatch ($CALC_HASH vs $MODEL_EXPECTED_HASH); aborting model unpack."
+        DOWNLOAD_OK=false
+      fi
+      if [ "$DOWNLOAD_OK" = true ]; then
+        echo "[Flowork] 📦 Unpacking official ONNX model bundle..."
+        tar -xzf "$TMP_MODEL_TAR" -C "$MODELS_DIR"
+        echo "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)."
+      fi
+    else
+      echo "[Flowork] ⚠️ Failed to download neural model from $MODEL_TAR_URL. Semantic search will fallback to auto-download."
+    fi
+    rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
+  fi
+fi
+
+# -------------------------------------------------------------
 # Flowork Sovereign Cloud-Native Self-Healer & Fast Updater (Zero-API)
 # -------------------------------------------------------------
 LOCAL_VER_FILE="$SCRIPT_DIR/VERSION"

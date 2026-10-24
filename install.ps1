@@ -97,6 +97,26 @@ if (Test-Path $RuntimeSetupScript) {
     }
 }
 
+# 4.5 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+$ModelsDir = Join-Path $InstallDir "portable-home\.flowork\models"
+$ModelTarget = Join-Path $ModelsDir "models--Xenova--bge-small-en-v1.5"
+$ModelZipUrl = "https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.zip"
+$TmpModelZip = Join-Path $ModelsDir "temp_model.zip"
+
+if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887e3f920caeb4f3e3\onnx\model.onnx"))) {
+    Write-Host "[Flowork] 🧠 Fetching official neural embedding model from GitHub Release (155 MB)..." -ForegroundColor Cyan
+    if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null }
+    try {
+        (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
+        Expand-Archive -Path $TmpModelZip -DestinationPath $ModelsDir -Force
+        Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue
+        Write-Host "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)." -ForegroundColor Green
+    } catch {
+        Write-Host "[Flowork] ⚠️ Model auto-download notice: $($_.Exception.Message)" -ForegroundColor Yellow
+        Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue
+    }
+}
+
 # 5. Add Install Directory & Portable Runtimes to User PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $RuntimePaths = @(

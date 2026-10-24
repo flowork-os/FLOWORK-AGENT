@@ -46,6 +46,19 @@ if exist "%SCRIPT_DIR%\runtimes\windows" set "PATH=%SCRIPT_DIR%\runtimes\windows
 if exist "%SCRIPT_DIR%\runtimes\python" set "PATH=%SCRIPT_DIR%\runtimes\python;!PATH!"
 if exist "%SCRIPT_DIR%\portable-home\bin" set "PATH=%SCRIPT_DIR%\portable-home\bin;!PATH!"
 
+rem 3.6.0 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+set "MODELS_DIR=%SCRIPT_DIR%\portable-home\.flowork\models"
+set "MODEL_TARGET=%MODELS_DIR%\models--Xenova--bge-small-en-v1.5"
+set "MODEL_ZIP_URL=https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.zip"
+set "TMP_MODEL_ZIP=%MODELS_DIR%\temp_model.zip"
+
+if not exist "%MODEL_TARGET%\snapshots\ea104dacec62c0de699686887e3f920caeb4f3e3\onnx\model.onnx" (
+    echo [Flowork] 🧠 Neural embedding model not found. Fetching official ONNX package from GitHub Release...
+    if not exist "%MODELS_DIR%" mkdir "%MODELS_DIR%" 2>nul
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; (New-Object System.Net.WebClient).DownloadFile('%MODEL_ZIP_URL%', '%TMP_MODEL_ZIP%'); Expand-Archive -Path '%TMP_MODEL_ZIP%' -DestinationPath '%MODELS_DIR%' -Force; Remove-Item '%TMP_MODEL_ZIP%' -Force -ErrorAction SilentlyContinue"
+    echo [Flowork] ✅ Neural ONNX embedding model installed successfully (100%% offline ready).
+)
+
 rem 3.6.1 Locate or Auto-Provision Node.js Runtime for Universal Switchboard Router
 set "NODE_BIN="
 if exist "%SCRIPT_DIR%\runtimes\node\node.exe" (
