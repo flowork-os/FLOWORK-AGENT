@@ -9,50 +9,12 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-function findBinary() {
-  const isWin = process.platform === 'win32';
-  const isDarwin = process.platform === 'darwin';
-  const arch = process.arch;
+// Dynamic relative resolution for release binary
+const binaryPath = path.resolve(__dirname, 'target/release/flowork-semantic');
 
-  const binCandidates = [];
-
-  if (isWin) {
-    binCandidates.push(
-      path.resolve(__dirname, 'bin/flowork-semantic.exe'),
-      path.resolve(__dirname, 'target/release/flowork-semantic.exe'),
-      path.resolve(__dirname, 'target/x86_64-pc-windows-gnu/release/flowork-semantic.exe'),
-      path.resolve(__dirname, 'target/x86_64-pc-windows-msvc/release/flowork-semantic.exe')
-    );
-  } else if (isDarwin) {
-    const targetTriple = arch === 'arm64' ? 'aarch64-apple-darwin' : 'x86_64-apple-darwin';
-    binCandidates.push(
-      path.resolve(__dirname, `bin/flowork-semantic-darwin-${arch}`),
-      path.resolve(__dirname, 'bin/flowork-semantic'),
-      path.resolve(__dirname, `target/${targetTriple}/release/flowork-semantic`),
-      path.resolve(__dirname, 'target/release/flowork-semantic')
-    );
-  } else {
-    // Linux / default
-    binCandidates.push(
-      path.resolve(__dirname, 'bin/flowork-semantic'),
-      path.resolve(__dirname, 'target/release/flowork-semantic'),
-      path.resolve(__dirname, 'target/x86_64-unknown-linux-gnu/release/flowork-semantic')
-    );
-  }
-
-  for (const p of binCandidates) {
-    if (fs.existsSync(p)) {
-      return p;
-    }
-  }
-  return null;
-}
-
-const binaryPath = findBinary();
-
-if (!binaryPath) {
+if (!fs.existsSync(binaryPath)) {
   console.error(JSON.stringify({
-    error: `flowork-semantic binary not found for platform ${process.platform} (${process.arch}). Please compile via: cd ${__dirname} && cargo build --release`,
+    error: `flowork-semantic binary not found at ${binaryPath}. Please run cargo build --release.`,
     exit_code: 1
   }));
   process.exit(1);
@@ -105,33 +67,10 @@ if (params.include_chat) {
   spawnArgs.push('--recency-decay', String(params.recency_decay));
 }
 
-function resolvePortableRoot() {
-  if (process.env.FLOWORK_PORTABLE_ROOT && fs.existsSync(process.env.FLOWORK_PORTABLE_ROOT)) {
-    return process.env.FLOWORK_PORTABLE_ROOT;
-  }
-  const candidates = [
-    path.resolve(__dirname, '..', '..', 'portable-home'),
-    path.resolve(__dirname, '..', '..', 'flowork', 'portable-home'),
-    path.resolve(process.cwd(), 'portable-home'),
-    path.resolve(process.cwd(), 'flowork', 'portable-home'),
-    path.resolve(process.cwd(), 'linux', 'portable-home'),
-    path.resolve(process.cwd(), 'macos', 'portable-home'),
-    path.resolve(process.cwd(), 'windows', 'portable-home')
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(c)) {
-      return c;
-    }
-  }
-  return path.resolve(__dirname, '..', '..', 'portable-home');
-}
-
-const portableRoot = resolvePortableRoot();
-
 const child = spawn(binaryPath, spawnArgs, {
   env: {
     ...process.env,
-    FLOWORK_PORTABLE_ROOT: portableRoot
+    FLOWORK_PORTABLE_ROOT: process.env.FLOWORK_PORTABLE_ROOT || path.resolve(process.cwd(), 'portable-home')
   }
 });
 
