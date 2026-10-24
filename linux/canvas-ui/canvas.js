@@ -291,8 +291,24 @@ function initOffice3DSystem() {
   }
 
   window.onOfficeAgentSelected = (agentData) => {
-    // 3D Office Agent Selection: Pure spatial focus, zero chat redirection
+    // 3D Office Agent Selection: Pure spatial focus + open Cockpit Model Selection
     currentInspectedAgent = agentData;
+    if (agentData) {
+      const targetAgentId = agentData.persona || (agentData.id ? agentData.id.replace(/^agent-/, '') : 'backend-engineer');
+      if (window.swarmPipeline && typeof window.swarmPipeline.openFullPromptModal === 'function') {
+        const targetNode = {
+          id: targetAgentId,
+          label: agentData.name || targetAgentId,
+          persona: targetAgentId,
+          agentId: targetAgentId,
+          modelConfig: {
+            provider: agentData.provider || 'gravity',
+            modelId: agentData.model || localStorage.getItem('xflow_agent_model_' + targetAgentId) || localStorage.getItem('xflow_chat_model') || 'gemini-3.8-flash-high'
+          }
+        };
+        window.swarmPipeline.openFullPromptModal(targetNode, null, 'model');
+      }
+    }
   };
 }
 
@@ -5201,10 +5217,10 @@ async function switchTab(tabId, options = {}) {
       officePanel.style.setProperty('display', 'block', 'important');
     }
 
-    // ── SOLO STUDIO DIRECTIVE: Buang selector Model & Account Antigravity, Ganti Agent Selector (Mr. Flow & Leader only)! ──
     const modelSelectorWrap = document.getElementById('chat-model-selector-wrap');
     if (modelSelectorWrap) {
       modelSelectorWrap.style.setProperty('display', 'none', 'important');
+      if (typeof initModelSelector === 'function') initModelSelector();
     }
     const accountSelectorWrap = document.getElementById('chat-account-selector-wrap');
     if (accountSelectorWrap) {
@@ -6247,12 +6263,15 @@ function switchConnectorProviderView(targetProvider) {
   const panelOllama = document.getElementById('panel-provider-ollama');
   const panel9Router = document.getElementById('panel-provider-9router');
 
-  if (panelDefault) panelDefault.style.display = targetProvider === 'default' ? 'flex' : 'none';
+  const isDefaultOrGravity = targetProvider === 'default' || targetProvider === 'gravity' || targetProvider === 'antygravity' || targetProvider === 'sovereign';
+  if (panelDefault) panelDefault.style.display = isDefaultOrGravity ? 'flex' : 'none';
   if (panelOllama) panelOllama.style.display = targetProvider === 'ollama' ? 'flex' : 'none';
   if (panel9Router) panel9Router.style.display = targetProvider === '9router' ? 'flex' : 'none';
 
   document.querySelectorAll('.connector-provider-card').forEach(c => {
-    c.classList.toggle('active', c.getAttribute('data-provider') === targetProvider);
+    const p = c.getAttribute('data-provider');
+    const isCardActive = (p === targetProvider) || (p === 'default' && isDefaultOrGravity);
+    c.classList.toggle('active', isCardActive);
   });
   const actPill = document.getElementById('connector-active-pill');
   if (actPill) actPill.textContent = `ACTIVE: ${targetProvider.toUpperCase()}`;
@@ -7734,8 +7753,10 @@ function updateAgentPillDisplay() {
 }
 
 const FALLBACK_SWARM_AGENTS = [
-  { id: 'mr.flow', name: 'Mr. Flow', role: 'Sovereign Solo Executive Agent', icon: '⚡', category: 'system', category_id: 'CAT-026', description: 'Autonomous agent with unrestricted sovereign tools located in system/subagent/mr.flow.', is_default: true },
-  { id: 'leader', name: 'Swarm Leader', role: 'Swarm Leader & Group Mode Orchestrator', icon: '👑', category: 'system', category_id: 'CAT-026', description: 'Commander for group mode and swarm orchestrator located in system/subagent/leader.' }
+  { id: 'backend-engineer', name: 'Backend Engineer', role: 'Backend & System Specialist', icon: '⚙️', description: 'APIs, database schemas, test-driven logic, performance located in system/subagent/backend-engineer.' },
+  { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Frontend & UI Specialist', icon: '🎨', description: 'Canvas UI, responsive CSS, brand themes, visual QC located in system/subagent/frontend-engineer.' },
+  { id: 'quality-control', name: 'Quality Control', role: 'Verification & QA Specialist', icon: '🧪', description: 'Terminal verification, Exit Code 0, regression testing located in system/subagent/quality-control.' },
+  { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Audit Specialist', icon: '🛡️', description: 'Zero-leak audit, token safety, AST & binary inspection located in system/subagent/security-auditor.' }
 ];
 
 async function fetchAvailablePersonas() {
@@ -8011,8 +8032,8 @@ function renderAgentDropdown() {
   const extSearchInput = document.getElementById('agent-search-input');
 
   if (extDeptTabs) {
-    extDeptTabs.innerHTML = tabsInnerHtml;
-    extDeptTabs.style.display = isSoloStudio ? 'none' : '';
+    extDeptTabs.innerHTML = '';
+    extDeptTabs.style.display = 'none';
   }
   if (extSearchInput) {
     if (extSearchInput.value !== activeAgentSearchText) {
@@ -8026,70 +8047,28 @@ function renderAgentDropdown() {
 
   const badge = document.getElementById('agent-dropdown-count-badge');
   if (badge) {
-    badge.textContent = isSoloStudio ? '2 Sovereign Agents' : `${AVAILABLE_PERSONAS.length} Agents`;
+    badge.textContent = `${AVAILABLE_PERSONAS.length} Agents`;
   }
 
-  // Filter personas: In Solo Studio, show strictly Mr. Flow & Swarm Leader from system/subagent/
-  let filtered = [];
-  if (isSoloStudio) {
-    const mrFlow = AVAILABLE_PERSONAS.find(p => p.id === 'mr.flow' || p.id === 'mrflow' || p.is_default) || {
-      id: 'mr.flow',
-      name: 'Mr. Flow',
-      role: 'Sovereign Solo Executive Agent',
-      icon: '⚡',
-      category: 'system',
-      category_id: 'CAT-026',
-      description: 'Autonomous agent with unrestricted sovereign tools (system/subagent/mr.flow).',
-      is_default: true
-    };
-    const leader = AVAILABLE_PERSONAS.find(p => p.id === 'leader') || {
-      id: 'leader',
-      name: 'Swarm Leader',
-      role: 'Swarm Leader & Group Mode Orchestrator',
-      icon: '👑',
-      category: 'system',
-      category_id: 'CAT-026',
-      description: 'Commander for group mode and swarm orchestrator (system/subagent/leader).'
-    };
-    filtered = [mrFlow, leader];
-  } else {
-    // Filter personas for Group Mode: in Group chat, filter out mr.flow
-    filtered = AVAILABLE_PERSONAS.filter(p => {
-      const isMrFlow = p.id.toLowerCase() === 'mr.flow' || p.id.toLowerCase() === 'mrflow' || (p.is_default && p.id.toLowerCase().includes('flow'));
-      if (isMrFlow) {
-        return false; // HARAM ADA MR. FLOW IN GROUP DROPDOWN!
-      }
-      const dept = getAgentDepartment(p);
-      
-      // Dept filter
-      if (activeAgentDeptFilter !== 'all' && dept !== activeAgentDeptFilter) {
+  // Filter personas: strictly from system/subagent/ with zero fake categories
+  const filtered = AVAILABLE_PERSONAS.filter(p => {
+    if (!p || !p.id) return false;
+    if (activeAgentSearchText.trim()) {
+      const q = activeAgentSearchText.trim().toLowerCase();
+      const matchName = (p.name || '').toLowerCase().includes(q);
+      const matchId = (p.id || '').toLowerCase().includes(q);
+      const matchDesc = (p.description || '').toLowerCase().includes(q);
+      if (!matchName && !matchId && !matchDesc) {
         return false;
       }
-      
-      // Search query filter
-      if (activeAgentSearchText.trim()) {
-        const q = activeAgentSearchText.trim().toLowerCase();
-        const matchName = (p.name || '').toLowerCase().includes(q);
-        const matchId = (p.id || '').toLowerCase().includes(q);
-        const matchDesc = (p.description || '').toLowerCase().includes(q);
-        const matchCat = (p.category || '').toLowerCase().includes(q);
-        const matchCatId = (p.category_id || '').toLowerCase().includes(q);
-        const matchDept = dept.includes(q);
-        if (!matchName && !matchId && !matchDesc && !matchCat && !matchCatId && !matchDept) {
-          return false;
-        }
-      }
-      return true;
-    });
-  }
+    }
+    return true;
+  });
 
   const itemsHtml = filtered.map(p => {
     const isSelected = p.id.toLowerCase() === currentId || (currentId === 'mrflow' && p.id === 'mr.flow');
     const isCore = p.id.toLowerCase() === 'mr.flow' || p.id.toLowerCase() === 'mrflow' || p.is_default;
     const isLeader = p.id.toLowerCase() === 'leader';
-    const dept = getAgentDepartment(p);
-    const deptBadgeClass = `badge-dept-${dept}`;
-    const deptBadgeText = deptLabels[dept] || dept.toUpperCase();
     const descText = p.description || (isCore ? 'Sovereign orchestrator with dynamic skill dispatch (system/subagent/mr.flow).' : (isLeader ? 'Commander for group mode and swarm orchestrator (system/subagent/leader).' : 'Autonomous specialist agent.'));
 
     let roleBadgeHtml = '';
@@ -8098,7 +8077,7 @@ function renderAgentDropdown() {
     } else if (isLeader) {
       roleBadgeHtml = `<span class="agent-option-badge badge-agent-leader" style="background:rgba(234,179,8,0.15); color:#facc15; border:1px solid rgba(234,179,8,0.3); border-radius:4px; padding:1px 6px; font-size:9.5px; font-weight:700;">LEADER</span>`;
     } else {
-      roleBadgeHtml = `<span class="badge-agent-dept ${deptBadgeClass}">${deptBadgeText}</span>`;
+      roleBadgeHtml = `<span class="agent-option-badge" style="background:rgba(56,189,248,0.15); color:#38bdf8; border:1px solid rgba(56,189,248,0.3); border-radius:4px; padding:1px 6px; font-size:9.5px; font-weight:700;">SUBAGENT</span>`;
     }
 
     const locBadge = `<span style="font-size:9px; color:#64748b; font-family:monospace; margin-left:auto;">system/subagent/${p.id}</span>`;
@@ -8471,9 +8450,9 @@ function initAgentSelector() {
   const modelWrap = document.getElementById('chat-model-selector-wrap');
   const accountWrap = document.getElementById('chat-account-selector-wrap');
 
-  // Solo Studio & Group Studio Directive: Model and Account Antigravity hidden, Agent Selector active!
   if (modelWrap) {
     modelWrap.style.setProperty('display', 'none', 'important');
+    if (typeof initModelSelector === 'function') initModelSelector();
   }
   if (accountWrap) {
     accountWrap.style.setProperty('display', 'none', 'important');
@@ -9124,11 +9103,43 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+window.safeCopyToClipboard = async function(text) {
+  if (typeof text !== "string") text = String(text ?? "");
+  if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+    try {
+      await window.safeCopyToClipboard(text);
+      return true;
+    } catch (e) {
+      // Fallback to execCommand below
+    }
+  }
+  try {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.position = "fixed";
+    ta.style.left = "-9999px";
+    ta.style.top = "-9999px";
+    ta.style.opacity = "0";
+    ta.style.pointerEvents = "none";
+    ta.setAttribute("readonly", "");
+    document.body.appendChild(ta);
+    ta.focus();
+    ta.select();
+    ta.setSelectionRange(0, ta.value.length);
+    const ok = document.execCommand("copy");
+    document.body.removeChild(ta);
+    if (ok) return true;
+  } catch (err) {
+    console.warn("[Flowork Canvas] execCommand fallback failed:", err);
+  }
+  throw new Error("All clipboard copy methods failed");
+};
+
 window.copyCodeSnippet = function(btn) {
   const card = btn.closest('.chat-code-card');
   if (!card) return;
   const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || '';
-  navigator.clipboard.writeText(code).then(() => {
+  window.safeCopyToClipboard(code).then(() => {
     const span = btn.querySelector('span') || btn;
     const orig = span.textContent;
     span.textContent = 'Copied!';
@@ -9174,7 +9185,7 @@ window.copyTableAsJson = function(btn) {
     headers.forEach((h, i) => { obj[h || `col_${i}`] = cells[i] || ''; });
     return obj;
   });
-  navigator.clipboard.writeText(JSON.stringify(rows, null, 2)).then(() => {
+  window.safeCopyToClipboard(JSON.stringify(rows, null, 2)).then(() => {
     const span = btn.querySelector('span');
     if (span) {
       const old = span.textContent;
@@ -9195,7 +9206,7 @@ window.copyTableAsCsv = function(btn) {
     return Array.from(tr.querySelectorAll('td')).map(td => `"${td.innerText.trim().replace(/"/g, '""')}"`).join(',');
   });
   const csv = [headers.join(','), ...rows].join('\n');
-  navigator.clipboard.writeText(csv).then(() => {
+  window.safeCopyToClipboard(csv).then(() => {
     const span = btn.querySelector('span');
     if (span) {
       const old = span.textContent;
@@ -9215,7 +9226,7 @@ window.handleChatLinkClick = function(e, url) {
       e.stopPropagation();
     }
     const filePath = clean.startsWith('file://') ? clean.substring(7) : clean;
-    navigator.clipboard.writeText(filePath).then(() => {
+    window.safeCopyToClipboard(filePath).then(() => {
       showToast(`Local path copied: ${filePath.split('/').pop()}`);
     });
     if (typeof openFileInWorkbench === 'function') {
@@ -9449,7 +9460,7 @@ window.closeChatLightbox = function() {
 };
 
 window.copyFilePath = function(path, btnEl) {
-  navigator.clipboard.writeText(path).then(() => {
+  window.safeCopyToClipboard(path).then(() => {
     const span = btnEl ? btnEl.querySelector('span') : null;
     if (span) {
       const old = span.textContent;
@@ -12833,6 +12844,18 @@ async function initChatMascot() {
     mascotCamera.updateProjectionMatrix();
   });
   mascotResizeObs.observe(stageWrap);
+
+  // 3D Agent Animation Click Handler -> Opens Model Selection
+  stageWrap.style.cursor = 'pointer';
+  stageWrap.title = 'Click 3D Agent to configure Model Selection';
+  stageWrap.onclick = (e) => {
+    e.stopPropagation();
+    if (window.swarmPipeline && typeof window.swarmPipeline.openFullPromptModal === 'function' && Array.isArray(window.swarmPipeline.nodes) && window.swarmPipeline.nodes.length > 0) {
+      window.swarmPipeline.openFullPromptModal(window.swarmPipeline.nodes[0], null, 'model');
+    } else if (typeof openModelDropdown === 'function') {
+      openModelDropdown();
+    }
+  };
 
   // Audio Hook & Controls
   if (audio) {
@@ -19807,7 +19830,7 @@ window.copyToolCode = function(btn) {
   const block = btn.closest('.fl-tool-block, .fl-cmd-item-body, .fl-subagent-body, .fl-task-body');
   const code = block ? block.querySelector('pre code') : null;
   if (!code) return;
-  navigator.clipboard.writeText(code.innerText).then(() => {
+  window.safeCopyToClipboard(code.innerText).then(() => {
     const orig = btn.textContent;
     btn.textContent = 'Copied!';
     btn.classList.add('copied');
@@ -20005,7 +20028,7 @@ function renderTrajectorySteps(steps) {
       const btnCopyPrompt = card.querySelector('.btn-copy-prompt');
       if (btnCopyPrompt) {
         btnCopyPrompt.addEventListener('click', () => {
-          navigator.clipboard.writeText(displayText).then(() => {
+          window.safeCopyToClipboard(displayText).then(() => {
             const span = btnCopyPrompt.querySelector('span');
             if (span) span.innerText = 'Copied!';
             btnCopyPrompt.classList.add('copied');
@@ -20110,7 +20133,7 @@ function renderTrajectorySteps(steps) {
       if (btnCopy) {
         btnCopy.addEventListener('click', () => {
           const textToCopy = currentBodyArea?.innerText || resp;
-          navigator.clipboard.writeText(textToCopy).then(() => {
+          window.safeCopyToClipboard(textToCopy).then(() => {
             const span = btnCopy.querySelector('span');
             if (span) span.innerText = 'Copied!';
             btnCopy.classList.add('copied');
@@ -20349,7 +20372,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
   const btnCopyPrompt = userCard.querySelector('.btn-copy-prompt');
   if (btnCopyPrompt) {
     btnCopyPrompt.addEventListener('click', () => {
-      navigator.clipboard.writeText(displayText).then(() => {
+      window.safeCopyToClipboard(displayText).then(() => {
         const span = btnCopyPrompt.querySelector('span');
         if (span) span.innerText = 'Copied!';
         btnCopyPrompt.classList.add('copied');
@@ -20413,7 +20436,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
 
   btnCopy.addEventListener('click', () => {
     const textToCopy = bodyArea.innerText || accumulatedResponse;
-    navigator.clipboard.writeText(textToCopy).then(() => {
+    window.safeCopyToClipboard(textToCopy).then(() => {
       const span = btnCopy.querySelector('span');
       if (span) span.innerText = 'Copied!';
       btnCopy.classList.add('copied');
@@ -21004,7 +21027,7 @@ async function copyEntireChatTranscript() {
 
   const fullMarkdown = markdownLines.join('\n');
   try {
-    await navigator.clipboard.writeText(fullMarkdown);
+    await window.safeCopyToClipboard(fullMarkdown);
     const btn = document.getElementById('btn-chat-copy-all');
     if (btn) {
       btn.style.color = '#34d399';
@@ -21080,7 +21103,7 @@ async function regenerateLastTurn() {
 
   btnCopy.addEventListener('click', () => {
     const textToCopy = bodyArea.innerText || accumulatedResponse;
-    navigator.clipboard.writeText(textToCopy).then(() => {
+    window.safeCopyToClipboard(textToCopy).then(() => {
       const span = btnCopy.querySelector('span');
       if (span) span.innerText = 'Copied!';
       btnCopy.classList.add('copied');
