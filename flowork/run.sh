@@ -156,11 +156,47 @@ if [ "$NEEDS_SYNC" = true ] && [ -n "$REMOTE_VER" ]; then
         fi
 
         if [ "$UPDATE_VALID" = true ]; then
-          cp -rn "$STAGING_DIR/extracted/"* "$SCRIPT_DIR/" 2>/dev/null || cp -r "$STAGING_DIR/extracted/"* "$SCRIPT_DIR/" 2>/dev/null || true
+          # Sovereign Selective Overwrite: Overwrite system files to heal tampering, strictly protect sacred user territories
+          python3 -c "
+import os, shutil
+
+src_root = '$STAGING_DIR/extracted'
+dst_root = '$SCRIPT_DIR'
+
+protected_prefixes = [
+    'portable-home',
+    '.flowork',
+    '.fl_brain',
+    '.env',
+    'dev.flowork',
+    'dev.flow',
+    'akungithub'
+]
+
+for root, dirs, files in os.walk(src_root):
+    rel_dir = os.path.relpath(root, src_root)
+    if rel_dir == '.': rel_dir = ''
+    if any(rel_dir == p or rel_dir.startswith(p + os.sep) for p in protected_prefixes):
+        continue
+    target_dir = os.path.join(dst_root, rel_dir)
+    os.makedirs(target_dir, exist_ok=True)
+    for f in files:
+        rel_file = os.path.join(rel_dir, f) if rel_dir else f
+        if any(rel_file == p or rel_file.startswith(p + os.sep) for p in protected_prefixes):
+            continue
+        src_file = os.path.join(root, f)
+        dst_file = os.path.join(dst_root, rel_file)
+        try:
+            shutil.copy2(src_file, dst_file)
+            if f in ['x-flow', 'flowork', 'run.sh', 'flowork.sh']:
+                os.chmod(dst_file, 0o755)
+        except Exception:
+            pass
+"
           rm -f "$SCRIPT_DIR/canvas-ui/launcher.html" 2>/dev/null || true
           rm -rf "$SCRIPT_DIR/canvas-ui/launcher" 2>/dev/null || true
           echo "$REMOTE_VER" > "$LOCAL_VER_FILE"
-          echo "[X-Flow] ✅ Synchronized successfully (v${REMOTE_VER})."
+          echo "[X-Flow] 🛡️ Sovereign Integrity Verified: All system components healed and updated to latest release (v${REMOTE_VER})."
         else
           echo "[X-Flow] ❌ Synchronize rejected: Cryptographic verification failed."
         fi

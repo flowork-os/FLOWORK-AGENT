@@ -442,7 +442,7 @@ const ECOSYSTEM_REGISTRIES = {
     title: 'X-Flow App Store',
     subtitle: 'Browse, install, and update verified polyglot extensions directly from GitHub repository',
     metaPill: 'CLOUD FEDERATION REPOSITORY',
-    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/apps/main/apps.json',
+    catalogUrl: 'https://auth.floworkos.com/api/store/catalog',
     itemsKey: 'plugins',
     accentColor: '#10b981',
     accentRgb: '16, 185, 129',
