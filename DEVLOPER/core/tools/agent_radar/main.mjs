@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
  * 📡 Flowork Sovereign Subagent Radar & JIT Dispatcher
- * Discovers and ranks optimal subagents for incoming task intents.
  */
 import fs from 'fs';
 import path from 'path';
@@ -20,24 +19,20 @@ if (args.includes('--params') && args[args.indexOf('--params') + 1]) {
   try {
     const p = JSON.parse(args.join(' '));
     query = p.task_description || p.query || p.task || args.join(' ');
-  } catch (_) {
-    query = args.join(' ');
-  }
+  } catch (_) { query = args.join(' '); }
 }
 
-const searchPaths = [
-  path.resolve(__dirname, '../../system/subagent/agent_registry.json'),
-  path.resolve(process.cwd(), 'system/subagent/agent_registry.json'),
-  path.resolve(process.cwd(), 'flowork/system/subagent/agent_registry.json')
-];
-
+const subDir = [path.resolve(__dirname, '../../system/subagent'), path.resolve(process.cwd(), 'system/subagent'), path.resolve(process.cwd(), 'flowork/system/subagent')].find(p => fs.existsSync(p));
 let registry = null;
-for (const p of searchPaths) {
-  if (fs.existsSync(p)) {
-    try { registry = JSON.parse(fs.readFileSync(p, 'utf8')); break; } catch (_) {}
-  }
+if (subDir && fs.existsSync(path.join(subDir, 'agent_registry.json'))) {
+  try { registry = JSON.parse(fs.readFileSync(path.join(subDir, 'agent_registry.json'), 'utf8')); } catch (_) {}
 }
-
+if ((!registry || !Array.isArray(registry.agents)) && subDir) {
+  const agents = fs.readdirSync(subDir, { withFileTypes: true }).filter(d => d.isDirectory() && !d.name.startsWith('.')).map(d => {
+    try { return JSON.parse(fs.readFileSync(path.join(subDir, d.name, 'agent.json'), 'utf8')); } catch (_) { return null; }
+  }).filter(Boolean);
+  if (agents.length) registry = { version: '1.0.0', agents };
+}
 if (!registry || !Array.isArray(registry.agents)) {
   console.log(JSON.stringify({ status: 'ERROR', error: 'agent_registry.json missing', candidates: [] }, null, 2));
   process.exit(0);
@@ -56,11 +51,10 @@ const scored = registry.agents.map((agent) => {
     if (role.includes(t)) score += 1.0;
     if (desc.includes(t)) score += 0.5;
   }
-
-  const normalized = tokens.length > 0 ? Math.min(1.0, Number((score / (tokens.length * 3.0)).toFixed(2))) : 0;
+  const norm = tokens.length > 0 ? Math.min(1.0, Number((score / (tokens.length * 3.0)).toFixed(2))) : 0;
   return {
     id: agent.id, name: agent.name, role: agent.role, icon: agent.icon || '🤖',
-    department: agent.department, relevance_score: normalized,
+    department: agent.department, relevance_score: norm,
     model_preference: agent.model_preference || 'pro',
     territory: agent.territory || {}, contracts: agent.contracts || {},
     recommended_subagent_call: { TypeName: agent.id, Role: agent.role, Model: agent.model_preference || 'pro' }
