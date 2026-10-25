@@ -1,6 +1,6 @@
 //! Sovereign Flowork OS Symbolic Memory & Context Offload Engine
 //! High-Density Symbolic Representation (Mermaid Task Nodes) & Lossless Context Compression
-//! Inspired by TencentDB-Agent-Memory Layered Architecture
+//! Sovereign Zero-Drought Symbolic Memory Architecture
 //! Co-authored-by: Flowork OS <agent@floworkos.com>
 
 use std::path::{Path, PathBuf};
@@ -74,7 +74,7 @@ impl SymbolicMemory {
             };
         }
 
-        // Output exceeds budget: engage TencentDB-inspired symbolic context offloading
+        // Output exceeds budget: engage sovereign symbolic context offloading
         let node_id = Self::generate_node_id();
         let logs_dir = workspace_root.join(".FL_BIN").join("scratch").join("logs");
         let _ = std::fs::create_dir_all(&logs_dir);
@@ -105,7 +105,7 @@ impl SymbolicMemory {
         // 3. Construct high-density Symbolic Mermaid Graph + Structured Preview
         let mut formatted = String::with_capacity(2048);
         formatted.push_str(&format!("Command: {}\nExit Code: {} ({})\n", command, exit_code, status_str));
-        formatted.push_str("[SYMBOLIC CONTEXT ENGINE // TENCENTDB-AGENT-MEMORY LAYERED ARCHITECTURE]\n");
+        formatted.push_str("[SOVEREIGN SYMBOLIC CONTEXT ENGINE // ZERO-DROUGHT CONTEXT ARCHITECTURE]\n");
         formatted.push_str("```mermaid\ngraph LR\n");
         formatted.push_str(&format!("    CMD[\"$ {}\"] --> N[\"[{}] {} lines, {:.1} KB // Exit Code: {}\"]\n", clean_short_cmd, node_id, total_lines, size_kb, exit_code));
         formatted.push_str("```\n");
