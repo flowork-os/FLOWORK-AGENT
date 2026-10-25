@@ -11046,7 +11046,7 @@ function initRightbarChat() {
 
 
 
-  // Quick-action prompt chips click delegation
+  // Quick-action prompt chips & shortcuts click delegation
   if (rightbarMessages) {
     rightbarMessages.addEventListener('click', (e) => {
       const chip = e.target.closest('.fl-chip-btn');
@@ -11057,6 +11057,17 @@ function initRightbarChat() {
           chatInput.style.height = 'auto';
           sendUserChatMessage();
         }
+        return;
+      }
+      const shortcut = e.target.closest('.fl-shortcut-pill');
+      if (shortcut) {
+        const cmd = shortcut.getAttribute('data-shortcut');
+        if (cmd && chatInput) {
+          chatInput.value = cmd;
+          chatInput.focus();
+          chatInput.style.height = 'auto';
+        }
+        return;
       }
     });
   }
@@ -12995,6 +13006,106 @@ function getEmptyHeroHtml() {
       </div>
       <!-- Sovereign Greeting Audio (Strictly Relative Asset Path) -->
       <audio id="chat-mascot-audio" preload="none" src="/canvas/sounds/greeting.mp3"></audio>
+
+      <!-- Sovereign Tactical Cockpit Zero-State (Auto-hidden when .has-messages is active) -->
+      <div class="fl-cockpit-content">
+        <div class="fl-cockpit-header">
+          <h2 class="fl-cockpit-title">
+            <span>Flowork Sovereign Mesh</span>
+            <span class="fl-cockpit-tag">v1.0 Ready</span>
+          </h2>
+          <p class="fl-cockpit-sub">Autonomous multi-agent runtime standing by. Select a tactical launchpad or type your directive below.</p>
+        </div>
+
+        <!-- Live Mesh Telemetry Strip -->
+        <div class="fl-cockpit-telemetry">
+          <div class="fl-telemetry-pill" title="2 Installed Skills: software_company_sop, ui_ux_pro_max">
+            <span class="fl-tel-icon">🧠</span>
+            <div class="fl-tel-info">
+              <span class="fl-tel-label">Skills</span>
+              <span class="fl-tel-val">2 Active SOPs</span>
+            </div>
+          </div>
+          <div class="fl-telemetry-pill" title="5 Registered Tools: crypto_scanner, file_ops, mcp_inspect, mcp_status, semantic_search">
+            <span class="fl-tel-icon">🛠️</span>
+            <div class="fl-tel-info">
+              <span class="fl-tel-label">Tools</span>
+              <span class="fl-tel-val">5 Loaded</span>
+            </div>
+          </div>
+          <div class="fl-telemetry-pill" title="4 Autonomous Subagents: backend, frontend, quality-control, security">
+            <span class="fl-tel-icon">🤖</span>
+            <div class="fl-tel-info">
+              <span class="fl-tel-label">Squad</span>
+              <span class="fl-tel-val">4 Specialists</span>
+            </div>
+          </div>
+          <div class="fl-telemetry-pill" title="4 Watchers: 2 Active Daemons (BTC, Webhook) + 2 Passive JIT Sensors (Docs, Zombies)">
+            <span class="fl-tel-icon">⚡</span>
+            <div class="fl-tel-info">
+              <span class="fl-tel-label">Triggers</span>
+              <span class="fl-tel-val">4 Watchers</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tactical Mission Launchpads -->
+        <div class="fl-cockpit-launchpads">
+          <button type="button" class="fl-chip-btn" data-prompt="Audit active workspace, check git unstaged diffs, and inspect security rules">
+            <div class="fl-chip-icon-box">🔍</div>
+            <div class="fl-chip-body">
+              <div class="fl-chip-header">
+                <span class="fl-chip-label">Workspace & Git Audit</span>
+                <span class="fl-chip-arrow">›</span>
+              </div>
+              <span class="fl-chip-desc">Inspect working tree, unstaged diffs & health</span>
+            </div>
+          </button>
+
+          <button type="button" class="fl-chip-btn" data-prompt="Run terminal verification gate and verify production release binary Exit Code 0">
+            <div class="fl-chip-icon-box" style="background: rgba(16, 185, 129, 0.12); border-color: rgba(16, 185, 129, 0.3); color: #34d399;">🛡️</div>
+            <div class="fl-chip-body">
+              <div class="fl-chip-header">
+                <span class="fl-chip-label">Terminal QC Verification</span>
+                <span class="fl-chip-arrow">›</span>
+              </div>
+              <span class="fl-chip-desc">Validate release assets & prove Exit Code 0</span>
+            </div>
+          </button>
+
+          <button type="button" class="fl-chip-btn" data-prompt="Dispatch autonomous engineering squad to build and connect a new feature">
+            <div class="fl-chip-icon-box" style="background: rgba(99, 102, 241, 0.12); border-color: rgba(99, 102, 241, 0.3); color: #818cf8;">👥</div>
+            <div class="fl-chip-body">
+              <div class="fl-chip-header">
+                <span class="fl-chip-label">Assemble Subagent Squad</span>
+                <span class="fl-chip-arrow">›</span>
+              </div>
+              <span class="fl-chip-desc">Coordinate Backend + Frontend + QC pipeline</span>
+            </div>
+          </button>
+
+          <button type="button" class="fl-chip-btn" data-prompt="Recall solution from .fl_brain and inspect software company SOP">
+            <div class="fl-chip-icon-box" style="background: rgba(168, 85, 247, 0.12); border-color: rgba(168, 85, 247, 0.3); color: #c084fc;">🌌</div>
+            <div class="fl-chip-body">
+              <div class="fl-chip-header">
+                <span class="fl-chip-label">Neural Brain Recall</span>
+                <span class="fl-chip-arrow">›</span>
+              </div>
+              <span class="fl-chip-desc">Search .fl_brain embeddings & past solutions</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Shortcuts Strip -->
+        <div class="fl-cockpit-shortcuts">
+          <span class="fl-shortcut-title">Shortcuts:</span>
+          <button type="button" class="fl-shortcut-pill" data-shortcut="/plan ">/plan</button>
+          <button type="button" class="fl-shortcut-pill" data-shortcut="/goal ">/goal</button>
+          <button type="button" class="fl-shortcut-pill" data-shortcut="/boost ">/boost</button>
+          <button type="button" class="fl-shortcut-pill" data-shortcut="/learn ">/learn</button>
+          <button type="button" class="fl-shortcut-pill" data-shortcut="/browser ">/browser</button>
+        </div>
+      </div>
     </div>
   `;
 }
