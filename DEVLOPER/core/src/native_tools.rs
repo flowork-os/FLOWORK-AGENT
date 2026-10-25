@@ -1017,25 +1017,38 @@ pub async fn execute_native_tool_with_discovery(
                 let stderr = crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&stderr_bytes));
                 let exit_code = status.code().unwrap_or(if status.success() { 0 } else { 1 });
 
+                let offload_res = crate::symbolic_memory::SymbolicMemory::condense_command_output(
+                    workspace_root,
+                    command,
+                    exit_code,
+                    &stdout,
+                    &stderr,
+                );
+
                 if status.success() {
-                    let formatted = format!("Command: {}\nExit Code: 0 (SUCCESS (Exit Code 0))\n{}", command, stdout);
                     Ok(json!({
                         "status": "SUCCESS",
                         "exit_code": 0,
                         "command": command,
                         "cwd": cwd_path.display().to_string(),
-                        "output": formatted,
-                        "raw_output": stdout
+                        "output": offload_res.formatted_output,
+                        "is_offloaded": offload_res.is_offloaded,
+                        "node_id": offload_res.node_id,
+                        "offload_path": offload_res.offload_path.as_ref().map(|p| p.display().to_string()),
+                        "tokens_saved": offload_res.tokens_saved_est,
+                        "raw_output": if offload_res.is_offloaded { &offload_res.formatted_output } else { &stdout }
                     }))
                 } else {
-                    let err_msg = if !stderr.trim().is_empty() { stderr.trim() } else { stdout.trim() };
-                    let formatted = format!("Command: {}\nExit Code: {}\n{}", command, exit_code, err_msg);
                     Ok(json!({
                         "status": "ERROR",
                         "exit_code": exit_code,
                         "command": command,
                         "cwd": cwd_path.display().to_string(),
-                        "output": formatted,
+                        "output": offload_res.formatted_output,
+                        "is_offloaded": offload_res.is_offloaded,
+                        "node_id": offload_res.node_id,
+                        "offload_path": offload_res.offload_path.as_ref().map(|p| p.display().to_string()),
+                        "tokens_saved": offload_res.tokens_saved_est,
                         "stdout": stdout,
                         "stderr": stderr
                     }))

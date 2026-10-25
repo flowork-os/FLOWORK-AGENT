@@ -36,6 +36,7 @@ pub mod sovereign_enclave;
 pub mod swarm_dag;
 pub mod sandbox;
 pub mod credential_shield;
+pub mod symbolic_memory;
 
 use agent::AgentService;
 use asset_server::{

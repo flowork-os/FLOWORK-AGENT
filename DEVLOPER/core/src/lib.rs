@@ -39,3 +39,4 @@ pub mod sovereign_enclave;
 pub mod swarm_dag;
 pub mod sandbox;
 pub mod credential_shield;
+pub mod symbolic_memory;
