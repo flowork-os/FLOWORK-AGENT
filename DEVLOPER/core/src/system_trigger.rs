@@ -1786,4 +1786,25 @@ Monitor system status.
         std::env::remove_var("FLOWORK_WEATHER_STATUS");
         let _ = fs::remove_dir_all(&temp_dir);
     }
+
+    #[test]
+    fn test_sovereign_symbolic_memory_directive_evaluation() {
+        let live_root = PathBuf::from("/home/mrflow/flowork");
+        let matched = scan_and_evaluate_system_directives(
+            &live_root,
+            &live_root,
+            true,
+            false,
+            "ALL",
+            None,
+            None,
+            &[],
+        );
+
+        let has_mem_directive = matched.iter().any(|d| d.trigger_id == "SYS-MEM-001");
+        assert!(has_mem_directive, "SYS-MEM-001 Sovereign Symbolic Memory directive must be discovered");
+        let injection = compose_system_directives_injection(&matched);
+        assert!(injection.contains("SOVEREIGN SYMBOLIC MEMORY & CONTEXT OFF-LOAD DIRECTIVE"));
+    }
 }
+
