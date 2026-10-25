@@ -61,20 +61,34 @@ if ($env:FLOWORK_INSTALL_DIR) {
 Write-Host "📁 Target Directory: $InstallDir" -ForegroundColor Green
 Set-Location $InstallDir
 
-# 2. Download Official Release Zip
+# 2. Download Official Release Zip (Precompiled Standalone Bundle)
 $ZipPath = Join-Path $env:TEMP "flowork_release_$PID.zip"
-Write-Host "📥 Fetching Flowork OS official release from GitHub..." -ForegroundColor Cyan
+$ReleaseBundleUrl = "https://github.com/$Repo/releases/latest/download/Flowork-Agent-Windows-x64.zip"
+Write-Host "📥 Fetching Flowork OS official release bundle from GitHub (Flowork-Agent-Windows-x64.zip)..." -ForegroundColor Cyan
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ZipPath -UseBasicParsing
+$DownloadedBundle = $false
+try {
+    Invoke-WebRequest -Uri $ReleaseBundleUrl -OutFile $ZipPath -UseBasicParsing
+    $DownloadedBundle = $true
+} catch {
+    Write-Host "[Flowork] ⚠️ Release bundle download failed, falling back to repository archive..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ZipPath -UseBasicParsing
+}
 
-# 3. Extract Windows Tree to Target Directory
+# 3. Extract Components to Target Directory
 Write-Host "📦 Extracting release components..." -ForegroundColor Cyan
 $ExtractTemp = Join-Path $env:TEMP "flowork_extract_$PID"
 if (Test-Path $ExtractTemp) { Remove-Item $ExtractTemp -Recurse -Force }
 Expand-Archive -Path $ZipPath -DestinationPath $ExtractTemp -Force
 
-$SourceWindowsDir = Join-Path $ExtractTemp "FLOWORK-AGENT-$Branch\windows"
+if ($DownloadedBundle) {
+    $SourceWindowsDir = Join-Path $ExtractTemp "flowork"
+    if (-not (Test-Path $SourceWindowsDir)) { $SourceWindowsDir = $ExtractTemp }
+} else {
+    $SourceWindowsDir = Join-Path $ExtractTemp "FLOWORK-AGENT-$Branch\windows"
+}
+
 if (Test-Path $SourceWindowsDir) {
     Copy-Item -Path "$SourceWindowsDir\*" -Destination $InstallDir -Recurse -Force
 } else {

@@ -55,16 +55,32 @@ done
 # 3. Determine target OS distribution folder
 if [ "$OS_TYPE" = "Darwin" ]; then
   OS_SUBDIR="macos"
+  BUNDLE_NAME="Flowork-Agent-macOS.tar.gz"
 else
   OS_SUBDIR="linux"
+  BUNDLE_NAME="Flowork-Agent-Linux-x86_64.tar.gz"
 fi
 
-# 4. Download & Extract Official Release Bundle
-echo "📥 Fetching Flowork OS official release bundle from GitHub..."
+RELEASE_BUNDLE_URL="https://github.com/${REPO}/releases/latest/download/${BUNDLE_NAME}"
+
+# 4. Download & Extract Official Release Bundle (Fast Standalone Package)
+echo "📥 Fetching Flowork OS official release bundle from GitHub ($BUNDLE_NAME)..."
 TMP_TAR="$(mktemp "$INSTALL_DIR/.flowork_pkg_XXXXXX.tar.gz" 2>/dev/null || mktemp /tmp/.flowork_pkg_XXXXXX.tar.gz)"
 
-if curl -fsSL --max-time 180 "$ARCHIVE_URL" -o "$TMP_TAR"; then
-  echo "📦 Extracting $OS_SUBDIR release components to $INSTALL_DIR..."
+if curl -fSL --retry 3 --max-time 300 "$RELEASE_BUNDLE_URL" -o "$TMP_TAR" 2>/dev/null; then
+  echo "📦 Extracting precompiled release components to $INSTALL_DIR..."
+  tar -xzf "$TMP_TAR" \
+    --strip-components=1 \
+    -C "$INSTALL_DIR" \
+    --exclude="flowork/portable-home/.flowork/*" \
+    --exclude="flowork/.env*" \
+    --exclude="*launcher.html*" \
+    --exclude="*canvas-ui/launcher*" 2>/dev/null || true
+  rm -f "$INSTALL_DIR/canvas-ui/launcher.html" 2>/dev/null || true
+  rm -rf "$INSTALL_DIR/canvas-ui/launcher" 2>/dev/null || true
+  rm -f "$TMP_TAR" 2>/dev/null || true
+elif curl -fsSL --retry 3 --max-time 300 "$ARCHIVE_URL" -o "$TMP_TAR"; then
+  echo "📦 Fallback: Extracting $OS_SUBDIR from repository source archive..."
   tar -xzf "$TMP_TAR" \
     --strip-components=2 \
     -C "$INSTALL_DIR" \
@@ -78,7 +94,7 @@ if curl -fsSL --max-time 180 "$ARCHIVE_URL" -o "$TMP_TAR"; then
   rm -f "$TMP_TAR" 2>/dev/null || true
 else
   rm -f "$TMP_TAR" 2>/dev/null || true
-  echo "❌ Failed to download Flowork release bundle from $ARCHIVE_URL."
+  echo "❌ Failed to download Flowork release bundle from GitHub."
   exit 1
 fi
 
@@ -112,7 +128,7 @@ if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de6
   echo "🧠 Fetching official neural embedding model from GitHub Release (77 MB)..."
   mkdir -p "$MODELS_DIR"
   TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
-  if curl -fSL --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR" 2>/dev/null; then
+  if curl -fSL --retry 3 --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR"; then
     DOWNLOAD_OK=true
     MODEL_EXPECTED_HASH="72e88f00b6d56957b09ac1329735fc8a829b050bb1dd158162fb632bfbe4f79d"
     if command -v sha256sum >/dev/null 2>&1; then
