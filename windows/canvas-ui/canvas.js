@@ -4418,6 +4418,22 @@ async function fetchPlugins() {
     const data = await res.json();
     if (data.status === 'ok') {
       pluginsState = data.apps || data.plugins || [];
+      if (Array.isArray(pluginsState) && Array.isArray(copilotState)) {
+        const existingIds = new Set(copilotState.map(p => p.id));
+        for (const lp of pluginsState) {
+          if (lp && lp.id && !existingIds.has(lp.id)) {
+            copilotState.unshift({
+              ...lp,
+              installed: true,
+              local_only: true
+            });
+            existingIds.add(lp.id);
+          }
+        }
+        if (typeof ecosystemState !== 'undefined' && ecosystemState) {
+          ecosystemState.apps = copilotState;
+        }
+      }
       renderDock();
       renderCategoryRibbons();
       filterAndRenderCards();
@@ -4489,7 +4505,25 @@ async function fetchCopilotRegistry(isManual = false, targetOs = null) {
 }
 
 function applyCopilotRegistryData(data, isManual) {
-  copilotState = data.registry.apps || data.registry.plugins || [];
+  const remoteApps = data.registry.apps || data.registry.plugins || [];
+  const mergedApps = [...remoteApps];
+  const remoteIds = new Set(remoteApps.map(p => p.id));
+  if (Array.isArray(pluginsState)) {
+    for (const lp of pluginsState) {
+      if (lp && lp.id && !remoteIds.has(lp.id)) {
+        mergedApps.unshift({
+          ...lp,
+          installed: true,
+          local_only: true
+        });
+        remoteIds.add(lp.id);
+      }
+    }
+  }
+  copilotState = mergedApps;
+  if (typeof ecosystemState !== 'undefined' && ecosystemState) {
+    ecosystemState.apps = copilotState;
+  }
   copilotCommitSha = data.registry.commit_sha || '';
   const targetOs = data.registry.target_os || 'linux';
   
@@ -5168,7 +5202,20 @@ function filterAndRenderCopilotCards() {
   }
 
   const installedSet = getInstalledSet(currentTab);
-  const items = (currentTab === 'apps') ? copilotState : (ecosystemState[currentTab] || []);
+  let items = (currentTab === 'apps') ? [...copilotState] : (ecosystemState[currentTab] || []);
+  if (currentTab === 'apps' && Array.isArray(pluginsState)) {
+    const existingIds = new Set(items.map(p => p.id));
+    for (const lp of pluginsState) {
+      if (lp && lp.id && !existingIds.has(lp.id)) {
+        items.unshift({
+          ...lp,
+          installed: true,
+          local_only: true
+        });
+        existingIds.add(lp.id);
+      }
+    }
+  }
 
   const filtered = items.filter((p) => {
     let matchesCategory = false;
