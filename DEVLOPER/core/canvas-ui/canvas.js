@@ -12944,7 +12944,7 @@ function extractToolReason(toolName, details) {
     ? { ...details, ...details.details }
     : (details && typeof details === 'object' ? details : {});
 
-  const explicit = d.reason || d.Reason || d.rationale || d.Rationale || d.purpose || d.explanation || d.toolAction || d.Description || d.Instruction || d.toolSummary || '';
+  const explicit = d.reason || d.Reason || d.task_description || d.task || d.rationale || d.Rationale || d.purpose || d.explanation || d.toolAction || d.Description || d.Instruction || d.toolSummary || '';
   if (explicit && typeof explicit === 'string' && explicit.trim().length > 0) {
     return explicit.trim();
   }
@@ -16119,7 +16119,8 @@ function formatToolCard(toolName, details = {}, status = 'done') {
     const query = details.query || details.q || details.prompt || '';
     const url = details.url || details.Url || '';
     const schedDesc = details.DurationSeconds ? `${details.DurationSeconds}s timer` : (details.CronExpression ? `cron (${details.CronExpression})` : '');
-    shortArg = schedDesc ? `${schedDesc}: ${details.Prompt || details.prompt || ''}` : (cmd || file || query || url || details.toolAction || details.toolSummary || '');
+    const task = details.task_description || details.task || details.Description || details.description || '';
+    shortArg = schedDesc ? `${schedDesc}: ${details.Prompt || details.prompt || ''}` : (task || cmd || file || query || url || details.toolAction || details.toolSummary || '');
     fullInput = JSON.stringify(details, null, 2);
     const rawOut = details.rawOutput ?? details.output ?? details.stdout ?? details.result ?? null;
     if (rawOut !== undefined && rawOut !== null && rawOut !== '') {
@@ -16127,7 +16128,12 @@ function formatToolCard(toolName, details = {}, status = 'done') {
     }
   }
 
-  if (rawTool.includes('view_file') || rawTool.includes('read_file') || rawTool.includes('inspect')) {
+  if (rawTool.includes('deterministic') || rawTool.includes('helper')) {
+    toolTag = 'ENGINE // DETERMINISTIC';
+    toolTitle = 'Deterministic Helper';
+    archetype = 'forge';
+    toolIconSvg = `<svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2"><path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/></svg>`;
+  } else if (rawTool.includes('view_file') || rawTool.includes('read_file') || rawTool.includes('inspect')) {
     toolTag = 'CODE // INSPECT';
     toolTitle = 'View File';
     archetype = 'inspect';
@@ -19857,7 +19863,7 @@ function renderLiveGenericToolBox(activeSlot, toolName, details, stepIdx) {
   if (!activeSlot) return;
   const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
   const cleanName = (toolName || 'tool').replace(/^flow_/, '').replace(/^default_api:/, '').toUpperCase();
-  const summary = d.toolSummary || d.toolAction || d.action || d.Action || (typeof details === 'string' ? details : 'Sovereign operation');
+  const summary = d.task_description || d.task || d.toolSummary || d.toolAction || d.action || d.Action || d.reason || (typeof details === 'string' ? details : 'Sovereign operation');
   renderLiveAmbientHoloStream(activeSlot, `OPS // ${cleanName}`, String(summary), 'cyan', stepIdx);
 }
 
@@ -20192,7 +20198,7 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
   const isGenImage = rawTool.includes('generate_image');
   const isSendMedia = rawTool.includes('send_media');
   const isScanner = !isSearchTools && !isSearchWeb && !isReadUrl && !isWebIntel && !isYtVideo && !isYtChannel && !isYtTranscript && !isYtSummary && !isYtComments && !isYtStrategy && (rawTool.includes('read') || rawTool.includes('view') || rawTool.includes('inspect') || rawTool.includes('ingest') || rawTool.includes('recon') || rawTool.includes('search') || rawTool.includes('cat') || rawTool.includes('grep') || rawTool.includes('youtube') || rawTool.includes('yt_spy'));
-  const isForger = !isFlowLock && (rawTool.includes('write') || rawTool.includes('replace') || rawTool.includes('edit') || rawTool.includes('forge') || rawTool.includes('splice') || rawTool.includes('patch'));
+  const isForger = !isFlowLock && (rawTool.includes('write') || rawTool.includes('replace') || rawTool.includes('edit') || rawTool.includes('forge') || rawTool.includes('splice') || rawTool.includes('patch') || rawTool.includes('deterministic') || rawTool.includes('helper'));
   const isBash = rawTool.includes('run_command') || rawTool.includes('exec') || rawTool.includes('terminal');
   const isMemory = rawTool.includes('brain') || rawTool.includes('memory');
   const isSkill = rawTool.includes('skill');
