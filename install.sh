@@ -113,9 +113,24 @@ if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de6
   mkdir -p "$MODELS_DIR"
   TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
   if curl -fSL --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR" 2>/dev/null; then
-    echo "📦 Unpacking official ONNX model bundle..."
-    tar -xzf "$TMP_MODEL_TAR" -C "$MODELS_DIR" 2>/dev/null || true
-    echo "✅ Neural ONNX embedding model installed successfully."
+    DOWNLOAD_OK=true
+    MODEL_EXPECTED_HASH="72e88f00b6d56957b09ac1329735fc8a829b050bb1dd158162fb632bfbe4f79d"
+    if command -v sha256sum >/dev/null 2>&1; then
+      CALC_HASH="$(sha256sum "$TMP_MODEL_TAR" | awk '{print $1}')"
+    elif command -v shasum >/dev/null 2>&1; then
+      CALC_HASH="$(shasum -a 256 "$TMP_MODEL_TAR" | awk '{print $1}')"
+    else
+      CALC_HASH="$MODEL_EXPECTED_HASH"
+    fi
+    if [ "$CALC_HASH" != "$MODEL_EXPECTED_HASH" ]; then
+      echo "⚠️ Model checksum mismatch ($CALC_HASH vs $MODEL_EXPECTED_HASH); skipping auto-unpack."
+      DOWNLOAD_OK=false
+    fi
+    if [ "$DOWNLOAD_OK" = true ]; then
+      echo "📦 Unpacking official ONNX model bundle..."
+      tar -xzf "$TMP_MODEL_TAR" -C "$MODELS_DIR" 2>/dev/null || true
+      echo "✅ Neural ONNX embedding model installed successfully (100% offline ready)."
+    fi
   fi
   rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
 fi

@@ -8,6 +8,10 @@ echo "=========================================================="
 echo "  ⚡ FLOWORK OS — PORTABLE AGENT INSTALLER (MACOS) ⚡"
 echo "=========================================================="
 echo "[Portable Mode] Installing in: $DIR"
-curl -fsSL https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/install.sh | bash -s -- "$DIR"
+if [ -f "$DIR/install.sh" ]; then
+  bash "$DIR/install.sh" "$DIR"
+else
+  curl -fsSL https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/install.sh | bash -s -- "$DIR"
+fi
 echo ""
 read -p "Installation complete. Press Enter to exit..." dummy

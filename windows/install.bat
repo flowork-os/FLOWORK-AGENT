@@ -13,7 +13,11 @@ echo.
 echo Launching PowerShell autonomous installer...
 echo.
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/install.ps1 | iex"
+if exist "%~dp0install.ps1" (
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0install.ps1"
+) else (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "irm https://raw.githubusercontent.com/flowork-os/FLOWORK-AGENT/main/install.ps1 | iex"
+)
 
 if %ERRORLEVEL% NEQ 0 (
     echo.

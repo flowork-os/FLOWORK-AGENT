@@ -4,14 +4,9 @@
 set -e
 
 # Multi-OS Architecture & Platform Matrix Validation
+IS_DARWIN=false
 if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
-  echo "============================================================"
-  echo "🍎 Flowork OS — macOS Support Notice"
-  echo "============================================================"
-  echo "ℹ️  Flowork OS Stage 1 Release officially supports Linux x86_64 & Windows x64."
-  echo "   Native macOS Mach-O binaries are arriving in Stage 2."
-  echo "============================================================"
-  exit 0
+  IS_DARWIN=true
 fi
 
 case "$(uname -s 2>/dev/null)" in
@@ -731,7 +726,7 @@ mkdir -p "$SCRIPT_DIR/.FL_BIN"
 cat << 'EOF_BROWSER_WRAPPER' > "$SCRIPT_DIR/.FL_BIN/google-chrome"
 #!/usr/bin/env bash
 REAL_BIN=""
-for c in /opt/google/chrome/chrome /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
+for c in "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" "/Applications/Brave Browser.app/Contents/MacOS/Brave Browser" "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge" /opt/google/chrome/chrome /usr/bin/google-chrome /usr/bin/google-chrome-stable /usr/bin/chromium /usr/bin/chromium-browser; do
   if [ -x "$c" ] && [ "$(readlink -f "$c" 2>/dev/null)" != "$(readlink -f "$0" 2>/dev/null)" ]; then
     REAL_BIN="$c"
     break
@@ -762,5 +757,16 @@ cp -f "$SCRIPT_DIR/.FL_BIN/google-chrome" "$SCRIPT_DIR/.FL_BIN/microsoft-edge" 2
 export PATH="$SCRIPT_DIR/.FL_BIN:$PATH"
 
 echo "[X-Flow] Starting Sovereign Canvas Host on http://127.0.0.1:19890..."
+if [ -x "./x-flow" ]; then
+  exec ./x-flow "$@"
+elif [ -x "./flowork/flowork" ]; then
+  exec ./flowork/flowork "$@"
+elif [ "$IS_DARWIN" = true ]; then
+  if [ "$(uname -m)" = "arm64" ] && [ -x "./flowork-arm64" ]; then
+    exec ./flowork-arm64 "$@"
+  elif [ -x "./flowork-x86_64" ]; then
+    exec ./flowork-x86_64 "$@"
+  fi
+fi
 exec ./x-flow "$@"
 

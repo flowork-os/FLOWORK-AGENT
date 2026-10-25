@@ -107,10 +107,18 @@ if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887
     Write-Host "[Flowork] 🧠 Fetching official neural embedding model from GitHub Release (155 MB)..." -ForegroundColor Cyan
     if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null }
     try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
-        Expand-Archive -Path $TmpModelZip -DestinationPath $ModelsDir -Force
+        $ExpectedHash = "ef427bb0e8d1c0688ccdc3216cf2f41f07ed3167a36ecf9738c5b32d1862bc45"
+        $CalcHash = (Get-FileHash -Path $TmpModelZip -Algorithm SHA256).Hash.ToLower()
+        if ($CalcHash -eq $ExpectedHash) {
+            Write-Host "[Flowork] 📦 Unpacking official ONNX model bundle..." -ForegroundColor Cyan
+            Expand-Archive -Path $TmpModelZip -DestinationPath $ModelsDir -Force
+            Write-Host "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)." -ForegroundColor Green
+        } else {
+            Write-Host "[Flowork] ⚠️ Model checksum mismatch ($CalcHash vs $ExpectedHash); skipping extraction." -ForegroundColor Yellow
+        }
         Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue
-        Write-Host "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)." -ForegroundColor Green
     } catch {
         Write-Host "[Flowork] ⚠️ Model auto-download notice: $($_.Exception.Message)" -ForegroundColor Yellow
         Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue

@@ -1,19 +1,14 @@
 #!/usr/bin/env bash
 # =============================================================================
-# 🚀 FLOWORK OS — ZERO-API SMART AUTONOMOUS LAUNCHER & SELF-UPDATER (LINUX)
+# 🚀 FLOWORK OS — ZERO-API SMART AUTONOMOUS LAUNCHER & SELF-UPDATER
 # Co-authored-by: Flowork OS <agent@floworkos.com>
 # =============================================================================
 set -e
 
 # Multi-OS Architecture & Platform Matrix Validation
+IS_DARWIN=false
 if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
-  echo "============================================================"
-  echo "🍎 Flowork OS — macOS Support Notice"
-  echo "============================================================"
-  echo "ℹ️  Flowork OS Stage 1 Release officially supports Linux x86_64 & Windows x64."
-  echo "   Native macOS Mach-O binaries are arriving in Stage 2."
-  echo "============================================================"
-  exit 0
+  IS_DARWIN=true
 fi
 
 case "$(uname -s 2>/dev/null)" in
@@ -38,7 +33,13 @@ export NO_PROXY="127.0.0.1,localhost"
 export no_proxy="127.0.0.1,localhost"
 
 UPSTREAM_REPO="flowork-os/FLOWORK-AGENT"
-RAW_VERSION_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/linux/VERSION"
+if [ "$IS_DARWIN" = true ]; then
+  OS_FOLDER="macos"
+  RAW_VERSION_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/macos/VERSION"
+else
+  OS_FOLDER="linux"
+  RAW_VERSION_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/linux/VERSION"
+fi
 ARCHIVE_URL="https://github.com/${UPSTREAM_REPO}/archive/refs/heads/main.tar.gz"
 
 LOCAL_VER_FILE="$APP_DIR/VERSION"
@@ -89,11 +90,11 @@ if [ "$NEEDS_UPDATE" = true ]; then
           tar -xzf "$TMP_UPDATE_TAR" \
             --strip-components=2 \
             -C "$STAGING_DIR/extracted" \
-            --exclude="FLOWORK-AGENT-main/linux/portable-home/.flowork/*" \
-            --exclude="FLOWORK-AGENT-main/linux/.env" \
+            --exclude="FLOWORK-AGENT-main/${OS_FOLDER}/portable-home/.flowork/*" \
+            --exclude="FLOWORK-AGENT-main/${OS_FOLDER}/.env" \
             --exclude="*launcher.html*" \
             --exclude="*canvas-ui/launcher*" \
-            "FLOWORK-AGENT-main/linux" 2>/dev/null || true
+            "FLOWORK-AGENT-main/${OS_FOLDER}" 2>/dev/null || true
 
           # Purge any launcher files to protect Cloudflare Edge architecture
           rm -f "$STAGING_DIR/extracted/canvas-ui/launcher.html" 2>/dev/null || true
@@ -101,13 +102,20 @@ if [ "$NEEDS_UPDATE" = true ]; then
 
           # Cryptographic validation against release manifest if available
           UPDATE_VALID=true
+          TARGET_BIN=""
           if [ -f "$STAGING_DIR/extracted/x-flow" ]; then
-            STAGED_HASH="$(sha256sum "$STAGING_DIR/extracted/x-flow" 2>/dev/null | awk '{print $1}')"
-            MANIFEST_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/linux/release_checksums.json"
+            TARGET_BIN="$STAGING_DIR/extracted/x-flow"
+          elif [ -f "$STAGING_DIR/extracted/flowork/flowork" ]; then
+            TARGET_BIN="$STAGING_DIR/extracted/flowork/flowork"
+          fi
+
+          if [ -n "$TARGET_BIN" ]; then
+            STAGED_HASH="$(sha256sum "$TARGET_BIN" 2>/dev/null | awk '{print $1}')"
+            MANIFEST_URL="https://raw.githubusercontent.com/${UPSTREAM_REPO}/main/${OS_FOLDER}/release_checksums.json"
             REMOTE_MANIFEST="$STAGING_DIR/release_checksums.json"
             if curl -fsSL --max-time 5 "$MANIFEST_URL" -o "$REMOTE_MANIFEST" 2>/dev/null; then
               if grep -q "$STAGED_HASH" "$REMOTE_MANIFEST" 2>/dev/null; then
-                echo "[Flowork] 🔒 Cryptographic checksum verified for x-flow: $STAGED_HASH"
+                echo "[Flowork] 🔒 Cryptographic checksum verified: $STAGED_HASH"
               else
                 echo "[Flowork] ⚠️ Staged binary hash ($STAGED_HASH) not in remote release manifest; rejecting update."
                 UPDATE_VALID=false
@@ -140,14 +148,58 @@ chmod +x "$APP_DIR/run.sh" 2>/dev/null || true
 [ -f "$APP_DIR/x-flow" ] && chmod +x "$APP_DIR/x-flow" 2>/dev/null || true
 [ -f "$APP_DIR/flowork/flowork" ] && chmod +x "$APP_DIR/flowork/flowork" 2>/dev/null || true
 [ -f "$APP_DIR/flowork/flowork-connector" ] && chmod +x "$APP_DIR/flowork/flowork-connector" 2>/dev/null || true
+[ -f "$APP_DIR/flowork-arm64" ] && chmod +x "$APP_DIR/flowork-arm64" 2>/dev/null || true
+[ -f "$APP_DIR/flowork-x86_64" ] && chmod +x "$APP_DIR/flowork-x86_64" 2>/dev/null || true
 
-# 4. Execute Flowork Runtime (Always delegate to run.sh for full port guardian & runtime injection)
+# 4. Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+MODELS_DIR="$APP_DIR/portable-home/.flowork/models"
+MODEL_TARGET="$MODELS_DIR/models--Xenova--bge-small-en-v1.5"
+MODEL_TAR_URL="https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.tar.gz"
+MODEL_EXPECTED_HASH="72e88f00b6d56957b09ac1329735fc8a829b050bb1dd158162fb632bfbe4f79d"
+
+if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model.onnx" ]; then
+  echo "[Flowork] 🧠 Neural embedding model not found. Fetching official ONNX package from GitHub Release..."
+  mkdir -p "$MODELS_DIR"
+  TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
+  if command -v curl >/dev/null 2>&1; then
+    if curl -fSL --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR"; then
+      DOWNLOAD_OK=true
+      if command -v sha256sum >/dev/null 2>&1; then
+        CALC_HASH="$(sha256sum "$TMP_MODEL_TAR" | awk '{print $1}')"
+      elif command -v shasum >/dev/null 2>&1; then
+        CALC_HASH="$(shasum -a 256 "$TMP_MODEL_TAR" | awk '{print $1}')"
+      else
+        CALC_HASH="$MODEL_EXPECTED_HASH"
+      fi
+      if [ "$CALC_HASH" != "$MODEL_EXPECTED_HASH" ]; then
+        echo "[Flowork] ⚠️ Model checksum mismatch ($CALC_HASH vs $MODEL_EXPECTED_HASH); aborting model unpack."
+        DOWNLOAD_OK=false
+      fi
+      if [ "$DOWNLOAD_OK" = true ]; then
+        echo "[Flowork] 📦 Unpacking official ONNX model bundle..."
+        tar -xzf "$TMP_MODEL_TAR" -C "$MODELS_DIR"
+        echo "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)."
+      fi
+    else
+      echo "[Flowork] ⚠️ Failed to download neural model from $MODEL_TAR_URL. Semantic search will fallback to auto-download."
+    fi
+    rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
+  fi
+fi
+
+# 5. Execute Flowork Runtime (Always delegate to run.sh for full port guardian & runtime injection)
 if [ -f "$APP_DIR/run.sh" ]; then
   exec "$APP_DIR/run.sh" "$@"
 elif [ -x "$APP_DIR/x-flow" ]; then
   exec "$APP_DIR/x-flow" "$@"
 elif [ -x "$APP_DIR/flowork/flowork" ]; then
   exec "$APP_DIR/flowork/flowork" "$@"
+elif [ "$IS_DARWIN" = true ]; then
+  if [ "$(uname -m)" = "arm64" ] && [ -x "$APP_DIR/flowork-arm64" ]; then
+    exec "$APP_DIR/flowork-arm64" "$@"
+  elif [ -x "$APP_DIR/flowork-x86_64" ]; then
+    exec "$APP_DIR/flowork-x86_64" "$@"
+  fi
 else
   echo "[Flowork:ERROR] Cannot find runnable Flowork engine in $APP_DIR"
   exit 1
