@@ -11644,8 +11644,19 @@ function renderMarkdown(md) {
     formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', () => card);
   });
 
-  return formatted;
+  return sanitizeMarkdownHtml(formatted);
 }
+
+function sanitizeMarkdownHtml(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<\/?(?:iframe|object|embed|applet|meta|base)\b[^>]*>/gi, '')
+    .replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*(?:["']\s*javascript:[^"']*["']|javascript:[^\s>]+)/gi, '$1="#"');
+}
+window.sanitizeMarkdownHtml = sanitizeMarkdownHtml;
+
 
 // =============================================================================
 // CHAT ATTACHMENTS & CONTEXT HANDLER (IMAGES / FILES / CLIPBOARD)
