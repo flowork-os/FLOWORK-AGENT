@@ -40,7 +40,7 @@ use asset_server::{
     serve_canvas_file, serve_canvas_root, serve_app_gui, serve_app_gui_redirect,
     serve_app_gui_root, serve_plugin_gui, serve_plugin_gui_redirect,
     serve_plugin_gui_root, serve_favicon_ico, serve_favicon_png, serve_favicon_svg,
-    serve_manifest_json,
+    serve_manifest_json, system_panic_trigger,
 };
 use auth::AuthManager;
 use axum::{routing::{delete, get, post}, Router};
@@ -294,6 +294,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/auth/status", get(get_auth_status))
         .route("/api/auth/set-token", post(set_auth_token))
         .route("/api/auth/logout", post(logout_auth))
+        .route("/api/system/panic", post(system_panic_trigger))
         .route("/api/sync-drive/status", get(get_sync_drive_status))
         .route("/api/sync-drive/auth/login-url", get(get_sync_drive_login_url))
         .route("/api/gdrive/auth/callback", get(gdrive_oauth_callback))

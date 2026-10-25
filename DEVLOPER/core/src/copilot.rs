@@ -40,31 +40,64 @@ impl CopilotManager {
         let repo = Self::target_repo_for_os(target_os);
         let cache_path = self.plugins_dir.join(format!(".registry_cache_{target_os}.json"));
 
-        // 1. Fetch public plugins.json from unified GitHub repo (Zero GitHub token / Zero rate limit consumed)
+        // 1. Fetch live authoritative App Store catalog from Cloudflare Edge (auth.floworkos.com)
         let mut fetched_reg: Option<(Value, String)> = None;
-        let base_raw = crate::prompt_enclave::PromptEnclave::url_github_raw_base();
-        let base_trimmed = base_raw.trim_end_matches('/');
-        let reg_url = format!("{base_trimmed}/{repo}/main/apps.json");
-
-        let out = Command::new("curl")
+        let edge_url = format!("{}/api/store/catalog", crate::prompt_enclave::PromptEnclave::url_auth());
+        let edge_out = Command::new("curl")
             .args([
-                "-sL", // Follow HTTP 301/302/307 redirects from GitHub raw CDN
+                "-sL",
                 "-A", "FloworkOS-Client/1.0",
                 "-H", "Cache-Control: no-cache, no-store",
                 "-H", "Pragma: no-cache",
-                "--max-time", "10",
-                &reg_url
+                "--max-time", "8",
+                &edge_url
             ])
             .output()
             .await;
 
-        if let Ok(o) = out {
+        if let Ok(o) = edge_out {
             if o.status.success() {
                 let reg_str = String::from_utf8_lossy(&o.stdout);
                 if let Ok(val) = serde_json::from_str::<Value>(&reg_str) {
                     if val.get("apps").is_some() || val.get("plugins").is_some() {
                         let _ = std::fs::write(&cache_path, reg_str.as_bytes());
-                        fetched_reg = Some((val, "live_github".to_string()));
+                        // SELF-HEALING: Overwrite local apps.json so any unauthorized local modifications are immediately reverted back
+                        let master_apps = self.plugins_dir.join("apps.json");
+                        let _ = std::fs::write(&master_apps, reg_str.as_bytes());
+                        fetched_reg = Some((val, "live_cloudflare_edge".to_string()));
+                    }
+                }
+            }
+        }
+
+        // 1.2. Fallback to unified GitHub repo
+        if fetched_reg.is_none() {
+            let base_raw = crate::prompt_enclave::PromptEnclave::url_github_raw_base();
+            let base_trimmed = base_raw.trim_end_matches('/');
+            let reg_url = format!("{base_trimmed}/{repo}/main/apps.json");
+
+            let out = Command::new("curl")
+                .args([
+                    "-sL", // Follow HTTP 301/302/307 redirects from GitHub raw CDN
+                    "-A", "FloworkOS-Client/1.0",
+                    "-H", "Cache-Control: no-cache, no-store",
+                    "-H", "Pragma: no-cache",
+                    "--max-time", "10",
+                    &reg_url
+                ])
+                .output()
+                .await;
+
+            if let Ok(o) = out {
+                if o.status.success() {
+                    let reg_str = String::from_utf8_lossy(&o.stdout);
+                    if let Ok(val) = serde_json::from_str::<Value>(&reg_str) {
+                        if val.get("apps").is_some() || val.get("plugins").is_some() {
+                            let _ = std::fs::write(&cache_path, reg_str.as_bytes());
+                            let master_apps = self.plugins_dir.join("apps.json");
+                            let _ = std::fs::write(&master_apps, reg_str.as_bytes());
+                            fetched_reg = Some((val, "live_github".to_string()));
+                        }
                     }
                 }
             }

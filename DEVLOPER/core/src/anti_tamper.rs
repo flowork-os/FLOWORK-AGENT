@@ -48,4 +48,15 @@ impl AntiTamper {
             }
         }
     }
+
+    /// Triggers immediate process termination due to fatal sovereign authentication violation or tampering.
+    pub fn trigger_fatal_quarantine(reason: &str) -> ! {
+        eprintln!("\n═══════════════════════════════════════════════════════════════════════════");
+        eprintln!("[SOVEREIGN GUARD] 🛑 FATAL AUTHENTICATION & TAMPER VIOLATION DETECTED");
+        eprintln!("[SOVEREIGN GUARD] Violation: {}", reason);
+        eprintln!("[SOVEREIGN GUARD] Jurisdiction: https://auth.floworkos.com required.");
+        eprintln!("[SOVEREIGN GUARD] Process terminated with Exit Code 42 (Fail-Closed Quarantine).");
+        eprintln!("═══════════════════════════════════════════════════════════════════════════\n");
+        std::process::exit(42);
+    }
 }

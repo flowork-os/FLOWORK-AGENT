@@ -131,8 +131,9 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
     }
 
     // Pre-member boundary enforcement: Unauthenticated requests cannot access member-area
+    // FAIL-CLOSED CRASH: If user is not authenticated with auth.floworkos.com and attempts to access member-area, trigger immediate shutdown.
     if clean.starts_with("member-area") && !is_auth {
-        return Redirect::temporary("/").into_response();
+        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to bypass sovereign launcher and enter protected member-area without valid session from auth.floworkos.com");
     }
 
     // Redirect legacy /canvas/index.html to /canvas/member-area/index.html
@@ -143,7 +144,7 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
                 return Redirect::temporary("/canvas/member-area/index.html").into_response();
             }
         } else {
-            return Redirect::temporary("/").into_response();
+            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to load protected canvas index without valid session from auth.floworkos.com");
         }
     }
 
@@ -220,6 +221,10 @@ pub async fn serve_app_gui(
     AxPath((id, subpath)): AxPath<(String, String)>,
     State(state): State<Arc<AppState>>,
 ) -> Response {
+    if !state.auth.is_authorized().await {
+        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!("Unauthorized access to app '{}' without valid session from auth.floworkos.com", id));
+    }
+
     if let Some(plugin) = state.discovery.get(&id).await {
         let clean = subpath.replace("..", "").trim_start_matches('/').to_string();
         let is_root_html = clean.is_empty() || clean == "index.html";
@@ -491,3 +496,11 @@ pub async fn serve_disk_file(path: &std::path::Path) -> Response {
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
+
+pub async fn system_panic_trigger(
+    axum::Json(payload): axum::Json<serde_json::Value>,
+) -> Response {
+    let reason = payload.get("reason").and_then(|v| v.as_str()).unwrap_or("Sovereign security tripwire triggered by frontend enclave");
+    crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(reason);
+}
+
