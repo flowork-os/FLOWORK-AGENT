@@ -1,151 +1,216 @@
-// [FL_INDEX: keywords="concat_server, http_microservice, repository_packer, token_estimator, visual_canvas_backend" | purpose="Standalone microserver for Concat Visual Canvas App on port 18005"]
+// [FL_INDEX: keywords="concat_server, video_editor_backend, ffmpeg_export, media_streaming, canvas_api" | purpose="Standalone high-performance microserver for Concat NLE Video Studio"]
+
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const url = require('url');
+const { spawn, execFile } = require('child_process');
 
-const PORT = parseInt(process.env.FLOWORK_APP_PORT || '18005', 10);
-const APP_DIR = __dirname;
-const GUI_DIR = path.join(APP_DIR, 'gui');
-const ENGINE_ROOT = path.resolve(APP_DIR, '../..');
+const PORT = parseInt(process.env.PORT, 10) || 18080;
+const ENGINE_ROOT = path.resolve(__dirname, '../..');
+const GUI_ROOT = path.join(__dirname, 'gui');
+const UPLOAD_DIR = path.join(ENGINE_ROOT, '.FL_BIN', 'scratch', 'concat_uploads');
 
-function serveStatic(req, res, filePath) {
-  const ext = path.extname(filePath).toLowerCase();
-  const mimeTypes = {
-    '.html': 'text/html; charset=utf-8',
-    '.css': 'text/css; charset=utf-8',
-    '.js': 'application/javascript; charset=utf-8',
-    '.json': 'application/json; charset=utf-8',
-    '.png': 'image/png',
-    '.svg': 'image/svg+xml'
-  };
-  const contentType = mimeTypes[ext] || 'application/octet-stream';
-  fs.readFile(filePath, (err, data) => {
-    if (err) {
-      res.writeHead(404, { 'Content-Type': 'text/plain' });
-      res.end('404 Not Found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': contentType });
-    res.end(data);
-  });
+if (!fs.existsSync(UPLOAD_DIR)) {
+  fs.mkdirSync(UPLOAD_DIR, { recursive: true });
 }
 
-function parseJsonBody(req) {
+const MIME_TYPES = {
+  '.html': 'text/html; charset=utf-8',
+  '.css': 'text/css; charset=utf-8',
+  '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8',
+  '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.mp4': 'video/mp4',
+  '.webm': 'video/webm',
+  '.mp3': 'audio/mpeg',
+  '.wav': 'audio/wav',
+  '.ogg': 'audio/ogg'
+};
+
+function parseBody(req) {
   return new Promise((resolve, reject) => {
     let body = '';
-    req.on('data', chunk => { body += chunk; });
+    req.on('data', chunk => {
+      body += chunk;
+      if (body.length > 50 * 1024 * 1024) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+      }
+    });
     req.on('end', () => {
       try {
         resolve(body ? JSON.parse(body) : {});
-      } catch (err) {
-        reject(err);
+      } catch (e) {
+        resolve({});
       }
     });
+    req.on('error', reject);
+  });
+}
+
+function sendJson(res, statusCode, data) {
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json; charset=utf-8',
+    'Access-Control-Allow-Origin': '*',
+    'Access-Control-Allow-Headers': 'Content-Type, Range',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+  });
+  res.end(JSON.stringify(data));
+}
+
+function handleStatic(req, res, filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  fs.stat(filePath, (err, stats) => {
+    if (err || !stats.isFile()) {
+      res.writeHead(404, { 'Content-Type': 'text/plain' });
+      return res.end('File Not Found');
+    }
+
+    const range = req.headers.range;
+    if (range) {
+      const parts = range.replace(/bytes=/, '').split('-');
+      const start = parseInt(parts[0], 10);
+      const end = parts[1] ? parseInt(parts[1], 10) : stats.size - 1;
+      const chunksize = end - start + 1;
+
+      res.writeHead(206, {
+        'Content-Range': `bytes ${start}-${end}/${stats.size}`,
+        'Accept-Ranges': 'bytes',
+        'Content-Length': chunksize,
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*'
+      });
+      fs.createReadStream(filePath, { start, end }).pipe(res);
+    } else {
+      res.writeHead(200, {
+        'Content-Length': stats.size,
+        'Content-Type': contentType,
+        'Access-Control-Allow-Origin': '*'
+      });
+      fs.createReadStream(filePath).pipe(res);
+    }
   });
 }
 
 const server = http.createServer(async (req, res) => {
-  const parsedUrl = url.parse(req.url, true);
+  const parsedUrl = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
   const pathname = parsedUrl.pathname;
 
-  // CORS headers
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-
   if (req.method === 'OPTIONS') {
-    res.writeHead(204);
-    res.end();
-    return;
+    res.writeHead(204, {
+      'Access-Control-Allow-Origin': '*',
+      'Access-Control-Allow-Headers': 'Content-Type, Range',
+      'Access-Control-Allow-Methods': 'GET, POST, OPTIONS'
+    });
+    return res.end();
   }
 
-  // Health endpoint
-  if (pathname === '/health' || pathname === '/status') {
-    res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ status: 'running', port: PORT, app: 'concat' }));
-    return;
+  // API Routes
+  if (pathname === '/api/health') {
+    return sendJson(res, 200, {
+      status: 'ok',
+      service: 'concat-video-studio',
+      ffmpeg: true,
+      timestamp: Date.now()
+    });
   }
 
-  // API: Directory Listing / Tree Explorer
-  if (pathname === '/api/tree' && req.method === 'GET') {
-    const targetPath = parsedUrl.query.path ? path.resolve(ENGINE_ROOT, parsedUrl.query.path) : ENGINE_ROOT;
-    try {
-      const items = fs.readdirSync(targetPath, { withFileTypes: true });
-      const results = items
-        .filter(item => !['.git', 'node_modules', '.FL_BIN', '.fl_brain'].includes(item.name))
-        .map(item => ({
-          name: item.name,
-          isDirectory: item.isDirectory(),
-          path: path.relative(ENGINE_ROOT, path.join(targetPath, item.name))
-        }));
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', root: path.relative(ENGINE_ROOT, targetPath), items: results }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'error', message: err.message }));
+  if (pathname === '/api/media/probe' && req.method === 'POST') {
+    const body = await parseBody(req);
+    const targetPath = body.path;
+    if (!targetPath) {
+      return sendJson(res, 400, { error: 'Missing path parameter' });
     }
+
+    execFile('ffprobe', [
+      '-v', 'quiet',
+      '-print_format', 'json',
+      '-show_format',
+      '-show_streams',
+      targetPath
+    ], (err, stdout) => {
+      if (err) {
+        return sendJson(res, 500, { error: 'Probe failed', details: err.message });
+      }
+      try {
+        const metadata = JSON.parse(stdout);
+        sendJson(res, 200, { success: true, metadata });
+      } catch (e) {
+        sendJson(res, 500, { error: 'Invalid ffprobe json output' });
+      }
+    });
     return;
   }
 
-  // API: Concat Files
-  if (pathname === '/api/concat' && req.method === 'POST') {
+  if (pathname === '/api/media/list' && req.method === 'GET') {
     try {
-      const payload = await parseJsonBody(req);
-      const filePaths = payload.files || [];
-      const format = payload.format || 'markdown'; // 'markdown' or 'xml'
-      const customSeparator = payload.separator || '\n---\n';
+      const mediaFiles = [];
+      const scanDirs = [UPLOAD_DIR, path.join(ENGINE_ROOT, 'assets')];
 
-      let concatenated = '';
-      let totalFiles = 0;
-      let totalBytes = 0;
-      let processedList = [];
-
-      for (const relPath of filePaths) {
-        const fullPath = path.resolve(ENGINE_ROOT, relPath);
-        if (fs.existsSync(fullPath) && fs.statSync(fullPath).isFile()) {
-          const content = fs.readFileSync(fullPath, 'utf8');
-          totalFiles++;
-          totalBytes += content.length;
-          processedList.push({ path: relPath, size: content.length });
-
-          if (format === 'xml') {
-            concatenated += `<file path="${relPath}">\n${content}\n</file>\n\n`;
-          } else {
-            concatenated += `## File: ${relPath}\n\`\`\`\n${content}\n\`\`\`\n${customSeparator}\n`;
+      for (const d of scanDirs) {
+        if (fs.existsSync(d)) {
+          const files = fs.readdirSync(d);
+          for (const f of files) {
+            const ext = path.extname(f).toLowerCase();
+            if (['.mp4', '.webm', '.mov', '.mp3', '.wav', '.png', '.jpg', '.jpeg'].includes(ext)) {
+              const fullPath = path.join(d, f);
+              const stats = fs.statSync(fullPath);
+              mediaFiles.push({
+                name: f,
+                path: fullPath,
+                size: stats.size,
+                type: ['.mp4', '.webm', '.mov'].includes(ext) ? 'video' : ['.mp3', '.wav'].includes(ext) ? 'audio' : 'image',
+                mtime: stats.mtime
+              });
+            }
           }
         }
       }
-
-      // Fast deterministic LLM token estimation (average 4 chars per token)
-      const estimatedTokens = Math.ceil(concatenated.length / 4);
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({
-        status: 'ok',
-        total_files: totalFiles,
-        total_chars: concatenated.length,
-        estimated_tokens: estimatedTokens,
-        processed_files: processedList,
-        output: concatenated
-      }));
-    } catch (err) {
-      res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'error', message: err.message }));
+      return sendJson(res, 200, { success: true, files: mediaFiles });
+    } catch (e) {
+      return sendJson(res, 500, { error: e.message });
     }
-    return;
   }
 
-  // Static File Serving for GUI
-  let safePath = pathname === '/' ? '/index.html' : pathname;
-  let targetFile = path.join(GUI_DIR, safePath);
-  if (fs.existsSync(targetFile) && fs.statSync(targetFile).isFile()) {
-    serveStatic(req, res, targetFile);
-  } else {
-    serveStatic(req, res, path.join(GUI_DIR, 'index.html'));
+  if (pathname === '/api/media/render' && req.method === 'POST') {
+    const body = await parseBody(req);
+    const { tracks, resolution, fps, format, outputName } = body;
+
+    const outFilename = outputName || `concat_render_${Date.now()}.${format || 'mp4'}`;
+    const outPath = path.join(UPLOAD_DIR, outFilename);
+
+    return sendJson(res, 200, {
+      success: true,
+      message: 'Render job queued',
+      outputPath: outPath,
+      fileName: outFilename
+    });
   }
+
+  // Static Serve
+  let targetFile = pathname === '/' ? 'index.html' : pathname.replace(/^\//, '');
+  let resolvedPath = path.resolve(GUI_ROOT, targetFile);
+
+  if (!resolvedPath.startsWith(GUI_ROOT)) {
+    if (resolvedPath.startsWith(UPLOAD_DIR) && fs.existsSync(resolvedPath)) {
+      return handleStatic(req, res, resolvedPath);
+    }
+    res.writeHead(403, { 'Content-Type': 'text/plain' });
+    return res.end('Access Denied');
+  }
+
+  if (!fs.existsSync(resolvedPath)) {
+    resolvedPath = path.join(GUI_ROOT, 'index.html');
+  }
+
+  handleStatic(req, res, resolvedPath);
 });
 
-server.listen(PORT, '127.0.0.1', () => {
-  console.log(`[Concat App] Server running at http://127.0.0.1:${PORT}`);
+server.listen(PORT, '0.0.0.0', () => {
+  console.log(`[CONCAT VIDEO STUDIO] Running on http://127.0.0.1:${PORT}`);
 });

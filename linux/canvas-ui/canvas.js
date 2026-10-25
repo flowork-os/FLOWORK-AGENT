@@ -16873,9 +16873,9 @@ function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
 
   activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
 
-  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || 'workspace/file';
+  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || d.task_description || d.task || d.arguments || 'workspace/file';
   const fileName = String(filePath).split(/[\\/]/).pop() || shortenFilePath(filePath);
-  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.content ?? d.real_content ?? ''));
+  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.code ?? d.content ?? d.real_content ?? ''));
   let totalBytes = new Blob([codeRaw]).size || codeRaw.length || 128;
   let codeLines = codeRaw.split(/\r?\n/).filter((l, idx, arr) => !(idx === arr.length - 1 && l === '')).map((l, idx) => `${String(idx + 1).padStart(3, '0')} │ ${l}`);
   if (codeLines.length === 0) {
