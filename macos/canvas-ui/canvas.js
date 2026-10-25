@@ -13096,14 +13096,10 @@ function getEmptyHeroHtml() {
           </button>
         </div>
 
-        <!-- Shortcuts Strip -->
-        <div class="fl-cockpit-shortcuts">
-          <span class="fl-shortcut-title">Shortcuts:</span>
-          <button type="button" class="fl-shortcut-pill" data-shortcut="/plan ">/plan</button>
-          <button type="button" class="fl-shortcut-pill" data-shortcut="/goal ">/goal</button>
-          <button type="button" class="fl-shortcut-pill" data-shortcut="/boost ">/boost</button>
-          <button type="button" class="fl-shortcut-pill" data-shortcut="/learn ">/learn</button>
-          <button type="button" class="fl-shortcut-pill" data-shortcut="/browser ">/browser</button>
+        <!-- Authentic Flowork Triggers Status Footer -->
+        <div class="fl-cockpit-status-bar">
+          <span class="fl-csb-dot"></span>
+          <span class="fl-csb-text">Triggers: 2 Active Daemons · 2 Passive JIT Sensors</span>
         </div>
       </div>
     </div>
