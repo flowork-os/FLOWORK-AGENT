@@ -37,3 +37,5 @@ pub mod native_tools;
 pub mod sealed_tools;
 pub mod sovereign_enclave;
 pub mod swarm_dag;
+pub mod sandbox;
+pub mod credential_shield;

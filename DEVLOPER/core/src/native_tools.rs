@@ -954,6 +954,12 @@ pub async fn execute_native_tool_with_discovery(
                .env("FLOWORK_CO_AUTHOR", "Flowork OS <agent@floworkos.com>")
                .env("PAGER", "cat");
 
+            // Apply Credential Shield (Zero-Secret Agent Environment inspired by NVIDIA OpenShell)
+            crate::credential_shield::CredentialShield::scrub_command_env(&mut cmd);
+
+            // Apply Kernel-level Landlock Sandbox Confinement (bypass if Dev Mode authenticated)
+            crate::sandbox::apply_sandbox_to_command(&mut cmd, workspace_root, true);
+
             let mut child = cmd.stdout(std::process::Stdio::piped())
                 .stderr(std::process::Stdio::piped())
                 .spawn()
@@ -1007,8 +1013,8 @@ pub async fn execute_native_tool_with_discovery(
                 let stdout_bytes = stdout_task.await.unwrap_or_default();
                 let stderr_bytes = stderr_task.await.unwrap_or_default();
 
-                let stdout = String::from_utf8_lossy(&stdout_bytes).to_string();
-                let stderr = String::from_utf8_lossy(&stderr_bytes).to_string();
+                let stdout = crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&stdout_bytes));
+                let stderr = crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&stderr_bytes));
                 let exit_code = status.code().unwrap_or(if status.success() { 0 } else { 1 });
 
                 if status.success() {
@@ -1050,7 +1056,12 @@ pub async fn execute_native_tool_with_discovery(
                         Ok(s) => s.code().unwrap_or(0),
                         Err(_) => 1,
                     };
-                    update_background_task_done(&task_id_clone, code, &String::from_utf8_lossy(&out), &String::from_utf8_lossy(&err)).await;
+                    update_background_task_done(
+                        &task_id_clone,
+                        code,
+                        &crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&out)),
+                        &crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&err)),
+                    ).await;
                 });
 
                 let formatted = format!(
@@ -1322,6 +1333,20 @@ pub async fn execute_native_tool_with_discovery(
                 .and_then(|v| v.as_str())
                 .ok_or_else(|| "Url is required".to_string())?;
 
+            // Egress Policy: Validate outbound destination (unless Dev Mode is authenticated)
+            let host = url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").split(':').next().unwrap_or("");
+            if !crate::attestation::is_dev_mode_authenticated(workspace_root) {
+                if !host.is_empty() && !crate::credential_shield::CredentialShield::is_egress_domain_allowed(host) {
+                    return Ok(json!({
+                        "status": "DENIED",
+                        "exit_code": 403,
+                        "url": url,
+                        "error": format!("Access Denied: Outbound egress to host '{}' is blocked by Sovereign Credential Shield & Egress Policy.", host),
+                        "output": format!("Access Denied: Outbound egress to host '{}' is blocked by Sovereign Credential Shield & Egress Policy.", host)
+                    }));
+                }
+            }
+
             let mut cmd = tokio::process::Command::new("curl");
             cmd.arg("-sL")
                .arg("--max-time").arg("10")
@@ -1329,11 +1354,12 @@ pub async fn execute_native_tool_with_discovery(
                .arg(url);
 
             let output = cmd.output().await.map_err(|e| format!("Failed to fetch URL '{url}': {e}"))?;
-            let text = String::from_utf8_lossy(&output.stdout);
-            let truncated = if text.len() > 50000 {
-                &text[..50000]
+            let raw_text = String::from_utf8_lossy(&output.stdout);
+            let sanitized_text = crate::credential_shield::CredentialShield::redact_secrets(&raw_text);
+            let truncated = if sanitized_text.len() > 50000 {
+                &sanitized_text[..50000]
             } else {
-                &text
+                &sanitized_text
             };
 
             Ok(json!({
@@ -2638,7 +2664,18 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                     "pypi": pypi_packages.len(),
                     "go": go_packages.len()
                 },
-                "output": format!("Sovereign Security & Hygiene audit completed across {} files (Score: {}/100, Issues: {} [Portability: {}, Security: {}], Exit Code 0).", files_scanned, health_score, total_issues, total_portability, total_security)
+                "runtime_isolation": {
+                    "sandbox_engine": if crate::sandbox::LandlockSandbox::is_supported() {
+                        format!("Linux Landlock LSM (Kernel ABI v{})", crate::sandbox::LandlockSandbox::abi_version())
+                    } else {
+                        "Standard OS Boundary".to_string()
+                    },
+                    "sandbox_status": if crate::sandbox::LandlockSandbox::is_supported() { "ACTIVE_ENFORCED" } else { "FALLBACK" },
+                    "credential_shield": "ACTIVE_ZERO_SECRET_ENV",
+                    "egress_filtering": "DENY_BY_DEFAULT_ALLOWLIST",
+                    "dev_mode_bypass": crate::attestation::is_dev_mode_authenticated(workspace_root)
+                },
+                "output": format!("Sovereign Security & Hygiene audit completed across {} files (Score: {}/100, Issues: {} [Portability: {}, Security: {}], Sandbox: {}, Exit Code 0).", files_scanned, health_score, total_issues, total_portability, total_security, if crate::sandbox::LandlockSandbox::is_supported() { "Landlock LSM Enforced" } else { "Standard Boundary" })
             }))
         },
 
