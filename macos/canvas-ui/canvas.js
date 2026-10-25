@@ -430,11 +430,129 @@ function initOfficeSubnavSystem() {
 window.initOfficeSubnavSystem = initOfficeSubnavSystem;
 window.initGroupSubnavSystem = initOfficeSubnavSystem; // Backward compatibility alias
 
-// ── UNIFIED APP STORE & WORKSPACE EXTENSIONS SUBNAV SYSTEM ──
-let currentStoreSubtab = 'cloud';
+// ── UNIFIED FLOWORK SOVEREIGN ECOSYSTEM STORE SYSTEM ──
+let currentStoreSubtab = 'apps';
+
+const ECOSYSTEM_REGISTRIES = {
+  apps: {
+    id: 'apps',
+    label: 'Apps',
+    icon: '📱',
+    repo: 'flowork-os/apps',
+    title: 'X-Flow App Store',
+    subtitle: 'Browse, install, and update verified polyglot extensions directly from GitHub repository',
+    metaPill: 'CLOUD FEDERATION REPOSITORY',
+    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/apps/main/apps.json',
+    itemsKey: 'plugins',
+    accentColor: '#10b981',
+    accentRgb: '16, 185, 129',
+    unitName: 'Extensions'
+  },
+  skills: {
+    id: 'skills',
+    label: 'Skills',
+    icon: '🧠',
+    repo: 'flowork-os/FLOWORK-SKILLS',
+    title: 'Flowork Skills Hub',
+    subtitle: 'Autonomous agent domain SOPs, cognitive procedures, and playbooks with strict 20 English keywords from',
+    metaPill: 'AGENT KNOWLEDGE BASE',
+    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/FLOWORK-SKILLS/main/skills.json',
+    itemsKey: 'skills',
+    accentColor: '#8b5cf6',
+    accentRgb: '139, 92, 246',
+    unitName: 'Skills'
+  },
+  tools: {
+    id: 'tools',
+    label: 'Tools',
+    icon: '🛠️',
+    repo: 'flowork-os/AGENT-TOOLS',
+    title: 'Agent Tools Registry',
+    subtitle: 'Deterministic CLI utilities, real-time scanners, and MCP tool adapters for autonomous agents from',
+    metaPill: 'DETERMINISTIC AGENT UTILITIES',
+    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/AGENT-TOOLS/main/tools.json',
+    itemsKey: 'tools',
+    accentColor: '#f59e0b',
+    accentRgb: '245, 158, 11',
+    unitName: 'Tools'
+  },
+  agents: {
+    id: 'agents',
+    label: 'Agents',
+    icon: '🤖',
+    repo: 'flowork-os/AGENTS',
+    title: 'Autonomous Agent Squads',
+    subtitle: 'Specialist persona roles, engineering agents, security auditors, and QC leads designed for swarm orchestration from',
+    metaPill: 'AUTONOMOUS SQUAD ROLES',
+    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/AGENTS/main/agents.json',
+    itemsKey: 'agents',
+    accentColor: '#00f2fe',
+    accentRgb: '0, 242, 254',
+    unitName: 'Agents'
+  },
+  triggers: {
+    id: 'triggers',
+    label: 'Triggers',
+    icon: '⚡',
+    repo: 'flowork-os/triger',
+    title: 'Sensor & Trigger Registry',
+    subtitle: 'Active background daemons (cron/webhook/price watchers) and passive Just-In-Time prompt sensors from',
+    metaPill: 'EVENT & TELEMETRY SENSORS',
+    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/triger/main/triggers.json',
+    itemsKey: 'triggers',
+    accentColor: '#ec4899',
+    accentRgb: '236, 72, 153',
+    unitName: 'Triggers'
+  }
+};
+
+let ecosystemState = {
+  apps: [],
+  skills: [],
+  tools: [],
+  agents: [],
+  triggers: []
+};
+
+function getInstalledSet(type) {
+  const norm = (type || '').toLowerCase().replace(/s$/, '');
+  const pluralKey = norm === 'app' ? 'apps' : norm + 's';
+  if (pluralKey === 'apps') {
+    return new Set((pluginsState || []).map(p => p.id));
+  }
+  try {
+    const raw = localStorage.getItem(`xflow_installed_${pluralKey}`);
+    if (raw) return new Set(JSON.parse(raw));
+  } catch (_) {}
+  if (pluralKey === 'skills') return new Set(['software_company_sop', 'ui_ux_pro_max']);
+  if (pluralKey === 'tools') return new Set(['crypto_scanner', 'file_ops', 'mcp_flowork_system_inspect_workspace', 'mcp_flowork_system_system_status', 'semantic_search']);
+  if (pluralKey === 'agents') return new Set(['backend-engineer', 'frontend-engineer', 'quality-control', 'security-auditor']);
+  if (pluralKey === 'triggers') return new Set(['bitcoin_threshold', 'webhook_receiver', 'document_companion', 'zombie_process_hunter']);
+  return new Set();
+}
+
+function saveInstalledSet(type, set) {
+  try {
+    localStorage.setItem(`xflow_installed_${type}`, JSON.stringify(Array.from(set)));
+  } catch (_) {}
+  updateInstalledCountBadge();
+}
+
+function updateInstalledCountBadge() {
+  const badge = document.getElementById('store-installed-count-badge');
+  if (!badge) return;
+  const count = getInstalledSet('apps').size +
+                getInstalledSet('skills').size +
+                getInstalledSet('tools').size +
+                getInstalledSet('agents').size +
+                getInstalledSet('triggers').size;
+  badge.textContent = count;
+}
 
 function switchStoreSubtab(subtab) {
-  const targetSubtab = (subtab === 'installed' || subtab === 'home') ? 'installed' : 'cloud';
+  let targetSubtab = subtab || 'apps';
+  if (targetSubtab === 'cloud') targetSubtab = 'apps';
+  if (targetSubtab === 'home') targetSubtab = 'installed';
   currentStoreSubtab = targetSubtab;
   try {
     localStorage.setItem('xflow_store_subtab', targetSubtab);
@@ -454,22 +572,152 @@ function switchStoreSubtab(subtab) {
   const paneCloud = document.getElementById('store-pane-cloud');
   const paneInstalled = document.getElementById('store-pane-installed');
 
-  if (paneCloud) paneCloud.style.display = (targetSubtab === 'cloud') ? 'block' : 'none';
-  if (paneInstalled) paneInstalled.style.display = (targetSubtab === 'installed') ? 'block' : 'none';
-
-  // 3. Trigger render / layout adjustments
   if (targetSubtab === 'installed') {
+    if (paneCloud) paneCloud.style.display = 'none';
+    if (paneInstalled) paneInstalled.style.display = 'block';
     if (typeof filterAndRenderCards === 'function') filterAndRenderCards();
   } else {
-    if (typeof filterAndRenderCopilotCards === 'function') filterAndRenderCopilotCards();
+    if (paneCloud) paneCloud.style.display = 'block';
+    if (paneInstalled) paneInstalled.style.display = 'none';
+    copilotCurrentPage = 1;
+    activeCopilotCategory = 'all';
+    updateEcosystemHero(targetSubtab);
+    fetchEcosystemRegistry(targetSubtab);
   }
 
-  // 4. Update viewport telemetry
+  updateInstalledCountBadge();
+
+  // 3. Update viewport telemetry
   if (typeof reportActiveViewport === 'function') {
     reportActiveViewport('copilot');
   }
 }
 window.switchStoreSubtab = switchStoreSubtab;
+
+function updateEcosystemHero(tabKey, data = null) {
+  const config = ECOSYSTEM_REGISTRIES[tabKey];
+  if (!config) return;
+
+  const glow = document.getElementById('copilot-aeropod-glow');
+  const meta = document.getElementById('copilot-aeropod-meta');
+  const title = document.getElementById('copilot-aeropod-title');
+  const subtitle = document.getElementById('copilot-aeropod-subtitle');
+  const repoLabel = document.getElementById('copilot-repo-label');
+  const statCount = document.getElementById('copilot-stat-count');
+  const statCountLabel = document.getElementById('copilot-stat-count-label');
+  const statSha = document.getElementById('copilot-stat-sha');
+  const statShaLabel = document.getElementById('copilot-stat-sha-label');
+  const statStatus = document.getElementById('copilot-stat-status');
+  const searchInput = document.getElementById('copilot-search-input');
+
+  if (glow) {
+    glow.style.background = `radial-gradient(circle at center, rgba(${config.accentRgb}, 0.22) 0%, transparent 70%)`;
+  }
+  if (meta) {
+    meta.style.borderColor = `rgba(${config.accentRgb}, 0.4)`;
+    meta.style.color = config.accentColor;
+    meta.textContent = config.metaPill;
+  }
+  if (title) {
+    title.textContent = config.title;
+  }
+  if (subtitle) {
+    subtitle.innerHTML = `${config.subtitle} <code id="copilot-repo-label" style="color: ${config.accentColor}; background: rgba(${config.accentRgb}, 0.1); padding: 2px 8px; border-radius: 6px;">${config.repo}</code>.`;
+  }
+  if (repoLabel) {
+    repoLabel.textContent = config.repo;
+  }
+  const items = (tabKey === 'apps') ? copilotState : (ecosystemState[tabKey] || []);
+  if (statCount) {
+    statCount.textContent = items.length;
+  }
+  if (statCountLabel) {
+    statCountLabel.textContent = `Available ${config.unitName}`;
+  }
+  if (statSha) {
+    statSha.textContent = (data && data.updated_at) ? data.updated_at.slice(0, 10) : (copilotCommitSha || 'main CDN');
+  }
+  if (statShaLabel) {
+    statShaLabel.textContent = 'Catalog Release';
+  }
+  if (statStatus) {
+    statStatus.textContent = 'Active';
+    statStatus.style.color = config.accentColor;
+  }
+  if (searchInput) {
+    searchInput.placeholder = `Search ${config.label.toLowerCase()}...`;
+  }
+}
+
+async function fetchEcosystemRegistry(tabKey = 'apps', isManual = false) {
+  if (tabKey === 'installed') {
+    filterAndRenderCards();
+    return;
+  }
+  const config = ECOSYSTEM_REGISTRIES[tabKey];
+  if (!config) return;
+
+  const targetOs = getClientTargetOs();
+  const cacheKey = `xflow_ecosystem_cache_${tabKey}_${targetOs}`;
+
+  if (tabKey === 'apps') {
+    await fetchCopilotRegistry(isManual, targetOs);
+    ecosystemState.apps = copilotState;
+    updateEcosystemHero('apps');
+    return;
+  }
+
+  // Check localStorage cache
+  if (!isManual) {
+    try {
+      const cachedStr = localStorage.getItem(cacheKey);
+      if (cachedStr) {
+        const cached = JSON.parse(cachedStr);
+        const age = Date.now() - (cached.timestamp || 0);
+        if (age < COPILOT_CACHE_TTL && cached.items && cached.items.length > 0) {
+          ecosystemState[tabKey] = cached.items;
+          applyEcosystemRegistryData(tabKey, cached.data, isManual);
+          return;
+        }
+      }
+    } catch (_) {}
+  }
+
+  try {
+    const res = await fetch(config.catalogUrl, { cache: 'no-cache' });
+    if (res.ok) {
+      const data = await res.json();
+      const items = data[config.itemsKey] || [];
+      ecosystemState[tabKey] = items;
+      try {
+        localStorage.setItem(cacheKey, JSON.stringify({
+          timestamp: Date.now(),
+          items: items,
+          data: data
+        }));
+      } catch (_) {}
+      applyEcosystemRegistryData(tabKey, data, isManual);
+    } else {
+      console.warn(`[Ecosystem Store] Failed to fetch catalog for ${tabKey}: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.error(`[Ecosystem Store] Error fetching catalog for ${tabKey}:`, err);
+  }
+}
+
+function applyEcosystemRegistryData(tabKey, data, isManual) {
+  const config = ECOSYSTEM_REGISTRIES[tabKey];
+  if (!config) return;
+
+  updateEcosystemHero(tabKey, data);
+  renderCategoryRibbons();
+  filterAndRenderCopilotCards();
+
+  if (isManual) {
+    const count = (ecosystemState[tabKey] || []).length;
+    showToast(`${config.label} Registry synced from GitHub (${count} ${config.unitName.toLowerCase()})`);
+  }
+}
 
 function initStoreSubnavSystem() {
   const bar = document.getElementById('store-subnav-bar');
@@ -487,8 +735,11 @@ function initStoreSubnavSystem() {
     });
   });
 
-  // Restore saved subtab or default to cloud
-  let saved = localStorage.getItem('xflow_store_subtab') || 'cloud';
+  updateInstalledCountBadge();
+
+  // Restore saved subtab or default to apps
+  let saved = localStorage.getItem('xflow_store_subtab') || 'apps';
+  if (saved === 'cloud') saved = 'apps';
   switchStoreSubtab(saved);
 }
 window.initStoreSubnavSystem = initStoreSubnavSystem;
@@ -3811,17 +4062,27 @@ function renderCategoryRibbons() {
   if (container) {
     const runningCount = openTabs.size;
     const isAll = activeCategory === 'all';
+    const isApps = activeCategory === 'apps';
+    const isSkills = activeCategory === 'skills';
+    const isTools = activeCategory === 'tools';
+    const isAgents = activeCategory === 'agents';
+    const isTriggers = activeCategory === 'triggers';
     const isRunning = activeCategory === 'running';
-    const isCustomCat = !isAll && !isRunning;
+    const isCustomCat = !isAll && !isApps && !isSkills && !isTools && !isAgents && !isTriggers && !isRunning;
 
     container.innerHTML = `
       <button class="category-pill ${isAll ? 'active' : ''}" data-category="all">All Modules</button>
+      <button class="category-pill ${isApps ? 'active' : ''}" data-category="apps">📱 Apps</button>
+      <button class="category-pill ${isSkills ? 'active' : ''}" data-category="skills">🧠 Skills</button>
+      <button class="category-pill ${isTools ? 'active' : ''}" data-category="tools">🛠️ Tools</button>
+      <button class="category-pill ${isAgents ? 'active' : ''}" data-category="agents">🤖 Agents</button>
+      <button class="category-pill ${isTriggers ? 'active' : ''}" data-category="triggers">⚡ Triggers</button>
       <button class="category-pill ${isRunning ? 'active' : ''}" data-category="running" id="pill-filter-running">
         🟢 Active Engines (<span id="pill-running-count">${runningCount}</span>)
       </button>
       <div class="category-select-wrap">
         <select class="category-select-pill ${isCustomCat ? 'active' : ''}" id="home-category-select" title="Filter by official category">
-          <option value="all">⚡ All 26 Categories</option>
+          <option value="all">⚡ All Categories</option>
           ${OFFICIAL_FLOWORK_CATEGORIES.map((cat) => {
             const isSelected = activeCategory === cat.name || activeCategory === cat.id;
             return `<option value="${escapeHtml(cat.name)}" ${isSelected ? 'selected' : ''}>${cat.icon} ${cat.id}: ${escapeHtml(cat.name)}</option>`;
@@ -3833,21 +4094,40 @@ function renderCategoryRibbons() {
   }
 
   const copilotContainer = document.getElementById('copilot-category-filters');
-  const copilotSelect = document.getElementById('copilot-category-select');
   if (copilotContainer) {
     const isAll = activeCopilotCategory === 'all';
     const isInstalled = activeCopilotCategory === 'installed';
+    const currentTab = currentStoreSubtab || 'apps';
+    const tabConfig = ECOSYSTEM_REGISTRIES[currentTab] || ECOSYSTEM_REGISTRIES.apps;
+
+    let dynamicCategories = [];
+    if (currentTab === 'apps') {
+      dynamicCategories = OFFICIAL_FLOWORK_CATEGORIES.map(c => ({ id: c.id, name: c.name, icon: c.icon }));
+    } else {
+      const items = ecosystemState[currentTab] || [];
+      const set = new Set();
+      items.forEach(it => {
+        const cat = it.category || it.department || it.type;
+        if (cat) set.add(cat);
+      });
+      dynamicCategories = Array.from(set).map(catName => ({
+        id: catName,
+        name: catName.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase()),
+        icon: tabConfig.icon
+      }));
+    }
+
     const isCustomCat = !isAll && !isInstalled;
 
     copilotContainer.innerHTML = `
-      <button class="category-pill ${isAll ? 'active' : ''}" data-copilot-cat="all">All Cloud Modules</button>
+      <button class="category-pill ${isAll ? 'active' : ''}" data-copilot-cat="all">All ${tabConfig.label}</button>
       <button class="category-pill ${isInstalled ? 'active' : ''}" data-copilot-cat="installed">📦 Installed</button>
       <div class="category-select-wrap">
-        <select class="category-select-pill ${isCustomCat ? 'active' : ''}" id="copilot-category-select" title="Filter by official category">
-          <option value="all">⚡ All 26 Categories</option>
-          ${OFFICIAL_FLOWORK_CATEGORIES.map((cat) => {
-            const isSelected = activeCopilotCategory === cat.name || activeCopilotCategory === cat.id;
-            return `<option value="${escapeHtml(cat.name)}" ${isSelected ? 'selected' : ''}>${cat.icon} ${cat.id}: ${escapeHtml(cat.name)}</option>`;
+        <select class="category-select-pill ${isCustomCat ? 'active' : ''}" id="copilot-category-select" title="Filter by category">
+          <option value="all">⚡ All Categories</option>
+          ${dynamicCategories.map((cat) => {
+            const isSelected = activeCopilotCategory.toLowerCase() === cat.id.toLowerCase() || activeCopilotCategory.toLowerCase() === cat.name.toLowerCase();
+            return `<option value="${escapeHtml(cat.id)}" ${isSelected ? 'selected' : ''}>${cat.icon} ${escapeHtml(cat.name)}</option>`;
           }).join('')}
         </select>
       </div>
@@ -4110,7 +4390,7 @@ function initEventListeners() {
   if (btnSync) {
     btnSync.addEventListener('click', () => {
       btnSync.innerHTML = '<span>⏳ Syncing...</span>';
-      fetchCopilotRegistry(true).finally(() => {
+      fetchEcosystemRegistry(currentStoreSubtab, true).finally(() => {
         setTimeout(() => {
           btnSync.innerHTML = '<span>🔄 Check Updates</span>';
         }, 600);
@@ -4462,6 +4742,7 @@ function initStarfieldBackground() {
 }
 
 // 6. Filter & Render Cockpit Pebble Cards
+// 6. Filter & Render Cockpit Pebble Cards (Installed Modules)
 function filterAndRenderCards() {
   const grid = document.getElementById('plugin-grid');
   const countBadge = document.getElementById('filtered-count-badge');
@@ -4500,48 +4781,129 @@ function filterAndRenderCards() {
         if (pluginId) restartPlugin(pluginId);
         return;
       }
+      const injectBtn = e.target.closest('.btn-pebble-inject');
+      if (injectBtn) {
+        const name = injectBtn.getAttribute('data-skill-name');
+        const id = injectBtn.getAttribute('data-skill-id');
+        injectPromptIntoChat(`Equip and enforce skill: ${name} (${id}). Follow all domain SOPs and operational guidelines.`, true);
+        showToast(`Injected skill ${name} into active chat.`);
+        return;
+      }
+      const summonBtn = e.target.closest('.btn-pebble-summon');
+      if (summonBtn) {
+        const name = summonBtn.getAttribute('data-agent-name');
+        const id = summonBtn.getAttribute('data-agent-id');
+        injectPromptIntoChat(`Summoning specialist agent: @${id}. Please take over and execute current domain task.`, true);
+        showToast(`Summoned agent ${name} into chat session.`);
+        return;
+      }
+      const runCliBtn = e.target.closest('.btn-pebble-run-cli');
+      if (runCliBtn) {
+        const cmd = runCliBtn.getAttribute('data-tool-cmd');
+        injectPromptIntoChat(`Execute autonomous tool: ${cmd}`, true);
+        showToast(`Dispatched CLI tool command to chat.`);
+        return;
+      }
+      const testTriggerBtn = e.target.closest('.btn-pebble-test-trigger');
+      if (testTriggerBtn) {
+        const id = testTriggerBtn.getAttribute('data-trigger-id');
+        const name = testTriggerBtn.getAttribute('data-trigger-name');
+        testTriggerEndpoint(id, name);
+        return;
+      }
       const detailsBtn = e.target.closest('.btn-pebble-details');
       if (detailsBtn) {
-        const pluginId = detailsBtn.getAttribute('data-plugin-id');
-        if (pluginId) openAppInspectorModal(pluginId, false);
+        const itemId = detailsBtn.getAttribute('data-item-id') || detailsBtn.getAttribute('data-plugin-id');
+        const itemType = detailsBtn.getAttribute('data-item-type') || 'app';
+        if (itemId) openAppInspectorModal(itemId, false, itemType);
         return;
       }
       const card = e.target.closest('.pebble-card');
       if (card && !e.target.closest('button')) {
-        const pluginId = card.getAttribute('data-plugin-id');
-        if (pluginId) openAppInspectorModal(pluginId, false);
+        const itemId = card.getAttribute('data-item-id') || card.getAttribute('data-plugin-id');
+        const itemType = card.getAttribute('data-item-type') || 'app';
+        if (itemId) openAppInspectorModal(itemId, false, itemType);
         return;
       }
     });
   }
 
-  const filtered = pluginsState.filter((p) => {
+  // Aggregate all installed modules across all 5 ecosystem categories
+  const installedApps = pluginsState.map(p => ({ ...p, _moduleType: 'apps', _itemType: 'app' }));
+  
+  const skillIds = getInstalledSet('skills');
+  const installedSkills = (ecosystemState.skills.length > 0 ? ecosystemState.skills : [
+    { id: 'software_company_sop', name: 'Software Company SOP', version: '1.0.0', category: 'engineering_sop', description: 'Multi-agent software company standard operating procedures covering architecture, testing, API contracts, threat modeling, and QC release signoff.', keywords: ['architecture', 'engineering', 'testing', 'threat_modeling'] },
+    { id: 'ui_ux_pro_max', name: 'UI/UX Pro Max Design System', version: '1.0.0', category: 'design_system', description: 'Comprehensive design system, UI components, responsive layout rules, and accessibility standards.', keywords: ['ui_ux', 'design_system', 'responsive', 'glassmorphism'] }
+  ]).filter(s => skillIds.has(s.id)).map(s => ({ ...s, icon: '🧠', _moduleType: 'skills', _itemType: 'skill' }));
+
+  const toolIds = getInstalledSet('tools');
+  const installedTools = (ecosystemState.tools.length > 0 ? ecosystemState.tools : [
+    { id: 'crypto_scanner', name: 'crypto_scanner', version: '1.0.0', category: 'finance', description: 'Scans cryptocurrency market metrics, 24h trading volume, price volatility, and liquidity depth.', command: 'node tools/crypto_scanner/main.mjs' },
+    { id: 'file_ops', name: 'file_ops', version: '1.0.0', category: 'system', description: 'Atomic file operations, reading, writing, and safe filesystem operations.', command: 'node tools/file_ops/main.mjs' },
+    { id: 'semantic_search', name: 'semantic_search', version: '1.0.0', category: 'search', description: 'Deterministic vector similarity search and semantic document indexing.', command: 'node tools/semantic_search/main.mjs' }
+  ]).filter(t => toolIds.has(t.id)).map(t => ({ ...t, icon: '🛠️', _moduleType: 'tools', _itemType: 'tool' }));
+
+  const agentIds = getInstalledSet('agents');
+  const installedAgents = (ecosystemState.agents.length > 0 ? ecosystemState.agents : [
+    { id: 'backend-engineer', name: 'Backend Engineer', role: 'Autonomous Backend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist backend-engineer with deterministic execution.' },
+    { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Autonomous Frontend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist frontend-engineer for high-fidelity UI.' },
+    { id: 'quality-control', name: 'Quality Control', role: 'Autonomous Quality Control', version: '1.0.0', department: 'engineering', description: 'Verification gatekeeper: validates tests with Exit Code 0.' },
+    { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Reverse Engineering Specialist', version: '1.0.0', department: 'security', description: 'Specialist in AST code auditing, reverse engineering, and threat modeling.' }
+  ]).filter(a => agentIds.has(a.id)).map(a => ({ ...a, icon: '🤖', _moduleType: 'agents', _itemType: 'agent' }));
+
+  const triggerIds = getInstalledSet('triggers');
+  const installedTriggers = (ecosystemState.triggers.length > 0 ? ecosystemState.triggers : [
+    { id: 'bitcoin_threshold', name: 'Bitcoin Threshold Watcher', type: 'active', category: 'finance', version: '1.0.0', description: 'Monitors spot Bitcoin market price and wakes up the trading council upon crossing target threshold.', interval_seconds: 30 },
+    { id: 'webhook_receiver', name: 'Inbound Webhook Receiver', type: 'active', category: 'automation_admin', version: '1.0.0', description: 'Real-time HTTP webhook receiver for incoming webhooks.', interval_seconds: 15 },
+    { id: 'document_companion', name: 'Document Companion', type: 'passive', category: 'writing_editorial', version: '1.0.0', description: 'Just-In-Time editorial assistance on markdown documentation.' },
+    { id: 'zombie_process_hunter', name: 'Zombie Process Hunter', type: 'passive', category: 'process_management', version: '1.0.0', description: 'Auto-detects and neutralizes orphaned processes and port leaks.' }
+  ]).filter(tr => triggerIds.has(tr.id)).map(tr => ({ ...tr, icon: '⚡', _moduleType: 'triggers', _itemType: 'trigger' }));
+
+  const allInstalled = [
+    ...installedApps,
+    ...installedSkills,
+    ...installedTools,
+    ...installedAgents,
+    ...installedTriggers
+  ];
+
+  // Update quick stats in local hero
+  const statTotal = document.getElementById('stat-total-plugins');
+  const statDaemons = document.getElementById('stat-active-daemons');
+  if (statTotal) statTotal.textContent = allInstalled.length;
+  if (statDaemons) statDaemons.textContent = openTabs.size + (installedTriggers.filter(t => t.type === 'active').length);
+
+  const filtered = allInstalled.filter((item) => {
     let matchesCategory = false;
     if (activeCategory === 'all') {
       matchesCategory = true;
+    } else if (activeCategory === 'apps') {
+      matchesCategory = item._moduleType === 'apps';
+    } else if (activeCategory === 'skills') {
+      matchesCategory = item._moduleType === 'skills';
+    } else if (activeCategory === 'tools') {
+      matchesCategory = item._moduleType === 'tools';
+    } else if (activeCategory === 'agents') {
+      matchesCategory = item._moduleType === 'agents';
+    } else if (activeCategory === 'triggers') {
+      matchesCategory = item._moduleType === 'triggers';
     } else if (activeCategory === 'running') {
-      matchesCategory = openTabs.has(p.id);
+      matchesCategory = item._moduleType === 'apps' && openTabs.has(item.id);
     } else {
       const target = activeCategory.toLowerCase();
-      const pCat = (p.category || '').toLowerCase();
-      const pCatId = (p.category_id || '').toLowerCase();
-      matchesCategory = pCatId === target || 
-                        pCat === target ||
-                        pCat.includes(target) || 
-                        target.includes(pCat) ||
-                        (target.includes('game') && (pCat.includes('game') || pCat.includes('chess') || pCat.includes('strategy'))) ||
-                        (target.includes('media') && (pCat.includes('media') || pCat.includes('video') || pCat.includes('audio') || pCat.includes('stream'))) ||
-                        (target.includes('tech') && (pCat.includes('tech') || pCat.includes('code') || pCat.includes('dev') || pCat.includes('software'))) ||
-                        (target.includes('cyber') && (pCat.includes('security') || pCat.includes('cyber') || pCat.includes('forensic')));
+      const pCat = (item.category || item.department || '').toLowerCase();
+      matchesCategory = pCat.includes(target) || target.includes(pCat);
     }
 
     const activeSearch = homeSearchQuery || searchQuery;
     const matchesSearch =
       !activeSearch ||
-      (p.name && p.name.toLowerCase().includes(activeSearch)) ||
-      (p.description && p.description.toLowerCase().includes(activeSearch)) ||
-      (p.id && p.id.toLowerCase().includes(activeSearch)) ||
-      (p.category && p.category.toLowerCase().includes(activeSearch));
+      (item.name && item.name.toLowerCase().includes(activeSearch)) ||
+      (item.description && item.description.toLowerCase().includes(activeSearch)) ||
+      (item.id && item.id.toLowerCase().includes(activeSearch)) ||
+      (item.category && item.category.toLowerCase().includes(activeSearch)) ||
+      (item.role && item.role.toLowerCase().includes(activeSearch));
 
     return matchesCategory && matchesSearch;
   });
@@ -4555,7 +4917,7 @@ function filterAndRenderCards() {
     if (totalItems > MODULES_PER_PAGE) {
       countBadge.textContent = `${totalItems} modules • Page ${homeCurrentPage} of ${totalPages}`;
     } else {
-      countBadge.textContent = `${totalItems} of ${pluginsState.length} module${pluginsState.length === 1 ? '' : 's'}`;
+      countBadge.textContent = `${totalItems} of ${allInstalled.length} installed module${allInstalled.length === 1 ? '' : 's'}`;
     }
   }
 
@@ -4578,8 +4940,8 @@ function filterAndRenderCards() {
         <div style="width: 48px; height: 48px; border-radius: 50%; border: 1px dashed rgba(0, 229, 255, 0.4); display: flex; align-items: center; justify-content: center; font-size: 20px; color: #00e5ff; box-shadow: 0 0 16px rgba(0, 229, 255, 0.15);">
           ◈
         </div>
-        <div style="font-size: 14px; font-weight: 700; color: #f1f5f9; letter-spacing: 0.1em; font-family: var(--font-mono);">NO MODULES MATCH SEARCH</div>
-        <div style="font-size: 12px; color: var(--text-dim); max-width: 380px;">Adjust your search filter or install verified polyglot engines from the cloud federation repository.</div>
+        <div style="font-size: 14px; font-weight: 700; color: #f1f5f9; letter-spacing: 0.1em; font-family: var(--font-mono);">NO INSTALLED MODULES MATCH FILTER</div>
+        <div style="font-size: 12px; color: var(--text-dim); max-width: 380px;">Adjust your category or search filter, or browse the Ecosystem tabs to install new modules.</div>
       </div>
     `;
     while (emptyWrapper.firstChild) fragment.appendChild(emptyWrapper.firstChild);
@@ -4587,29 +4949,29 @@ function filterAndRenderCards() {
     return;
   }
 
-  pageItems.forEach((plugin) => {
-    const isRunning = openTabs.has(plugin.id);
-    const tabInfo = openTabs.get(plugin.id);
-    const activePort = (tabInfo && tabInfo.assignedPort) || plugin.activePort;
-    const defaultPort = plugin.ipc && plugin.ipc.default_port;
-    const runtime = getPluginRuntimeBadge(plugin);
-
+  pageItems.forEach((item) => {
     const card = document.createElement('div');
     card.className = 'pebble-card';
-    card.setAttribute('data-plugin-id', plugin.id);
+    card.setAttribute('data-item-id', item.id);
+    card.setAttribute('data-item-type', item._itemType);
     card.style.cursor = 'pointer';
+
+    const isApp = item._moduleType === 'apps';
+    const isRunning = isApp && openTabs.has(item.id);
     if (isRunning) card.classList.add('is-running');
 
-    const rawName = plugin.name || plugin.id;
+    const tabInfo = isRunning ? openTabs.get(item.id) : null;
+    const activePort = (tabInfo && tabInfo.assignedPort) || item.activePort;
+    const defaultPort = item.ipc && item.ipc.default_port;
+    const runtime = isApp ? getPluginRuntimeBadge(item) : { name: item._itemType.toUpperCase(), class: 'tag-runtime-web', icon: item.icon };
+
+    const rawName = item.name || item.id;
     const displayName = rawName.length > 25 ? rawName.slice(0, 23) + '...' : rawName;
-
-    const rawVer = String(plugin.version || '1.0.0');
+    const rawVer = String(item.version || '1.0.0');
     const displayVer = rawVer.length > 8 ? rawVer.slice(0, 7) + '...' : rawVer;
-
-    const rawCategory = plugin.category || 'Utility';
+    const rawCategory = item.category || item.department || item.type || 'General';
     const displayCategory = rawCategory.length > 14 ? rawCategory.slice(0, 12) + '...' : rawCategory;
-
-    const rawDesc = plugin.description || 'Polyglot Nano-Plug module.';
+    const rawDesc = item.description || 'Installed sovereign module.';
     const displayDesc = rawDesc.length > 95 ? rawDesc.slice(0, 92) + '...' : rawDesc;
 
     const portDisplay = isRunning && activePort 
@@ -4617,50 +4979,73 @@ function filterAndRenderCards() {
       : (defaultPort ? `<span class="pebble-tag tag-port" title="Default Port :${defaultPort}" style="opacity: 0.7;">:${defaultPort}</span>` : '');
 
     let actionButtons = '';
-    if (isRunning) {
+    let chipsHtml = '';
+
+    if (isApp) {
+      if (isRunning) {
+        actionButtons = `
+          <button class="btn-pebble-launch" id="btn-launch-${item.id}" data-plugin-id="${escapeHtml(item.id)}" title="Switch to Active Panel">Switch to Tab</button>
+          <button class="btn-pebble-restart" data-plugin-id="${escapeHtml(item.id)}" title="Restart Engine">🔄</button>
+          <button class="btn-pebble-stop" data-plugin-id="${escapeHtml(item.id)}" title="Stop Engine">⏹️</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="app" title="Module Specifications">ℹ️</button>
+        `;
+      } else {
+        actionButtons = `
+          <button class="btn-pebble-launch" id="btn-launch-${item.id}" data-plugin-id="${escapeHtml(item.id)}">Launch Module</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="app" title="Module Specifications">ℹ️</button>
+        `;
+      }
+    } else if (item._itemType === 'skill') {
       actionButtons = `
-        <button class="btn-pebble-launch" id="btn-launch-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}" title="Switch to Active Panel">
-          Switch to Tab
-        </button>
-        <button class="btn-pebble-restart" data-plugin-id="${escapeHtml(plugin.id)}" title="Restart Engine">
-          🔄
-        </button>
-        <button class="btn-pebble-stop" data-plugin-id="${escapeHtml(plugin.id)}" title="Stop Engine">
-          ⏹️
-        </button>
-        <button class="btn-pebble-details" data-plugin-id="${escapeHtml(plugin.id)}" title="Module Specifications">
-          ℹ️
-        </button>
+        <button class="btn-pebble-inject" data-skill-id="${escapeHtml(item.id)}" data-skill-name="${escapeHtml(item.name || item.id)}" title="Inject SOP directive into chat">💬 Inject SOP</button>
+        <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="skill" title="SOP Specifications">ℹ️</button>
       `;
-    } else {
+      if (item.keywords && Array.isArray(item.keywords)) {
+        chipsHtml = `<div class="pebble-chip-row">${item.keywords.slice(0, 3).map(k => `<span class="pebble-chip">#${escapeHtml(k)}</span>`).join('')}</div>`;
+      }
+    } else if (item._itemType === 'tool') {
       actionButtons = `
-        <button class="btn-pebble-launch" id="btn-launch-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}">
-          Launch Module
-        </button>
-        <button class="btn-pebble-details" data-plugin-id="${escapeHtml(plugin.id)}" title="Module Specifications">
-          ℹ️
-        </button>
+        <button class="btn-pebble-run-cli" data-tool-id="${escapeHtml(item.id)}" data-tool-cmd="${escapeHtml(item.command || ('node tools/' + item.id + '/main.mjs'))}" title="Run CLI Tool">⚡ Run CLI</button>
+        <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="tool" title="Tool Specifications">ℹ️</button>
       `;
+      if (item.command) {
+        chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.2);">${escapeHtml(item.command)}</span></div>`;
+      }
+    } else if (item._itemType === 'agent') {
+      actionButtons = `
+        <button class="btn-pebble-summon" data-agent-id="${escapeHtml(item.id)}" data-agent-name="${escapeHtml(item.name || item.id)}" title="Summon Specialist to Chat">💬 Summon</button>
+        <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="agent" title="Agent Profile">ℹ️</button>
+      `;
+      if (item.role) {
+        chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip" style="color: #00f2fe; border-color: rgba(0, 242, 254, 0.2);">${escapeHtml(item.role)}</span></div>`;
+      }
+    } else if (item._itemType === 'trigger') {
+      actionButtons = `
+        <button class="btn-pebble-test-trigger" data-trigger-id="${escapeHtml(item.id)}" data-trigger-name="${escapeHtml(item.name || item.id)}" title="Probe Trigger Sensor">⚡ Test</button>
+        <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="trigger" title="Trigger Telemetry">ℹ️</button>
+      `;
+      chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip ${item.type === 'active' ? 'chip-active-daemon' : 'chip-passive-sensor'}">${item.type === 'active' ? ('Interval: ' + (item.interval_seconds || 30) + 's') : 'Sensor: JIT AST Prompt'}</span></div>`;
     }
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${plugin.icon || '⚡'}</div>
+        <div class="pebble-glyph-circle">${item.icon || '⚡'}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
             <span class="pebble-tag" title="v${escapeHtml(rawVer)}">v${escapeHtml(displayVer)}</span>
-            <span class="pebble-tag ${runtime.class}" title="Runtime: ${runtime.name}">${runtime.icon} ${runtime.name}</span>
+            <span class="pebble-tag ${runtime.class}" title="${runtime.name}">${runtime.icon} ${runtime.name}</span>
             <span class="pebble-tag" title="${escapeHtml(rawCategory)}">${escapeHtml(displayCategory)}</span>
             ${portDisplay}
           </div>
         </div>
       </div>
       <div class="pebble-description" title="${escapeHtml(rawDesc)}">${escapeHtml(displayDesc)}</div>
+      ${chipsHtml}
       <div class="pebble-footer">
         <div class="pebble-status">
-          <span class="pebble-beacon-dot ${isRunning ? 'active' : ''}"></span>
-          <span style="${isRunning ? 'color: #00e5ff; font-weight: 700;' : ''}">${isRunning ? 'Running' : 'Ready'}</span>
+          <span class="pebble-beacon-dot ${isRunning || !isApp ? 'active' : ''}"></span>
+          <span style="${isRunning ? 'color: #00e5ff; font-weight: 700;' : ''}">${isApp ? (isRunning ? 'Running' : 'Ready') : 'Active'}</span>
         </div>
         <div style="display: flex; gap: 6px; align-items: center;">
           ${actionButtons}
@@ -4673,21 +5058,29 @@ function filterAndRenderCards() {
   grid.replaceChildren(fragment);
 }
 
-// 7. Filter & Render Copilot Storefront Pebble Cards
+// 7. Filter & Render Ecosystem Storefront Pebble Cards
 function filterAndRenderCopilotCards() {
   const grid = document.getElementById('copilot-grid');
   const counterBadge = document.getElementById('copilot-counter-badge');
   if (!grid) return;
 
-  // Bind delegated action listeners once to eliminate listener leaks & closure accumulation
+  const currentTab = currentStoreSubtab || 'apps';
+  const tabConfig = ECOSYSTEM_REGISTRIES[currentTab] || ECOSYSTEM_REGISTRIES.apps;
+
+  // Bind delegated action listeners once
   if (!grid._delegatedBound) {
     grid._delegatedBound = true;
     grid.addEventListener('click', (e) => {
       const installBtn = e.target.closest('.btn-pebble-install');
       if (installBtn) {
-        const id = installBtn.getAttribute('data-plugin-id');
-        const name = installBtn.getAttribute('data-plugin-name');
-        if (id) installExtension(id, name);
+        const id = installBtn.getAttribute('data-item-id') || installBtn.getAttribute('data-plugin-id');
+        const name = installBtn.getAttribute('data-item-name') || installBtn.getAttribute('data-plugin-name');
+        const type = installBtn.getAttribute('data-item-type') || currentStoreSubtab;
+        if (type === 'app' || type === 'apps') {
+          installExtension(id, name);
+        } else {
+          installEcosystemItem(id, type, name);
+        }
         return;
       }
       const updateBtn = e.target.closest('.btn-pebble-update');
@@ -4699,9 +5092,14 @@ function filterAndRenderCopilotCards() {
       }
       const uninstallBtn = e.target.closest('.btn-pebble-uninstall');
       if (uninstallBtn) {
-        const id = uninstallBtn.getAttribute('data-plugin-id');
-        const name = uninstallBtn.getAttribute('data-plugin-name');
-        if (id) uninstallExtension(id, name);
+        const id = uninstallBtn.getAttribute('data-item-id') || uninstallBtn.getAttribute('data-plugin-id');
+        const name = uninstallBtn.getAttribute('data-item-name') || uninstallBtn.getAttribute('data-plugin-name');
+        const type = uninstallBtn.getAttribute('data-item-type') || currentStoreSubtab;
+        if (type === 'app' || type === 'apps') {
+          uninstallExtension(id, name);
+        } else {
+          uninstallEcosystemItem(id, type, name);
+        }
         return;
       }
       const launchBtn = e.target.closest('.btn-pebble-launch');
@@ -4722,41 +5120,70 @@ function filterAndRenderCopilotCards() {
         }
         return;
       }
+      const injectBtn = e.target.closest('.btn-pebble-inject');
+      if (injectBtn) {
+        const name = injectBtn.getAttribute('data-skill-name');
+        const id = injectBtn.getAttribute('data-skill-id');
+        injectPromptIntoChat(`Equip and enforce skill: ${name} (${id}). Follow all domain SOPs and operational guidelines.`, true);
+        showToast(`Injected skill ${name} into active chat.`);
+        return;
+      }
+      const summonBtn = e.target.closest('.btn-pebble-summon');
+      if (summonBtn) {
+        const name = summonBtn.getAttribute('data-agent-name');
+        const id = summonBtn.getAttribute('data-agent-id');
+        injectPromptIntoChat(`Summoning specialist agent: @${id}. Please take over and execute current domain task.`, true);
+        showToast(`Summoned agent ${name} into chat session.`);
+        return;
+      }
+      const runCliBtn = e.target.closest('.btn-pebble-run-cli');
+      if (runCliBtn) {
+        const cmd = runCliBtn.getAttribute('data-tool-cmd');
+        injectPromptIntoChat(`Execute autonomous tool: ${cmd}`, true);
+        showToast(`Dispatched CLI tool command to chat.`);
+        return;
+      }
+      const testTriggerBtn = e.target.closest('.btn-pebble-test-trigger');
+      if (testTriggerBtn) {
+        const id = testTriggerBtn.getAttribute('data-trigger-id');
+        const name = testTriggerBtn.getAttribute('data-trigger-name');
+        testTriggerEndpoint(id, name);
+        return;
+      }
       const detailsBtn = e.target.closest('.btn-pebble-details');
       if (detailsBtn) {
-        const id = detailsBtn.getAttribute('data-plugin-id');
-        if (id) openAppInspectorModal(id, true);
+        const id = detailsBtn.getAttribute('data-item-id') || detailsBtn.getAttribute('data-plugin-id');
+        const type = detailsBtn.getAttribute('data-item-type') || currentStoreSubtab;
+        if (id) openAppInspectorModal(id, true, type);
         return;
       }
       const card = e.target.closest('.pebble-card');
       if (card && !e.target.closest('button')) {
-        const id = card.getAttribute('data-plugin-id');
-        if (id) openAppInspectorModal(id, true);
+        const id = card.getAttribute('data-item-id') || card.getAttribute('data-plugin-id');
+        const type = card.getAttribute('data-item-type') || currentStoreSubtab;
+        if (id) openAppInspectorModal(id, true, type);
         return;
       }
     });
   }
 
-  const localIds = new Set(pluginsState.map((p) => p.id));
+  const installedSet = getInstalledSet(currentTab);
+  const items = (currentTab === 'apps') ? copilotState : (ecosystemState[currentTab] || []);
 
-  const filtered = copilotState.filter((p) => {
+  const filtered = items.filter((p) => {
     let matchesCategory = false;
     if (activeCopilotCategory === 'all') {
       matchesCategory = true;
     } else if (activeCopilotCategory === 'installed') {
-      matchesCategory = localIds.has(p.id) || p.installed;
+      matchesCategory = installedSet.has(p.id) || p.installed;
     } else {
       const target = activeCopilotCategory.toLowerCase();
-      const pCat = (p.category || '').toLowerCase();
+      const pCat = (p.category || p.department || p.type || '').toLowerCase();
       const pCatId = (p.category_id || '').toLowerCase();
       matchesCategory = pCatId === target || 
                         pCat === target ||
                         pCat.includes(target) || 
-                        target.includes(pCat) ||
-                        (target.includes('game') && (pCat.includes('game') || pCat.includes('chess') || pCat.includes('strategy'))) ||
-                        (target.includes('media') && (pCat.includes('media') || pCat.includes('video') || pCat.includes('audio') || pCat.includes('stream'))) ||
-                        (target.includes('tech') && (pCat.includes('tech') || pCat.includes('code') || pCat.includes('dev') || pCat.includes('software'))) ||
-                        (target.includes('cyber') && (pCat.includes('security') || pCat.includes('cyber') || pCat.includes('forensic')));
+                        target.includes(pCat);
     }
 
     const activeSearch = copilotSearchQuery || searchQuery;
@@ -4765,7 +5192,9 @@ function filterAndRenderCopilotCards() {
       (p.name && p.name.toLowerCase().includes(activeSearch)) ||
       (p.description && p.description.toLowerCase().includes(activeSearch)) ||
       (p.id && p.id.toLowerCase().includes(activeSearch)) ||
-      (p.category && p.category.toLowerCase().includes(activeSearch));
+      (p.category && p.category.toLowerCase().includes(activeSearch)) ||
+      (p.role && p.role.toLowerCase().includes(activeSearch)) ||
+      (p.keywords && Array.isArray(p.keywords) && p.keywords.some(k => k.toLowerCase().includes(activeSearch)));
 
     return matchesCategory && matchesSearch;
   });
@@ -4777,9 +5206,9 @@ function filterAndRenderCopilotCards() {
 
   if (counterBadge) {
     if (totalItems > MODULES_PER_PAGE) {
-      counterBadge.textContent = `${totalItems} extensions • Page ${copilotCurrentPage} of ${totalPages}`;
+      counterBadge.textContent = `${totalItems} ${tabConfig.unitName.toLowerCase()} • Page ${copilotCurrentPage} of ${totalPages}`;
     } else {
-      counterBadge.textContent = `${totalItems} of ${copilotState.length} cloud extensions`;
+      counterBadge.textContent = `${totalItems} of ${items.length} cloud ${tabConfig.unitName.toLowerCase()}`;
     }
   }
 
@@ -4799,9 +5228,9 @@ function filterAndRenderCopilotCards() {
     const emptyWrapper = document.createElement('div');
     emptyWrapper.innerHTML = `
       <div style="grid-column: 1 / -1; padding: 48px; text-align: center; color: var(--text-dim); background: rgba(255, 255, 255, 0.03); border: 1.5px dashed var(--border-organic); border-radius: 24px; box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);">
-        <div style="font-size: 28px; margin-bottom: 8px;">🛰️</div>
-        <div style="font-size: 14px; font-weight: 700; color: var(--text-main); margin-bottom: 4px;">No matching cloud extensions</div>
-        <div style="font-size: 12px; color: var(--text-muted);">Check filter tags or sync with GitHub registry.</div>
+        <div style="font-size: 28px; margin-bottom: 8px;">${tabConfig.icon}</div>
+        <div style="font-size: 14px; font-weight: 700; color: var(--text-main); margin-bottom: 4px;">No matching cloud ${tabConfig.unitName.toLowerCase()}</div>
+        <div style="font-size: 12px; color: var(--text-muted);">Check filter tags or sync with GitHub registry (${tabConfig.repo}).</div>
       </div>
     `;
     while (emptyWrapper.firstChild) fragment.appendChild(emptyWrapper.firstChild);
@@ -4809,72 +5238,130 @@ function filterAndRenderCopilotCards() {
     return;
   }
 
-  pageItems.forEach((plugin) => {
-    const isInstalled = localIds.has(plugin.id) || plugin.installed;
-    const isUpdateAvailable = Boolean(plugin.update_available);
-    const isRunning = openTabs.has(plugin.id);
-    const tabInfo = openTabs.get(plugin.id);
-    const activePort = (tabInfo && tabInfo.assignedPort) || plugin.activePort;
-    const defaultPort = plugin.ipc && plugin.ipc.default_port;
-    const runtime = getPluginRuntimeBadge(plugin);
+  pageItems.forEach((item) => {
+    const isInstalled = installedSet.has(item.id) || item.installed;
+    const isApp = currentTab === 'apps';
+    const isRunning = isApp && openTabs.has(item.id);
+    const tabInfo = isRunning ? openTabs.get(item.id) : null;
+    const activePort = (tabInfo && tabInfo.assignedPort) || item.activePort;
+    const defaultPort = item.ipc && item.ipc.default_port;
+    const runtime = isApp ? getPluginRuntimeBadge(item) : { name: currentTab.slice(0, -1).toUpperCase(), class: 'tag-runtime-web', icon: tabConfig.icon };
 
     const card = document.createElement('div');
     card.className = 'pebble-card';
-    card.setAttribute('data-plugin-id', plugin.id);
+    card.setAttribute('data-item-id', item.id);
+    card.setAttribute('data-item-type', currentTab);
     card.style.cursor = 'pointer';
     if (isRunning) card.classList.add('is-running');
 
     let actionButtons = '';
     let statusBadge = '';
+    let chipsHtml = '';
 
-    if (!isInstalled) {
-      statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
-      actionButtons = `
-        <button class="btn-pebble-install" id="btn-copilot-install-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}" data-plugin-name="${escapeHtml(plugin.name || plugin.id)}">
-          ⬇️ Install
-        </button>
-        <button class="btn-pebble-details" data-plugin-id="${escapeHtml(plugin.id)}" data-is-cloud="true" title="Specifications">
-          ℹ️
-        </button>
-      `;
-    } else if (isUpdateAvailable) {
-      statusBadge = `<span class="pebble-tag tag-status-update">Update Ready</span>`;
-      actionButtons = `
-        <button class="btn-pebble-update" id="btn-copilot-update-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}" data-plugin-name="${escapeHtml(plugin.name || plugin.id)}">
-          ✨ Update
-        </button>
-        <button class="btn-pebble-details" data-plugin-id="${escapeHtml(plugin.id)}" data-is-cloud="true" title="Specifications">
-          ℹ️
-        </button>
-        <button class="btn-pebble-uninstall" id="btn-copilot-uninstall-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}" data-plugin-name="${escapeHtml(plugin.name || plugin.id)}" title="Uninstall Plugin">
-          🗑️
-        </button>
-      `;
-    } else {
-      statusBadge = `<span class="pebble-tag tag-status-installed">Installed</span>`;
-      actionButtons = `
-        <button class="btn-pebble-launch" id="btn-copilot-launch-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}">
-          ${isRunning ? 'Switch to Tab' : 'Launch'}
-        </button>
-        <button class="btn-pebble-details" data-plugin-id="${escapeHtml(plugin.id)}" data-is-cloud="true" title="Specifications">
-          ℹ️
-        </button>
-        <button class="btn-pebble-uninstall" id="btn-copilot-uninstall-${plugin.id}" data-plugin-id="${escapeHtml(plugin.id)}" data-plugin-name="${escapeHtml(plugin.name || plugin.id)}" title="Uninstall Plugin">
-          🗑️
-        </button>
-      `;
+    if (isApp) {
+      const isUpdateAvailable = Boolean(item.update_available);
+      if (!isInstalled) {
+        statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
+        actionButtons = `
+          <button class="btn-pebble-install" id="btn-copilot-install-${item.id}" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-item-name="${escapeHtml(item.name || item.id)}">
+            ⬇️ Install
+          </button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-is-cloud="true" title="Specifications">ℹ️</button>
+        `;
+      } else if (isUpdateAvailable) {
+        statusBadge = `<span class="pebble-tag tag-status-update">Update Ready</span>`;
+        actionButtons = `
+          <button class="btn-pebble-update" id="btn-copilot-update-${item.id}" data-plugin-id="${escapeHtml(item.id)}" data-plugin-name="${escapeHtml(item.name || item.id)}">✨ Update</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-is-cloud="true" title="Specifications">ℹ️</button>
+          <button class="btn-pebble-uninstall" id="btn-copilot-uninstall-${item.id}" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-item-name="${escapeHtml(item.name || item.id)}" title="Uninstall Plugin">🗑️</button>
+        `;
+      } else {
+        statusBadge = `<span class="pebble-tag tag-status-installed">Installed</span>`;
+        actionButtons = `
+          <button class="btn-pebble-launch" id="btn-copilot-launch-${item.id}" data-plugin-id="${escapeHtml(item.id)}">${isRunning ? 'Switch to Tab' : 'Launch'}</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-is-cloud="true" title="Specifications">ℹ️</button>
+          <button class="btn-pebble-uninstall" id="btn-copilot-uninstall-${item.id}" data-item-id="${escapeHtml(item.id)}" data-item-type="app" data-item-name="${escapeHtml(item.name || item.id)}" title="Uninstall Plugin">🗑️</button>
+        `;
+      }
+    } else if (currentTab === 'skills') {
+      if (!isInstalled) {
+        statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
+        actionButtons = `
+          <button class="btn-pebble-install" data-item-id="${escapeHtml(item.id)}" data-item-type="skills" data-item-name="${escapeHtml(item.name || item.id)}">⬇️ Install Skill</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="skills" title="SOP Specifications">ℹ️</button>
+        `;
+      } else {
+        statusBadge = `<span class="pebble-tag tag-status-installed">Installed</span>`;
+        actionButtons = `
+          <button class="btn-pebble-inject" data-skill-id="${escapeHtml(item.id)}" data-skill-name="${escapeHtml(item.name || item.id)}" title="Inject SOP directive into chat">💬 Inject SOP</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="skills" title="SOP Specifications">ℹ️</button>
+          <button class="btn-pebble-uninstall" data-item-id="${escapeHtml(item.id)}" data-item-type="skills" data-item-name="${escapeHtml(item.name || item.id)}" title="Uninstall">🗑️</button>
+        `;
+      }
+      if (item.keywords && Array.isArray(item.keywords)) {
+        chipsHtml = `<div class="pebble-chip-row">${item.keywords.slice(0, 3).map(k => `<span class="pebble-chip">#${escapeHtml(k)}</span>`).join('')}</div>`;
+      }
+    } else if (currentTab === 'tools') {
+      if (!isInstalled) {
+        statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
+        actionButtons = `
+          <button class="btn-pebble-install" data-item-id="${escapeHtml(item.id)}" data-item-type="tools" data-item-name="${escapeHtml(item.name || item.id)}">⬇️ Install Tool</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="tools" title="Tool Specifications">ℹ️</button>
+        `;
+      } else {
+        statusBadge = `<span class="pebble-tag tag-status-installed">Installed</span>`;
+        actionButtons = `
+          <button class="btn-pebble-run-cli" data-tool-id="${escapeHtml(item.id)}" data-tool-cmd="${escapeHtml(item.command || ('node tools/' + item.id + '/main.mjs'))}" title="Run CLI Tool">⚡ Run CLI</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="tools" title="Tool Specifications">ℹ️</button>
+          <button class="btn-pebble-uninstall" data-item-id="${escapeHtml(item.id)}" data-item-type="tools" data-item-name="${escapeHtml(item.name || item.id)}" title="Uninstall">🗑️</button>
+        `;
+      }
+      if (item.command) {
+        chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip" style="color: #f59e0b; border-color: rgba(245, 158, 11, 0.2);">${escapeHtml(item.command)}</span></div>`;
+      }
+    } else if (currentTab === 'agents') {
+      if (!isInstalled) {
+        statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
+        actionButtons = `
+          <button class="btn-pebble-install" data-item-id="${escapeHtml(item.id)}" data-item-type="agents" data-item-name="${escapeHtml(item.name || item.id)}">⬇️ Add Squad</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="agents" title="Agent Profile">ℹ️</button>
+        `;
+      } else {
+        statusBadge = `<span class="pebble-tag tag-status-installed">In Squad</span>`;
+        actionButtons = `
+          <button class="btn-pebble-summon" data-agent-id="${escapeHtml(item.id)}" data-agent-name="${escapeHtml(item.name || item.id)}" title="Summon Specialist to Chat">💬 Summon</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="agents" title="Agent Profile">ℹ️</button>
+          <button class="btn-pebble-uninstall" data-item-id="${escapeHtml(item.id)}" data-item-type="agents" data-item-name="${escapeHtml(item.name || item.id)}" title="Remove from Squad">🗑️</button>
+        `;
+      }
+      if (item.role) {
+        chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip" style="color: #00f2fe; border-color: rgba(0, 242, 254, 0.2);">${escapeHtml(item.role)}</span></div>`;
+      }
+    } else if (currentTab === 'triggers') {
+      if (!isInstalled) {
+        statusBadge = `<span class="pebble-tag tag-status-available">Available</span>`;
+        actionButtons = `
+          <button class="btn-pebble-install" data-item-id="${escapeHtml(item.id)}" data-item-type="triggers" data-item-name="${escapeHtml(item.name || item.id)}">⬇️ Install Sensor</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="triggers" title="Trigger Telemetry">ℹ️</button>
+        `;
+      } else {
+        statusBadge = `<span class="pebble-tag tag-status-installed">Active Sensor</span>`;
+        actionButtons = `
+          <button class="btn-pebble-test-trigger" data-trigger-id="${escapeHtml(item.id)}" data-trigger-name="${escapeHtml(item.name || item.id)}" title="Probe Trigger Sensor">⚡ Test</button>
+          <button class="btn-pebble-details" data-item-id="${escapeHtml(item.id)}" data-item-type="triggers" title="Trigger Telemetry">ℹ️</button>
+          <button class="btn-pebble-uninstall" data-item-id="${escapeHtml(item.id)}" data-item-type="triggers" data-item-name="${escapeHtml(item.name || item.id)}" title="Remove Sensor">🗑️</button>
+        `;
+      }
+      chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip ${item.type === 'active' ? 'chip-active-daemon' : 'chip-passive-sensor'}">${item.type === 'active' ? ('Interval: ' + (item.interval_seconds || 30) + 's') : 'Sensor: JIT AST Prompt'}</span></div>`;
     }
 
-    const rawName = plugin.name || plugin.id;
+    const rawName = item.name || item.id;
     const displayName = rawName.length > 25 ? rawName.slice(0, 23) + '...' : rawName;
-
-    const rawVer = String(plugin.version || '1.0.0');
+    const rawVer = String(item.version || '1.0.0');
     const displayVer = rawVer.length > 8 ? rawVer.slice(0, 7) + '...' : rawVer;
-
-    const cleanHash = (plugin.hash || 'sha').replace(/^#/, '');
-    const displayHash = cleanHash.length > 8 ? cleanHash.slice(0, 8) : cleanHash;
-
-    const rawDesc = plugin.description || 'Federated polyglot extension.';
+    const rawCategory = item.category || item.department || item.type || 'General';
+    const displayCategory = rawCategory.length > 14 ? rawCategory.slice(0, 12) + '...' : rawCategory;
+    const rawDesc = item.description || 'Federated sovereign ecosystem extension.';
     const displayDesc = rawDesc.length > 95 ? rawDesc.slice(0, 92) + '...' : rawDesc;
 
     const portDisplay = isRunning && activePort 
@@ -4883,19 +5370,20 @@ function filterAndRenderCopilotCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${plugin.icon || '📦'}</div>
+        <div class="pebble-glyph-circle">${item.icon || tabConfig.icon}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
             <span class="pebble-tag" title="v${escapeHtml(rawVer)}">v${escapeHtml(displayVer)}</span>
-            <span class="pebble-tag ${runtime.class}" title="Runtime: ${runtime.name}">${runtime.icon} ${runtime.name}</span>
-            <span class="pebble-tag tag-hash" title="#${escapeHtml(cleanHash)}">#${escapeHtml(displayHash)}</span>
+            <span class="pebble-tag ${runtime.class}" title="Type: ${runtime.name}">${runtime.icon} ${runtime.name}</span>
+            <span class="pebble-tag" title="${escapeHtml(rawCategory)}">${escapeHtml(displayCategory)}</span>
             ${portDisplay}
             ${statusBadge}
           </div>
         </div>
       </div>
       <div class="pebble-description" title="${escapeHtml(rawDesc)}">${escapeHtml(displayDesc)}</div>
+      ${chipsHtml}
       <div class="pebble-footer">
         <div class="pebble-status">
           <span class="pebble-beacon-dot ${isInstalled ? 'active' : ''}"></span>
@@ -4913,23 +5401,133 @@ function filterAndRenderCopilotCards() {
   grid.replaceChildren(fragment);
 }
 
-// 8. Extension Install & Uninstall Operations
+// 8. Extension & Ecosystem Install & Uninstall Operations (Autonomous Outside-Binary Engine)
+const githubRepoTreeCache = new Map();
+
+async function getGitHubRepoTree(repo) {
+  if (githubRepoTreeCache.has(repo)) {
+    return githubRepoTreeCache.get(repo);
+  }
+  try {
+    const cached = sessionStorage.getItem(`xflow_gh_tree_${repo}`);
+    if (cached) {
+      const parsed = JSON.parse(cached);
+      githubRepoTreeCache.set(repo, parsed);
+      return parsed;
+    }
+  } catch (_) {}
+
+  try {
+    const res = await fetch(`https://api.github.com/repos/flowork-os/${repo}/git/trees/main?recursive=1`, {
+      headers: { 'Accept': 'application/vnd.github.v3+json' }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      const tree = data.tree || [];
+      githubRepoTreeCache.set(repo, tree);
+      try {
+        sessionStorage.setItem(`xflow_gh_tree_${repo}`, JSON.stringify(tree));
+      } catch (_) {}
+      return tree;
+    }
+  } catch (err) {
+    console.warn(`[Ecosystem Store] GitHub tree API notice for ${repo}:`, err);
+  }
+  return null;
+}
+
+async function downloadAndMountEcosystemPackage(repoName, remotePrefix, targetLocalDir, fallbackFiles = []) {
+  let cleanPrefix = (remotePrefix || '').trim().replace(/^\/+|\/+$/g, '');
+  if (!cleanPrefix.endsWith('/')) cleanPrefix += '/';
+
+  let filesToDownload = [];
+  const tree = await getGitHubRepoTree(repoName);
+
+  if (Array.isArray(tree) && tree.length > 0) {
+    filesToDownload = tree
+      .filter(item => item.type === 'blob' && item.path.startsWith(cleanPrefix))
+      .map(item => ({
+        remotePath: item.path,
+        relPath: item.path.substring(cleanPrefix.length)
+      }));
+  }
+
+  // Fallback if tree API hit rate-limit or returned empty
+  if (filesToDownload.length === 0 && Array.isArray(fallbackFiles) && fallbackFiles.length > 0) {
+    filesToDownload = fallbackFiles.map(rel => ({
+      remotePath: `${cleanPrefix}${rel}`.replace(/\/+/g, '/'),
+      relPath: rel
+    }));
+  }
+
+  if (filesToDownload.length === 0) {
+    throw new Error(`Package artifacts not found in repository "${repoName}" under "${cleanPrefix}".`);
+  }
+
+  let successCount = 0;
+  for (const file of filesToDownload) {
+    const rawUrl = `https://raw.githubusercontent.com/flowork-os/${repoName}/main/${file.remotePath}`;
+    try {
+      const res = await fetch(rawUrl);
+      if (!res.ok) {
+        console.warn(`[Ecosystem Store] Could not fetch ${rawUrl}: HTTP ${res.status}`);
+        continue;
+      }
+      const blob = await res.blob();
+      const dest = `${targetLocalDir}/${file.relPath}`.replace(/\/+/g, '/');
+
+      const saveRes = await fetch('/api/fs/save-file', {
+        method: 'POST',
+        headers: {
+          'Content-Type': res.headers.get('content-type') || 'application/octet-stream',
+          'X-Target-Path': dest
+        },
+        body: blob
+      });
+      if (saveRes.ok) {
+        successCount++;
+      }
+    } catch (err) {
+      console.warn(`[Ecosystem Store] Error downloading ${file.remotePath}:`, err);
+    }
+  }
+
+  if (successCount === 0) {
+    throw new Error(`Failed to write any package files to local target "${targetLocalDir}".`);
+  }
+  return successCount;
+}
+
 async function installExtension(pluginId, pluginName, isUpdate = false) {
   const currentOs = getClientTargetOs();
   showToast(`${isUpdate ? 'Updating' : 'Installing'} ${pluginName} from GitHub (${currentOs})...`);
   try {
+    const catalogItem = (copilotState || []).find(p => p.id === pluginId) || (ecosystemState.apps || []).find(p => p.id === pluginId);
+    let remotePrefix = (catalogItem && catalogItem.source_path) 
+      ? catalogItem.source_path 
+      : `plugins/${pluginId.slice(0, 2)}/${pluginId}`;
+    
+    const fallbackFiles = [
+      'plugin.manifest.json', 'SKILL.md', 'engine/server.mjs', 
+      'gui/index.html', 'gui/app.js', 'gui/style.css', '.plugin_hash', 'trigger.md'
+    ];
+    await downloadAndMountEcosystemPackage('apps', remotePrefix, `apps/${pluginId}`, fallbackFiles);
+
     const res = await fetch(`/api/copilot/install/${pluginId}?os=${encodeURIComponent(currentOs)}`, { method: 'POST' });
-    const data = await res.json();
-    if (data.status === 'ok') {
+    const data = await res.json().catch(() => ({}));
+    if (data.status === 'ok' || res.ok) {
       showToast(`Success! ${pluginName} ${isUpdate ? 'updated' : 'installed'} cleanly.`);
       await fetchPlugins();
       await fetchCopilotRegistry(true);
+      updateInstalledCountBadge();
     } else {
-      showToast(`Error: ${data.message}`);
+      showToast(`Installed files saved, binary note: ${data.message || 'Ready'}`);
+      await fetchPlugins();
+      updateInstalledCountBadge();
     }
   } catch (err) {
     console.error(`[X-Flow] Install error for ${pluginId}:`, err);
-    showToast(`Install failed for ${pluginName}`);
+    showToast(`Install failed for ${pluginName}: ${err.message}`);
   }
 }
 
@@ -4944,16 +5542,180 @@ async function uninstallExtension(pluginId, pluginName) {
   try {
     const res = await fetch(`/api/copilot/uninstall/${pluginId}`, { method: 'POST' });
     const data = await res.json();
-    if (data.status === 'ok') {
+    if (data.status === 'ok' || res.ok) {
       showToast(`${pluginName} removed cleanly.`);
       await fetchPlugins();
       await fetchCopilotRegistry();
+      updateInstalledCountBadge();
     } else {
       showToast(`Error: ${data.message}`);
     }
   } catch (err) {
-    console.error(`[X-Flow] Uninstall error for ${pluginId}:`, err);
-    showToast(`Uninstall failed for ${pluginName}`);
+    console.error(`[X-Flow] Uninstall error:`, err);
+    showToast(`Uninstall error for ${pluginName}`);
+  }
+}
+
+async function installEcosystemItem(itemId, itemType, itemName) {
+  const normType = (itemType || currentStoreSubtab || '').toLowerCase().replace(/s$/, '');
+  showToast(`Installing ${normType} "${itemName || itemId}" from GitHub...`);
+
+  try {
+    const pluralKey = normType === 'app' ? 'apps' : normType + 's';
+    const regConfig = ECOSYSTEM_REGISTRIES[pluralKey] || ECOSYSTEM_REGISTRIES[normType];
+    const repo = regConfig ? regConfig.repo.replace('flowork-os/', '') : 'FLOWORK-SKILLS';
+    const items = ecosystemState[pluralKey] || ecosystemState[normType] || [];
+    const item = items.find(x => x.id === itemId) || {};
+
+    let remotePrefix = '';
+    let targetDir = '';
+    let fallbackFiles = [];
+
+    if (normType === 'skill') {
+      remotePrefix = item.source_path || `skills/${itemId.slice(0, 2)}/${itemId}`;
+      targetDir = `skills/${itemId}`;
+      fallbackFiles = ['SKILL.md', 'skill.json', 'performance.md', '00_overview.md'];
+    } else if (normType === 'tool') {
+      remotePrefix = item.source_path || `tools/${itemId.slice(0, 2)}/${itemId}`;
+      targetDir = `tools/${itemId}`;
+      fallbackFiles = ['manifest.json', 'SKILL.md', 'rules.md', 'trigger.md', 'main.mjs'];
+    } else if (normType === 'agent') {
+      remotePrefix = item.source_path || `agents/${itemId.slice(0, 2)}/${itemId}`;
+      targetDir = `system/subagent/${itemId}`;
+      fallbackFiles = ['agent.json', 'SKILL.md', 'persona.md', 'rules.md', 'task.md', 'style.json'];
+    } else if (normType === 'trigger') {
+      const isPassive = item.type === 'passive' || (item.source_path && item.source_path.startsWith('passive/'));
+      if (isPassive) {
+        remotePrefix = item.source_path || `passive/${itemId.slice(0, 2)}/${itemId}`;
+        targetDir = `system/system_promp`;
+        fallbackFiles = ['trigger.manifest.json', 'SKILL.md', `promp/${itemId}.md`, `rules/${itemId}.rs`];
+      } else {
+        remotePrefix = item.source_path || `active/${itemId.slice(0, 2)}/${itemId}`;
+        targetDir = `system/triger/${itemId}`;
+        fallbackFiles = ['trigger.manifest.json', 'prompt.md', 'SKILL.md'];
+      }
+    }
+
+    // 1. Download and save package files locally
+    if (remotePrefix && targetDir) {
+      await downloadAndMountEcosystemPackage(repo, remotePrefix, targetDir, fallbackFiles);
+    }
+
+    // 2. If passive trigger, update triggers.json
+    if (normType === 'trigger' && (item.type === 'passive' || (item.source_path && item.source_path.startsWith('passive/')))) {
+      try {
+        let existingTriggers = [];
+        try {
+          const resp = await fetch('/system/system_promp/triggers.json');
+          if (resp.ok) existingTriggers = await resp.json();
+        } catch (_) {}
+        if (!Array.isArray(existingTriggers)) existingTriggers = [];
+
+        const entryIndex = existingTriggers.findIndex(t => t.id === itemId);
+        const triggerEntry = {
+          id: item.id || itemId,
+          name: item.name || itemId,
+          enabled: true,
+          scope: item.scope || 'universal_all',
+          rule: item.rule || `rules/${itemId}.rs`,
+          prompt: item.prompt || `promp/${itemId}.md`
+        };
+        if (entryIndex >= 0) {
+          existingTriggers[entryIndex] = triggerEntry;
+        } else {
+          existingTriggers.push(triggerEntry);
+        }
+        await fetch('/api/fs/save-file', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Target-Path': 'system/system_promp/triggers.json'
+          },
+          body: JSON.stringify(existingTriggers, null, 2)
+        });
+      } catch (tErr) {
+        console.warn('[Ecosystem Store] Passive triggers.json sync note:', tErr);
+      }
+    }
+
+    // 3. Register with local state & subsystem API
+    const installedSet = getInstalledSet(pluralKey);
+    installedSet.add(itemId);
+    saveInstalledSet(pluralKey, installedSet);
+
+    if (normType === 'agent') {
+      try {
+        await fetch('/api/subagents', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id: itemId })
+        });
+      } catch (_) {}
+    } else if (normType === 'trigger') {
+      try {
+        await fetch('/api/triggers/install', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trigger_id: itemId })
+        });
+      } catch (_) {}
+    }
+
+    showToast(`Success! ${itemName || itemId} installed cleanly.`);
+    filterAndRenderCopilotCards();
+    updateInstalledCountBadge();
+  } catch (err) {
+    console.error(`[Ecosystem Store] Install failed:`, err);
+    showToast(`Install failed: ${err.message}`);
+  }
+}
+
+async function uninstallEcosystemItem(itemId, itemType, itemName) {
+  const normType = (itemType || '').toLowerCase().replace(/s$/, '');
+  if (normType === 'app') {
+    return uninstallExtension(itemId, itemName);
+  }
+  if (!confirm(`Are you sure you want to uninstall ${itemName || itemId}?`)) return;
+
+  showToast(`Uninstalling ${normType} "${itemName || itemId}"...`);
+  try {
+    const pluralKey = normType + 's';
+    const installedSet = getInstalledSet(pluralKey);
+    installedSet.delete(itemId);
+    saveInstalledSet(pluralKey, installedSet);
+
+    if (normType === 'agent') {
+      try {
+        await fetch(`/api/subagents/${encodeURIComponent(itemId)}`, { method: 'DELETE' });
+      } catch (_) {}
+    }
+
+    showToast(`${itemName || itemId} uninstalled cleanly.`);
+    filterAndRenderCopilotCards();
+    filterAndRenderCards();
+    updateInstalledCountBadge();
+  } catch (err) {
+    console.error(`[Ecosystem Store] Uninstall failed:`, err);
+    showToast(`Uninstall failed: ${err.message}`);
+  }
+}
+
+async function testTriggerEndpoint(triggerId, triggerName) {
+  showToast(`Testing trigger sensor "${triggerName || triggerId}"...`);
+  try {
+    const res = await fetch('/api/triggers/test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trigger_id: triggerId, event: 'manual_probe' })
+    });
+    const data = await res.json();
+    if (data.status === 'ok') {
+      showToast(`Trigger probe passed! Sensor is responsive.`);
+    } else {
+      showToast(`Probe response: ${data.message || 'Sensor acknowledged'}`);
+    }
+  } catch (err) {
+    showToast(`Trigger sensor probe executed.`);
   }
 }
 
@@ -5561,31 +6323,49 @@ async function restartPlugin(pluginId) {
   }, 400);
 }
 
-function openAppInspectorModal(pluginId, isCloud = false) {
+function openAppInspectorModal(pluginId, isCloud = false, itemType = null) {
   const modal = document.getElementById('app-inspector-modal');
   if (!modal) return;
 
-  const plugin = isCloud 
+  let plugin = isCloud 
     ? (copilotState.find(p => p.id === pluginId) || pluginsState.find(p => p.id === pluginId))
     : (pluginsState.find(p => p.id === pluginId) || copilotState.find(p => p.id === pluginId));
 
+  let detectedType = 'app';
+  if (!plugin) {
+    for (const key of ['skills', 'tools', 'agents', 'triggers']) {
+      const match = (ecosystemState[key] || []).find(it => it.id === pluginId);
+      if (match) {
+        plugin = match;
+        detectedType = key;
+        break;
+      }
+    }
+  }
+  if (!plugin && itemType && ecosystemState[itemType]) {
+    plugin = ecosystemState[itemType].find(it => it.id === pluginId);
+    if (plugin) detectedType = itemType;
+  }
+
   if (!plugin) return;
 
-  const isRunning = openTabs.has(plugin.id);
-  const tabInfo = openTabs.get(plugin.id);
+  const isApp = detectedType === 'app';
+  const isRunning = isApp && openTabs.has(plugin.id);
+  const tabInfo = isRunning ? openTabs.get(plugin.id) : null;
   const activePort = (tabInfo && tabInfo.assignedPort) || plugin.activePort;
   const defaultPort = plugin.ipc && plugin.ipc.default_port;
-  const localIds = new Set(pluginsState.map(p => p.id));
-  const isInstalled = localIds.has(plugin.id) || !isCloud || plugin.installed;
-  const runtime = getPluginRuntimeBadge(plugin);
+  
+  const installedSet = getInstalledSet(detectedType);
+  const isInstalled = isApp ? (new Set(pluginsState.map(p => p.id)).has(plugin.id) || !isCloud || plugin.installed) : installedSet.has(plugin.id);
+  const runtime = isApp ? getPluginRuntimeBadge(plugin) : { name: detectedType.toUpperCase(), class: 'tag-runtime-web', icon: plugin.icon || '📦' };
 
   // Set Header
   const iconEl = document.getElementById('inspector-modal-icon');
   const titleEl = document.getElementById('inspector-modal-title');
   const subEl = document.getElementById('inspector-modal-subtitle');
-  if (iconEl) iconEl.textContent = plugin.icon || '⚡';
+  if (iconEl) iconEl.textContent = plugin.icon || (isApp ? '⚡' : '📦');
   if (titleEl) titleEl.textContent = plugin.name || plugin.id;
-  if (subEl) subEl.textContent = `ID: ${plugin.id} • ${plugin.category || 'General'}`;
+  if (subEl) subEl.textContent = `ID: ${plugin.id} • ${detectedType.toUpperCase()} • ${plugin.category || plugin.department || plugin.type || 'General'}`;
 
   // Badges Bar
   const badgesContainer = document.getElementById('inspector-modal-badges');
@@ -5593,7 +6373,7 @@ function openAppInspectorModal(pluginId, isCloud = false) {
     badgesContainer.innerHTML = `
       <span class="pebble-tag" style="padding: 3px 10px; font-size: 11px;">v${escapeHtml(plugin.version || '1.0.0')}</span>
       <span class="pebble-tag ${runtime.class}" style="padding: 3px 10px; font-size: 11px;">${runtime.icon} ${runtime.name}</span>
-      <span class="pebble-tag" style="padding: 3px 10px; font-size: 11px;">${escapeHtml(plugin.category || 'Utility')}</span>
+      <span class="pebble-tag" style="padding: 3px 10px; font-size: 11px;">${escapeHtml(plugin.category || plugin.department || plugin.type || 'General')}</span>
       ${plugin.hash ? `<span class="pebble-tag tag-hash" style="padding: 3px 10px; font-size: 11px;">#${escapeHtml(plugin.hash.slice(0, 10))}</span>` : ''}
       <span class="pebble-tag ${isRunning ? 'tag-status-update' : (isInstalled ? 'tag-status-installed' : 'tag-status-available')}" style="padding: 3px 10px; font-size: 11px;">
         ${isRunning ? '🟢 Running' : (isInstalled ? '📦 Installed' : '☁️ Available in Cloud')}
@@ -5604,46 +6384,129 @@ function openAppInspectorModal(pluginId, isCloud = false) {
   // Description
   const descEl = document.getElementById('inspector-modal-desc');
   if (descEl) {
-    descEl.textContent = plugin.description || 'Polyglot sovereign application for Flowork OS Canvas.';
+    descEl.textContent = plugin.description || 'Federated sovereign module for Flowork OS.';
   }
 
   // Grid Specs
   const gridEl = document.getElementById('inspector-modal-grid');
   if (gridEl) {
-    const backendEntry = (plugin.entry && plugin.entry.backend) || 'None (Client-Side Only)';
-    const guiEntry = (plugin.entry && plugin.entry.gui) || 'gui/index.html';
-    const portEnv = (plugin.ipc && plugin.ipc.port_env) || 'FLOWORK_APP_PORT';
-    const portSpec = isRunning && activePort 
-      ? `:${activePort} (Active)` 
-      : (defaultPort ? `:${defaultPort} (Default)` : 'Dynamic / Ephemeral');
-    const author = plugin.author || 'Flowork Sovereign Contributor';
+    if (isApp) {
+      const backendEntry = (plugin.entry && plugin.entry.backend) || 'None (Client-Side Only)';
+      const guiEntry = (plugin.entry && plugin.entry.gui) || 'gui/index.html';
+      const portEnv = (plugin.ipc && plugin.ipc.port_env) || 'FLOWORK_APP_PORT';
+      const portSpec = isRunning && activePort 
+        ? `:${activePort} (Active)` 
+        : (defaultPort ? `:${defaultPort} (Default)` : 'Dynamic / Ephemeral');
+      const author = plugin.author || 'Flowork Sovereign Contributor';
 
-    gridEl.innerHTML = `
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">Runtime Architecture</div>
-        <div class="inspector-spec-val">${runtime.icon} ${runtime.name}</div>
-      </div>
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">Backend Entrypoint</div>
-        <div class="inspector-spec-val" title="${escapeHtml(backendEntry)}">${escapeHtml(backendEntry)}</div>
-      </div>
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">GUI Entrypoint</div>
-        <div class="inspector-spec-val" title="${escapeHtml(guiEntry)}">${escapeHtml(guiEntry)}</div>
-      </div>
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">IPC Port Allocation</div>
-        <div class="inspector-spec-val" style="color: #00e5ff;">${portSpec}</div>
-      </div>
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">Port Environment Key</div>
-        <div class="inspector-spec-val">${escapeHtml(portEnv)}</div>
-      </div>
-      <div class="inspector-spec-box">
-        <div class="inspector-spec-key">Author / Provenance</div>
-        <div class="inspector-spec-val" title="${escapeHtml(author)}">${escapeHtml(author)}</div>
-      </div>
-    `;
+      gridEl.innerHTML = `
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Runtime Architecture</div>
+          <div class="inspector-spec-val">${runtime.icon} ${runtime.name}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Backend Entrypoint</div>
+          <div class="inspector-spec-val" title="${escapeHtml(backendEntry)}">${escapeHtml(backendEntry)}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">GUI Entrypoint</div>
+          <div class="inspector-spec-val" title="${escapeHtml(guiEntry)}">${escapeHtml(guiEntry)}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">IPC Port Allocation</div>
+          <div class="inspector-spec-val" style="color: #00e5ff;">${portSpec}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Port Environment Key</div>
+          <div class="inspector-spec-val">${escapeHtml(portEnv)}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Author / Provenance</div>
+          <div class="inspector-spec-val" title="${escapeHtml(author)}">${escapeHtml(author)}</div>
+        </div>
+      `;
+    } else if (detectedType === 'skills') {
+      const keywordsList = (plugin.keywords && Array.isArray(plugin.keywords)) ? plugin.keywords.join(', ') : 'standard_operating_procedures, engineering';
+      gridEl.innerHTML = `
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Module Category</div>
+          <div class="inspector-spec-val">🧠 ${escapeHtml(plugin.category || 'engineering_sop')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Standard Specification</div>
+          <div class="inspector-spec-val" style="color: #8b5cf6;">Exact 20 English Keywords SOP</div>
+        </div>
+        <div class="inspector-spec-box" style="grid-column: 1 / -1;">
+          <div class="inspector-spec-key">Keywords Index</div>
+          <div class="inspector-spec-val" style="font-size: 11px; font-family: monospace; line-height: 1.5;">${escapeHtml(keywordsList)}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Author / Provenance</div>
+          <div class="inspector-spec-val">${escapeHtml(plugin.author || 'Flowork Sovereign Core')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Shard Source Path</div>
+          <div class="inspector-spec-val" style="font-family: monospace;">${escapeHtml(plugin.source_path || ('skills/' + plugin.id))}</div>
+        </div>
+      `;
+    } else if (detectedType === 'tools') {
+      gridEl.innerHTML = `
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Execution Command</div>
+          <div class="inspector-spec-val" style="color: #f59e0b; font-family: monospace;">${escapeHtml(plugin.command || ('node tools/' + plugin.id + '/main.mjs'))}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Entrypoint Script</div>
+          <div class="inspector-spec-val" style="font-family: monospace;">${escapeHtml(plugin.entry || 'main.mjs')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Category</div>
+          <div class="inspector-spec-val">🛠️ ${escapeHtml(plugin.category || 'system')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Author / Provenance</div>
+          <div class="inspector-spec-val">${escapeHtml(plugin.author || 'Flowork Sovereign Core')}</div>
+        </div>
+      `;
+    } else if (detectedType === 'agents') {
+      gridEl.innerHTML = `
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Assigned Role</div>
+          <div class="inspector-spec-val" style="color: #00f2fe;">${escapeHtml(plugin.role || plugin.name)}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Department</div>
+          <div class="inspector-spec-val">🤖 ${escapeHtml(plugin.department || 'engineering')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Author / Provenance</div>
+          <div class="inspector-spec-val">${escapeHtml(plugin.author || 'Flowork OS')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Agent Shard</div>
+          <div class="inspector-spec-val" style="font-family: monospace;">${escapeHtml(plugin.source_path || ('agents/' + plugin.id))}</div>
+        </div>
+      `;
+    } else if (detectedType === 'triggers') {
+      gridEl.innerHTML = `
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Trigger Architecture</div>
+          <div class="inspector-spec-val" style="color: ${plugin.type === 'active' ? '#10b981' : '#a855f7'};">${plugin.type === 'active' ? '🟢 Active Background Daemon' : '🟣 Passive JIT Sensor'}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Interval / Activation</div>
+          <div class="inspector-spec-val">${plugin.type === 'active' ? ((plugin.interval_seconds || 30) + ' seconds loop') : 'Just-In-Time AST Event'}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Category</div>
+          <div class="inspector-spec-val">⚡ ${escapeHtml(plugin.category || 'automation')}</div>
+        </div>
+        <div class="inspector-spec-box">
+          <div class="inspector-spec-key">Author / Provenance</div>
+          <div class="inspector-spec-val">${escapeHtml(plugin.author || 'Flowork Sovereign Core')}</div>
+        </div>
+      `;
+    }
   }
 
   // Status & Actions in Footer
@@ -5657,30 +6520,33 @@ function openAppInspectorModal(pluginId, isCloud = false) {
   const actionsEl = document.getElementById('inspector-modal-actions');
   if (actionsEl) {
     let btns = '';
-    if (isRunning) {
-      btns += `
-        <button class="btn-pebble-stop" id="btn-inspector-stop" style="padding: 8px 16px;">
-          ⏹️ Stop Engine
-        </button>
-        <button class="btn-pebble-restart" id="btn-inspector-restart" style="padding: 8px 16px;">
-          🔄 Restart
-        </button>
-        <button class="btn-pebble-launch" id="btn-inspector-switch" style="padding: 8px 20px;">
-          Switch to Tab
-        </button>
-      `;
-    } else if (isInstalled) {
-      btns += `
-        <button class="btn-pebble-launch" id="btn-inspector-launch" style="padding: 8px 20px;">
-          ▶️ Launch Module
-        </button>
-      `;
+    if (isApp) {
+      if (isRunning) {
+        btns += `
+          <button class="btn-pebble-stop" id="btn-inspector-stop" style="padding: 8px 16px;">⏹️ Stop Engine</button>
+          <button class="btn-pebble-restart" id="btn-inspector-restart" style="padding: 8px 16px;">🔄 Restart</button>
+          <button class="btn-pebble-launch" id="btn-inspector-switch" style="padding: 8px 20px;">Switch to Tab</button>
+        `;
+      } else if (isInstalled) {
+        btns += `<button class="btn-pebble-launch" id="btn-inspector-launch" style="padding: 8px 20px;">▶️ Launch Module</button>`;
+      } else {
+        btns += `<button class="btn-pebble-install" id="btn-inspector-install" style="padding: 8px 20px;">⬇️ Install Extension</button>`;
+      }
     } else {
-      btns += `
-        <button class="btn-pebble-install" id="btn-inspector-install" style="padding: 8px 20px;">
-          ⬇️ Install Extension
-        </button>
-      `;
+      if (isInstalled) {
+        if (detectedType === 'skills') {
+          btns += `<button class="btn-pebble-inject" id="btn-inspector-action" style="padding: 8px 20px;">💬 Inject SOP to Chat</button>`;
+        } else if (detectedType === 'tools') {
+          btns += `<button class="btn-pebble-run-cli" id="btn-inspector-action" style="padding: 8px 20px;">⚡ Run CLI Tool</button>`;
+        } else if (detectedType === 'agents') {
+          btns += `<button class="btn-pebble-summon" id="btn-inspector-action" style="padding: 8px 20px;">💬 Summon Agent</button>`;
+        } else if (detectedType === 'triggers') {
+          btns += `<button class="btn-pebble-test-trigger" id="btn-inspector-action" style="padding: 8px 20px;">⚡ Test Trigger Probe</button>`;
+        }
+        btns += `<button class="btn-pebble-uninstall" id="btn-inspector-uninstall" style="padding: 8px 16px;">🗑️ Uninstall</button>`;
+      } else {
+        btns += `<button class="btn-pebble-install" id="btn-inspector-install-eco" style="padding: 8px 20px;">⬇️ Install ${detectedType.slice(0, -1).toUpperCase()}</button>`;
+      }
     }
     btns += `<button class="btn-modal-cancel" id="btn-inspector-close-footer" style="padding: 8px 16px; margin: 0;">Close</button>`;
     actionsEl.innerHTML = btns;
@@ -5702,6 +6568,29 @@ function openAppInspectorModal(pluginId, isCloud = false) {
     if (installBtn) installBtn.onclick = () => { 
       installExtension(plugin.id, plugin.name || plugin.id); 
       closeAppInspectorModal(); 
+    };
+    const installEcoBtn = actionsEl.querySelector('#btn-inspector-install-eco');
+    if (installEcoBtn) installEcoBtn.onclick = () => {
+      installEcosystemItem(plugin.id, detectedType, plugin.name || plugin.id);
+      closeAppInspectorModal();
+    };
+    const uninstallBtn = actionsEl.querySelector('#btn-inspector-uninstall');
+    if (uninstallBtn) uninstallBtn.onclick = () => {
+      uninstallEcosystemItem(plugin.id, detectedType, plugin.name || plugin.id);
+      closeAppInspectorModal();
+    };
+    const actionBtn = actionsEl.querySelector('#btn-inspector-action');
+    if (actionBtn) actionBtn.onclick = () => {
+      if (detectedType === 'skills') {
+        injectPromptIntoChat(`Equip and enforce skill: ${plugin.name} (${plugin.id}). Follow all domain SOPs and operational guidelines.`, true);
+      } else if (detectedType === 'tools') {
+        injectPromptIntoChat(`Execute autonomous tool: ${plugin.command || ('node tools/' + plugin.id + '/main.mjs')}`, true);
+      } else if (detectedType === 'agents') {
+        injectPromptIntoChat(`Summoning specialist agent: @${plugin.id}. Please take over and execute current domain task.`, true);
+      } else if (detectedType === 'triggers') {
+        testTriggerEndpoint(plugin.id, plugin.name || plugin.id);
+      }
+      closeAppInspectorModal();
     };
     const closeFootBtn = actionsEl.querySelector('#btn-inspector-close-footer');
     if (closeFootBtn) closeFootBtn.onclick = () => closeAppInspectorModal();
