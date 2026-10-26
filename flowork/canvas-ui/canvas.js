@@ -94,15 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (raw) savedOpenTabIds = JSON.parse(raw);
   } catch (_) {}
 
-  // If saved tab is neither standard (office, copilot, home) nor an open plugin tab, fallback immediately
-  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home') {
+  // If saved tab is neither standard (office, copilot, home, pipeline) nor an open plugin tab, fallback immediately
+  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home' && preSavedActiveTab !== 'pipeline') {
     if (!Array.isArray(savedOpenTabIds) || !savedOpenTabIds.includes(preSavedActiveTab)) {
       preSavedActiveTab = 'office';
       try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
     }
   }
 
-  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot') {
+  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot' || preSavedActiveTab === 'pipeline') {
     switchTab(preSavedActiveTab);
   } else if (preSavedActiveTab === 'office') {
     const layout = document.querySelector('.canvas-layout');
@@ -4356,6 +4356,11 @@ function initEventListeners() {
     tabCopilot.addEventListener('click', () => switchTab('copilot'));
   }
 
+  const tabPipeline = document.getElementById('tab-pipeline');
+  if (tabPipeline) {
+    tabPipeline.addEventListener('click', () => switchTab('pipeline'));
+  }
+
   initStoreSubnavSystem();
 
   const tabStrip = document.getElementById('tab-strip');
@@ -4364,7 +4369,7 @@ function initEventListeners() {
     tabStrip.addEventListener('auxclick', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
           e.stopPropagation();
           closePluginTab(tab.dataset.tabId);
@@ -4374,7 +4379,7 @@ function initEventListeners() {
     tabStrip.addEventListener('mousedown', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
         }
       }
@@ -4775,6 +4780,17 @@ function initStarfieldBackground() {
   window.cosmicStarfieldController = cosmicStarfieldController;
 }
 
+function sanitizePebbleIcon(iconStr, fallback = '⚡') {
+  if (!iconStr) return fallback;
+  if (iconStr === 'fl-icon-video-editor' || iconStr === 'clapperboard') return '🎬';
+  if (iconStr === 'fl-icon-forge' || iconStr === 'forge') return '⚒️';
+  if (typeof iconStr === 'string' && (iconStr.startsWith('fl-icon-') || (iconStr.length > 5 && !/\s/.test(iconStr)))) {
+    return fallback;
+  }
+  return iconStr;
+}
+window.sanitizePebbleIcon = sanitizePebbleIcon;
+
 // 6. Filter & Render Cockpit Pebble Cards
 // 6. Filter & Render Cockpit Pebble Cards (Installed Modules)
 function filterAndRenderCards() {
@@ -5063,7 +5079,7 @@ function filterAndRenderCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || '⚡'}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -5417,7 +5433,7 @@ function filterAndRenderCopilotCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || tabConfig.icon}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon, tabConfig.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -5814,7 +5830,7 @@ async function restoreTabsState() {
 
     if (openTabs.has(savedActiveTab)) {
       switchTab(savedActiveTab);
-    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot') {
+    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot' || savedActiveTab === 'pipeline') {
       switchTab(savedActiveTab);
     } else if (openTabs.size > 0 && savedActiveTab !== 'office' && savedActiveTab !== 'group' && savedActiveTab !== 'canvas-stage') {
       const firstTab = Array.from(openTabs.keys())[0];
@@ -6246,6 +6262,42 @@ async function switchTab(tabId, options = {}) {
     }
   }
 
+  if (tabId === 'pipeline') {
+    const pipelineView = document.getElementById('view-pipeline');
+    if (pipelineView) {
+      pipelineView.style.setProperty('display', 'flex', 'important');
+      pipelineView.classList.add('active');
+      const rightbar = document.getElementById('rightbar-chat');
+      if (rightbar) rightbar.style.setProperty('display', 'none', 'important');
+      const resizer = document.getElementById('resizer-right');
+      if (resizer) resizer.style.setProperty('display', 'none', 'important');
+      document.querySelector('.canvas-layout')?.classList.add('pipeline-active');
+
+      if (window.swarmPipelineInstance) {
+        if (!pipelineView.classList.contains('swarm-pipeline-container') || !pipelineView.querySelector('.pipeline-palette-sidebar')) {
+          window.swarmPipelineInstance.mount(pipelineView);
+        } else {
+          window.swarmPipelineInstance.render();
+        }
+      }
+    }
+  } else {
+    const pipelineView = document.getElementById('view-pipeline');
+    if (pipelineView) {
+      pipelineView.style.setProperty('display', 'none', 'important');
+      pipelineView.classList.remove('active');
+    }
+    document.querySelector('.canvas-layout')?.classList.remove('pipeline-active');
+    const rightbar = document.getElementById('rightbar-chat');
+    if (rightbar && !rightbar.classList.contains('collapsed')) {
+      rightbar.style.removeProperty('display');
+    }
+    const resizer = document.getElementById('resizer-right');
+    if (resizer) {
+      resizer.style.removeProperty('display');
+    }
+  }
+
   // Sovereign Viewport Telemetry: Report active tab to Engine Host for agent context
   reportActiveViewport(tabId);
 }
@@ -6257,6 +6309,9 @@ function reportActiveViewport(tabId) {
   if (tabId === 'office') {
     title = 'Office';
     kind = 'office';
+  } else if (tabId === 'pipeline') {
+    title = 'Visual Swarm Pipeline';
+    kind = 'pipeline';
   } else if (tabId === 'canvas-stage') {
     title = 'Sovereign Solo Studio';
     kind = 'canvas_stage';
@@ -11644,8 +11699,19 @@ function renderMarkdown(md) {
     formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', () => card);
   });
 
-  return formatted;
+  return sanitizeMarkdownHtml(formatted);
 }
+
+function sanitizeMarkdownHtml(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<\/?(?:iframe|object|embed|applet|meta|base)\b[^>]*>/gi, '')
+    .replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*(?:["']\s*javascript:[^"']*["']|javascript:[^\s>]+)/gi, '$1="#"');
+}
+window.sanitizeMarkdownHtml = sanitizeMarkdownHtml;
+
 
 // =============================================================================
 // CHAT ATTACHMENTS & CONTEXT HANDLER (IMAGES / FILES / CLIPBOARD)
@@ -16862,9 +16928,9 @@ function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
 
   activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
 
-  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || 'workspace/file';
+  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || d.task_description || d.task || d.arguments || 'workspace/file';
   const fileName = String(filePath).split(/[\\/]/).pop() || shortenFilePath(filePath);
-  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.content ?? d.real_content ?? ''));
+  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.code ?? d.content ?? d.real_content ?? ''));
   let totalBytes = new Blob([codeRaw]).size || codeRaw.length || 128;
   let codeLines = codeRaw.split(/\r?\n/).filter((l, idx, arr) => !(idx === arr.length - 1 && l === '')).map((l, idx) => `${String(idx + 1).padStart(3, '0')} │ ${l}`);
   if (codeLines.length === 0) {
