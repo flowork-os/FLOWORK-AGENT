@@ -56,8 +56,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function apiCall(endpoint, options = {}) {
     const base = await resolveApiBase();
-    const url = endpoint.startsWith('http') ? endpoint : `${base}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
-    const res = await fetch(url, options);
+    let url = endpoint.startsWith('http') ? endpoint : `${base}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+    let res;
+    try {
+      res = await fetch(url, options);
+    } catch (fetchErr) {
+      // Dynamic multi-port fallback: Try 17870, 32937, 34977, or window.location.port
+      const candidatePorts = ['17870', '32937', '34977', window.location.port].filter(p => p && !url.includes(`:${p}`));
+      let resolved = false;
+      for (const p of candidatePorts) {
+        try {
+          const fallbackUrl = `http://127.0.0.1:${p}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+          const fallbackRes = await fetch(fallbackUrl, options);
+          if (fallbackRes) {
+            res = fallbackRes;
+            API_BASE = `http://127.0.0.1:${p}`;
+            updateEngineBadge(p);
+            resolved = true;
+            break;
+          }
+        } catch (_) {}
+      }
+      if (!resolved) {
+        throw new Error(`Koneksi terputus ke Sentinel Engine (${fetchErr.message}). Silakan refresh halaman.`);
+      }
+    }
+
     const text = await res.text();
     if (!text || text.trim().length === 0) {
       if (!res.ok) throw new Error(`HTTP ${res.status} from Sentinel engine`);
@@ -179,14 +203,24 @@ document.addEventListener('DOMContentLoaded', () => {
     if (!confirm(`Hapus sesi rekaman "${displayName}"?`)) return;
 
     try {
-      const data = await apiCall(`/api/session/${id}`, { method: 'DELETE' });
-      if (data.status === 'ok') {
+      let data;
+      try {
+        data = await apiCall('/api/session/delete', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id })
+        });
+      } catch (_) {
+        data = await apiCall(`/api/session/${id}`, { method: 'DELETE' });
+      }
+
+      if (data && data.status === 'ok') {
         if (selectedSessionId === id) {
           resetSessionInspector();
         }
         await loadSessions();
       } else {
-        alert(data.message || 'Gagal menghapus sesi');
+        alert(data?.message || 'Gagal menghapus sesi');
       }
     } catch (err) {
       alert('Error saat menghapus sesi: ' + err.message);

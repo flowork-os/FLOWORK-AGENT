@@ -19,8 +19,9 @@ let sessionEvents = [];
 
 function setCorsHeaders(res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.setHeader('Access-Control-Allow-Private-Network', 'true');
 }
 
 function parseBody(req) {
@@ -437,14 +438,15 @@ server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Flowork-Sentinel] 🛰️ Sentinel & Synthesizer Server running on http://127.0.0.1:${PORT}`);
 });
 
-if (PORT !== 17870) {
+const extraBridgePorts = [17870, 32937].filter(p => p !== PORT);
+for (const p of extraBridgePorts) {
   try {
-    const bridgeServer = http.createServer((req, res) => server.emit('request', req, res));
-    bridgeServer.on('error', (e) => {
-      console.log(`[Flowork-Sentinel] Secondary bridge port 17870 notice: ${e.message}`);
+    const bridge = http.createServer((req, res) => server.emit('request', req, res));
+    bridge.on('error', (e) => {
+      console.log(`[Flowork-Sentinel] Notice: Bridge port ${p}: ${e.message}`);
     });
-    bridgeServer.listen(17870, '127.0.0.1', () => {
-      console.log(`[Flowork-Sentinel] 🛰️ Chrome Extension bridge also listening on http://127.0.0.1:17870`);
+    bridge.listen(p, '127.0.0.1', () => {
+      console.log(`[Flowork-Sentinel] 🛰️ Bridge also listening on http://127.0.0.1:${p}`);
     });
   } catch (_) {}
 }
