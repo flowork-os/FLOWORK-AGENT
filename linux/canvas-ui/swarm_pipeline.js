@@ -942,12 +942,9 @@
       document.querySelector('.canvas-layout')?.classList.add('pipeline-active');
 
       this._buildLayout();
-      this._initDefaultNodes();
       this._bindGlobalEvents();
-      this.render();
       this.loadDynamicRoster();
-      this.fetchServerPresets(false);
-      this.syncServerDag();
+      this._initDefaultNodes();
 
       // Auto-poll subagents every 2.5s to detect additions or deletions on disk dynamically!
       if (this._rosterPollTimer) clearInterval(this._rosterPollTimer);
@@ -1079,6 +1076,7 @@
       if (this.loadSavedState()) {
         this.populatePresetDropdown();
         this.updateStatusBadge();
+        this.render();
         return;
       }
 
@@ -1241,7 +1239,6 @@
      */
     switchPreset(presetId) {
       if (!presetId) return;
-      if (presetId === this.activePresetId && this.nodes && this.nodes.length > 0) return;
 
       // 1. Snapshot outgoing active preset state
       if (this.presets[this.activePresetId]) {
@@ -1435,6 +1432,12 @@
         const data = JSON.parse(raw);
         if (!data || !Array.isArray(data.nodes)) return false;
 
+        // Sovereign check: only restore local draft if it matches active preset from server
+        if (data.activePresetId && this.activePresetId && data.activePresetId !== this.activePresetId) {
+          console.log(`[SwarmPipeline] Local draft preset '${data.activePresetId}' does not match active preset '${this.activePresetId}'. Discarding stale draft.`);
+          return false;
+        }
+
         if (data.presets && typeof data.presets === 'object') {
           Object.assign(this.presets, data.presets);
         }
@@ -1484,8 +1487,8 @@
         const res = await fetch('/api/pipeline/dag');
         const json = await res.json();
         if (json && json.status === 'ok' && json.dag && Array.isArray(json.dag.nodes) && json.dag.nodes.length > 0) {
-          if (json.dag.activePresetId && this.presets[json.dag.activePresetId]) {
-            this.activePresetId = json.dag.activePresetId;
+          if (json.dag.activePresetId && json.dag.activePresetId !== this.activePresetId) {
+            return; // Ignore stale DAG belonging to a different preset
           }
           this.nodes = json.dag.nodes;
           this.connections = Array.isArray(json.dag.connections) ? json.dag.connections : [];
