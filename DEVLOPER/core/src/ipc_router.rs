@@ -74,6 +74,55 @@ pub async fn get_plugin_status(Path(id): Path<String>, State(state): State<Arc<A
     Json(json!({ "status": "ok", "running": port.is_some(), "port": port }))
 }
 
+pub async fn open_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
+    let mut assigned_port = None;
+    if let Some(plugin) = state.discovery.get(&id).await {
+        if let Some(backend) = &plugin.entry.backend {
+            if let Some(existing_port) = state.supervisor.get_port(&id).await {
+                assigned_port = Some(existing_port);
+            } else {
+                let bin_path = plugin.root_dir.join(backend);
+                let port = state.port_mgr.allocate_free_port();
+                if let Ok(p) = state.supervisor.spawn_engine(&id, &bin_path, &plugin.root_dir, port).await {
+                    assigned_port = Some(p);
+                }
+            }
+        }
+    }
+
+    state.discovery.broadcast_plugin_command("open", &id);
+    Json(json!({
+        "status": "ok",
+        "action": "open",
+        "app_id": id,
+        "port": assigned_port,
+        "message": format!("Application '{}' opened in Canvas UI", id)
+    }))
+}
+
+pub async fn reload_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
+    state.discovery.broadcast_plugin_command("reload", &id);
+    Json(json!({
+        "status": "ok",
+        "action": "reload",
+        "app_id": id,
+        "message": format!("Application '{}' reloaded in Canvas UI", id)
+    }))
+}
+
+pub async fn close_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
+    state.discovery.broadcast_plugin_command("close", &id);
+    let stopped = state.supervisor.stop_engine(&id).await;
+    Json(json!({
+        "status": "ok",
+        "action": "close",
+        "app_id": id,
+        "stopped": stopped,
+        "message": format!("Application '{}' closed and engine stopped", id)
+    }))
+}
+
+
 pub async fn plugin_events(State(state): State<Arc<AppState>>) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let mut rx = state.discovery.subscribe();
     let stream = async_stream::stream! {
@@ -1833,7 +1882,300 @@ pub async fn save_pipeline_dag(
             let _ = std::fs::write(d.join("pipeline_dag.json"), &content);
         }
     }
+
+    // Also mirror to atomic swarmflow/{id}.json and swarmflow/active.json
+    let swarm_dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+    if let Some(active_id) = payload.get("activePresetId").and_then(|v| v.as_str()) {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64;
+        let _ = std::fs::write(
+            swarm_dir.join("active.json"),
+            serde_json::to_string_pretty(&json!({
+                "activePresetId": active_id,
+                "updatedAt": now
+            })).unwrap_or_default()
+        );
+
+        if let Some(presets_map) = payload.get("presets").and_then(|v| v.as_object()) {
+            if let Some(preset_val) = presets_map.get(active_id) {
+                let _ = std::fs::write(
+                    swarm_dir.join(format!("{}.json", active_id)),
+                    serde_json::to_string_pretty(preset_val).unwrap_or_default()
+                );
+            }
+        }
+    }
+
     Json(json!({ "status": "ok", "saved": true }))
+}
+
+// ============================================================================
+// SWARM FLOW ATOMIC PRESETS & SEQUENTIAL RELAY ENDPOINTS
+// ============================================================================
+
+pub fn resolve_swarmflow_dir(engine_root: &std::path::Path, effective_ws: &std::path::Path) -> std::path::PathBuf {
+    let candidates = [
+        engine_root.join("swarmflow"),
+        effective_ws.join("swarmflow"),
+        effective_ws.join(".flowork").join("swarmflow"),
+        engine_root.join("flowork").join("swarmflow"),
+    ];
+    for c in &candidates {
+        if c.is_dir() {
+            return c.clone();
+        }
+    }
+    let default_dir = engine_root.join("swarmflow");
+    let _ = std::fs::create_dir_all(&default_dir);
+    default_dir
+}
+
+pub async fn list_swarmflow_presets(
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let mut presets = serde_json::Map::new();
+    let mut active_preset_id = String::from("coding");
+
+    let active_path = dir.join("active.json");
+    if active_path.is_file() {
+        if let Ok(c) = std::fs::read_to_string(&active_path) {
+            if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                if let Some(id_str) = v.get("activePresetId").or_else(|| v.get("id")).and_then(|s| s.as_str()) {
+                    active_preset_id = id_str.to_string();
+                }
+            }
+        }
+    }
+
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_file() && p.extension().map(|e| e == "json").unwrap_or(false) {
+                let file_name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+                if file_name == "active" {
+                    continue;
+                }
+                if let Ok(content) = std::fs::read_to_string(&p) {
+                    if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                        let id = val.get("id").and_then(|s| s.as_str()).unwrap_or(file_name).to_string();
+                        presets.insert(id, val);
+                    }
+                }
+            }
+        }
+    }
+
+    Json(json!({
+        "status": "ok",
+        "activePresetId": active_preset_id,
+        "presets": presets
+    }))
+}
+
+pub async fn get_active_swarmflow_preset(
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let active_path = dir.join("active.json");
+    let mut active_preset_id = String::from("coding");
+    if active_path.is_file() {
+        if let Ok(c) = std::fs::read_to_string(&active_path) {
+            if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                if let Some(id_str) = v.get("activePresetId").or_else(|| v.get("id")).and_then(|s| s.as_str()) {
+                    active_preset_id = id_str.to_string();
+                }
+            }
+        }
+    }
+
+    let preset_file = dir.join(format!("{}.json", active_preset_id));
+    if preset_file.is_file() {
+        if let Ok(c) = std::fs::read_to_string(&preset_file) {
+            if let Ok(preset_val) = serde_json::from_str::<Value>(&c) {
+                return Json(json!({
+                    "status": "ok",
+                    "activePresetId": active_preset_id,
+                    "preset": preset_val
+                }));
+            }
+        }
+    }
+
+    Json(json!({
+        "status": "ok",
+        "activePresetId": active_preset_id,
+        "preset": null
+    }))
+}
+
+pub async fn set_active_swarmflow_preset(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let target_id = payload.get("activePresetId")
+        .or_else(|| payload.get("id"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("coding")
+        .to_string();
+
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64;
+
+    let active_obj = json!({
+        "activePresetId": target_id,
+        "updatedAt": now
+    });
+
+    let _ = std::fs::write(dir.join("active.json"), serde_json::to_string_pretty(&active_obj).unwrap_or_default());
+
+    // Also load the active preset to return it
+    let preset_file = dir.join(format!("{}.json", target_id));
+    let preset_val = if preset_file.is_file() {
+        std::fs::read_to_string(&preset_file).ok().and_then(|c| serde_json::from_str::<Value>(&c).ok())
+    } else {
+        None
+    };
+
+    Json(json!({
+        "status": "ok",
+        "activePresetId": target_id,
+        "preset": preset_val
+    }))
+}
+
+pub async fn get_swarmflow_preset(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let p = dir.join(format!("{}.json", id));
+    if p.is_file() {
+        if let Ok(c) = std::fs::read_to_string(&p) {
+            if let Ok(val) = serde_json::from_str::<Value>(&c) {
+                return Json(json!({ "status": "ok", "preset": val }));
+            }
+        }
+    }
+    Json(json!({ "status": "error", "message": format!("Preset '{}' not found", id) }))
+}
+
+pub async fn save_swarmflow_preset(
+    axum::extract::Path(id): axum::extract::Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let target_file = dir.join(format!("{}.json", id));
+    if let Ok(content) = serde_json::to_string_pretty(&payload) {
+        if std::fs::write(&target_file, &content).is_ok() {
+            // Check if this is the active preset; if so, update active timestamp
+            let active_path = dir.join("active.json");
+            let mut is_active = false;
+            if active_path.is_file() {
+                if let Ok(c) = std::fs::read_to_string(&active_path) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                        if v.get("activePresetId").and_then(|s| s.as_str()) == Some(&id) {
+                            is_active = true;
+                        }
+                    }
+                }
+            }
+            if is_active {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as u64;
+                let _ = std::fs::write(active_path, serde_json::to_string_pretty(&json!({
+                    "activePresetId": id,
+                    "updatedAt": now
+                })).unwrap_or_default());
+            }
+
+            return Json(json!({ "status": "ok", "id": id, "saved": true }));
+        }
+    }
+    Json(json!({ "status": "error", "message": "Failed to write preset file" }))
+}
+
+pub async fn relay_swarmflow_step(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let engine_root = state.agent.resolve_engine_root();
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let dir = resolve_swarmflow_dir(&engine_root, &effective_ws);
+
+    let current_node_id = payload.get("node_id").and_then(|v| v.as_str()).unwrap_or("");
+    let status_str = payload.get("status").and_then(|v| v.as_str()).unwrap_or("DONE");
+    let summary = payload.get("output").and_then(|v| v.as_str()).unwrap_or("");
+
+    // Read active preset
+    let active_path = dir.join("active.json");
+    let active_preset_id = if active_path.is_file() {
+        std::fs::read_to_string(&active_path)
+            .ok()
+            .and_then(|c| serde_json::from_str::<Value>(&c).ok())
+            .and_then(|v| v.get("activePresetId").and_then(|s| s.as_str()).map(|s| s.to_string()))
+            .unwrap_or_else(|| "coding".to_string())
+    } else {
+        "coding".to_string()
+    };
+
+    let preset_file = dir.join(format!("{}.json", active_preset_id));
+    if let Ok(c) = std::fs::read_to_string(&preset_file) {
+        if let Ok(preset) = serde_json::from_str::<Value>(&c) {
+            let nodes = preset.get("nodes").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+            let connections = preset.get("connections").and_then(|v| v.as_array()).cloned().unwrap_or_default();
+
+            // Find downstream targets from current_node_id
+            let mut next_targets: Vec<Value> = Vec::new();
+            for conn in &connections {
+                let from_id = conn.get("from").and_then(|v| v.as_str()).unwrap_or("");
+                let to_id = conn.get("to").and_then(|v| v.as_str()).unwrap_or("");
+                if from_id == current_node_id && !to_id.is_empty() {
+                    if let Some(target_node) = nodes.iter().find(|n| n.get("id").and_then(|v| v.as_str()) == Some(to_id)) {
+                        next_targets.push(target_node.clone());
+                    }
+                }
+            }
+
+            return Json(json!({
+                "status": "ok",
+                "activePresetId": active_preset_id,
+                "completedNodeId": current_node_id,
+                "nodeStatus": status_str,
+                "summary": summary,
+                "nextNodes": next_targets,
+                "hasDownstream": !next_targets.is_empty()
+            }));
+        }
+    }
+
+    Json(json!({
+        "status": "error",
+        "message": "Failed to resolve active pipeline relay"
+    }))
 }
 
 

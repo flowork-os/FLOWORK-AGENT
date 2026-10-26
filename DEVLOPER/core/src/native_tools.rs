@@ -112,6 +112,7 @@ pub const NATIVE_BINARY_TOOLS: &[&str] = &[
     "deterministic_helper",
     "c7_helper",
     "team_progress",
+    "app_control",
 ];
 
 pub fn is_native_binary_tool(name: &str) -> bool {
@@ -2073,6 +2074,139 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
             }))
         },
 
+        "app_control" | "plugin_control" | "flow_app_control" => {
+            let action = args.get("action")
+                .or_else(|| args.get("Action"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim()
+                .to_lowercase();
+
+            let app_id = args.get("app_id")
+                .or_else(|| args.get("plugin_id"))
+                .or_else(|| args.get("id"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+
+            let port = std::env::var("FLOWORK_PORT").unwrap_or_else(|_| "19890".to_string());
+
+            match action.as_str() {
+                "open" | "launch" => {
+                    if app_id.is_empty() {
+                        return Err("Parameter 'app_id' is required for action 'open'".to_string());
+                    }
+                    if let Some(disc) = discovery {
+                        disc.broadcast_plugin_command("open", app_id);
+                    }
+                    let mut cmd = tokio::process::Command::new("curl");
+                    cmd.arg("-s").arg("-X").arg("POST").arg(format!("http://127.0.0.1:{}/api/apps/{}/launch", port, app_id));
+                    let _ = cmd.output().await;
+
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "open",
+                        "app_id": app_id,
+                        "message": format!("Application '{}' tab opened in Canvas UI and backend engine launched.", app_id)
+                    }))
+                },
+                "reload" | "refresh" => {
+                    if app_id.is_empty() {
+                        return Err("Parameter 'app_id' is required for action 'reload'".to_string());
+                    }
+                    if let Some(disc) = discovery {
+                        disc.broadcast_plugin_command("reload", app_id);
+                    }
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "reload",
+                        "app_id": app_id,
+                        "message": format!("Application '{}' tab refreshed in Canvas UI.", app_id)
+                    }))
+                },
+                "close" | "stop" => {
+                    if app_id.is_empty() {
+                        return Err("Parameter 'app_id' is required for action 'close'".to_string());
+                    }
+                    if let Some(disc) = discovery {
+                        disc.broadcast_plugin_command("close", app_id);
+                    }
+                    let mut cmd = tokio::process::Command::new("curl");
+                    cmd.arg("-s").arg("-X").arg("POST").arg(format!("http://127.0.0.1:{}/api/apps/{}/stop", port, app_id));
+                    let _ = cmd.output().await;
+
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "close",
+                        "app_id": app_id,
+                        "message": format!("Application '{}' tab closed and engine stopped.", app_id)
+                    }))
+                },
+                "status" => {
+                    if app_id.is_empty() {
+                        return Err("Parameter 'app_id' is required for action 'status'".to_string());
+                    }
+                    let mut cmd = tokio::process::Command::new("curl");
+                    cmd.arg("-s").arg(format!("http://127.0.0.1:{}/api/apps/{}/status", port, app_id));
+                    let output = cmd.output().await;
+                    let mut running = false;
+                    let mut port_val = None;
+                    if let Ok(o) = output {
+                        if let Ok(val) = serde_json::from_slice::<Value>(&o.stdout) {
+                            running = val.get("running").and_then(|v| v.as_bool()).unwrap_or(false);
+                            port_val = val.get("port").and_then(|v| v.as_u64());
+                        }
+                    }
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "status",
+                        "app_id": app_id,
+                        "running": running,
+                        "port": port_val
+                    }))
+                },
+                "list" => {
+                    let apps_dir = engine_root.join("apps");
+                    let mut apps_list = Vec::new();
+                    if let Ok(entries) = std::fs::read_dir(&apps_dir) {
+                        for e in entries.flatten() {
+                            let p = e.path();
+                            if p.is_dir() {
+                                let manifest_p = p.join("plugin.manifest.json");
+                                if manifest_p.exists() {
+                                    if let Ok(m_str) = std::fs::read_to_string(&manifest_p) {
+                                        if let Ok(m_json) = serde_json::from_str::<Value>(&m_str) {
+                                            apps_list.push(json!({
+                                                "id": m_json.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+                                                "name": m_json.get("name").and_then(|v| v.as_str()).unwrap_or(""),
+                                                "category": m_json.get("category").and_then(|v| v.as_str()).unwrap_or(""),
+                                                "icon": m_json.get("icon").and_then(|v| v.as_str()).unwrap_or("⚡"),
+                                                "description": m_json.get("description").and_then(|v| v.as_str()).unwrap_or("")
+                                            }));
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "list",
+                        "count": apps_list.len(),
+                        "apps": apps_list
+                    }))
+                },
+                _ => {
+                    Err(format!("Unknown action '{}' for app_control. Supported actions: 'open', 'reload', 'close', 'status', 'list'.", action))
+                }
+            }
+        },
+
         "screenshot" | "flow_screenshot" | "take_screenshot" => {
             let delay_ms = args.get("delay_ms")
                 .or_else(|| args.get("delay"))
@@ -3545,8 +3679,8 @@ pub fn get_native_declarations_internal(
         }
     }
 
-    // 3. Process Ecosystem Tools (plugin_control, app_publish, skill_control, brain_control, trigger_control)
-    for tool_name in &["plugin_control", "app_publish", "plugin_publish", "skill_control", "brain_control", "trigger_control"] {
+    // 3. Process Ecosystem Tools (app_control, plugin_control, app_publish, skill_control, brain_control, trigger_control)
+    for tool_name in &["app_control", "plugin_control", "app_publish", "plugin_publish", "skill_control", "brain_control", "trigger_control"] {
         if mounted_set.contains(*tool_name) || *tool_name == "trigger_control" {
             if let Some(mut decl) = resolve_canvas_tool_declaration(canvas_tools_dir, tool_name) {
                 crate::tools::inject_intercept_gate_schema(&mut decl);
@@ -3683,6 +3817,27 @@ pub fn resolve_canvas_tool_declaration(canvas_tools_dir: &Path, tool_name: &str)
                         "description": "Level of detail: 'outline' (symbols only), 'compact' (files + key symbols), 'full' (all exports & calls)"
                     }
                 }
+            }
+        }));
+    }
+
+    if tool_name == "app_control" || tool_name == "flow_app_control" {
+        return Some(json!({
+            "name": "app_control",
+            "description": "Control and manage Flowork OS visual Canvas UI applications (open, reload, close, status, list). Directly commands the Canvas UI to open/mount app tabs, reload running tabs, close tabs, or query running engine status.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Action to perform: 'open' (launch and open app tab in Canvas UI), 'reload' (refresh/reload app tab), 'close' (close tab and stop engine), 'status' (query app status and assigned port), 'list' (list all installed applications)"
+                    },
+                    "app_id": {
+                        "type": "STRING",
+                        "description": "Target application identifier (e.g. 'chess', 'flow-studio', 'whale-radar', 'app-forge')"
+                    }
+                },
+                "required": ["action"]
             }
         }));
     }
@@ -4051,7 +4206,7 @@ mod tests {
         // 8. Test exact count invariants
         assert_eq!(CORE_14_TOOLS.len(), 14, "Must have exactly 14 Core Universal Agent Tools");
         assert_eq!(PROMPT_TRIGGER_9_TOOLS.len(), 9, "Must have exactly 9 Prompt Trigger Tools");
-        assert_eq!(NATIVE_BINARY_TOOLS.len(), 28, "Must have exactly 28 Native Binary Tools");
+        assert_eq!(NATIVE_BINARY_TOOLS.len(), 29, "Must have exactly 29 Native Binary Tools");
 
         for t in NATIVE_BINARY_TOOLS {
             assert!(is_native_binary_tool(t), "Tool '{}' must be recognized as native binary tool", t);
@@ -4088,6 +4243,51 @@ mod tests {
         assert_eq!(write_res["exit_code"], 0);
         assert!(ext_file.exists());
         let _ = tokio::fs::remove_dir_all(&ext_dir).await;
+
+        let _ = tokio::fs::remove_dir_all(&temp_dir).await;
+    }
+
+    #[tokio::test]
+    async fn test_native_app_control_execution() {
+        let temp_dir = std::env::temp_dir().join(format!("flw_appctl_test_{}", std::process::id()));
+        let apps_dir = temp_dir.join("apps").join("test_app");
+        let _ = tokio::fs::create_dir_all(&apps_dir).await;
+
+        let manifest = json!({
+            "id": "test_app",
+            "name": "Test Application",
+            "category": "Software Engineering",
+            "icon": "🧪",
+            "description": "Test App for App Control Unit Test"
+        });
+        let _ = tokio::fs::write(apps_dir.join("plugin.manifest.json"), manifest.to_string()).await;
+
+        // 1. Test list action
+        let list_args = json!({ "action": "list" });
+        let list_res = execute_native_tool("app_control", &list_args, &temp_dir, &temp_dir).await.expect("app_control list");
+        assert_eq!(list_res["status"], "SUCCESS");
+        assert_eq!(list_res["exit_code"], 0);
+        assert_eq!(list_res["action"], "list");
+        assert!(list_res["apps"].as_array().map(|a| a.iter().any(|app| app["id"] == "test_app")).unwrap_or(false));
+
+        // 2. Test open action
+        let open_args = json!({ "action": "open", "app_id": "test_app" });
+        let open_res = execute_native_tool("app_control", &open_args, &temp_dir, &temp_dir).await.expect("app_control open");
+        assert_eq!(open_res["status"], "SUCCESS");
+        assert_eq!(open_res["action"], "open");
+        assert_eq!(open_res["app_id"], "test_app");
+
+        // 3. Test reload action
+        let reload_args = json!({ "action": "reload", "app_id": "test_app" });
+        let reload_res = execute_native_tool("app_control", &reload_args, &temp_dir, &temp_dir).await.expect("app_control reload");
+        assert_eq!(reload_res["status"], "SUCCESS");
+        assert_eq!(reload_res["action"], "reload");
+
+        // 4. Test close action
+        let close_args = json!({ "action": "close", "app_id": "test_app" });
+        let close_res = execute_native_tool("app_control", &close_args, &temp_dir, &temp_dir).await.expect("app_control close");
+        assert_eq!(close_res["status"], "SUCCESS");
+        assert_eq!(close_res["action"], "close");
 
         let _ = tokio::fs::remove_dir_all(&temp_dir).await;
     }

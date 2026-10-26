@@ -58,12 +58,15 @@ use ipc_router::{
     get_active_viewport, get_auth_status, get_auth_ticket, get_available_personas, get_copilot_registry, get_default_save_path,
     get_plugin_status, get_sync_drive_login_url, get_sync_drive_status, get_workspaces,
     install_copilot_plugin, launch_desktop_recorder, launch_plugin, list_plugins, list_skills, list_scheduled_jobs, logout_auth, pick_folder_dialog, pick_save_dialog,
+    open_plugin, reload_plugin, close_plugin,
     list_all_triggers, test_trigger_endpoint, toggle_trigger_daemon, get_trigger_store, install_trigger_endpoint, create_trigger_endpoint,
     list_system_prompts, get_system_prompt_content, save_system_prompt,
     get_subagent_persona, save_subagent_persona, get_subagent_rules, save_subagent_rules, get_subagent_task, save_subagent_task,
     get_subagent_style, save_subagent_style, get_subagent_skills, save_subagent_skills,
     list_subagents, create_subagent, delete_subagent,
     get_pipeline_dag, save_pipeline_dag,
+    list_swarmflow_presets, get_active_swarmflow_preset, set_active_swarmflow_preset,
+    get_swarmflow_preset, save_swarmflow_preset, relay_swarmflow_step,
     plugin_events, prompt_dispatch, remove_sync_drive_account, remove_sync_drive_folder,
     restore_sync_drive_file, save_file_to_disk, set_active_viewport, set_auth_token, stop_plugin,
     switch_workspace, uninstall_copilot_plugin, update_scheduled_job, AppState,
@@ -237,6 +240,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/apps/:id/gui/*subpath", get(serve_app_gui))
         .route("/api/apps", get(list_plugins))
         .route("/api/apps/:id/launch", post(launch_plugin))
+        .route("/api/apps/:id/open", post(open_plugin))
+        .route("/api/apps/:id/reload", post(reload_plugin))
+        .route("/api/apps/:id/close", post(close_plugin))
         .route("/api/apps/:id/stop", post(stop_plugin))
         .route("/api/apps/:id/status", get(get_plugin_status))
         .route("/plugins/:id/gui", get(serve_plugin_gui_redirect))
@@ -247,6 +253,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/agents", get(get_available_personas))
         .route("/api/personas", get(get_available_personas))
         .route("/api/plugins/:id/launch", post(launch_plugin))
+        .route("/api/plugins/:id/open", post(open_plugin))
+        .route("/api/plugins/:id/reload", post(reload_plugin))
+        .route("/api/plugins/:id/close", post(close_plugin))
         .route("/api/plugins/:id/stop", post(stop_plugin))
         .route("/api/plugins/:id/status", get(get_plugin_status))
         .route("/api/viewport/active", get(get_active_viewport).post(set_active_viewport))
@@ -275,6 +284,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/subagents/:id/style", get(get_subagent_style).post(save_subagent_style))
         .route("/api/subagents/:id/skills", get(get_subagent_skills).post(save_subagent_skills))
         .route("/api/pipeline/dag", get(get_pipeline_dag).post(save_pipeline_dag))
+        .route("/api/swarmflow/presets", get(list_swarmflow_presets))
+        .route("/api/swarmflow/active", get(get_active_swarmflow_preset).post(set_active_swarmflow_preset))
+        .route("/api/swarmflow/preset/:id", get(get_swarmflow_preset).post(save_swarmflow_preset))
+        .route("/api/swarmflow/relay", post(relay_swarmflow_step))
         .route("/api/dialog/pick-folder", get(pick_folder_dialog))
         .route("/api/events", get(plugin_events))
         .route("/api/copilot/registry", get(get_copilot_registry))

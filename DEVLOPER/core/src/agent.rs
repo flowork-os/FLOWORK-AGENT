@@ -2661,13 +2661,13 @@ r#"<CALLER_CONTEXT>
 </CALLER_CONTEXT>
 
 <ACTIVE_WORKSPACE_TERRITORY>
-🚨 ABSOLUTE LAW OF ACTIVE WORKSPACE TERRITORY (HUKUM MUTLAK TERITORI WORKSPACE AKTIF):
+🚨 ABSOLUTE LAW OF ACTIVE WORKSPACE TERRITORY:
 • ACTIVE WORKSPACE TERRITORY : `{ws_str}` | Session: `{sess_id}`
 • THREE SACRED TERRITORIES   : TERRITORIAL ISOLATION
 • PROJECT NAME               : `{ws_name}`
 • ISOLATED SCRATCH DIRECTORY : `{ws_str}/.FL_BIN/scratch/`
-• STRICTLY PROHIBITED FROM TOUCHING OUTSIDE THE WORKSPACE (DILARANG KERAS SENTUH DI LUAR WORKSPACE).
-SELURUH TARGET BERKAS YANG DISENTUH WAJIB DI BAWAH `{ws_str}`.
+• STRICTLY PROHIBITED FROM TOUCHING OUTSIDE THE WORKSPACE.
+ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
 </ACTIVE_WORKSPACE_TERRITORY>"#
         ));
 
@@ -4056,6 +4056,7 @@ SELURUH TARGET BERKAS YANG DISENTUH WAJIB DI BAWAH `{ws_str}`.
 
         // Sovereign Lifecycle Tools: Auto-mount anchor discovery, screenshot, trigger_control, and pinning tools permanently
         self.tools.mount_tools(session_id, &[
+            "app_control".to_string(),
             "plugin_control".to_string(),
             "app_publish".to_string(),
             "plugin_publish".to_string(),
@@ -4068,6 +4069,7 @@ SELURUH TARGET BERKAS YANG DISENTUH WAJIB DI BAWAH `{ws_str}`.
         ]).await;
 
         let mut mounted_tools = self.tools.get_mounted_tools(session_id).await;
+        mounted_tools.insert("app_control".to_string());
         mounted_tools.insert("plugin_control".to_string());
         mounted_tools.insert("app_publish".to_string());
         mounted_tools.insert("plugin_publish".to_string());
@@ -8592,8 +8594,8 @@ Solution: Always enable PRAGMA journal_mode = WAL and busy_timeout = 5000.
             None, None, None, None, None, Some("mr.flow")
         );
         assert!(prompt_gh.contains("<CONDITIONAL_GITHUB_RESEARCH_DIRECTIVE>"));
-        assert!(prompt_gh.contains("PRIORITAS 1 (TRENDING & REPUTASI)"));
-        assert!(prompt_gh.contains("MEMBANGUN SENDIRI DARI NOL"));
+        assert!(prompt_gh.contains("PRIORITY 1: INTEL GROUND TRUTH OVER MARKETING HYPE") || prompt_gh.contains("PRIORITAS 1 (TRENDING & REPUTASI)"));
+        assert!(prompt_gh.contains("SCRATCH-BUILT SOVEREIGN IMPLEMENTATION") || prompt_gh.contains("MEMBANGUN SENDIRI DARI NOL"));
 
         // 2. Test GUI / Frontend Trigger
         let prompt_gui = agent.build_system_prompt_full_with_persona(
@@ -8630,10 +8632,10 @@ Solution: Always enable PRAGMA journal_mode = WAL and busy_timeout = 5000.
             None, None, None, None, None, Some("mr.flow")
         );
         assert!(prompt_push.contains("<CONDITIONAL_GIT_PUSH_SECURITY_DIRECTIVE>"));
-        assert!(prompt_push.contains("BENTENG ZERO-LEAK MUTLAK"));
+        assert!(prompt_push.contains("ABSOLUTE ZERO-LEAK FORTRESS") || prompt_push.contains("BENTENG ZERO-LEAK MUTLAK"));
         assert!(prompt_push.contains("agent@floworkos.com"));
         assert!(prompt_push.contains("Co-authored-by: Flowork OS <agent@floworkos.com>"));
-        assert!(prompt_push.contains("MUTLAK DIHARAMKAN melakukan destructive force push"));
+        assert!(prompt_push.contains("ABSOLUTELY FORBIDDEN to execute destructive force push") || prompt_push.contains("MUTLAK DIHARAMKAN melakukan destructive force push"));
 
         // 6. Test Free Tier Restriction (Tier Gating)
         let temp_free_ws = std::env::temp_dir().join(format!("flw_test_free_{}", uuid::Uuid::new_v4()));
@@ -9100,6 +9102,10 @@ Solution: Always enable PRAGMA journal_mode = WAL and busy_timeout = 5000.
         assert!(prompt.contains("PRIMARY REFLEX (MANDATORY USE OF CODE_GRAPH)"), "Primary code_graph reflex must be declared!");
         assert!(prompt.contains("SECONDARY INVESTIGATION (VIEW_FILE & BASH CONDITIONALLY ALLOWED)"), "Conditional view_file/bash must be declared!");
         assert!(prompt.contains("STRICT PROHIBITION (ANTI-MEMBABI BUTA)"), "Strict prohibition against blind reading must be declared!");
+
+        // 4. Verify native app_control lifecycle (open, reload, close) always appears unconditionally in every prompt
+        assert!(prompt.contains("app_control"), "app_control must be declared in constitution and organ SOP!");
+        assert!(prompt.contains("reload") && prompt.contains("close"), "reload and close app lifecycle must be present in prompt!");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }

@@ -316,13 +316,6 @@ function initOffice3DSystem() {
 let currentOfficeSubtab = 'office'; // 'office' | 'pipeline' | 'blackboard'
 
 function switchOfficeSubtab(targetSubtab) {
-  if (targetSubtab === 'pipeline') {
-    if (typeof window.openAgentStudio === 'function') {
-      window.openAgentStudio();
-    }
-    targetSubtab = 'office';
-  }
-
   if (!targetSubtab || targetSubtab === 'boardroom' || targetSubtab === '3d') {
     targetSubtab = 'office';
   }
@@ -332,7 +325,7 @@ function switchOfficeSubtab(targetSubtab) {
   } catch (_) {}
 
   // 1. Update sub-nav button active classes
-  const btns = document.querySelectorAll('.group-subnav-btn');
+  const btns = document.querySelectorAll('#office-subnav-bar .group-subnav-btn, .group-subnav-bar .group-subnav-btn');
   btns.forEach(btn => {
     const s = btn.getAttribute('data-subtab');
     if (s === targetSubtab || (s === 'office' && (targetSubtab === 'office' || targetSubtab === 'boardroom'))) {
@@ -345,10 +338,12 @@ function switchOfficeSubtab(targetSubtab) {
   // 2. Pane visibility inside Office
   const paneOffice = document.getElementById('office-pane-3d');
   const paneBlackboard = document.getElementById('office-pane-blackboard');
+  const panePipeline = document.getElementById('view-pipeline');
 
-  if (paneOffice) paneOffice.style.display = targetSubtab === 'office' ? 'block' : 'none';
+  if (paneOffice) paneOffice.style.display = (targetSubtab === 'office') ? 'block' : 'none';
+
   if (paneBlackboard) {
-    paneBlackboard.style.display = targetSubtab === 'blackboard' ? 'block' : 'none';
+    paneBlackboard.style.display = (targetSubtab === 'blackboard') ? 'flex' : 'none';
     if (targetSubtab === 'blackboard' && window.swarmTelemetry) {
       if (!window.swarmTelemetry.isInitialized && typeof window.swarmTelemetry.bindUI === 'function') {
         window.swarmTelemetry.bindUI();
@@ -359,21 +354,38 @@ function switchOfficeSubtab(targetSubtab) {
     }
   }
 
-  // 2b. CHAT VISIBILITY POLICY:
+  if (panePipeline) {
+    const isPipeline = (targetSubtab === 'pipeline');
+    panePipeline.style.setProperty('display', isPipeline ? 'flex' : 'none', 'important');
+    panePipeline.classList.toggle('active', isPipeline);
+    if (isPipeline && window.swarmPipelineInstance) {
+      if (!panePipeline.classList.contains('swarm-pipeline-container') || !panePipeline.querySelector('.pipeline-palette-sidebar')) {
+        window.swarmPipelineInstance.mount(panePipeline);
+      } else {
+        window.swarmPipelineInstance.render();
+      }
+    }
+  }
+
+  // 2b. CHAT & LAYOUT VISIBILITY POLICY:
   const rightbarChat = document.getElementById('rightbar-chat');
   const resizerRight = document.getElementById('resizer-right');
   const canvasLayout = document.querySelector('.canvas-layout');
 
-  if (rightbarChat) {
-    rightbarChat.style.removeProperty('display');
-    rightbarChat.classList.remove('collapsed');
-  }
-  if (resizerRight) {
-    resizerRight.style.removeProperty('display');
-    resizerRight.classList.remove('collapsed');
-  }
-  if (canvasLayout) {
-    canvasLayout.classList.remove('pipeline-active');
+  if (targetSubtab === 'pipeline') {
+    if (rightbarChat) rightbarChat.style.setProperty('display', 'none', 'important');
+    if (resizerRight) resizerRight.style.setProperty('display', 'none', 'important');
+    if (canvasLayout) canvasLayout.classList.add('pipeline-active');
+  } else {
+    if (rightbarChat) {
+      rightbarChat.style.removeProperty('display');
+      rightbarChat.classList.remove('collapsed');
+    }
+    if (resizerRight) {
+      resizerRight.style.removeProperty('display');
+      resizerRight.classList.remove('collapsed');
+    }
+    if (canvasLayout) canvasLayout.classList.remove('pipeline-active');
   }
   if (typeof window.__updateLayoutResizers === 'function') {
     window.__updateLayoutResizers();
@@ -398,7 +410,7 @@ function switchOfficeSubtab(targetSubtab) {
       window.office3DInstance.onWindowResize();
     }
   } else {
-    // Blackboard: 0 FPS, 0 GPU draw calls!
+    // Blackboard & Swarm Flow: 0 FPS, 0 GPU draw calls!
     if (window.office3DInstance && typeof window.office3DInstance.pause === 'function') {
       window.office3DInstance.pause();
     }
@@ -5967,6 +5979,10 @@ async function switchTab(tabId, options = {}) {
   } else if (tabId === 'copilot') {
     const saved = localStorage.getItem('xflow_store_subtab') || 'cloud';
     switchStoreSubtab(saved);
+  } else if (tabId === 'pipeline') {
+    await switchTab('office', options);
+    switchOfficeSubtab('pipeline');
+    return;
   }
 
   // Fail-safe view existence validation: NEVER switch to a non-existent panel
@@ -6262,26 +6278,7 @@ async function switchTab(tabId, options = {}) {
     }
   }
 
-  if (tabId === 'pipeline') {
-    const pipelineView = document.getElementById('view-pipeline');
-    if (pipelineView) {
-      pipelineView.style.setProperty('display', 'flex', 'important');
-      pipelineView.classList.add('active');
-      const rightbar = document.getElementById('rightbar-chat');
-      if (rightbar) rightbar.style.setProperty('display', 'none', 'important');
-      const resizer = document.getElementById('resizer-right');
-      if (resizer) resizer.style.setProperty('display', 'none', 'important');
-      document.querySelector('.canvas-layout')?.classList.add('pipeline-active');
-
-      if (window.swarmPipelineInstance) {
-        if (!pipelineView.classList.contains('swarm-pipeline-container') || !pipelineView.querySelector('.pipeline-palette-sidebar')) {
-          window.swarmPipelineInstance.mount(pipelineView);
-        } else {
-          window.swarmPipelineInstance.render();
-        }
-      }
-    }
-  } else {
+  if (tabId !== 'office') {
     const pipelineView = document.getElementById('view-pipeline');
     if (pipelineView) {
       pipelineView.style.setProperty('display', 'none', 'important');

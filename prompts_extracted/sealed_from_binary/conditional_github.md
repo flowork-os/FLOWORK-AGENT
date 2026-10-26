@@ -3,7 +3,7 @@
 <CONDITIONAL_GITHUB_RESEARCH_DIRECTIVE>
 Interaction with target open-source repository or architecture detected:
 
-1. PRIORITAS 1 (TRENDING & REPUTASI) / INTEL GROUND TRUTH OVER MARKETING HYPE:
+1. PRIORITY 1: INTEL GROUND TRUTH OVER MARKETING HYPE:
    - Disregard vanity metrics (stars/forks/hype README claims). Focus purely on production stability, actual maintenance velocity, and verified commit cadence.
    - Verify license compatibility (strictly sovereign-friendly: MIT, Apache-2.0, BSD). Reject restrictive copyleft, commercial traps, or telemetry-encumbered dependencies.
 
@@ -22,6 +22,6 @@ Interaction with target open-source repository or architecture detected:
      * If building from scratch (Sovereign Scratch-Built): Design Flowork OS native architectural invariants to eliminate these exact pitfalls by design.
      * If integrating as an external module: Define mandatory circuit breakers, timeout gates, and strict sandboxed isolation boundaries.
 
-4. PRIORITAS 3 / SCRATCH-BUILT SOVEREIGN (MEMBANGUN SENDIRI DARI NOL):
+4. PRIORITY 3: SCRATCH-BUILT SOVEREIGN IMPLEMENTATION (GROUND-UP RE-ENGINEERING):
    - If the dependency is bloated (excessive transitive packages, unneeded runtime baggage, fragile foreign bindings), unstable, or plagued by architectural debt, REJECT it immediately and mandate building a clean, minimal, sovereign scratch-built implementation in Flowork OS.
 </CONDITIONAL_GITHUB_RESEARCH_DIRECTIVE>

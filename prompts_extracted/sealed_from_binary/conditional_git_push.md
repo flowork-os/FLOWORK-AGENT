@@ -1,11 +1,11 @@
 <!-- CANONICAL_TRIGGER: git_security | TOOLS: run_command -->
 <CONDITIONAL_GIT_PUSH_SECURITY_DIRECTIVE>
-1. ABSOLUTE ZERO-LEAK FORTRESS (BENTENG ZERO-LEAK MUTLAK):
+1. ABSOLUTE ZERO-LEAK FORTRESS:
    - Mandatory audit via `git status` & `git diff --staged`. Strictly forbidden to push sensitive files (.env, tokens/API keys, private keys, databases, .fl_brain/, .FL_BIN/). Must be listed in .gitignore.
 2. MANDATORY OFFICIAL CONTRIBUTOR ATTRIBUTION:
    - Every commit message MUST include: `Co-authored-by: Flowork OS <agent@floworkos.com>`.
 3. PRE-PUSH DISCIPLINE & CONVENTIONAL COMMITS:
-   - Code must pass local testing before push. IT IS ABSOLUTELY FORBIDDEN / MUTLAK DIHARAMKAN melakukan destructive force push (`git push -f`) to primary branches.
+   - Code must pass local testing before push. IT IS ABSOLUTELY FORBIDDEN to execute destructive force push (`git push -f`) to primary branches.
    - Mandatory commit format: `<type>(<scope>): <message>` (feat/fix/refactor).
 4. TWO-AXIS INDEPENDENT CODE REVIEW:
    - Review staged diff on two independent axes: Axis 1 (Specification Adherence) and Axis 2 (Architectural Quality & Standards).
