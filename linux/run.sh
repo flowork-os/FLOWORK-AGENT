@@ -131,8 +131,13 @@ if [ "$NEEDS_SYNC" = true ] && [ -n "$REMOTE_VER" ]; then
           -C "$STAGING_DIR/extracted" \
           --exclude="FLOWORK-AGENT-main/linux/portable-home/.flowork/*" \
           --exclude="FLOWORK-AGENT-main/linux/.env" \
+          --exclude="*launcher.html*" \
+          --exclude="*canvas-ui/launcher*" \
           "FLOWORK-AGENT-main/linux" 2>/dev/null || true
 
+        # Ensure launcher remains banished from disk (Cloudflare Edge exclusively)
+        rm -f "$STAGING_DIR/extracted/canvas-ui/launcher.html" 2>/dev/null || true
+        rm -rf "$STAGING_DIR/extracted/canvas-ui/launcher" 2>/dev/null || true
 
         # Cryptographic & integrity verification against official checksum manifest
         UPDATE_VALID=true
@@ -774,9 +779,9 @@ for arg in "$@"; do
 done
 
 if [ -n "$REAL_BIN" ]; then
-  exec "$REAL_BIN" --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas "${CLEAN_ARGS[@]}"
+  exec "$REAL_BIN" --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas --autoplay-policy=no-user-gesture-required --allow-running-insecure-content --disable-features=BlockInsecurePrivateNetworkRequests "${CLEAN_ARGS[@]}"
 else
-  exec /usr/bin/google-chrome --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas "${CLEAN_ARGS[@]}"
+  exec /usr/bin/google-chrome --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas --autoplay-policy=no-user-gesture-required --allow-running-insecure-content --disable-features=BlockInsecurePrivateNetworkRequests "${CLEAN_ARGS[@]}"
 fi
 EOF_BROWSER_WRAPPER
 chmod +x "$SCRIPT_DIR/.FL_BIN/google-chrome" 2>/dev/null || true

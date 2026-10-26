@@ -43,7 +43,9 @@ impl WindowManager {
             "--enable-accelerated-2d-canvas",
             "--enable-gpu-rasterization",
             "--disable-popup-blocking",
-            "--disable-session-crashed-bubble",
+            "--autoplay-policy=no-user-gesture-required",
+            "--allow-running-insecure-content",
+            "--disable-features=BlockInsecurePrivateNetworkRequests",
             "--class=flowork-os",
             "--app-id=flowork-os",
         ];

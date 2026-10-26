@@ -779,9 +779,9 @@ for arg in "$@"; do
 done
 
 if [ -n "$REAL_BIN" ]; then
-  exec "$REAL_BIN" --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas "${CLEAN_ARGS[@]}"
+  exec "$REAL_BIN" --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas --autoplay-policy=no-user-gesture-required --allow-running-insecure-content --disable-features=BlockInsecurePrivateNetworkRequests "${CLEAN_ARGS[@]}"
 else
-  exec /usr/bin/google-chrome --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas "${CLEAN_ARGS[@]}"
+  exec /usr/bin/google-chrome --ignore-gpu-blocklist --enable-webgl --enable-accelerated-2d-canvas --autoplay-policy=no-user-gesture-required --allow-running-insecure-content --disable-features=BlockInsecurePrivateNetworkRequests "${CLEAN_ARGS[@]}"
 fi
 EOF_BROWSER_WRAPPER
 chmod +x "$SCRIPT_DIR/.FL_BIN/google-chrome" 2>/dev/null || true

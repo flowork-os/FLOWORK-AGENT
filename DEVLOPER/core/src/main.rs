@@ -338,6 +338,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/chat/regenerate", post(chat_regenerate_turn))
         .route("/api/prompt-dispatch", post(prompt_dispatch))
         .route("/api/chat/prompt-dispatch", post(prompt_dispatch))
+        .layer(axum::middleware::from_fn(pna_middleware))
         .layer(CorsLayer::permissive())
         .with_state(state.clone());
 
@@ -422,3 +423,13 @@ async fn shutdown_signal() {
         _ = terminate => {},
     }
 }
+
+async fn pna_middleware(req: axum::extract::Request, next: axum::middleware::Next) -> axum::response::Response {
+    let mut resp = next.run(req).await;
+    resp.headers_mut().insert(
+        axum::http::header::HeaderName::from_static("access-control-allow-private-network"),
+        axum::http::HeaderValue::from_static("true"),
+    );
+    resp
+}
+
