@@ -864,6 +864,436 @@
     }
   ];
 
+  const DEFAULT_SWARM_PRESETS = {
+    trading: {
+      id: 'trading',
+      name: 'Forex & Quant Trading',
+      icon: '📈',
+      domain: 'Forex / Quant Finance',
+      description: 'Real-time FX tick sensor, Quant VaR modeling, Capital Preservation Risk Manager, and Autonomous Order Dispatcher.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-fx-sensor',
+          type: 'trigger',
+          triggerId: 'market_tick_sensor',
+          name: 'Forex Market Volatility Sensor',
+          role: 'Forex / Crypto Market Sensor',
+          domain: 'Forex / Quant Finance',
+          icon: '📈',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'market_tick',
+            channel: 'EURUSD, XAUUSD, BTCUSDT',
+            symbol: 'EURUSD, XAUUSD, BTCUSDT',
+            threshold: 'Spread <= 1.2 pips && RSI < 30',
+            conditionExpr: 'payload.spread <= 1.2 && payload.rsi < 30',
+            samplePayload: JSON.stringify({
+              symbol: "EURUSD",
+              bid: 1.0848,
+              ask: 1.0850,
+              spread: 0.2,
+              rsi: 28.4,
+              volatility: "HIGH"
+            }, null, 2)
+          }
+        },
+        {
+          id: 'node-fx-quant',
+          type: 'agent',
+          name: 'Quantitative Analyst',
+          role: 'Quantitative Analyst',
+          icon: '📊',
+          x: 450,
+          y: 200,
+          taskPrompt: 'Analyze price action, volume momentum, and portfolio value-at-risk.',
+          rulePrompt: 'Reject high-spread slippage anomalies and enforce statistical edge.'
+        },
+        {
+          id: 'node-fx-risk',
+          type: 'agent',
+          name: 'Risk Manager',
+          role: 'Risk Manager',
+          icon: '💼',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Perform capital preservation check, margin audit, and drawdown limits.',
+          rulePrompt: 'Never authorize position size exceeding 1.5% portfolio equity.'
+        },
+        {
+          id: 'node-fx-trader',
+          type: 'agent',
+          name: 'Trading Director',
+          role: 'Trading Director',
+          icon: '👑',
+          x: 1150,
+          y: 200,
+          taskPrompt: 'Execute sovereign order routing with dynamic position sizing.',
+          rulePrompt: 'Only execute orders with dual risk-manager confirmation.'
+        },
+        {
+          id: 'node-fx-escalator',
+          type: 'agent',
+          name: 'Risk Escalation Auditor',
+          role: 'Risk Escalation Auditor',
+          icon: '🛡️',
+          x: 450,
+          y: 450,
+          taskPrompt: 'Intervene on high-spread spikes, news volatility, or slippage anomalies.',
+          rulePrompt: 'Trigger hedging and margin lock when condition threshold fails.'
+        }
+      ],
+      connections: [
+        { id: 'conn-fx-1', from: 'node-fx-sensor', fromPort: 'out-1', to: 'node-fx-quant', guardianEnabled: true },
+        { id: 'conn-fx-2', from: 'node-fx-quant', fromPort: 'out-1', to: 'node-fx-risk', guardianEnabled: true },
+        { id: 'conn-fx-3', from: 'node-fx-risk', fromPort: 'out-1', to: 'node-fx-trader', guardianEnabled: true },
+        { id: 'conn-fx-4', from: 'node-fx-sensor', fromPort: 'out-2', to: 'node-fx-escalator', guardianEnabled: true }
+      ]
+    },
+    coding: {
+      id: 'coding',
+      name: 'Software Systems & Coding',
+      icon: '💻',
+      domain: 'Engineering / Software Systems',
+      description: 'End-to-end full-stack software development, automated test gatekeeping, and security compliance.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-dev-ingress',
+          type: 'trigger',
+          triggerId: 'webhook_ingress',
+          name: 'Webhook Ingress Gateway',
+          role: 'Webhook Ingress Gateway',
+          domain: 'Universal / API Ingress',
+          icon: '⚡',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'webhook',
+            channel: '/api/webhook/pipeline',
+            conditionExpr: 'payload.event != null',
+            samplePayload: JSON.stringify({ event: 'GIT_PUSH', branch: 'main', commits: 3 }, null, 2)
+          }
+        },
+        {
+          id: 'node-dev-leader',
+          agentId: 'leader',
+          type: 'leader',
+          name: 'Swarm Leader',
+          role: 'Swarm Leader',
+          icon: '👑',
+          x: 450,
+          y: 200,
+          isLocked: true,
+          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
+          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
+        },
+        {
+          id: 'node-dev-backend',
+          agentId: 'backend-engineer',
+          type: 'agent',
+          name: 'Backend Engineer',
+          role: 'Backend & Systems Specialist',
+          icon: '⚙️',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Build sovereign, lightweight, multi-OS portable backend services.',
+          rulePrompt: 'Zero zombie code. Strict exit code 0.'
+        },
+        {
+          id: 'node-dev-frontend',
+          agentId: 'frontend-engineer',
+          type: 'agent',
+          name: 'Frontend Engineer',
+          role: 'Frontend Interface Craftsman',
+          icon: '🎨',
+          x: 1150,
+          y: 200,
+          taskPrompt: 'Implement modern, responsive, glassmorphic UI components.',
+          rulePrompt: 'Pixel-perfect CSS containment and zero global DOM leaks.'
+        },
+        {
+          id: 'node-dev-security',
+          agentId: 'security-auditor',
+          type: 'agent',
+          name: 'Security Auditor',
+          role: 'Security & Penetration Specialist',
+          icon: '🛡️',
+          x: 800,
+          y: 450,
+          taskPrompt: 'Scrutinize attack surfaces, credentials, and reverse engineering defenses.',
+          rulePrompt: 'Zero credential leaks. Strict circuit breaker isolation.'
+        },
+        {
+          id: 'node-dev-qc',
+          agentId: 'quality-control',
+          type: 'agent',
+          name: 'Quality Control',
+          role: 'Quality Control & Regression Sentinel',
+          icon: '🧪',
+          x: 1150,
+          y: 450,
+          taskPrompt: 'Run rigorous headless browser verification, smoke tests, and lint audits.',
+          rulePrompt: 'Claim success ONLY with empirical evidence and exit code 0.'
+        }
+      ],
+      connections: [
+        { id: 'conn-dev-1', from: 'node-dev-ingress', fromPort: 'out-1', to: 'node-dev-leader', guardianEnabled: true },
+        { id: 'conn-dev-2', from: 'node-dev-leader', fromPort: 'out-1', to: 'node-dev-backend', guardianEnabled: true },
+        { id: 'conn-dev-3', from: 'node-dev-backend', fromPort: 'out-1', to: 'node-dev-frontend', guardianEnabled: true },
+        { id: 'conn-dev-4', from: 'node-dev-leader', fromPort: 'out-2', to: 'node-dev-security', guardianEnabled: true },
+        { id: 'conn-dev-5', from: 'node-dev-frontend', fromPort: 'out-1', to: 'node-dev-qc', guardianEnabled: true }
+      ]
+    },
+    seo: {
+      id: 'seo',
+      name: 'SEO & Growth Marketing',
+      icon: '🚀',
+      domain: 'Marketing / Growth / SEO',
+      description: 'Keyword research, competitive SERP intelligence, viral copywriting, and conversion optimization.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-seo-sched',
+          type: 'trigger',
+          triggerId: 'cron_scheduler',
+          name: 'Autonomous Chrono Scheduler',
+          role: 'Autonomous Chrono Scheduler',
+          domain: 'Universal / Timing',
+          icon: '⏰',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'cron',
+            interval: '1h',
+            conditionExpr: 'payload.is_active === true',
+            samplePayload: JSON.stringify({ task: 'serp_rank_scan', is_active: true }, null, 2)
+          }
+        },
+        {
+          id: 'node-seo-strategist',
+          type: 'agent',
+          name: 'Marketing & Growth Strategist',
+          role: 'Marketing & Growth Strategist',
+          icon: '🤖',
+          x: 450,
+          y: 200,
+          taskPrompt: 'Analyze high-intent keywords, backlink profiles, and competitor content gaps.'
+        },
+        {
+          id: 'node-seo-copywriter',
+          type: 'agent',
+          name: 'SEO Content Specialist',
+          role: 'SEO Content Specialist',
+          icon: '✍️',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Draft high-converting SEO articles, meta schemas, and EEAT authority clusters.'
+        },
+        {
+          id: 'node-seo-cro',
+          type: 'agent',
+          name: 'Conversion Rate Specialist',
+          role: 'Conversion Rate Specialist',
+          icon: '📊',
+          x: 1150,
+          y: 200,
+          taskPrompt: 'Optimize CTA placement, user engagement loops, and page conversion funnels.'
+        }
+      ],
+      connections: [
+        { id: 'conn-seo-1', from: 'node-seo-sched', fromPort: 'out-1', to: 'node-seo-strategist', guardianEnabled: true },
+        { id: 'conn-seo-2', from: 'node-seo-strategist', fromPort: 'out-1', to: 'node-seo-copywriter', guardianEnabled: true },
+        { id: 'conn-seo-3', from: 'node-seo-copywriter', fromPort: 'out-1', to: 'node-seo-cro', guardianEnabled: true }
+      ]
+    },
+    legal: {
+      id: 'legal',
+      name: 'Corporate Law & Contract Audit',
+      icon: '⚖️',
+      domain: 'Corporate Law / Governance',
+      description: 'Automated contract clause audit, indemnity liability scrutiny, counter-redlining, and partner sign-off.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-law-ingress',
+          type: 'trigger',
+          triggerId: 'file_watcher',
+          name: 'Document & File Observer',
+          role: 'Document & File Observer',
+          domain: 'Corporate Law / Data / Research',
+          icon: '📁',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'file_watcher',
+            watchPath: 'vault/incoming/',
+            conditionExpr: 'payload.file_size_kb > 0',
+            samplePayload: JSON.stringify({ event: 'FILE_CREATED', file_name: 'Vendor_Agreement_2026.pdf', file_size_kb: 350 }, null, 2)
+          }
+        },
+        {
+          id: 'node-law-auditor',
+          type: 'agent',
+          name: 'Contract Clause Auditor',
+          role: 'Contract Clause Auditor',
+          icon: '⚖️',
+          x: 450,
+          y: 200,
+          taskPrompt: 'Detect hidden indemnity traps, ambiguous termination clauses, and jurisdiction liabilities.'
+        },
+        {
+          id: 'node-law-partner',
+          type: 'agent',
+          name: 'Senior Legal Partner',
+          role: 'Senior Legal Partner',
+          icon: '👨‍⚖️',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Review vetted agreement, verify statutory compliance, and approve signing seal.'
+        },
+        {
+          id: 'node-law-negotiator',
+          type: 'agent',
+          name: 'Dispute & Redline Negotiator',
+          role: 'Dispute & Redline Negotiator',
+          icon: '✍️',
+          x: 450,
+          y: 450,
+          taskPrompt: 'Draft balanced redlines, liability caps, and arbitration counter-proposals.'
+        }
+      ],
+      connections: [
+        { id: 'conn-law-1', from: 'node-law-ingress', fromPort: 'out-1', to: 'node-law-auditor', guardianEnabled: true },
+        { id: 'conn-law-2', from: 'node-law-auditor', fromPort: 'out-1', to: 'node-law-partner', guardianEnabled: true },
+        { id: 'conn-law-3', from: 'node-law-auditor', fromPort: 'out-2', to: 'node-law-negotiator', guardianEnabled: true }
+      ]
+    },
+    psychology: {
+      id: 'psychology',
+      name: 'Psychology & CBT Consultation',
+      icon: '🧠',
+      domain: 'Psychology / Mental Health',
+      description: 'Intake assessment, empathetic triage, cognitive reframing coaching, and clinical supervision.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-psy-ingress',
+          type: 'trigger',
+          triggerId: 'chat_ingress',
+          name: 'Client Consultation Intake',
+          role: 'Client Consultation Intake',
+          domain: 'Psychology / Advisory / Support',
+          icon: '💬',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'chat_ingress',
+            conditionExpr: 'payload.urgency >= 3 || payload.sentiment === "distressed"',
+            samplePayload: JSON.stringify({ client_id: 'CL-104', urgency: 4, sentiment: 'distressed' }, null, 2)
+          }
+        },
+        {
+          id: 'node-psy-intake',
+          type: 'agent',
+          name: 'Empathetic Intake Specialist',
+          role: 'Empathetic Intake Specialist',
+          icon: '💬',
+          x: 450,
+          y: 200,
+          taskPrompt: 'Perform compassionate client intake, active listening, and somatic symptom triage.'
+        },
+        {
+          id: 'node-psy-cbt',
+          type: 'agent',
+          name: 'CBT Behavioral Coach',
+          role: 'CBT Behavioral Coach',
+          icon: '🛋️',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Guide cognitive reframing, thought records, and behavioral homework.'
+        },
+        {
+          id: 'node-psy-crisis',
+          type: 'agent',
+          name: 'Crisis Intervention Specialist',
+          role: 'Crisis Intervention Specialist',
+          icon: '🚨',
+          x: 450,
+          y: 450,
+          taskPrompt: 'Execute immediate de-escalation protocol and professional safety network routing.'
+        }
+      ],
+      connections: [
+        { id: 'conn-psy-1', from: 'node-psy-ingress', fromPort: 'out-1', to: 'node-psy-intake', guardianEnabled: true },
+        { id: 'conn-psy-2', from: 'node-psy-intake', fromPort: 'out-1', to: 'node-psy-cbt', guardianEnabled: true },
+        { id: 'conn-psy-3', from: 'node-psy-intake', fromPort: 'out-2', to: 'node-psy-crisis', guardianEnabled: true }
+      ]
+    },
+    media: {
+      id: 'media',
+      name: 'Creative Media & YouTube',
+      icon: '🎬',
+      domain: 'Creative / Media / Content',
+      description: 'YouTube spy intelligence, viral hook generation, scriptwriting, and autonomous video asset rendering.',
+      panX: 40,
+      panY: 40,
+      scale: 1.0,
+      nodes: [
+        {
+          id: 'node-med-ingress',
+          type: 'trigger',
+          triggerId: 'webhook_ingress',
+          name: 'Webhook Ingress Gateway',
+          role: 'Webhook Ingress Gateway',
+          domain: 'Universal / API Ingress',
+          icon: '⚡',
+          x: 100,
+          y: 200,
+          triggerConfig: {
+            ingressType: 'webhook',
+            conditionExpr: 'payload.event != null',
+            samplePayload: JSON.stringify({ event: 'TREND_ALERT', niche: 'ai_tools' }, null, 2)
+          }
+        },
+        {
+          id: 'node-med-automator',
+          type: 'agent',
+          name: 'youtube-automator',
+          role: 'youtube-automator',
+          icon: '🎬',
+          x: 450,
+          y: 200,
+          taskPrompt: 'Analyze viral competitor formats, retention drop-offs, and high-CTR thumbnails.'
+        },
+        {
+          id: 'node-med-engineer',
+          type: 'agent',
+          name: 'media-engineer',
+          role: 'media-engineer',
+          icon: '🎥',
+          x: 800,
+          y: 200,
+          taskPrompt: 'Render multi-track audio mixes, visual clips, and timed subtitles.'
+        }
+      ],
+      connections: [
+        { id: 'conn-med-1', from: 'node-med-ingress', fromPort: 'out-1', to: 'node-med-automator', guardianEnabled: true },
+        { id: 'conn-med-2', from: 'node-med-automator', fromPort: 'out-1', to: 'node-med-engineer', guardianEnabled: true }
+      ]
+    }
+  };
 
   class SwarmPipelineEngine {
     constructor() {
@@ -873,9 +1303,13 @@
       this.nodesLayer = null;
       this.inspectorEl = null; // Right bar removed per instruction
 
-      // Persistence & Dynamic Discovery
+      // Persistence, Presets & Dynamic Discovery
       this.STORAGE_KEY = 'flowork_swarm_pipeline_dag_v1';
+      this.PRESETS_STORAGE_KEY = 'flowork_swarm_presets_v1';
+      this.ACTIVE_PRESET_KEY = 'flowork_swarm_active_preset_id';
       this._saveTimer = null;
+      this.activePresetId = 'trading';
+      this.presets = {};
       this.dynamicAgents = [];
       this.dynamicTriggers = [];
 
@@ -1011,6 +1445,11 @@
       const board = document.createElement('main');
       board.className = 'pipeline-canvas-board pipeline-board';
       board.innerHTML = `
+        <div class="pipeline-floating-status">
+          <span class="pipeline-status-badge" id="pipeline-active-preset-badge">📈 Forex & Quant Trading</span>
+          <span class="pipeline-save-indicator" id="pipeline-save-indicator">💾 Auto-Saved</span>
+        </div>
+
         <svg class="pipeline-svg-layer" id="pipeline-svg-layer">
           <defs>
             <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
@@ -1026,10 +1465,18 @@
         <div class="pipeline-nodes-layer" id="pipeline-nodes-layer"></div>
 
         <div class="pipeline-floating-hud">
+          <div class="pipeline-hud-preset-group">
+            <select class="pipeline-hud-select" id="pipeline-preset-selector" title="Switch Domain Preset">
+            </select>
+            <button type="button" class="pipeline-hud-btn" id="btn-pipe-save-preset" title="Save Preset Snapshot">💾 Save</button>
+            <button type="button" class="pipeline-hud-btn" id="btn-pipe-new-preset" title="Create New Custom Preset">➕ New</button>
+          </div>
+          <div style="width: 1px; height: 18px; background: rgba(255,255,255,0.15); margin: 0 4px;"></div>
           <button type="button" class="pipeline-hud-btn" id="btn-pipe-auto-layout" title="Auto-Arrange DAG (Clean Non-Overlapping Layout)">✨ Auto Arrange</button>
-          <button type="button" class="pipeline-hud-btn" id="btn-pipe-reset-squad" title="Reset to Sovereign 5-Agent Squad">🔄 Reset Squad</button>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-reset-squad" title="Reset Preset to Pristine Squad">🔄 Reset Squad</button>
           <button type="button" class="pipeline-hud-btn" id="btn-pipe-center" title="Center Canvas View">🎯 Center</button>
           <button type="button" class="pipeline-hud-btn danger" id="btn-pipe-clear-all" title="Clear All Nodes from Canvas">🗑️ Clear All</button>
+          <button type="button" class="pipeline-hud-btn primary" id="btn-pipe-run" title="Execute Active Swarm Signal Flow">⚡ Run Pipeline</button>
         </div>
       `;
 
@@ -1054,125 +1501,230 @@
      * Initializes default nodes or restores from localStorage
      */
     _initDefaultNodes() {
+      this.initPresets();
+
       if (this.loadSavedState()) {
+        this.populatePresetDropdown();
+        this.updateStatusBadge();
         return;
       }
 
-      // Default Initial State: Production 5-Agent Squad Pipeline (Google Standard)
-      this.nodes = [
-        {
-          id: 'node-0-leader',
-          agentId: 'leader',
-          type: 'leader',
-          name: 'Swarm Leader',
-          role: 'Swarm Leader',
-          icon: '👑',
-          x: 100,
-          y: 180,
-          isLocked: true,
-          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
-          rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
-          toolGovernance: {
-            allowAll: true,
-            allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
-            deniedTools: []
-          }
-        },
-        {
-          id: 'node-1-backend',
-          agentId: 'backend-engineer',
-          type: 'agent',
-          name: 'Backend Engineer',
-          role: 'Backend & Systems Specialist',
-          icon: '⚙️',
-          x: 440,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
-          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
-        },
-        {
-          id: 'node-2-frontend',
-          agentId: 'frontend-engineer',
-          type: 'agent',
-          name: 'Frontend Engineer',
-          role: 'UI/UX & Client Specialist',
-          icon: '🎨',
-          x: 780,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
-          rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
-        },
-        {
-          id: 'node-3-security',
-          agentId: 'security-auditor',
-          type: 'agent',
-          name: 'Security Auditor',
-          role: 'Security & Reverse Engineering Specialist',
-          icon: '🛡️',
-          x: 1120,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
-          rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
-        },
-        {
-          id: 'node-4-qc',
-          agentId: 'quality-control',
-          type: 'agent',
-          name: 'Quality Control',
-          role: 'Quality Control & Release Gatekeeper',
-          icon: '🧪',
-          x: 1460,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
-          rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
-        }
-      ];
+      // If no saved state, load the active preset (default: trading)
+      this.loadPreset(this.activePresetId, false);
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+    }
 
-      this.connections = [
-        {
-          id: 'conn-0-1',
-          from: 'node-0-leader',
-          fromPort: 'out-1',
-          to: 'node-1-backend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-1-2',
-          from: 'node-1-backend',
-          fromPort: 'out-1',
-          to: 'node-2-frontend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-2-3',
-          from: 'node-2-frontend',
-          fromPort: 'out-1',
-          to: 'node-3-security',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-3-4',
-          from: 'node-3-security',
-          fromPort: 'out-1',
-          to: 'node-4-qc',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
+    /**
+     * Initializes default and custom presets
+     */
+    initPresets() {
+      // 1. Start with pristine default presets
+      this.presets = JSON.parse(JSON.stringify(DEFAULT_SWARM_PRESETS));
+
+      // 2. Load stored presets if any
+      try {
+        const raw = localStorage.getItem(this.PRESETS_STORAGE_KEY);
+        if (raw) {
+          const stored = JSON.parse(raw);
+          if (stored && typeof stored === 'object') {
+            for (const [id, preset] of Object.entries(stored)) {
+              if (preset && preset.nodes) {
+                this.presets[id] = preset;
+              }
+            }
+          }
         }
-      ];
+      } catch (err) {
+        console.warn('[SwarmPipeline] Error reading presets storage:', err);
+      }
+
+      // 3. Determine active preset ID
+      try {
+        const savedActive = localStorage.getItem(this.ACTIVE_PRESET_KEY);
+        if (savedActive && this.presets[savedActive]) {
+          this.activePresetId = savedActive;
+        } else if (!this.presets[this.activePresetId]) {
+          this.activePresetId = 'trading';
+        }
+      } catch (e) {
+        this.activePresetId = 'trading';
+      }
+
+      return this.presets;
+    }
+
+    /**
+     * Populates the Floating HUD Preset Dropdown
+     */
+    populatePresetDropdown() {
+      const select = this.boardEl?.querySelector('#pipeline-preset-selector');
+      if (!select) return;
+
+      select.innerHTML = '';
+      for (const preset of Object.values(this.presets)) {
+        const opt = document.createElement('option');
+        opt.value = preset.id;
+        opt.textContent = `${preset.icon || '📦'} ${preset.name || preset.id}`;
+        if (preset.id === this.activePresetId) {
+          opt.selected = true;
+        }
+        select.appendChild(opt);
+      }
+    }
+
+    /**
+     * Updates Floating Status Badge with active domain information
+     */
+    updateStatusBadge(customText = null) {
+      const badge = this.boardEl?.querySelector('#pipeline-active-preset-badge');
+      if (!badge) return;
+
+      if (customText) {
+        badge.textContent = customText;
+        return;
+      }
+
+      const active = this.presets[this.activePresetId] || DEFAULT_SWARM_PRESETS[this.activePresetId];
+      if (active) {
+        badge.textContent = `${active.icon || '📦'} ${active.name || this.activePresetId}`;
+      } else {
+        badge.textContent = `⚡ ${this.activePresetId}`;
+      }
+    }
+
+    /**
+     * Loads a specific preset into the DAG canvas
+     */
+    loadPreset(presetId, autoSave = true) {
+      if (!this.presets[presetId] && DEFAULT_SWARM_PRESETS[presetId]) {
+        this.presets[presetId] = JSON.parse(JSON.stringify(DEFAULT_SWARM_PRESETS[presetId]));
+      }
+
+      const target = this.presets[presetId];
+      if (!target) return false;
+
+      this.activePresetId = presetId;
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+
+      this.nodes = JSON.parse(JSON.stringify(target.nodes || []));
+      this.connections = JSON.parse(JSON.stringify(target.connections || []));
+      this.connections.forEach(c => {
+        if (c.guardianEnabled === undefined) c.guardianEnabled = true;
+      });
+
+      if (target.panX !== undefined) this.panX = target.panX;
+      if (target.panY !== undefined) this.panY = target.panY;
+      if (target.scale !== undefined) this.scale = target.scale;
 
       this.nodes.forEach(n => this._ensureNodeStructures(n));
-      this.saveState(false);
+
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+      this.render();
+
+      if (autoSave) {
+        this.saveState(true);
+      }
+
+      return true;
+    }
+
+    /**
+     * Switches to another preset, auto-saving outgoing canvas first
+     */
+    switchPreset(presetId) {
+      if (!presetId) return;
+      if (presetId === this.activePresetId && this.nodes && this.nodes.length > 0) return;
+
+      // 1. Snapshot outgoing active preset state
+      if (this.presets[this.activePresetId]) {
+        this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+        this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+        this.presets[this.activePresetId].panX = this.panX;
+        this.presets[this.activePresetId].panY = this.panY;
+        this.presets[this.activePresetId].scale = this.scale;
+        this.presets[this.activePresetId].updatedAt = Date.now();
+      }
+
+      // 2. Load incoming preset
+      this.loadPreset(presetId, true);
+
+      // 3. Visual notification indicator
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets[presetId];
+        indicator.textContent = `⚡ Switched to ${curr?.name || presetId}`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
+    }
+
+    /**
+     * Explicitly saves current preset modifications
+     */
+    saveCurrentPreset() {
+      if (this.presets[this.activePresetId]) {
+        this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+        this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+        this.presets[this.activePresetId].panX = this.panX;
+        this.presets[this.activePresetId].panY = this.panY;
+        this.presets[this.activePresetId].scale = this.scale;
+        this.presets[this.activePresetId].updatedAt = Date.now();
+      }
+
+      this.saveState(true);
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets[this.activePresetId];
+        indicator.textContent = `💾 Preset Saved [${curr?.name || this.activePresetId}]`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
+    }
+
+    /**
+     * Creates a new custom preset cloned from the current canvas
+     */
+    createNewPreset() {
+      const name = window.prompt('Enter a title for the new preset (e.g. Crypto Arbitrage, SEO Content Engine):');
+      if (!name || !name.trim()) return;
+
+      const cleanName = name.trim();
+      const id = 'custom_' + cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '_') + '_' + Date.now().toString(36);
+
+      const newPreset = {
+        id,
+        name: cleanName,
+        icon: '✨',
+        domain: 'Custom Swarm Domain',
+        description: `Custom sovereign pipeline preset: ${cleanName}`,
+        panX: this.panX,
+        panY: this.panY,
+        scale: this.scale,
+        nodes: JSON.parse(JSON.stringify(this.nodes)),
+        connections: JSON.parse(JSON.stringify(this.connections)),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      this.presets[id] = newPreset;
+      this.activePresetId = id;
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+      this.saveState(true);
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        indicator.textContent = `✨ Created Preset [${cleanName}]`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
     }
 
     /**
@@ -1180,16 +1732,31 @@
      */
     saveState(syncToServer = true) {
       try {
+        // 1. Always keep current preset in sync in memory
+        if (this.presets && this.activePresetId && this.presets[this.activePresetId]) {
+          this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+          this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+          this.presets[this.activePresetId].panX = this.panX;
+          this.presets[this.activePresetId].panY = this.panY;
+          this.presets[this.activePresetId].scale = this.scale;
+          this.presets[this.activePresetId].updatedAt = Date.now();
+        }
+
         const state = {
           version: '2026.10.18.clean',
           timestamp: Date.now(),
+          activePresetId: this.activePresetId,
+          presets: this.presets,
           panX: this.panX,
           panY: this.panY,
           scale: this.scale,
           nodes: this.nodes,
           connections: this.connections
         };
+
         localStorage.setItem(this.STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(this.PRESETS_STORAGE_KEY, JSON.stringify(this.presets));
+        localStorage.setItem(this.ACTIVE_PRESET_KEY, this.activePresetId);
 
         if (syncToServer) {
           // Sync DAG & Cable Guardian switches directly to disk via backend API
@@ -1202,7 +1769,9 @@
 
         const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
         if (indicator) {
-          indicator.textContent = '💾 Saved ' + new Date().toLocaleTimeString('en-US');
+          const curr = this.presets?.[this.activePresetId];
+          const presetLabel = curr?.name ? ` [${curr.name}]` : '';
+          indicator.textContent = `💾 Auto-Saved${presetLabel} ${new Date().toLocaleTimeString('en-US')}`;
           indicator.classList.remove('save-indicator-flash');
           void indicator.offsetWidth;
           indicator.classList.add('save-indicator-flash');
@@ -1225,6 +1794,14 @@
         if (!raw) return false;
         const data = JSON.parse(raw);
         if (!data || !Array.isArray(data.nodes)) return false;
+
+        if (data.presets && typeof data.presets === 'object') {
+          Object.assign(this.presets, data.presets);
+        }
+
+        if (data.activePresetId && this.presets[data.activePresetId]) {
+          this.activePresetId = data.activePresetId;
+        }
 
         this.nodes = data.nodes;
         this.connections = Array.isArray(data.connections) ? data.connections : [];
@@ -1251,8 +1828,7 @@
             }).catch(() => {});
         }
 
-        // DO NOT RESURRECT ANY DELETED NODE! RESPECT USER'S STATE 100%!
-        console.log(`[SwarmPipeline] 💾 Restored ${this.nodes.length} nodes & ${this.connections.length} connections from persistent storage.`);
+        console.log(`[SwarmPipeline] 💾 Restored ${this.nodes.length} nodes & ${this.connections.length} connections for preset [${this.activePresetId}].`);
         return true;
       } catch (err) {
         console.warn('[SwarmPipeline] Failed to parse saved DAG:', err);
@@ -1268,6 +1844,12 @@
         const res = await fetch('/api/pipeline/dag');
         const json = await res.json();
         if (json && json.status === 'ok' && json.dag && Array.isArray(json.dag.nodes) && json.dag.nodes.length > 0) {
+          if (json.dag.presets && typeof json.dag.presets === 'object') {
+            Object.assign(this.presets, json.dag.presets);
+          }
+          if (json.dag.activePresetId && this.presets[json.dag.activePresetId]) {
+            this.activePresetId = json.dag.activePresetId;
+          }
           this.nodes = json.dag.nodes;
           this.connections = Array.isArray(json.dag.connections) ? json.dag.connections : [];
           this.connections.forEach(c => {
@@ -1277,15 +1859,8 @@
           if (json.dag.panY !== undefined) this.panY = json.dag.panY;
           if (json.dag.scale !== undefined) this.scale = json.dag.scale;
           this.nodes.forEach(n => this._ensureNodeStructures(n));
-          localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
-            version: '2026.10.18.clean',
-            timestamp: Date.now(),
-            panX: this.panX,
-            panY: this.panY,
-            scale: this.scale,
-            nodes: this.nodes,
-            connections: this.connections
-          }));
+          this.populatePresetDropdown();
+          this.updateStatusBadge();
           this.render();
           console.log(`[SwarmPipeline] 🚀 Synchronized ${this.nodes.length} nodes & ${this.connections.length} connections with server DAG.`);
         }
@@ -1543,11 +2118,32 @@
      * Toolbar actions & Floating Canvas HUD
      */
     _bindToolbarEvents(board) {
+      const presetSelector = board.querySelector('#pipeline-preset-selector');
+      const btnSavePreset = board.querySelector('#btn-pipe-save-preset');
+      const btnNewPreset = board.querySelector('#btn-pipe-new-preset');
       const btnAutoLayout = board.querySelector('#btn-pipe-auto-layout');
       const btnResetSquad = board.querySelector('#btn-pipe-reset-squad');
       const btnCenter = board.querySelector('#btn-pipe-center');
       const btnClearAll = board.querySelector('#btn-pipe-clear-all') || board.querySelector('#btn-pipe-clear');
       const btnRun = board.querySelector('#btn-pipe-run');
+
+      if (presetSelector) {
+        presetSelector.addEventListener('change', (e) => {
+          this.switchPreset(e.target.value);
+        });
+      }
+
+      if (btnSavePreset) {
+        btnSavePreset.addEventListener('click', () => {
+          this.saveCurrentPreset();
+        });
+      }
+
+      if (btnNewPreset) {
+        btnNewPreset.addEventListener('click', () => {
+          this.createNewPreset();
+        });
+      }
 
       if (btnAutoLayout) {
         btnAutoLayout.addEventListener('click', () => {
@@ -1669,131 +2265,148 @@
     }
 
     /**
-     * Resets canvas to the pristine 5-agent squad (Leader 👑, Backend ⚙️, Frontend 🎨, Security 🛡️, QC 🧪)
+     * Resets canvas to the pristine squad definition of current preset
      */
     resetToDefaultSquad() {
-      localStorage.removeItem(this.STORAGE_KEY);
       this.selectedNodeId = null;
       this.selectedConnId = null;
 
-      this.nodes = [
-        {
-          id: 'node-0-leader',
-          agentId: 'leader',
-          type: 'leader',
-          name: 'Swarm Leader',
-          role: 'Swarm Leader',
-          icon: '👑',
-          x: 100,
-          y: 180,
-          isLocked: true,
-          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
-          rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
-          toolGovernance: {
-            allowAll: true,
-            allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
-            deniedTools: []
+      if (DEFAULT_SWARM_PRESETS[this.activePresetId]) {
+        const pristine = DEFAULT_SWARM_PRESETS[this.activePresetId];
+        this.nodes = JSON.parse(JSON.stringify(pristine.nodes));
+        this.connections = JSON.parse(JSON.stringify(pristine.connections));
+        this.panX = pristine.panX !== undefined ? pristine.panX : 40;
+        this.panY = pristine.panY !== undefined ? pristine.panY : 40;
+        this.scale = pristine.scale !== undefined ? pristine.scale : 1.0;
+      } else {
+        this.nodes = [
+          {
+            id: 'node-0-leader',
+            agentId: 'leader',
+            type: 'leader',
+            name: 'Swarm Leader',
+            role: 'Swarm Leader',
+            icon: '👑',
+            x: 100,
+            y: 180,
+            isLocked: true,
+            taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
+            rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
+            toolGovernance: {
+              allowAll: true,
+              allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
+              deniedTools: []
+            }
+          },
+          {
+            id: 'node-1-backend',
+            agentId: 'backend-engineer',
+            type: 'agent',
+            name: 'Backend Engineer',
+            role: 'Backend & Systems Specialist',
+            icon: '⚙️',
+            x: 440,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
+            rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
+          },
+          {
+            id: 'node-2-frontend',
+            agentId: 'frontend-engineer',
+            type: 'agent',
+            name: 'Frontend Engineer',
+            role: 'UI/UX & Client Specialist',
+            icon: '🎨',
+            x: 780,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
+            rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
+          },
+          {
+            id: 'node-3-security',
+            agentId: 'security-auditor',
+            type: 'agent',
+            name: 'Security Auditor',
+            role: 'Security & Reverse Engineering Specialist',
+            icon: '🛡️',
+            x: 1120,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
+            rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
+          },
+          {
+            id: 'node-4-qc',
+            agentId: 'quality-control',
+            type: 'agent',
+            name: 'Quality Control',
+            role: 'Quality Control & Release Gatekeeper',
+            icon: '🧪',
+            x: 1460,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
+            rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
           }
-        },
-        {
-          id: 'node-1-backend',
-          agentId: 'backend-engineer',
-          type: 'agent',
-          name: 'Backend Engineer',
-          role: 'Backend & Systems Specialist',
-          icon: '⚙️',
-          x: 440,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
-          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
-        },
-        {
-          id: 'node-2-frontend',
-          agentId: 'frontend-engineer',
-          type: 'agent',
-          name: 'Frontend Engineer',
-          role: 'UI/UX & Client Specialist',
-          icon: '🎨',
-          x: 780,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
-          rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
-        },
-        {
-          id: 'node-3-security',
-          agentId: 'security-auditor',
-          type: 'agent',
-          name: 'Security Auditor',
-          role: 'Security & Reverse Engineering Specialist',
-          icon: '🛡️',
-          x: 1120,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
-          rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
-        },
-        {
-          id: 'node-4-qc',
-          agentId: 'quality-control',
-          type: 'agent',
-          name: 'Quality Control',
-          role: 'Quality Control & Release Gatekeeper',
-          icon: '🧪',
-          x: 1460,
-          y: 180,
-          isLocked: false,
-          taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
-          rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
-        }
-      ];
+        ];
 
-      this.connections = [
-        {
-          id: 'conn-0-1',
-          from: 'node-0-leader',
-          fromPort: 'out-1',
-          to: 'node-1-backend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-1-2',
-          from: 'node-1-backend',
-          fromPort: 'out-1',
-          to: 'node-2-frontend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-2-3',
-          from: 'node-2-frontend',
-          fromPort: 'out-1',
-          to: 'node-3-security',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-3-4',
-          from: 'node-3-security',
-          fromPort: 'out-1',
-          to: 'node-4-qc',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        }
-      ];
+        this.connections = [
+          {
+            id: 'conn-0-1',
+            from: 'node-0-leader',
+            fromPort: 'out-1',
+            to: 'node-1-backend',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-1-2',
+            from: 'node-1-backend',
+            fromPort: 'out-1',
+            to: 'node-2-frontend',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-2-3',
+            from: 'node-2-frontend',
+            fromPort: 'out-1',
+            to: 'node-3-security',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-3-4',
+            from: 'node-3-security',
+            fromPort: 'out-1',
+            to: 'node-4-qc',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          }
+        ];
+        this.panX = 40;
+        this.panY = 40;
+        this.scale = 1.0;
+      }
 
       this.nodes.forEach(n => this._ensureNodeStructures(n));
-      this.panX = 40;
-      this.panY = 40;
-      this.scale = 1.0;
       this.render();
       this.saveState(true);
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets?.[this.activePresetId];
+        indicator.textContent = `🔄 Reset [${curr?.name || this.activePresetId}] to Pristine Squad`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
     }
 
     /**
