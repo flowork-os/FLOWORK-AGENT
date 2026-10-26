@@ -1403,7 +1403,7 @@
      * - Right Bar: REMOVED COMPLETELY
      */
     _buildLayout() {
-      this.container.classList.add('swarm-pipeline-container', 'view-panel', 'view-panel-app');
+      this.container.classList.add('swarm-pipeline-container', 'group-subview-pane');
 
       // 1. Left Zone: Palette Sidebar (Triggers & Agents only)
       const palette = document.createElement('aside');
@@ -1628,6 +1628,21 @@
         this.saveState(true);
       }
 
+      // Notify 3D Office and system listeners that active squad has changed
+      try {
+        window.dispatchEvent(new CustomEvent('flowork:preset-changed', {
+          detail: { presetId, preset: target }
+        }));
+        window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+          detail: { nodes: target.nodes }
+        }));
+        fetch('/api/swarmflow/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activePresetId: presetId })
+        }).catch(() => {});
+      } catch (_) {}
+
       return true;
     }
 
@@ -1776,6 +1791,12 @@
           void indicator.offsetWidth;
           indicator.classList.add('save-indicator-flash');
         }
+
+        try {
+          window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+            detail: { nodes: this.nodes }
+          }));
+        } catch (_) {}
       } catch (err) {
         console.error('[SwarmPipeline] Auto-Save error:', err);
       }
@@ -2562,8 +2583,8 @@
         const fromNode = this.nodes.find(n => n.id === this.wireStartNodeId);
         if (!fromNode) return;
 
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 118 : 59);
 
         const boardRect = this.boardEl.getBoundingClientRect();
         const mouseCanvasX = (e.clientX - boardRect.left - this.panX) / this.scale;
@@ -2908,10 +2929,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
 
         const pathData = this._calculateBezier(x1, y1, x2, y2);
         const isTrigger = fromNode.type === 'trigger';
@@ -2961,10 +2982,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const midX = Math.round((x1 + x2) / 2);
         const midY = Math.round((y1 + y2) / 2);
 
@@ -3087,6 +3108,7 @@
               <span>${node.role}</span>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
+              <span class="dag-node-status-indicator" style="display:none;"></span>
               <span class="dag-node-type-badge ${badgeClass}">${badgeText}</span>
               <button type="button" class="dag-node-delete-btn" data-node-id="${node.id}" title="Delete node from canvas">✕</button>
             </div>
@@ -3203,10 +3225,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const pathData = this._calculateBezier(x1, y1, x2, y2);
 
         const cables = g.querySelectorAll('path');
@@ -5860,6 +5882,111 @@
     }
 
     /**
+     * Retrieves the currently active preset object
+     */
+    getActivePreset() {
+      if (this.presets && this.activePresetId && this.presets[this.activePresetId]) {
+        return this.presets[this.activePresetId];
+      }
+      return {
+        id: this.activePresetId || 'coding',
+        name: this.activePresetId || 'Coding',
+        nodes: this.nodes || [],
+        connections: this.connections || []
+      };
+    }
+
+    /**
+     * Dynamically lights up agent node and connected cables based on real-time task execution.
+     * @param {string} agentId - The agent ID, role, or name
+     * @param {string} state - 'working' | 'processing' | 'done' | 'idle' | 'firing'
+     */
+    setAgentActivityState(agentId, state, options = {}) {
+      if (!agentId || !this.nodes || this.nodes.length === 0) return;
+
+      const cleanId = String(agentId).toLowerCase().replace(/^(agent-|session-)/, '');
+      const isWorking = (state === 'working' || state === 'processing' || state === 'busy');
+      const isDone = (state === 'done' || state === 'success' || state === 'completed');
+
+      const matchedNodes = this.nodes.filter(n => {
+        const nAgent = String(n.agentId || '').toLowerCase();
+        const nId = String(n.id || '').toLowerCase();
+        const nRole = String(n.role || '').toLowerCase();
+        const nName = String(n.name || '').toLowerCase();
+        return nAgent === cleanId ||
+               nId === cleanId ||
+               nId.includes(cleanId) ||
+               cleanId.includes(nId) ||
+               nRole.includes(cleanId) ||
+               cleanId.includes(nRole) ||
+               nName.includes(cleanId) ||
+               cleanId.includes(nName) ||
+               (cleanId === 'leader' && n.type === 'leader') ||
+               (cleanId.includes('backend') && (nId.includes('backend') || nRole.includes('backend'))) ||
+               (cleanId.includes('frontend') && (nId.includes('frontend') || nRole.includes('frontend'))) ||
+               (cleanId.includes('security') && (nId.includes('security') || nRole.includes('security'))) ||
+               (cleanId.includes('qc') && (nId.includes('qc') || nRole.includes('qc') || nRole.includes('quality')));
+      });
+
+      if (matchedNodes.length === 0) return;
+
+      matchedNodes.forEach(node => {
+        const nodeEl = document.getElementById(`dag-node-${node.id}`);
+        const statusEl = nodeEl?.querySelector('.dag-node-status-indicator');
+        const connectedConns = this.connections.filter(c => c.from === node.id || c.to === node.id);
+
+        if (isWorking) {
+          if (nodeEl) {
+            nodeEl.classList.remove('node-success');
+            nodeEl.classList.add('node-processing');
+          }
+          if (statusEl) {
+            statusEl.textContent = '⚡ RUNNING';
+            statusEl.style.display = 'inline-flex';
+          }
+          connectedConns.forEach(conn => {
+            const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+            const cable = connGroup?.querySelector('.pipeline-cable');
+            const photon = connGroup?.querySelector('.pipeline-photon-stream');
+            if (cable) cable.classList.add('cable-active');
+            if (photon) photon.classList.add('active-flow-1');
+          });
+        } else if (isDone) {
+          if (nodeEl) {
+            nodeEl.classList.remove('node-processing');
+            nodeEl.classList.add('node-success');
+          }
+          if (statusEl) {
+            statusEl.textContent = '✓ DONE';
+            statusEl.style.display = 'inline-flex';
+          }
+          setTimeout(() => {
+            if (nodeEl) nodeEl.classList.remove('node-success');
+            if (statusEl) statusEl.style.display = 'none';
+            connectedConns.forEach(conn => {
+              const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+              const cable = connGroup?.querySelector('.pipeline-cable');
+              const photon = connGroup?.querySelector('.pipeline-photon-stream');
+              if (cable) cable.classList.remove('cable-active');
+              if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
+            });
+          }, 2500);
+        } else {
+          // Idle
+          if (nodeEl) nodeEl.classList.remove('node-processing', 'node-success', 'node-firing');
+          if (statusEl) statusEl.style.display = 'none';
+          connectedConns.forEach(conn => {
+            const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+            const cable = connGroup?.querySelector('.pipeline-cable');
+            const photon = connGroup?.querySelector('.pipeline-photon-stream');
+            if (cable) cable.classList.remove('cable-active');
+            if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
+          });
+        }
+      });
+    }
+
+    /**
      * Executes pipeline cyber photon simulation (Universal Entry Point)
      */
     executePipelineSimulation() {
@@ -5871,6 +5998,7 @@
   window.SwarmPipelineEngine = SwarmPipelineEngine;
   window.swarmPipelineInstance = new SwarmPipelineEngine();
   window.swarmPipelineEngine = window.swarmPipelineInstance;
+  window.swarmPipeline = window.swarmPipelineInstance;
 
   // Universal Sovereign Agent Studio Opener
   window.openAgentStudio = function(agentIdOrData) {

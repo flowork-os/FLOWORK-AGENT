@@ -59,6 +59,7 @@ class SovereignOffice3D {
     this.camTarget = new THREE.Vector3(0, 1.20, 1.10);
     this.camPosTarget = new THREE.Vector3(0, 6.20, 11.80);
     this.agentRoster = [];
+    this._cachedSwarmNodes = null;
 
     this.floorMesh = null;
     this.selectionRing = null;
@@ -1593,61 +1594,10 @@ class SovereignOffice3D {
         ];
       }
 
-      const cleanRoster = agents.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
-
       // Filter by active Swarm Flow preset to keep 3D office uncluttered
-      let activeFilteredRoster = cleanRoster;
-      try {
-        let activePreset = null;
-        const resSwarm = await fetch('/api/swarmflow/active');
-        if (resSwarm.ok) {
-          const sData = await resSwarm.json();
-          if (sData && sData.preset) activePreset = sData.preset;
-        }
-        if (!activePreset && window.swarmPipeline && typeof window.swarmPipeline.getActivePreset === 'function') {
-          activePreset = window.swarmPipeline.getActivePreset();
-        }
-
-        if (activePreset && Array.isArray(activePreset.nodes) && activePreset.nodes.length > 0) {
-          const activeSquadIds = new Set();
-          const activeSquadNames = new Set();
-          activePreset.nodes.forEach(n => {
-            if (n.type === 'trigger') return;
-            if (n.agentId) activeSquadIds.add(n.agentId.toLowerCase());
-            if (n.id) activeSquadIds.add(n.id.toLowerCase());
-            if (n.name) activeSquadNames.add(n.name.toLowerCase());
-            if (n.role) activeSquadNames.add(n.role.toLowerCase());
-          });
-
-          if (activeSquadIds.size > 0 || activeSquadNames.size > 0) {
-            const matched = cleanRoster.filter(p => {
-              const pid = (p.id || '').toLowerCase();
-              const pname = (p.name || '').toLowerCase();
-              const prole = (p.role || '').toLowerCase();
-              return activeSquadIds.has(pid) ||
-                     activeSquadNames.has(pname) ||
-                     activeSquadNames.has(prole) ||
-                     Array.from(activeSquadIds).some(id => pid.includes(id) || id.includes(pid)) ||
-                     Array.from(activeSquadNames).some(name => pname.includes(name) || name.includes(pname));
-            });
-
-            if (matched.length > 0) {
-              activeFilteredRoster = matched;
-            } else {
-              activeFilteredRoster = activePreset.nodes
-                .filter(n => n.type !== 'trigger')
-                .map(n => ({
-                  id: n.agentId || n.id,
-                  name: n.name || n.role || n.id,
-                  role: n.role || n.name || 'Specialist',
-                  icon: n.icon || '🤖'
-                }));
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[Office 3D] Swarm active preset filter error:', err);
-      }
+      const cleanRoster = agents.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
+      await this.fetchSwarmSquadNodes();
+      const activeFilteredRoster = this.filterPersonasByActiveSwarm(cleanRoster);
 
       window.AVAILABLE_PERSONAS = activeFilteredRoster;
       this.syncPersonas(activeFilteredRoster);
@@ -1657,6 +1607,145 @@ class SovereignOffice3D {
     } catch (err) {
       console.warn('[Office 3D] Failed to fetch agents:', err);
     }
+  }
+
+  getActiveSwarmSquadNodes() {
+    try {
+      if (window.swarmPipeline && typeof window.swarmPipeline.getActivePreset === 'function') {
+        const p = window.swarmPipeline.getActivePreset();
+        if (p && Array.isArray(p.nodes) && p.nodes.length > 0) {
+          this._cachedSwarmNodes = p.nodes;
+          return p.nodes;
+        }
+      }
+      if (window.swarmPipelineInstance && Array.isArray(window.swarmPipelineInstance.nodes) && window.swarmPipelineInstance.nodes.length > 0) {
+        this._cachedSwarmNodes = window.swarmPipelineInstance.nodes;
+        return window.swarmPipelineInstance.nodes;
+      }
+      const raw = localStorage.getItem('flowork_swarm_pipeline_dag_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && Array.isArray(parsed.nodes) && parsed.nodes.length > 0) {
+          this._cachedSwarmNodes = parsed.nodes;
+          return parsed.nodes;
+        }
+      }
+    } catch (_) {}
+    return this._cachedSwarmNodes || null;
+  }
+
+  async fetchSwarmSquadNodes() {
+    const immediate = this.getActiveSwarmSquadNodes();
+    if (immediate && immediate.length > 0) return immediate;
+
+    try {
+      const res = await fetch('/api/swarmflow/active');
+      if (res.ok) {
+        const sData = await res.json();
+        if (sData && sData.preset && Array.isArray(sData.preset.nodes) && sData.preset.nodes.length > 0) {
+          this._cachedSwarmNodes = sData.preset.nodes;
+          return sData.preset.nodes;
+        }
+      }
+    } catch (_) {}
+
+    try {
+      const res2 = await fetch('/api/pipeline/dag');
+      if (res2.ok) {
+        const dData = await res2.json();
+        if (dData && dData.dag && Array.isArray(dData.dag.nodes) && dData.dag.nodes.length > 0) {
+          this._cachedSwarmNodes = dData.dag.nodes;
+          return dData.dag.nodes;
+        }
+      }
+    } catch (_) {}
+
+    return this._cachedSwarmNodes || null;
+  }
+
+  filterPersonasByActiveSwarm(personaList) {
+    if (!personaList || !Array.isArray(personaList)) personaList = [];
+    const swarmNodes = this.getActiveSwarmSquadNodes();
+    if (!swarmNodes || !Array.isArray(swarmNodes) || swarmNodes.length === 0) {
+      return personaList;
+    }
+
+    const agentNodes = swarmNodes.filter(n => n && n.type !== 'trigger');
+    if (agentNodes.length === 0) return personaList;
+
+    const squadIds = new Set();
+    const squadNames = new Set();
+    const squadRoles = new Set();
+
+    agentNodes.forEach(n => {
+      if (n.agentId) squadIds.add(String(n.agentId).toLowerCase().trim());
+      if (n.id) {
+        squadIds.add(String(n.id).toLowerCase().trim());
+        const stripped = String(n.id).replace(/^node-[a-z0-9]+-/, '').toLowerCase().trim();
+        if (stripped) squadIds.add(stripped);
+      }
+      if (n.name) squadNames.add(String(n.name).toLowerCase().trim());
+      if (n.role) squadRoles.add(String(n.role).toLowerCase().trim());
+    });
+
+    const isMatch = (p) => {
+      const pid = String(p.id || '').toLowerCase().trim();
+      const pname = String(p.name || '').toLowerCase().trim();
+      const prole = String(p.role || '').toLowerCase().trim();
+
+      if (pid === 'mr.flow' || pid === 'mrflow' || p.is_default) {
+        return true;
+      }
+
+      if (squadIds.has(pid) || squadNames.has(pname) || squadRoles.has(prole)) {
+        return true;
+      }
+
+      for (const id of squadIds) {
+        if (id && (pid.includes(id) || id.includes(pid))) return true;
+      }
+      for (const name of squadNames) {
+        if (name && (pname.includes(name) || name.includes(pname))) return true;
+      }
+      for (const role of squadRoles) {
+        if (role && (prole.includes(role) || role.includes(prole))) return true;
+      }
+      return false;
+    };
+
+    const matched = personaList.filter(isMatch);
+    if (matched.length > 0) {
+      const hasCore = matched.some(p => p.id === 'mr.flow' || p.id === 'mrflow' || p.is_default);
+      if (!hasCore) {
+        const foundCore = personaList.find(p => p.id === 'mr.flow' || p.id === 'mrflow' || p.is_default);
+        if (foundCore) {
+          matched.unshift(foundCore);
+        } else {
+          matched.unshift({
+            id: 'mr.flow',
+            name: 'Mr. Flow',
+            role: 'Grand Chief AI Overseer & Executive Architect',
+            icon: '⚡',
+            is_default: true
+          });
+        }
+      }
+      return matched;
+    }
+
+    // Direct synthesis from swarm agent nodes if dynamic or not in personaList
+    const synthesized = [
+      { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', icon: '⚡', is_default: true }
+    ];
+    agentNodes.forEach(n => {
+      synthesized.push({
+        id: n.agentId || n.id,
+        name: n.name || n.role || n.id,
+        role: n.role || n.name || 'Specialist Autonomous Agent',
+        icon: n.icon || '🤖'
+      });
+    });
+    return synthesized;
   }
 
   startRosterWatcher() {
@@ -1672,7 +1761,18 @@ class SovereignOffice3D {
       this._boundRosterEvents = true;
       window.addEventListener('flowork:subagent-updated', () => this.checkRosterChanges());
       window.addEventListener('flowork:agents-changed', () => this.checkRosterChanges());
-      window.addEventListener('flowork:preset-changed', () => this.loadPersonas());
+      window.addEventListener('flowork:preset-changed', async () => {
+        await this.fetchSwarmSquadNodes();
+        this.loadPersonas();
+      });
+      window.addEventListener('flowork:swarm-dag-updated', async (e) => {
+        if (e && e.detail && Array.isArray(e.detail.nodes)) {
+          this._cachedSwarmNodes = e.detail.nodes;
+        } else {
+          await this.fetchSwarmSquadNodes();
+        }
+        this.loadPersonas();
+      });
       window.addEventListener('focus', () => this.checkRosterChanges());
       window.syncOffice3DAgents = (list) => {
         if (Array.isArray(list) && list.length > 0) {
@@ -1686,6 +1786,7 @@ class SovereignOffice3D {
 
   async checkRosterChanges() {
     try {
+      await this.fetchSwarmSquadNodes();
       let agents = [];
       try {
         let res = await fetch('/api/agents');
@@ -1713,14 +1814,15 @@ class SovereignOffice3D {
 
       if (!agents.length) return;
       const clean = agents.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
-      const currentFingerprint = clean.map(a => `${a.id}:${a.name || ''}:${a.role || ''}`).sort().join('||');
+      const squadFiltered = this.filterPersonasByActiveSwarm(clean);
+      const currentFingerprint = squadFiltered.map(a => `${a.id}:${a.name || ''}:${a.role || ''}`).sort().join('||');
 
       if (!this._lastRosterFingerprint || this._lastRosterFingerprint !== currentFingerprint) {
         if (this._lastRosterFingerprint) {
-          console.log('[Office 3D] ⚡ Dynamic Agent update detected! Auto-syncing 3D Office...');
+          console.log('[Office 3D] ⚡ Swarm squad change detected! Auto-syncing 3D Office...');
         }
-        window.AVAILABLE_PERSONAS = clean;
-        this.syncPersonas(clean);
+        window.AVAILABLE_PERSONAS = squadFiltered;
+        this.syncPersonas(squadFiltered);
         this._lastRosterFingerprint = currentFingerprint;
       }
     } catch (_) {}
@@ -1764,7 +1866,9 @@ class SovereignOffice3D {
         : [];
     }
 
-    const cleanList = personaList.filter(p => p && p.id && p.id.toLowerCase() !== 'default');
+    const nonDefault = personaList.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
+    // STRICT SWARM FLOW SQUAD FILTER: Enforce uncluttered 3D Office
+    const cleanList = this.filterPersonasByActiveSwarm(nonDefault);
 
     // Sort: Mr. Flow strictly at index 0 (Executive Desk), followed by Swarm Leader, then specialists
     const sorted = [...cleanList].sort((a, b) => {

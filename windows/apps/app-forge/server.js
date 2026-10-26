@@ -52,6 +52,34 @@ function parseJsonBody(req) {
   });
 }
 
+function safeStreamFile(filePath, res, contentType = 'text/html; charset=utf-8') {
+  const resolvedGuiRoot = path.resolve(GUI_ROOT);
+  const resolvedFilePath = path.resolve(filePath);
+  if (!resolvedFilePath.startsWith(resolvedGuiRoot)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    return res.end('403 Forbidden');
+  }
+
+  const stream = fs.createReadStream(resolvedFilePath);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+    }
+    res.end();
+  });
+
+  res.on('close', () => {
+    stream.destroy();
+  });
+
+  stream.pipe(res);
+}
+
 // Generate code templates for new micro-apps
 function generateAppScaffold(opts) {
   const { id, name, description, category, category_id, icon, default_port, app_type } = opts;
@@ -170,6 +198,34 @@ function sendJson(res, statusCode, data) {
   res.end(JSON.stringify(data));
 }
 
+function safeStreamFile(filePath, res, contentType = 'text/html; charset=utf-8') {
+  const resolvedGuiRoot = path.resolve(GUI_ROOT);
+  const resolvedFilePath = path.resolve(filePath);
+  if (!resolvedFilePath.startsWith(resolvedGuiRoot)) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    return res.end('403 Forbidden');
+  }
+
+  const stream = fs.createReadStream(resolvedFilePath);
+  res.writeHead(200, {
+    'Content-Type': contentType,
+    'Access-Control-Allow-Origin': '*'
+  });
+
+  stream.on('error', () => {
+    if (!res.headersSent) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+    }
+    res.end();
+  });
+
+  res.on('close', () => {
+    stream.destroy();
+  });
+
+  stream.pipe(res);
+}
+
 const server = http.createServer((req, res) => {
   const url = new URL(req.url, \`http://127.0.0.1:\${PORT}\`);
   const pathname = url.pathname;
@@ -191,18 +247,14 @@ const server = http.createServer((req, res) => {
 
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'text/html; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    return fs.createReadStream(filePath).pipe(res);
+    const contentType = MIME_TYPES[ext] || 'text/html; charset=utf-8';
+    return safeStreamFile(filePath, res, contentType);
   }
 
   // Fallback to index.html for SPA
   const indexHtml = path.join(GUI_ROOT, 'index.html');
   if (fs.existsSync(indexHtml)) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    return fs.createReadStream(indexHtml).pipe(res);
+    return safeStreamFile(indexHtml, res, 'text/html; charset=utf-8');
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -507,6 +559,13 @@ const server = http.createServer(async (req, res) => {
       testProc.stdout.on('data', d => testOutput += d);
       testProc.stderr.on('data', d => testOutput += d);
 
+      testProc.on('error', (err) => {
+        return sendJson(res, 500, {
+          status: 'error',
+          message: 'Failed to spawn test runner: ' + err.message
+        });
+      });
+
       testProc.on('close', code => {
         if (code === 0) {
           return sendJson(res, 201, {
@@ -529,24 +588,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Path traversal guard
+  if (req.url.includes('..') || pathname.includes('..')) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    return res.end('403 Forbidden');
+  }
+
   // Static files
   let reqPath = pathname === '/' ? '/index.html' : pathname;
-  const safePath = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, '');
-  const filePath = path.join(GUI_ROOT, safePath);
+  const filePath = path.resolve(GUI_ROOT, '.' + reqPath);
+  if (!filePath.startsWith(path.resolve(GUI_ROOT))) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
+    return res.end('403 Forbidden');
+  }
 
   if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
     const ext = path.extname(filePath).toLowerCase();
-    res.writeHead(200, {
-      'Content-Type': MIME_TYPES[ext] || 'text/html; charset=utf-8',
-      'Access-Control-Allow-Origin': '*'
-    });
-    return fs.createReadStream(filePath).pipe(res);
+    const contentType = MIME_TYPES[ext] || 'text/html; charset=utf-8';
+    return safeStreamFile(filePath, res, contentType);
   }
 
-  const indexHtml = path.join(GUI_ROOT, 'index.html');
-  if (fs.existsSync(indexHtml)) {
-    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    return fs.createReadStream(indexHtml).pipe(res);
+  // SPA fallback only for extensionless navigation routes
+  const ext = path.extname(reqPath);
+  if (!ext) {
+    const indexHtml = path.join(GUI_ROOT, 'index.html');
+    if (fs.existsSync(indexHtml)) {
+      return safeStreamFile(indexHtml, res, 'text/html; charset=utf-8');
+    }
   }
 
   res.writeHead(404, { 'Content-Type': 'text/plain' });

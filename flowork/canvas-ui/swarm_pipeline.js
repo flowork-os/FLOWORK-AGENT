@@ -1633,6 +1633,9 @@
         window.dispatchEvent(new CustomEvent('flowork:preset-changed', {
           detail: { presetId, preset: target }
         }));
+        window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+          detail: { nodes: target.nodes }
+        }));
         fetch('/api/swarmflow/active', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -1788,6 +1791,12 @@
           void indicator.offsetWidth;
           indicator.classList.add('save-indicator-flash');
         }
+
+        try {
+          window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+            detail: { nodes: this.nodes }
+          }));
+        } catch (_) {}
       } catch (err) {
         console.error('[SwarmPipeline] Auto-Save error:', err);
       }
