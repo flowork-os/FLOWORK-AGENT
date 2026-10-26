@@ -21,11 +21,22 @@ pub enum TamperKind {
     HistogramMismatch,
 }
 
-pub fn unseal_verified(cipher: &[u8], _fp: &SovereignFingerprint) -> String {
-    crate::prompt_seal::unseal(cipher)
+pub fn unseal_verified(cipher: &[u8], fp: &SovereignFingerprint) -> String {
+    match verify_cipher_integrity(cipher, fp) {
+        Ok(s) => s,
+        Err(tamper) => {
+            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!(
+                "Cryptographic seal violation: {:?} (Morphological Fingerprint: length, spaces, vowels A-I-U-E-O mismatch)",
+                tamper
+            ));
+        }
+    }
 }
 
 pub fn verify_cipher_integrity(cipher: &[u8], fp: &SovereignFingerprint) -> Result<String, TamperKind> {
+    if fp.length == 0 {
+        return Ok(crate::prompt_seal::unseal(cipher));
+    }
     if cipher.len() != fp.length {
         return Err(TamperKind::LengthMismatch);
     }

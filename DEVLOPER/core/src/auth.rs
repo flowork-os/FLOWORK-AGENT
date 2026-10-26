@@ -340,29 +340,35 @@ impl AuthManager {
     pub fn enforce_startup_auth_or_crash(root_dir: &std::path::Path) {
         let vault_path = Self::find_vault_path(root_dir);
         if !vault_path.exists() {
-            println!("[X-Flow Core] 🛡️ Startup Gatekeeper: No auth vault found at {}. Initializing in Sovereign Lock mode.", vault_path.display());
-            return;
+            eprintln!("\n================================================================================");
+            eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Auth Gatekeeper");
+            eprintln!("================================================================================");
+            eprintln!("❌ Missing authentication credentials: vault not found at {}", vault_path.display());
+            eprintln!("🔒 Strict lifecycle dependence on https://auth.floworkos.com enforced.");
+            eprintln!("💥 Hard crash triggered (Exit Code 137). Please authenticate via auth.floworkos.com.");
+            eprintln!("================================================================================\n");
+            std::process::exit(137);
         }
 
         let data = match std::fs::read(&vault_path) {
             Ok(d) => d,
             Err(e) => {
-                eprintln!("[X-Flow Core] ⚠️ Failed to read auth vault ({}): {}. Initializing in Sovereign Lock mode.", vault_path.display(), e);
-                return;
+                eprintln!("\n🛑 [FATAL LOCKDOWN] Failed to read auth vault ({}): {}", vault_path.display(), e);
+                std::process::exit(137);
             }
         };
 
         let vault: Value = match serde_json::from_slice(&data) {
             Ok(v) => v,
             Err(e) => {
-                eprintln!("[X-Flow Core] ⚠️ Corrupted auth vault ({}): {}. Initializing in Sovereign Lock mode.", vault_path.display(), e);
-                return;
+                eprintln!("\n🛑 [FATAL LOCKDOWN] Corrupted auth vault ({}): {}", vault_path.display(), e);
+                std::process::exit(137);
             }
         };
 
         if vault.get("is_logged_out").and_then(|v| v.as_bool()).unwrap_or(false) {
-            println!("[X-Flow Core] 🔒 Session explicitly logged out. Initializing in Sovereign Lock mode.");
-            return;
+            eprintln!("\n🛑 [FATAL LOCKDOWN] Session explicitly logged out. Hard crash enforced (Exit Code 137).");
+            std::process::exit(137);
         }
 
         let candidates = [
@@ -378,9 +384,16 @@ impl AuthManager {
             }
         }
 
+        let auth_authority = crate::prompt_enclave::PromptEnclave::url_auth();
         if !authenticated {
-            println!("[X-Flow Core] 🔒 No active cryptographic passport session found in vault. Initializing in Sovereign Lock mode.");
-            return;
+            eprintln!("\n================================================================================");
+            eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Auth Gatekeeper");
+            eprintln!("================================================================================");
+            eprintln!("❌ No valid cryptographic passport issued by {} found in vault.", auth_authority);
+            eprintln!("🔒 Strict lifecycle dependence on https://auth.floworkos.com enforced.");
+            eprintln!("💥 Hard crash triggered (Exit Code 137). Unauthorized binary execution denied.");
+            eprintln!("================================================================================\n");
+            std::process::exit(137);
         }
 
         println!("[X-Flow Core] 🛡️ Startup Gatekeeper: Cryptographic Passport (https://auth.floworkos.com) verified successfully.");
@@ -431,9 +444,13 @@ impl AuthManager {
         let status = self.verify_current_session().await;
         let is_auth = status.get("authorized").and_then(|v| v.as_bool()).unwrap_or(false);
         if !is_auth {
-            let mut cached = self.cache.lock().await;
-            *cached = None;
-            println!("[X-Flow Core] 🔒 Heartbeat Gatekeeper: Session is locked or unauthenticated.");
+            eprintln!("\n================================================================================");
+            eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Heartbeat Gatekeeper");
+            eprintln!("================================================================================");
+            eprintln!("❌ Session revoked or invalidated by auth.floworkos.com.");
+            eprintln!("💥 Hard crash enforced (Exit Code 137). Terminating immediately.");
+            eprintln!("================================================================================\n");
+            std::process::exit(137);
         }
     }
 

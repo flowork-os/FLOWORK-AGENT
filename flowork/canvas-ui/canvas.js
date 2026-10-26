@@ -3359,11 +3359,7 @@ async function initAuthSystem() {
   const btnLogin = document.getElementById('btn-topbar-login');
   if (btnLogin) {
     btnLogin.addEventListener('click', () => {
-      const lockOverlay = document.getElementById('sovereign-lock-overlay');
-      if (lockOverlay) {
-        lockOverlay.style.display = 'flex';
-        setupLockScreenHandlers();
-      }
+      window.location.href = 'https://canvas.floworkos.com/';
     });
   }
 
@@ -3534,19 +3530,12 @@ function renderAuthUI(data) {
       authPollInterval = null;
     }
   } else {
-    // Engage Local Sovereign Lock Overlay without external redirect
+    // Strictly Fail-Closed: Redirect unauthorized workspace sessions to Cloudflare Edge launcher
     window.__isUserAuthenticated = false;
     document.documentElement.classList.remove('xflow-authenticated');
     sessionStorage.removeItem('flowork_auth_verified');
     sessionStorage.removeItem('xflow_user_authenticated');
-    if (btnLogin) btnLogin.style.display = 'inline-flex';
-    if (profileCapsule) profileCapsule.style.display = 'none';
-
-    const lockOverlay = document.getElementById('sovereign-lock-overlay');
-    if (lockOverlay) {
-      lockOverlay.style.display = 'flex';
-      setupLockScreenHandlers();
-    }
+    window.location.replace('https://canvas.floworkos.com/');
   }
 }
 
@@ -3586,13 +3575,8 @@ async function logoutSession() {
   if (profileCapsule) profileCapsule.style.display = 'none';
   if (btnLogin) btnLogin.style.display = 'inline-flex';
 
-  // Engage local sovereign lock screen overlay immediately
-  const lockOverlay = document.getElementById('sovereign-lock-overlay');
-  if (lockOverlay) {
-    lockOverlay.style.display = 'flex';
-    setupLockScreenHandlers();
-  }
-  showToast('🔒 Session logged out and locked.');
+  // Redirect to authoritative animated Cloudflare Edge launcher
+  window.location.replace('https://canvas.floworkos.com/');
 }
 
 function setupLockScreenHandlers() {

@@ -50,16 +50,20 @@ pub async fn get_edge_launcher_html() -> String {
     r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flowork OS</title><meta http-equiv="refresh" content="0; url=/canvas/member-area/index.html"></head><body style="background:#04060a;color:#00e5ff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div>⚡ Redirecting to Sovereign Canvas...</div></body></html>"#.to_string()
 }
 
-pub async fn serve_canvas_root(State(_state): State<Arc<AppState>>) -> Response {
+pub async fn serve_canvas_root(State(state): State<Arc<AppState>>) -> Response {
+    if !state.auth.is_authorized().await {
+        return Redirect::temporary("https://canvas.floworkos.com/").into_response();
+    }
     Redirect::temporary("/canvas/member-area/index.html").into_response()
 }
 
 pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State<Arc<AppState>>) -> Response {
     let clean = file.replace("..", "").trim_start_matches('/').to_string();
+    let is_auth = state.auth.is_authorized().await;
 
-    // Serve local sovereign launcher on local port
+    // Serve Cloudflare Edge launcher on local port
     if clean == "launcher.html" || clean == "launcher" || clean == "launcher/index.html" {
-        return Redirect::temporary("/canvas/member-area/index.html").into_response();
+        return Redirect::temporary("https://canvas.floworkos.com/").into_response();
     }
 
     // Serve hybrid auth attestation HTML directly on local port
@@ -81,11 +85,21 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
         ).into_response();
     }
 
+    // Pre-member boundary enforcement: Unauthenticated requests cannot access member-area
+    // FAIL-CLOSED CRASH: If user is not authenticated with auth.floworkos.com and attempts to access member-area, trigger immediate shutdown.
+    if clean.starts_with("member-area") && !is_auth {
+        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to bypass sovereign launcher and enter protected member-area without valid session from auth.floworkos.com");
+    }
+
     // Redirect legacy /canvas/index.html to /canvas/member-area/index.html
     if clean == "index.html" {
-        let member_index = state.cfg.canvas_dir.join("member-area").join("index.html");
-        if member_index.exists() {
-            return Redirect::temporary("/canvas/member-area/index.html").into_response();
+        if is_auth {
+            let member_index = state.cfg.canvas_dir.join("member-area").join("index.html");
+            if member_index.exists() {
+                return Redirect::temporary("/canvas/member-area/index.html").into_response();
+            }
+        } else {
+            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to load protected canvas index without valid session from auth.floworkos.com");
         }
     }
 
