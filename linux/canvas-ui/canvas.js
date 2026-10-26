@@ -4356,6 +4356,11 @@ function initEventListeners() {
     tabCopilot.addEventListener('click', () => switchTab('copilot'));
   }
 
+  const tabPipeline = document.getElementById('tab-pipeline');
+  if (tabPipeline) {
+    tabPipeline.addEventListener('click', () => switchTab('pipeline'));
+  }
+
   initStoreSubnavSystem();
 
   const tabStrip = document.getElementById('tab-strip');
@@ -6246,6 +6251,15 @@ async function switchTab(tabId, options = {}) {
     }
   }
 
+  if (tabId === 'pipeline') {
+    const pipelineView = document.getElementById('view-pipeline');
+    if (pipelineView && window.swarmPipelineInstance) {
+      if (!pipelineView.querySelector('.swarm-pipeline-container')) {
+        window.swarmPipelineInstance.mount(pipelineView);
+      }
+    }
+  }
+
   // Sovereign Viewport Telemetry: Report active tab to Engine Host for agent context
   reportActiveViewport(tabId);
 }
@@ -6257,6 +6271,9 @@ function reportActiveViewport(tabId) {
   if (tabId === 'office') {
     title = 'Office';
     kind = 'office';
+  } else if (tabId === 'pipeline') {
+    title = 'Visual Swarm Pipeline';
+    kind = 'pipeline';
   } else if (tabId === 'canvas-stage') {
     title = 'Sovereign Solo Studio';
     kind = 'canvas_stage';
