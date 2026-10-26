@@ -38,6 +38,12 @@ echo "============================================================"
 mkdir -p "$SCRATCH_DIR"
 
 # -------------------------------------------------------------
+# 1.5. Architectural Sovereignty & Rejection Gate
+# -------------------------------------------------------------
+echo "🔍 [Gatekeeper] Verifying Sovereign Architecture Integrity..."
+python3 "$DEVLOPER_DIR/hooks/validate_sovereignty.py"
+
+# -------------------------------------------------------------
 # 2. Locate Source Binaries
 # -------------------------------------------------------------
 LINUX_BIN="$DEVLOPER_DIR/build_output/flowork"

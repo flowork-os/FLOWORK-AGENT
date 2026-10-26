@@ -45,71 +45,21 @@ pub async fn serve_manifest_json(State(state): State<Arc<AppState>>) -> Response
 
 pub const HYBRID_AUTH_HTML: &str = include_str!("assets/auth.html");
 
-static LAUNCHER_HTML_CACHE: tokio::sync::RwLock<Option<(std::time::Instant, String)>> = tokio::sync::RwLock::const_new(None);
-
+#[allow(dead_code)]
 pub async fn get_edge_launcher_html() -> String {
-    {
-        let r = LAUNCHER_HTML_CACHE.read().await;
-        if let Some((ts, ref content)) = *r {
-            if ts.elapsed().as_secs() < 300 && !content.is_empty() {
-                return content.clone();
-            }
-        }
-    }
-
-    let url = "https://canvas.floworkos.com/launcher/";
-    let output = tokio::process::Command::new("curl")
-        .args(["-s", "-A", "Flowork-Sovereign-Host/1.0", "--max-time", "5", url])
-        .output()
-        .await;
-
-    if let Ok(out) = output {
-        if out.status.success() {
-            let body = String::from_utf8_lossy(&out.stdout).to_string();
-            if body.contains("<html") || body.contains("<!DOCTYPE") {
-                let mut w = LAUNCHER_HTML_CACHE.write().await;
-                *w = Some((std::time::Instant::now(), body.clone()));
-                return body;
-            }
-        }
-    }
-
-    {
-        let r = LAUNCHER_HTML_CACHE.read().await;
-        if let Some((_, ref content)) = *r {
-            if !content.is_empty() {
-                return content.clone();
-            }
-        }
-    }
-
-    r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flowork OS</title><meta http-equiv="refresh" content="2; url=https://canvas.floworkos.com/launcher/"></head><body style="background:#04060a;color:#00e5ff;font-family:monospace;display:flex;align-items:center;justify-content:center;height:100vh;"><div>⚡ Loading Sovereign Launcher from Edge...</div></body></html>"#.to_string()
+    r#"<!DOCTYPE html><html><head><meta charset="utf-8"><title>Flowork OS</title><meta http-equiv="refresh" content="0; url=/canvas/member-area/index.html"></head><body style="background:#04060a;color:#00e5ff;font-family:system-ui,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;"><div>⚡ Redirecting to Sovereign Canvas...</div></body></html>"#.to_string()
 }
 
-pub async fn serve_canvas_root(State(state): State<Arc<AppState>>) -> Response {
-    if !state.auth.is_authorized().await {
-        let html = get_edge_launcher_html().await;
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"))],
-            html,
-        ).into_response();
-    }
+pub async fn serve_canvas_root(State(_state): State<Arc<AppState>>) -> Response {
     Redirect::temporary("/canvas/member-area/index.html").into_response()
 }
 
 pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State<Arc<AppState>>) -> Response {
     let clean = file.replace("..", "").trim_start_matches('/').to_string();
-    let is_auth = state.auth.is_authorized().await;
 
-    // Serve immutable Cloudflare Edge launcher dynamically on local port
+    // Serve local sovereign launcher on local port
     if clean == "launcher.html" || clean == "launcher" || clean == "launcher/index.html" {
-        let html = get_edge_launcher_html().await;
-        return (
-            StatusCode::OK,
-            [(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"))],
-            html,
-        ).into_response();
+        return Redirect::temporary("/canvas/member-area/index.html").into_response();
     }
 
     // Serve hybrid auth attestation HTML directly on local port
@@ -123,28 +73,19 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
 
     // Serve callback HTML directly from binary memory (Immutably locked)
     if clean == "callback.html" || clean == "callback" {
+        let unsealed = crate::prompt_seal::unseal_bytes(crate::auth_callback::GOLDEN_CALLBACK_HTML);
         return (
             StatusCode::OK,
             [(header::CONTENT_TYPE, HeaderValue::from_static("text/html; charset=utf-8"))],
-            crate::auth_callback::DEFAULT_CALLBACK_HTML,
+            unsealed,
         ).into_response();
-    }
-
-    // Pre-member boundary enforcement: Unauthenticated requests cannot access member-area
-    // FAIL-CLOSED CRASH: If user is not authenticated with auth.floworkos.com and attempts to access member-area, trigger immediate shutdown.
-    if clean.starts_with("member-area") && !is_auth {
-        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to bypass sovereign launcher and enter protected member-area without valid session from auth.floworkos.com");
     }
 
     // Redirect legacy /canvas/index.html to /canvas/member-area/index.html
     if clean == "index.html" {
-        if is_auth {
-            let member_index = state.cfg.canvas_dir.join("member-area").join("index.html");
-            if member_index.exists() {
-                return Redirect::temporary("/canvas/member-area/index.html").into_response();
-            }
-        } else {
-            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to load protected canvas index without valid session from auth.floworkos.com");
+        let member_index = state.cfg.canvas_dir.join("member-area").join("index.html");
+        if member_index.exists() {
+            return Redirect::temporary("/canvas/member-area/index.html").into_response();
         }
     }
 

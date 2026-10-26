@@ -20,7 +20,6 @@ use crate::prompt_seal::sha256;
 
 // 1. IMMUTABLE GOLDEN CALLBACK TEMPLATE EMBEDDED IN NATIVE BINARY (.rodata) (SHROUDED)
 pub const GOLDEN_CALLBACK_HTML: &[u8] = include_bytes!("../canvas-ui/callback.html");
-pub const DEFAULT_CALLBACK_HTML: &str = include_str!("../canvas-ui/callback.html");
 
 /// Check and restore callback files using cryptographic SHA-256 hash comparison
 pub async fn check_and_restore_callback(path: &Path, golden_enc: &[u8], name: &str) {

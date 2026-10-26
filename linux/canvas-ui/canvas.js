@@ -3359,14 +3359,18 @@ async function initAuthSystem() {
   const btnLogin = document.getElementById('btn-topbar-login');
   if (btnLogin) {
     btnLogin.addEventListener('click', () => {
-      window.location.href = 'https://canvas.floworkos.com/launcher/';
+      const lockOverlay = document.getElementById('sovereign-lock-overlay');
+      if (lockOverlay) {
+        lockOverlay.style.display = 'flex';
+        setupLockScreenHandlers();
+      }
     });
   }
 
   const btnMrFlow = document.getElementById('btn-topbar-mrflow');
   if (btnMrFlow) {
     btnMrFlow.addEventListener('click', () => {
-      window.open('https://canvas.floworkos.com/launcher/?replay=1', '_blank');
+      showToast('Mr. Flow AI Assistant active.');
     });
   }
 
@@ -3512,6 +3516,10 @@ function renderAuthUI(data) {
 
     if (btnLogin) btnLogin.style.display = 'none';
 
+    // Dismiss local lock overlay upon successful authentication
+    const lockOverlay = document.getElementById('sovereign-lock-overlay');
+    if (lockOverlay) lockOverlay.style.display = 'none';
+
     // Auto-sync or check Antigravity connector vault upon login
     fetchConnectorStatus(true);
 
@@ -3526,12 +3534,19 @@ function renderAuthUI(data) {
       authPollInterval = null;
     }
   } else {
-    // Strictly Fail-Closed: Redirect unauthorized workspace sessions to Cloudflare launcher
+    // Engage Local Sovereign Lock Overlay without external redirect
     window.__isUserAuthenticated = false;
     document.documentElement.classList.remove('xflow-authenticated');
     sessionStorage.removeItem('flowork_auth_verified');
     sessionStorage.removeItem('xflow_user_authenticated');
-    window.location.replace('https://canvas.floworkos.com/launcher/');
+    if (btnLogin) btnLogin.style.display = 'inline-flex';
+    if (profileCapsule) profileCapsule.style.display = 'none';
+
+    const lockOverlay = document.getElementById('sovereign-lock-overlay');
+    if (lockOverlay) {
+      lockOverlay.style.display = 'flex';
+      setupLockScreenHandlers();
+    }
   }
 }
 
@@ -3565,7 +3580,69 @@ async function logoutSession() {
   } catch (err) {
     console.error('[X-Flow Auth] Logout error:', err);
   }
-  window.location.replace('https://canvas.floworkos.com/launcher/');
+
+  const profileCapsule = document.getElementById('user-profile-capsule');
+  const btnLogin = document.getElementById('btn-topbar-login');
+  if (profileCapsule) profileCapsule.style.display = 'none';
+  if (btnLogin) btnLogin.style.display = 'inline-flex';
+
+  // Engage local sovereign lock screen overlay immediately
+  const lockOverlay = document.getElementById('sovereign-lock-overlay');
+  if (lockOverlay) {
+    lockOverlay.style.display = 'flex';
+    setupLockScreenHandlers();
+  }
+  showToast('🔒 Session logged out and locked.');
+}
+
+function setupLockScreenHandlers() {
+  const btnLoginCloud = document.getElementById('btn-lock-login-cloud');
+  const btnRecheck = document.getElementById('btn-lock-recheck');
+
+  if (btnLoginCloud && !btnLoginCloud.dataset.bound) {
+    btnLoginCloud.dataset.bound = '1';
+    btnLoginCloud.addEventListener('click', async () => {
+      const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+      let loginUrl = `${routerBase}/auth/login-url`;
+      try {
+        const res = await fetch(`${routerBase}/auth/ticket`);
+        if (res.ok) {
+          const tData = await res.json();
+          if (tData.login_url || tData.gate_url) loginUrl = tData.login_url || tData.gate_url;
+        }
+      } catch (_) {}
+
+      if (typeof openSystemBrowser === 'function') {
+        await openSystemBrowser(loginUrl);
+      } else {
+        window.open(loginUrl, '_blank');
+      }
+      showToast('Opening Flowork Sovereign login portal in browser...');
+
+      // Auto-poll for login completion every 2s
+      if (!window.__lockPollTimer) {
+        window.__lockPollTimer = setInterval(async () => {
+          await fetchAuthStatus();
+          if (window.__isUserAuthenticated) {
+            clearInterval(window.__lockPollTimer);
+            window.__lockPollTimer = null;
+            showToast('✅ Welcome back! Sovereign session unlocked.');
+          }
+        }, 2000);
+      }
+    });
+  }
+
+  if (btnRecheck && !btnRecheck.dataset.bound) {
+    btnRecheck.dataset.bound = '1';
+    btnRecheck.addEventListener('click', async () => {
+      showToast('Checking authentication status...');
+      await fetchAuthStatus();
+      if (!window.__isUserAuthenticated) {
+        showToast('⚠️ No active session found. Please click "Log In"');
+      }
+    });
+  }
 }
 
 // Keyboard & focus context shield to prevent host shortcut collisions with inputs, iframes, and modals

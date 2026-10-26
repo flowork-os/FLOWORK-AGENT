@@ -21,6 +21,10 @@ echo "📁 Source Dir:  ${CORE_DIR}"
 echo "📦 Output Dir:  ${OUTPUT_DIR}"
 echo "============================================================"
 
+# Step 0: Autonomous Architectural Validation & Zero-Trust Gatekeeper
+echo "🔍 [Step 0] Executing Sovereign Release Gatekeeper (Anti-Regression)..."
+python3 "${SCRIPT_DIR}/hooks/validate_sovereignty.py"
+
 # Check compiler tools
 if ! command -v cargo &> /dev/null; then
     echo "❌ Error: cargo is not installed or not in PATH."
