@@ -2205,29 +2205,77 @@
     }
 
     // Export button handler
+    // Export button handler with real polling & status banner
     const btnExport = document.getElementById('fl-btn-export');
     if (btnExport) {
       btnExport.addEventListener('click', async () => {
+        const origText = btnExport.innerText;
+        btnExport.disabled = true;
         btnExport.innerText = '⏳ Rendering...';
+        
+        let statusToast = document.getElementById('fl-export-toast');
+        if (!statusToast) {
+          statusToast = document.createElement('div');
+          statusToast.id = 'fl-export-toast';
+          statusToast.style.cssText = 'position: fixed; bottom: 24px; right: 24px; z-index: 9999; background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 12px 18px; color: #f0f6fc; box-shadow: 0 8px 24px rgba(0,0,0,0.5); font-size: 13px; display: flex; align-items: center; gap: 12px; transition: all 0.2s ease;';
+          document.body.appendChild(statusToast);
+        }
+        statusToast.style.display = 'flex';
+        statusToast.innerHTML = '<span>⚡ Initializing video rendering...</span>';
+
         try {
           const res = await fetch(getApiUrl('/api/project/export'), {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-              projectName: 'Flowork Cinematic Montage',
+              projectName: 'Flow Studio Montage',
               resolution: document.getElementById('fl-aspect-ratio')?.value || '16-9',
               fps: 30,
               format: 'mp4'
             })
           });
           const data = await res.json();
-          alert(`Render Initialized!
-Job ID: ${data.jobId}
-Format: ${data.details.format.toUpperCase()} (${data.details.resolution})`);
+          if (!res.ok || data.status === 'error') {
+            throw new Error(data.message || 'Render request failed');
+          }
+
+          const jobId = data.jobId;
+          statusToast.innerHTML = `<span>⏳ Rendering job <b>${jobId}</b> (0%)...</span>`;
+
+          // Poll job status until complete or failed
+          const pollInterval = setInterval(async () => {
+            try {
+              const statusRes = await fetch(getApiUrl(`/api/project/status/${jobId}`));
+              if (!statusRes.ok) return;
+              const statusData = await statusRes.json();
+              const job = statusData.job;
+              if (job) {
+                if (job.status === 'completed') {
+                  clearInterval(pollInterval);
+                  btnExport.disabled = false;
+                  btnExport.innerText = origText;
+                  statusToast.innerHTML = `<span>✅ <b>Render Complete!</b></span> <a href="${job.url}" download="${job.filename}" style="background: var(--color-accent); color: #000; font-weight: bold; text-decoration: none; padding: 4px 10px; border-radius: 4px; font-size: 12px;">Download MP4</a>`;
+                  setTimeout(() => { if (statusToast) statusToast.style.display = 'none'; }, 10000);
+                } else if (job.status === 'failed') {
+                  clearInterval(pollInterval);
+                  btnExport.disabled = false;
+                  btnExport.innerText = origText;
+                  statusToast.innerHTML = `<span style="color: #ff7b72;">❌ Render failed: ${job.error || 'Unknown error'}</span>`;
+                  setTimeout(() => { if (statusToast) statusToast.style.display = 'none'; }, 6000);
+                } else {
+                  statusToast.innerHTML = `<span>⏳ Processing video (${job.progress || 50}%)...</span>`;
+                }
+              }
+            } catch (pollErr) {
+              // Network retry
+            }
+          }, 1000);
+
         } catch (err) {
-          alert('Render pipeline simulated successfully!');
-        } finally {
-          btnExport.innerText = '⚡ Render & Export';
+          btnExport.disabled = false;
+          btnExport.innerText = origText;
+          statusToast.innerHTML = `<span style="color: #ff7b72;">❌ ${err.message}</span>`;
+          setTimeout(() => { if (statusToast) statusToast.style.display = 'none'; }, 5000);
         }
       });
     }
@@ -2642,6 +2690,57 @@ Format: ${data.details.format.toUpperCase()} (${data.details.resolution})`);
         addAssetToTimeline('adjustment', 'Adjustment Layer', 5.0);
       });
     }
+
+    // Event delegation for all sidebar '+ Add' asset buttons, presets, transitions, and filters
+    document.addEventListener('click', (e) => {
+      // 1. Direct '+ Add' or '+ Use' button click
+      const addBtn = e.target.closest('.fl-btn-add-asset');
+      if (addBtn) {
+        e.stopPropagation();
+        const parent = addBtn.closest('.fl-asset-item, .fl-asset-preset, .fl-card-interactive') || addBtn.parentElement;
+        const panel = addBtn.closest('.fl-tab-panel');
+        const titleEl = parent ? (parent.querySelector('.fl-asset-name, span') || parent.querySelector('div:first-child')) : null;
+        let title = (titleEl ? titleEl.innerText : addBtn.getAttribute('data-name')) || 'Asset';
+        title = title.replace(/\s*\+.*$/, '').trim();
+
+        let type = 'video';
+        let duration = 3.0;
+
+        if (panel) {
+          if (panel.id === 'fl-panel-audio') {
+            type = 'audio';
+            duration = 10.0;
+          } else if (panel.id === 'fl-panel-text') {
+            type = 'text';
+            duration = 4.0;
+          } else if (panel.id === 'fl-panel-stickers') {
+            type = 'sticker';
+            duration = 3.5;
+          } else if (panel.id === 'fl-panel-effects') {
+            type = 'effect';
+            duration = 4.0;
+          } else if (panel.id === 'fl-panel-transitions') {
+            type = 'transition';
+            duration = 1.5;
+          } else if (panel.id === 'fl-panel-filters') {
+            type = 'filter';
+            duration = 5.0;
+          }
+        }
+
+        addAssetToTimeline(type, title, duration);
+        return;
+      }
+
+      // 2. Click on preset cards or transition/filter items directly
+      const presetCard = e.target.closest('.fl-asset-preset, .fl-card-interactive');
+      if (presetCard && !e.target.closest('button')) {
+        const type = presetCard.getAttribute('data-type') || (presetCard.closest('#fl-panel-transitions') ? 'transition' : (presetCard.closest('#fl-panel-filters') ? 'filter' : 'sticker'));
+        const title = presetCard.getAttribute('data-title') || presetCard.querySelector('.fl-asset-name, span')?.innerText?.trim() || 'Preset';
+        const duration = parseFloat(presetCard.getAttribute('data-duration')) || 3.0;
+        addAssetToTimeline(type, title, duration);
+      }
+    });
 
     // Startup restoration and initializations
     const hasRestored = restoreProjectState();

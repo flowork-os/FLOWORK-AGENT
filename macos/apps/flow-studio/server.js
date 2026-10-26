@@ -90,8 +90,15 @@ function serveStaticFile(filePath, req, res) {
   const resolvedPath = path.resolve(filePath);
   const resolvedGuiRoot = path.resolve(GUI_ROOT);
   const resolvedOutputs = path.resolve(OUTPUTS_DIR);
+  const resolvedUploads = path.resolve(UPLOADS_DIR);
+  const resolvedSamples = path.resolve(SAMPLES_DIR);
 
-  if (!resolvedPath.startsWith(resolvedGuiRoot) && !resolvedPath.startsWith(resolvedOutputs)) {
+  const isAllowed = resolvedPath.startsWith(resolvedGuiRoot) ||
+                    resolvedPath.startsWith(resolvedOutputs) ||
+                    resolvedPath.startsWith(resolvedUploads) ||
+                    resolvedPath.startsWith(resolvedSamples);
+
+  if (!isAllowed) {
     res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
     return res.end('403 Forbidden');
   }
@@ -568,6 +575,11 @@ const server = http.createServer(async (req, res) => {
   if (reqPath.startsWith('/uploads/')) {
     const rel = reqPath.replace(/^\/uploads\//, '');
     const target = path.join(UPLOADS_DIR, rel);
+    return serveStaticFile(target, req, res);
+  }
+  if (reqPath.startsWith('/samples/')) {
+    const rel = reqPath.replace(/^\/samples\//, '');
+    const target = path.join(SAMPLES_DIR, rel);
     return serveStaticFile(target, req, res);
   }
 
