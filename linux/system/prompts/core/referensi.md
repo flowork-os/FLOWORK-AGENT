@@ -23,3 +23,5 @@ To thoroughly comprehend your identity, system architecture, sovereign guardrail
    - **Role**: Authoritative Visual Canvas Application Engineering Runbook & Multi-Modal Stage Curation.
 10. `{engine_root}/apps/trigger.md`
     - **Role**: Dynamic Plugin Triggers & Ambient Canvas Activation (11-Dimension UNCE Evaluation, Local Loopback Probes, and Lex Superior Guardrail).
+11. `{engine_root}/swarmflow/README.md`
+    - **Role**: Sovereign Multi-Domain Swarm Flow Orchestration Engine, Atomic 1 Preset 1 File Architecture, Autonomous Sequential Relay Handover, and 3D Virtual Office Synchronization.

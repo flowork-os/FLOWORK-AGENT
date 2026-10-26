@@ -48,7 +48,7 @@ Within the Flowork OS Sovereign Architecture, **Tools** and **Plugins** serve di
 * **Execution Boundary:** Execute non-visually under agent discretion to inspect, analyze, edit files, and execute system commands behind the scenes.
 * **Output:** Return structured data directly into the LLM conversation context or render inline visual summaries in the chat HUD.
 
-### 2. Interactive Canvas Plugins (`{engine_root}/plugins/`)
+### 2. Interactive Canvas Plugins (`{engine_root}/apps/`)
 * **Purpose:** Visual, interactive workbench applications hosted on the Flowork Canvas stage.
 * **Core Doctrine: Human-in-the-Loop Co-Creation:** A dedicated visual arena where human operators and AI agents collaborate in real time (e.g. Chess Arena duels, YouTube Downloader & DSP Suno Audio Studio, Video Editor, Diagram/Form Co-creators).
 * **Agent Awareness:** The AI agent possesses real-time awareness of plugins opened by the user, inspects live application state via local APIs, dispatches actions, and updates the Canvas interface instantaneously.
@@ -60,7 +60,7 @@ Within the Flowork OS Sovereign Architecture, **Tools** and **Plugins** serve di
 Every plugin implements the **Flow Hybrid Architecture**, balancing immediate UI inspectability and CSS reactivity with sealed, tamper-proof backend execution:
 
 ```text
-{engine_root}/plugins/<app_id>/
+{engine_root}/apps/<app_id>/
 ├── plugin.manifest.json       # [MANDATORY] Plugin contract, Dual-Wing triggers, entrypoint, IPC & permissions
 ├── SKILL.md                   # [MANDATORY] Plugin interaction runbook (exact 20 English keywords, API schema)
 ├── trigger.md                 # [MANDATORY] UNCE sensory trigger conditions
@@ -317,13 +317,13 @@ Plugins are not static displays; they are living collaborative arenas between hu
 
 ---
 
-## 📖 8. Mandatory Dedicated Plugin Runbook (`{engine_root}/plugins/<app_id>/SKILL.md`)
+## 📖 8. Mandatory Dedicated Plugin Runbook (`{engine_root}/apps/<app_id>/SKILL.md`)
 
 > 🚨 **INVARIANT OPERATIONAL LAW: ZERO GUESSWORK**  
 > **AGENTS ARE STRICTLY FORBIDDEN FROM GUESSING PLUGIN API ENDPOINTS, QUERY PARAMETERS, OR JSON PAYLOAD SCHEMAS.**
 
 Whenever an agent interacts with a newly mounted Canvas plugin:
-1. **Initial Inspection (`view_file`):** Open and read `{engine_root}/plugins/<app_id>/SKILL.md` once upon mounting using `view_file`.
+1. **Initial Inspection (`view_file`):** Open and read `{engine_root}/apps/<app_id>/SKILL.md` once upon mounting using `view_file`.
 2. **Review Official Contracts:** Inspect the declared REST API endpoints (`GET /api/state`, `POST /api/action`), header requirements, and expected response payloads.
 3. **Precision Execution:** Invoke endpoints via `run_command` (using `curl` or Node.js) with verified arguments.
 
@@ -359,22 +359,22 @@ curl -s -X POST http://127.0.0.1:<PORT>/api/move \
 
 Before publishing or finalizing any new Canvas plugin:
 1. **Mandatory Dual Runbook & Trigger Consultation:**
-   - Prior to designing, implementing, or scaffolding any Canvas plugin, the agent MUST read both `{engine_root}/plugins/SKILL.MD` AND `{engine_root}/plugins/trigger.md` via `view_file`.
+   - Prior to designing, implementing, or scaffolding any Canvas plugin, the agent MUST read both `{engine_root}/apps/SKILL.MD` AND `{engine_root}/apps/trigger.md` via `view_file`.
 2. **Mandatory Category Taxonomy Binding (`category_id` CAT-001 .. CAT-026):**
    - The plugin manifest MUST declare an official `category_id` from the 26 Flowork OS professional jurisdictions (`CAT-001` through `CAT-026`). Plugins with missing or unrecognized categories are rejected by the Gatekeeper with Exit Code 1.
-3. **Plugin Trigger Specification (`{engine_root}/plugins/<app_id>/trigger.md`):**
-   - Every plugin MUST provide its ambient trigger specification in `{engine_root}/plugins/<app_id>/trigger.md` (or within `plugin.manifest.json`).
+3. **Plugin Trigger Specification (`{engine_root}/apps/<app_id>/trigger.md`):**
+   - Every plugin MUST provide its ambient trigger specification in `{engine_root}/apps/<app_id>/trigger.md` (or within `plugin.manifest.json`).
    - Must declare valid `scopes`, `events`, and bind to an official category (`CAT-001` through `CAT-026`, or `all`).
    - If declaring UNCE conditions (`local.port_open`, `time.market_session`, `env.is_headless`, `hw.cpu_load_percent`), all operators MUST conform strictly to standard UNCE comparison syntax.
 4. **Multi-OS Portability Audit:** Verify zero absolute host paths (`detect_hardcode`). Use relative paths and OS-agnostic path resolvers (`path.join`).
 5. **Dynamic Port Proof:** Verify backend microservice honors `process.env.FLOWORK_APP_PORT`.
 6. **100% Strict English UI & Logs:** Ensure all buttons, labels, tooltips, and console log outputs are written exclusively in formal industry English.
 7. **Scoped CSS Isolation:** Ensure all GUI styling is enclosed within `#<app_id>-root` or custom scoped container classes.
-8. **Mandatory Dedicated Runbook (`SKILL.md`):** Verify `{engine_root}/plugins/<app_id>/SKILL.md` provides complete, copy-paste runnable `curl` examples and schema docs.
+8. **Mandatory Dedicated Runbook (`SKILL.md`):** Verify `{engine_root}/apps/<app_id>/SKILL.md` provides complete, copy-paste runnable `curl` examples and schema docs.
 9. **Exit Code 0 Terminal Proof:** Verify backend tests and build suites terminate cleanly with exit code 0.
 10. **Visual GUI Inspection via Screenshot:** Take a screenshot via `flow_screenshot` / `screenshot` of the running GUI window to verify layout, rendering, DOM state, and responsive styling. It is strictly forbidden to claim completion without visual screenshot evidence.
 11. **Mandatory Subagent Audit Verification (Pilar 5: Trigger Verification):**
-   - The independent auditor subagent spawned during preflight verification MUST verify `{engine_root}/plugins/<app_id>/trigger.md` against `{engine_root}/plugins/trigger.md`.
+   - The independent auditor subagent spawned during preflight verification MUST verify `{engine_root}/apps/<app_id>/trigger.md` against `{engine_root}/apps/trigger.md`.
    - Any hallucinated trigger keys, invalid category bindings, or syntax errors will cause the auditor to reject the plugin immediately.
 
 ---

@@ -11,6 +11,16 @@
 (function (window, document) {
   'use strict';
 
+  function escapeHtml(str) {
+    if (str === null || str === undefined) return '';
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  }
+
   // =========================================================================
   // 🏛️ CONSTANT CATALOGS: ANTIGRAVITY MODELS, TOOLS, FILE ACTIONS, SKILLS
   // =========================================================================
@@ -719,6 +729,143 @@
 
   let DYNAMIC_LOCAL_SKILLS = [...DEFAULT_LOCAL_SKILLS];
 
+  const SOVEREIGN_MULTIDOMAIN_TRIGGERS = [
+    {
+      id: 'market_tick_sensor',
+      name: 'Forex / Crypto Market Sensor',
+      domain: 'Forex / Quant Finance',
+      icon: '📈',
+      description: 'Real-time FX & Crypto volatility, price breakout, spread spikes, and technical indicator sensor.',
+      triggerConfig: {
+        ingressType: 'market_tick',
+        channel: 'EURUSD, XAUUSD, BTCUSDT',
+        symbol: 'EURUSD, XAUUSD, BTCUSDT',
+        threshold: 'Spread <= 1.2 pips && RSI < 30',
+        conditionExpr: 'payload.spread <= 1.2 && payload.rsi < 30',
+        samplePayload: JSON.stringify({
+          symbol: "EURUSD",
+          bid: 1.0848,
+          ask: 1.0850,
+          spread: 0.2,
+          rsi: 28.4,
+          volatility: "HIGH",
+          timeframe: "M15",
+          signal: "OVERSOLD_REVERSAL"
+        }, null, 2)
+      }
+    },
+    {
+      id: 'webhook_ingress',
+      name: 'Webhook Ingress Gateway',
+      domain: 'Universal / API Ingress',
+      icon: '⚡',
+      description: 'HTTP POST listener (:19890/api/webhook) for TradingView alerts, Stripe events, GitHub, and Telegram.',
+      triggerConfig: {
+        ingressType: 'webhook',
+        channel: '/api/webhook/pipeline',
+        method: 'POST',
+        authMode: 'bearer_token',
+        conditionExpr: 'payload.event != null',
+        samplePayload: JSON.stringify({
+          event: "ORDER_SIGNAL",
+          pair: "EURUSD",
+          signal: "BUY",
+          price: 1.0845,
+          tp: 1.0920,
+          sl: 1.0810,
+          confidence: 0.94
+        }, null, 2)
+      }
+    },
+    {
+      id: 'file_watcher',
+      name: 'Document & File Observer',
+      domain: 'Corporate Law / Data / Research',
+      icon: '📁',
+      description: 'Watches incoming contracts, CSVs, PDF briefs, or financial tick data in local directory.',
+      triggerConfig: {
+        ingressType: 'file_watcher',
+        channel: 'vault/incoming/',
+        watchPath: 'vault/incoming/',
+        patterns: '*.pdf, *.docx, *.csv',
+        conditionExpr: 'payload.file_size_kb > 0 && !payload.file_name.startsWith(".")',
+        samplePayload: JSON.stringify({
+          event: "FILE_CREATED",
+          file_name: "Master_Service_Agreement_2026.pdf",
+          path: "vault/incoming/Master_Service_Agreement_2026.pdf",
+          mime: "application/pdf",
+          file_size_kb: 412,
+          jurisdiction: "International Commercial Law"
+        }, null, 2)
+      }
+    },
+    {
+      id: 'chat_ingress',
+      name: 'Client Consultation Intake',
+      domain: 'Psychology / Advisory / Support',
+      icon: '💬',
+      description: 'Listens for inbound client messages, intake consultation forms, patient notes, or priority triage tickets.',
+      triggerConfig: {
+        ingressType: 'chat_ingress',
+        channel: 'web_portal_intake',
+        source: 'web_portal',
+        category: 'intake_consultation',
+        conditionExpr: 'payload.urgency >= 3 || payload.sentiment === "distressed"',
+        samplePayload: JSON.stringify({
+          client_id: "CL-908",
+          intake_form: "Initial Clinical Assessment",
+          urgency: 4,
+          primary_concern: "acute cognitive fatigue & burnout",
+          session_type: "CBT",
+          preferred_specialist: "Psychologist Agent"
+        }, null, 2)
+      }
+    },
+    {
+      id: 'cron_scheduler',
+      name: 'Autonomous Chrono Scheduler',
+      domain: 'Universal / Timing',
+      icon: '⏰',
+      description: 'Scheduled recurring cron ticks (1m, 5m, 1h, daily audits, market opening Bell).',
+      triggerConfig: {
+        ingressType: 'cron',
+        channel: '*/5 * * * * (every 5 minutes)',
+        interval: '5m',
+        cronExpr: '*/5 * * * *',
+        conditionExpr: 'payload.is_active === true',
+        samplePayload: JSON.stringify({
+          tick_id: "cron-0042",
+          timestamp: new Date().toISOString(),
+          interval: "5m",
+          is_active: true,
+          target: "periodic_market_and_compliance_audit"
+        }, null, 2)
+      }
+    },
+    {
+      id: 'security_sentinel',
+      name: 'System Sentinel & Safety Guard',
+      domain: 'Engineering / Infrastructure',
+      icon: '🛡️',
+      description: 'Monitors system health, memory anomalies, circuit breaker trips, and error threshold spikes.',
+      triggerConfig: {
+        ingressType: 'system_sentinel',
+        channel: 'system_resource_guard',
+        metrics: 'memory_rss, api_error_rate',
+        conditionExpr: 'payload.error_rate > 0.05 || payload.memory_percent > 85',
+        samplePayload: JSON.stringify({
+          alert_level: "WARNING",
+          metric: "memory_rss",
+          memory_percent: 88,
+          error_rate: 0.01,
+          source: "worker_cluster_0"
+        }, null, 2)
+      }
+    }
+  ];
+
+  const DEFAULT_SWARM_PRESETS = {};
+
   class SwarmPipelineEngine {
     constructor() {
       this.container = null;
@@ -727,9 +874,13 @@
       this.nodesLayer = null;
       this.inspectorEl = null; // Right bar removed per instruction
 
-      // Persistence & Dynamic Discovery
+      // Persistence, Presets & Dynamic Discovery
       this.STORAGE_KEY = 'flowork_swarm_pipeline_dag_v1';
+      this.PRESETS_STORAGE_KEY = 'flowork_swarm_presets_v1';
+      this.ACTIVE_PRESET_KEY = 'flowork_swarm_active_preset_id';
       this._saveTimer = null;
+      this.activePresetId = 'default';
+      this.presets = {};
       this.dynamicAgents = [];
       this.dynamicTriggers = [];
 
@@ -791,11 +942,9 @@
       document.querySelector('.canvas-layout')?.classList.add('pipeline-active');
 
       this._buildLayout();
-      this._initDefaultNodes();
       this._bindGlobalEvents();
-      this.render();
-      this.loadDynamicRoster(); // Real-time discovery of Triggers and Agents only
-      this.syncServerDag();
+      this.loadDynamicRoster();
+      this._initDefaultNodes();
 
       // Auto-poll subagents every 2.5s to detect additions or deletions on disk dynamically!
       if (this._rosterPollTimer) clearInterval(this._rosterPollTimer);
@@ -823,7 +972,7 @@
      * - Right Bar: REMOVED COMPLETELY
      */
     _buildLayout() {
-      this.container.className = 'swarm-pipeline-container';
+      this.container.classList.add('swarm-pipeline-container', 'group-subview-pane');
 
       // 1. Left Zone: Palette Sidebar (Triggers & Agents only)
       const palette = document.createElement('aside');
@@ -837,23 +986,25 @@
           </div>
         </div>
         <div class="palette-scroll-content">
-          <div>
+          <!-- 1. Triggers First (Ingress Gateway) -->
+          <div style="margin-bottom:16px;">
             <div class="palette-category-title" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>🤖 Agents</span>
-              <span id="palette-agent-count" style="font-size:9.5px; color:#00f2fe; font-weight:700;"></span>
-            </div>
-            <div class="palette-items-grid" id="palette-agents-list">
-              <div style="color:#64748b; font-size:10px; padding:8px 4px;">Loading agents...</div>
-            </div>
-          </div>
-
-          <div style="margin-top:16px;">
-            <div class="palette-category-title" style="display:flex; justify-content:space-between; align-items:center;">
-              <span>⚡ Triggers</span>
-              <span id="palette-trigger-count" style="font-size:9.5px; color:#38bdf8; font-weight:700;"></span>
+              <span>⚡ Triggers (Ingress)</span>
+              <span id="palette-trigger-count" style="font-size:9.5px; color:#00f2fe; font-weight:700;"></span>
             </div>
             <div class="palette-items-grid" id="palette-triggers-list">
               <div style="color:#64748b; font-size:10px; padding:8px 4px;">Loading triggers...</div>
+            </div>
+          </div>
+
+          <!-- 2. Agents (Specialists & Executives) -->
+          <div>
+            <div class="palette-category-title" style="display:flex; justify-content:space-between; align-items:center;">
+              <span>🤖 Agents & Specialists</span>
+              <span id="palette-agent-count" style="font-size:9.5px; color:#38bdf8; font-weight:700;"></span>
+            </div>
+            <div class="palette-items-grid" id="palette-agents-list">
+              <div style="color:#64748b; font-size:10px; padding:8px 4px;">Loading agents...</div>
             </div>
           </div>
         </div>
@@ -861,8 +1012,13 @@
 
       // 2. Center Zone: Infinite DAG Canvas Board (Full Width, Clean Canvas without Toolbar Clutter)
       const board = document.createElement('main');
-      board.className = 'pipeline-canvas-board';
+      board.className = 'pipeline-canvas-board pipeline-board';
       board.innerHTML = `
+        <div class="pipeline-floating-status">
+          <span class="pipeline-status-badge" id="pipeline-active-preset-badge">⚡ Swarm Flow</span>
+          <span class="pipeline-save-indicator" id="pipeline-save-indicator">💾 Auto-Saved</span>
+        </div>
+
         <svg class="pipeline-svg-layer" id="pipeline-svg-layer">
           <defs>
             <filter id="glow-emerald" x="-20%" y="-20%" width="140%" height="140%">
@@ -877,6 +1033,19 @@
         </svg>
         <div class="pipeline-nodes-layer" id="pipeline-nodes-layer"></div>
 
+        <div class="pipeline-floating-hud">
+          <div class="pipeline-hud-preset-group">
+            <select class="pipeline-hud-select" id="pipeline-preset-selector" title="Switch Domain Preset">
+            </select>
+            <button type="button" class="pipeline-hud-btn" id="btn-pipe-save-preset" title="Save Preset Snapshot">💾 Save</button>
+            <button type="button" class="pipeline-hud-btn" id="btn-pipe-new-preset" title="Create New Custom Preset">➕ New</button>
+          </div>
+          <div style="width: 1px; height: 18px; background: rgba(255,255,255,0.15); margin: 0 4px;"></div>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-auto-layout" title="Auto-Arrange DAG (Clean Non-Overlapping Layout)">✨ Auto Arrange</button>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-reset-squad" title="Reset Preset to Pristine Squad">🔄 Reset Squad</button>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-center" title="Center Canvas View">🎯 Center</button>
+          <button type="button" class="pipeline-hud-btn danger" id="btn-pipe-clear-all" title="Clear All Nodes from Canvas">🗑️ Clear All</button>
+          <button type="button" class="pipeline-hud-btn primary" id="btn-pipe-run" title="Execute Active Swarm Signal Flow">⚡ Run Pipeline</button>
         </div>
       `;
 
@@ -898,128 +1067,296 @@
     }
 
     /**
-     * Initializes default nodes or restores from localStorage
+     * Initializes default nodes or restores dynamically from server filesystem (swarmflow/*.json)
      */
-    _initDefaultNodes() {
+    async _initDefaultNodes() {
+      // 1. Fetch live presets directly from server disk
+      await this.fetchServerPresets(false);
+
       if (this.loadSavedState()) {
+        this.populatePresetDropdown();
+        this.updateStatusBadge();
+        this.render();
         return;
       }
 
-      // Default Initial State: Production 5-Agent Squad Pipeline (Google Standard)
-      this.nodes = [
-        {
-          id: 'node-0-leader',
-          agentId: 'leader',
-          type: 'leader',
-          name: 'Swarm Leader',
-          role: 'Swarm Leader',
-          icon: '👑',
-          x: 120,
-          y: 220,
-          isLocked: true,
-          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
-          rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
-          toolGovernance: {
-            allowAll: true,
-            allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
-            deniedTools: []
-          }
-        },
-        {
-          id: 'node-1-backend',
-          agentId: 'backend-engineer',
-          type: 'agent',
-          name: 'Backend Engineer',
-          role: 'Backend & Systems Specialist',
-          icon: '⚙️',
-          x: 480,
-          y: 220,
-          isLocked: false,
-          taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
-          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
-        },
-        {
-          id: 'node-2-frontend',
-          agentId: 'frontend-engineer',
-          type: 'agent',
-          name: 'Frontend Engineer',
-          role: 'UI/UX & Client Specialist',
-          icon: '🎨',
-          x: 840,
-          y: 220,
-          isLocked: false,
-          taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
-          rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
-        },
-        {
-          id: 'node-3-security',
-          agentId: 'security-auditor',
-          type: 'agent',
-          name: 'Security Auditor',
-          role: 'Security & Reverse Engineering Specialist',
-          icon: '🛡️',
-          x: 1200,
-          y: 220,
-          isLocked: false,
-          taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
-          rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
-        },
-        {
-          id: 'node-4-qc',
-          agentId: 'quality-control',
-          type: 'agent',
-          name: 'Quality Control',
-          role: 'Quality Control & Release Gatekeeper',
-          icon: '🧪',
-          x: 1560,
-          y: 220,
-          isLocked: false,
-          taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
-          rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
-        }
-      ];
+      // If no saved state, load the active preset from server
+      if (this.presets[this.activePresetId]) {
+        this.loadPreset(this.activePresetId, false);
+      } else if (Object.keys(this.presets).length > 0) {
+        const firstId = Object.keys(this.presets)[0];
+        this.loadPreset(firstId, false);
+      }
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+    }
 
-      this.connections = [
-        {
-          id: 'conn-0-1',
-          from: 'node-0-leader',
-          fromPort: 'out-1',
-          to: 'node-1-backend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-1-2',
-          from: 'node-1-backend',
-          fromPort: 'out-1',
-          to: 'node-2-frontend',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-2-3',
-          from: 'node-2-frontend',
-          fromPort: 'out-1',
-          to: 'node-3-security',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
-        },
-        {
-          id: 'conn-3-4',
-          from: 'node-3-security',
-          fromPort: 'out-1',
-          to: 'node-4-qc',
-          toPort: 'input',
-          type: 'normal',
-          guardianEnabled: true
+    /**
+     * Fetches live presets directly from server filesystem (/api/swarmflow/presets)
+     */
+    async fetchServerPresets(autoSelect = false) {
+      try {
+        const res = await fetch('/api/swarmflow/presets');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.presets && typeof data.presets === 'object') {
+            const serverPresets = data.presets;
+            if (Object.keys(serverPresets).length > 0) {
+              this.presets = serverPresets;
+              if (data.activePresetId && this.presets[data.activePresetId]) {
+                this.activePresetId = data.activePresetId;
+              } else if (!this.presets[this.activePresetId]) {
+                this.activePresetId = Object.keys(this.presets)[0];
+              }
+              this.populatePresetDropdown();
+              this.updateStatusBadge();
+
+              if (autoSelect && this.presets[this.activePresetId]) {
+                this.loadPreset(this.activePresetId, false);
+              }
+              return true;
+            }
+          }
         }
-      ];
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to fetch /api/swarmflow/presets:', err);
+      }
+      return false;
+    }
+
+    /**
+     * Initializes default and custom presets
+     */
+    initPresets() {
+      this.fetchServerPresets(false);
+      return this.presets;
+    }
+
+    /**
+     * Populates the Floating HUD Preset Dropdown
+     */
+    populatePresetDropdown() {
+      const select = this.boardEl?.querySelector('#pipeline-preset-selector');
+      if (!select) return;
+
+      select.innerHTML = '';
+      const list = Object.values(this.presets || {});
+      if (list.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = this.activePresetId || 'default';
+        opt.textContent = '⚡ Mr. Flow';
+        select.appendChild(opt);
+        return;
+      }
+
+      for (const preset of list) {
+        if (!preset || !preset.id) continue;
+        const opt = document.createElement('option');
+        opt.value = preset.id;
+        opt.textContent = `${preset.icon || '⚡'} ${preset.name || preset.id}`;
+        if (preset.id === this.activePresetId) {
+          opt.selected = true;
+        }
+        select.appendChild(opt);
+      }
+    }
+
+    /**
+     * Updates Floating Status Badge with active domain information
+     */
+    updateStatusBadge(customText = null) {
+      const badge = this.boardEl?.querySelector('#pipeline-active-preset-badge');
+      if (!badge) return;
+
+      if (customText) {
+        badge.textContent = customText;
+        return;
+      }
+
+      const active = this.presets[this.activePresetId] || DEFAULT_SWARM_PRESETS[this.activePresetId];
+      if (active) {
+        badge.textContent = `${active.icon || '📦'} ${active.name || this.activePresetId}`;
+      } else {
+        badge.textContent = `⚡ ${this.activePresetId}`;
+      }
+    }
+
+    /**
+     * Loads a specific preset into the DAG canvas
+     */
+    loadPreset(presetId, autoSave = true) {
+      if (!this.presets[presetId] && DEFAULT_SWARM_PRESETS[presetId]) {
+        this.presets[presetId] = JSON.parse(JSON.stringify(DEFAULT_SWARM_PRESETS[presetId]));
+      }
+
+      const target = this.presets[presetId];
+      if (!target) return false;
+
+      this.activePresetId = presetId;
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+
+      this.nodes = JSON.parse(JSON.stringify(target.nodes || []));
+      this.connections = JSON.parse(JSON.stringify(target.connections || []));
+      this.connections.forEach(c => {
+        if (c.guardianEnabled === undefined) c.guardianEnabled = true;
+      });
+
+      if (target.panX !== undefined) this.panX = target.panX;
+      if (target.panY !== undefined) this.panY = target.panY;
+      if (target.scale !== undefined) this.scale = target.scale;
 
       this.nodes.forEach(n => this._ensureNodeStructures(n));
-      this.saveState(false);
+
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+      this.render();
+
+      if (autoSave) {
+        this.saveState(true);
+      }
+
+      // Notify 3D Office and system listeners that active squad has changed
+      try {
+        window.dispatchEvent(new CustomEvent('flowork:preset-changed', {
+          detail: { presetId, preset: target }
+        }));
+        window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+          detail: { nodes: target.nodes }
+        }));
+        fetch('/api/swarmflow/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activePresetId: presetId })
+        }).catch(() => {});
+      } catch (_) {}
+
+      return true;
+    }
+
+    /**
+     * Switches to another preset, auto-saving outgoing canvas first
+     */
+    switchPreset(presetId) {
+      if (!presetId) return;
+
+      // 1. Snapshot outgoing active preset state
+      if (this.presets[this.activePresetId]) {
+        this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+        this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+        this.presets[this.activePresetId].panX = this.panX;
+        this.presets[this.activePresetId].panY = this.panY;
+        this.presets[this.activePresetId].scale = this.scale;
+        this.presets[this.activePresetId].updatedAt = Date.now();
+      }
+
+      // 2. Load incoming preset
+      this.loadPreset(presetId, true);
+
+      // 3. Visual notification indicator
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets[presetId];
+        indicator.textContent = `⚡ Switched to ${curr?.name || presetId}`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
+    }
+
+    /**
+     * Explicitly saves current preset modifications
+     */
+    async saveCurrentPreset() {
+      if (this.presets[this.activePresetId]) {
+        this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+        this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+        this.presets[this.activePresetId].panX = this.panX;
+        this.presets[this.activePresetId].panY = this.panY;
+        this.presets[this.activePresetId].scale = this.scale;
+        this.presets[this.activePresetId].updatedAt = Date.now();
+      }
+
+      this.saveState(true);
+
+      // Persist directly to disk on server via /api/swarmflow/preset/:id
+      try {
+        const payload = this.presets[this.activePresetId];
+        if (payload) {
+          await fetch(`/api/swarmflow/preset/${encodeURIComponent(this.activePresetId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        }
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to save preset file to disk:', err);
+      }
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets[this.activePresetId];
+        indicator.textContent = `💾 Preset Saved [${curr?.name || this.activePresetId}]`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
+    }
+
+    /**
+     * Creates a new custom preset cloned from the current canvas
+     */
+    async createNewPreset() {
+      const name = window.prompt('Enter a title for the new preset (e.g. Coding Squad, Research Council):');
+      if (!name || !name.trim()) return;
+
+      const cleanName = name.trim();
+      const id = cleanName.toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || ('preset_' + Date.now().toString(36));
+
+      const newPreset = {
+        id,
+        name: cleanName,
+        icon: '⚡',
+        domain: cleanName,
+        description: `Autonomous Swarm Pipeline: ${cleanName}`,
+        panX: this.panX,
+        panY: this.panY,
+        scale: this.scale,
+        nodes: JSON.parse(JSON.stringify(this.nodes)),
+        connections: JSON.parse(JSON.stringify(this.connections)),
+        createdAt: Date.now(),
+        updatedAt: Date.now()
+      };
+
+      this.presets[id] = newPreset;
+      this.activePresetId = id;
+      this.populatePresetDropdown();
+      this.updateStatusBadge();
+      this.saveState(true);
+
+      // Save atomic .json file directly to server disk
+      try {
+        await fetch(`/api/swarmflow/preset/${encodeURIComponent(id)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newPreset)
+        });
+        await fetch('/api/swarmflow/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activePresetId: id })
+        });
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to save new preset to disk:', err);
+      }
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        indicator.textContent = `✨ Created Preset [${cleanName}]`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
     }
 
     /**
@@ -1027,16 +1364,30 @@
      */
     saveState(syncToServer = true) {
       try {
+        // 1. Always keep current preset in sync in memory
+        if (this.presets && this.activePresetId && this.presets[this.activePresetId]) {
+          this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
+          this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
+          this.presets[this.activePresetId].panX = this.panX;
+          this.presets[this.activePresetId].panY = this.panY;
+          this.presets[this.activePresetId].scale = this.scale;
+          this.presets[this.activePresetId].updatedAt = Date.now();
+        }
+
         const state = {
           version: '2026.10.18.clean',
           timestamp: Date.now(),
+          activePresetId: this.activePresetId,
           panX: this.panX,
           panY: this.panY,
           scale: this.scale,
           nodes: this.nodes,
           connections: this.connections
         };
+
         localStorage.setItem(this.STORAGE_KEY, JSON.stringify(state));
+        localStorage.setItem(this.PRESETS_STORAGE_KEY, JSON.stringify(this.presets));
+        localStorage.setItem(this.ACTIVE_PRESET_KEY, this.activePresetId);
 
         if (syncToServer) {
           // Sync DAG & Cable Guardian switches directly to disk via backend API
@@ -1049,11 +1400,19 @@
 
         const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
         if (indicator) {
-          indicator.textContent = '💾 Saved ' + new Date().toLocaleTimeString('en-US');
+          const curr = this.presets?.[this.activePresetId];
+          const presetLabel = curr?.name ? ` [${curr.name}]` : '';
+          indicator.textContent = `💾 Auto-Saved${presetLabel} ${new Date().toLocaleTimeString('en-US')}`;
           indicator.classList.remove('save-indicator-flash');
           void indicator.offsetWidth;
           indicator.classList.add('save-indicator-flash');
         }
+
+        try {
+          window.dispatchEvent(new CustomEvent('flowork:swarm-dag-updated', {
+            detail: { nodes: this.nodes }
+          }));
+        } catch (_) {}
       } catch (err) {
         console.error('[SwarmPipeline] Auto-Save error:', err);
       }
@@ -1072,6 +1431,20 @@
         if (!raw) return false;
         const data = JSON.parse(raw);
         if (!data || !Array.isArray(data.nodes)) return false;
+
+        // Sovereign check: only restore local draft if it matches active preset from server
+        if (data.activePresetId && this.activePresetId && data.activePresetId !== this.activePresetId) {
+          console.log(`[SwarmPipeline] Local draft preset '${data.activePresetId}' does not match active preset '${this.activePresetId}'. Discarding stale draft.`);
+          return false;
+        }
+
+        if (data.presets && typeof data.presets === 'object') {
+          Object.assign(this.presets, data.presets);
+        }
+
+        if (data.activePresetId && this.presets[data.activePresetId]) {
+          this.activePresetId = data.activePresetId;
+        }
 
         this.nodes = data.nodes;
         this.connections = Array.isArray(data.connections) ? data.connections : [];
@@ -1098,8 +1471,7 @@
             }).catch(() => {});
         }
 
-        // DO NOT RESURRECT ANY DELETED NODE! RESPECT USER'S STATE 100%!
-        console.log(`[SwarmPipeline] 💾 Restored ${this.nodes.length} nodes & ${this.connections.length} connections from persistent storage.`);
+        console.log(`[SwarmPipeline] 💾 Restored ${this.nodes.length} nodes & ${this.connections.length} connections for preset [${this.activePresetId}].`);
         return true;
       } catch (err) {
         console.warn('[SwarmPipeline] Failed to parse saved DAG:', err);
@@ -1115,6 +1487,9 @@
         const res = await fetch('/api/pipeline/dag');
         const json = await res.json();
         if (json && json.status === 'ok' && json.dag && Array.isArray(json.dag.nodes) && json.dag.nodes.length > 0) {
+          if (json.dag.activePresetId && json.dag.activePresetId !== this.activePresetId) {
+            return; // Ignore stale DAG belonging to a different preset
+          }
           this.nodes = json.dag.nodes;
           this.connections = Array.isArray(json.dag.connections) ? json.dag.connections : [];
           this.connections.forEach(c => {
@@ -1124,15 +1499,8 @@
           if (json.dag.panY !== undefined) this.panY = json.dag.panY;
           if (json.dag.scale !== undefined) this.scale = json.dag.scale;
           this.nodes.forEach(n => this._ensureNodeStructures(n));
-          localStorage.setItem(this.STORAGE_KEY, JSON.stringify({
-            version: '2026.10.18.clean',
-            timestamp: Date.now(),
-            panX: this.panX,
-            panY: this.panY,
-            scale: this.scale,
-            nodes: this.nodes,
-            connections: this.connections
-          }));
+          this.populatePresetDropdown();
+          this.updateStatusBadge();
           this.render();
           console.log(`[SwarmPipeline] 🚀 Synchronized ${this.nodes.length} nodes & ${this.connections.length} connections with server DAG.`);
         }
@@ -1153,19 +1521,24 @@
       // 1. Fetch Dynamic Triggers
       try {
         let triggers = [];
-        const res = await fetch('/api/triggers/list?session_id=default');
-        if (res.ok) {
-          const data = await res.json();
-          if (data && Array.isArray(data.external_triggers)) triggers = data.external_triggers;
-          if (data && Array.isArray(data.chrono_jobs)) triggers = triggers.concat(data.chrono_jobs);
+        try {
+          const res = await fetch('/api/triggers/list?session_id=default');
+          if (res.ok) {
+            const data = await res.json();
+            if (data && Array.isArray(data.triggers)) triggers = data.triggers;
+            if (data && Array.isArray(data.external_triggers)) triggers = triggers.concat(data.external_triggers);
+            if (data && Array.isArray(data.chrono_jobs)) triggers = triggers.concat(data.chrono_jobs);
+          }
+        } catch (e) {
+          console.warn('[SwarmPipeline] Backend triggers fetch note:', e);
         }
 
-        if (!triggers.some(t => t.id === 'webhook_ingress' || t.name?.toLowerCase().includes('webhook'))) {
-          triggers.unshift({ id: 'webhook_ingress', name: 'Webhook Ingress Endpoint', description: 'HTTP POST listener (:9099 / :19890)', icon: '⚡' });
-        }
-        if (!triggers.some(t => t.id === 'cron_scheduler' || t.name?.toLowerCase().includes('cron'))) {
-          triggers.push({ id: 'cron_scheduler', name: 'Enterprise Cron Tick', description: 'Scheduled recurring timer tick', icon: '⏰' });
-        }
+        // Merge sovereign multi-domain triggers (preserves any backend triggers)
+        SOVEREIGN_MULTIDOMAIN_TRIGGERS.forEach(sTrig => {
+          if (!triggers.some(t => (t.id || t.trigger_id) === sTrig.id)) {
+            triggers.push(sTrig);
+          }
+        });
 
         this.dynamicTriggers = triggers;
         if (triggerCountEl) triggerCountEl.textContent = `(${triggers.length})`;
@@ -1176,19 +1549,50 @@
             const item = document.createElement('div');
             item.className = 'palette-card-item';
             item.setAttribute('data-type', 'trigger');
-            item.setAttribute('data-trigger-id', t.id);
+            item.setAttribute('data-trigger-id', t.id || t.trigger_id);
+            item.setAttribute('draggable', 'true');
+            item.style.cursor = 'grab';
+            item.title = `Drag to canvas or click to add ${t.name || t.id}`;
             item.innerHTML = `
               <div class="palette-card-icon" style="color:#00f2fe;">${t.icon || '⚡'}</div>
-              <div class="palette-card-info">
-                <div class="palette-card-name">${t.name || t.id}</div>
-                <div class="palette-card-desc">${t.description || 'System Trigger'}</div>
+              <div class="palette-card-info" style="min-width:0; flex:1;">
+                <div class="palette-card-name" style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${t.name || t.id}</div>
+                ${t.domain ? `<div style="margin-top:2px;"><span style="font-size:8.5px; color:#38bdf8; background:rgba(56,189,248,0.12); padding:1px 5px; border-radius:3px; font-weight:700;">${t.domain}</span></div>` : ''}
+                <div class="palette-card-desc" style="margin-top:2px;">${t.description || 'System Trigger'}</div>
               </div>
             `;
+
+            // HTML5 Drag & Drop from Sidebar to Canvas
+            item.addEventListener('dragstart', (e) => {
+              const payload = {
+                type: 'trigger',
+                triggerId: t.id || t.trigger_id,
+                name: t.name || t.id,
+                role: t.name || t.id,
+                icon: t.icon || '⚡',
+                domain: t.domain || 'Sovereign Sensor',
+                description: t.description || 'System Trigger',
+                triggerConfig: t.triggerConfig ? JSON.parse(JSON.stringify(t.triggerConfig)) : null
+              };
+              e.dataTransfer.setData('application/json', JSON.stringify(payload));
+              e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+              e.dataTransfer.effectAllowed = 'copy';
+              item.classList.add('is-dragging');
+            });
+            item.addEventListener('dragend', () => {
+              item.classList.remove('is-dragging');
+            });
+
             item.addEventListener('click', () => {
               this.spawnFromPalette({
                 type: 'trigger',
+                triggerId: t.id || t.trigger_id,
+                name: t.name || t.id,
                 role: t.name || t.id,
-                icon: t.icon || '⚡'
+                icon: t.icon || '⚡',
+                domain: t.domain || 'Sovereign Sensor',
+                description: t.description || 'System Trigger',
+                triggerConfig: t.triggerConfig ? JSON.parse(JSON.stringify(t.triggerConfig)) : null
               });
             });
             triggerListEl.appendChild(item);
@@ -1241,7 +1645,9 @@
             item.className = 'palette-card-item';
             item.setAttribute('data-type', 'agent');
             item.setAttribute('data-agent-id', a.id);
-            item.title = `Click to spawn ${a.name || a.id} onto canvas`;
+            item.setAttribute('draggable', 'true');
+            item.style.cursor = 'grab';
+            item.title = `Drag to canvas or click to add ${a.name || a.id}`;
             item.innerHTML = `
               <div class="palette-card-icon" style="color:${a.id === 'leader' ? '#f59e0b' : '#38bdf8'};">${a.icon || (a.id === 'leader' ? '👑' : '🤖')}</div>
               <div class="palette-card-info">
@@ -1252,6 +1658,25 @@
                 <div class="palette-card-desc">${a.role || a.description || 'Autonomous Agent'}</div>
               </div>
             `;
+
+            // HTML5 Drag & Drop from Sidebar to Canvas
+            item.addEventListener('dragstart', (e) => {
+              const payload = {
+                type: a.id === 'leader' ? 'leader' : 'agent',
+                agentId: a.id,
+                name: a.name || a.id,
+                role: a.name || a.id,
+                icon: a.icon || (a.id === 'leader' ? '👑' : '🤖'),
+                description: a.description || a.role
+              };
+              e.dataTransfer.setData('application/json', JSON.stringify(payload));
+              e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+              e.dataTransfer.effectAllowed = 'copy';
+              item.classList.add('is-dragging');
+            });
+            item.addEventListener('dragend', () => {
+              item.classList.remove('is-dragging');
+            });
 
             item.addEventListener('click', () => {
               this.spawnFromPalette({
@@ -1295,8 +1720,22 @@
      * Spawns an agent or trigger node from the palette onto the canvas
      */
     spawnFromPalette(data) {
-      const spawnX = -this.panX + 460 + (Math.random() * 80 - 40);
-      const spawnY = -this.panY + 200 + (Math.random() * 80 - 40);
+      let spawnX = 100;
+      let spawnY = 180;
+      if (this.nodes && this.nodes.length > 0) {
+        let maxNode = this.nodes[0];
+        for (const n of this.nodes) {
+          if ((n.x || 0) > (maxNode.x || 0)) {
+            maxNode = n;
+          }
+        }
+        spawnX = (maxNode.x || 100) + 340;
+        spawnY = maxNode.y || 180;
+        if (spawnX > 2200) {
+          spawnX = 100;
+          spawnY += 240;
+        }
+      }
       return this.addNode({
         type: data.type || 'agent',
         agentId: data.agentId || data.id,
@@ -1304,8 +1743,8 @@
         role: data.role || (data.type === 'trigger' ? 'Trigger Endpoint' : 'Specialist Agent'),
         icon: data.icon || (data.type === 'trigger' ? '⚡' : '🤖'),
         description: data.description || '',
-        x: Math.max(80, Math.round(spawnX)),
-        y: Math.max(80, Math.round(spawnY)),
+        x: Math.round(spawnX),
+        y: Math.round(spawnY),
         taskPrompt: data.taskPrompt || '',
         rulePrompt: data.rulePrompt || '',
         promptFile: data.promptFile || '',
@@ -1316,12 +1755,47 @@
     }
 
     /**
-     * Toolbar actions
+     * Toolbar actions & Floating Canvas HUD
      */
     _bindToolbarEvents(board) {
+      const presetSelector = board.querySelector('#pipeline-preset-selector');
+      const btnSavePreset = board.querySelector('#btn-pipe-save-preset');
+      const btnNewPreset = board.querySelector('#btn-pipe-new-preset');
+      const btnAutoLayout = board.querySelector('#btn-pipe-auto-layout');
+      const btnResetSquad = board.querySelector('#btn-pipe-reset-squad');
       const btnCenter = board.querySelector('#btn-pipe-center');
-      const btnClear = board.querySelector('#btn-pipe-clear');
+      const btnClearAll = board.querySelector('#btn-pipe-clear-all') || board.querySelector('#btn-pipe-clear');
       const btnRun = board.querySelector('#btn-pipe-run');
+
+      if (presetSelector) {
+        presetSelector.addEventListener('change', (e) => {
+          this.switchPreset(e.target.value);
+        });
+      }
+
+      if (btnSavePreset) {
+        btnSavePreset.addEventListener('click', () => {
+          this.saveCurrentPreset();
+        });
+      }
+
+      if (btnNewPreset) {
+        btnNewPreset.addEventListener('click', () => {
+          this.createNewPreset();
+        });
+      }
+
+      if (btnAutoLayout) {
+        btnAutoLayout.addEventListener('click', () => {
+          this.autoArrangeNodes();
+        });
+      }
+
+      if (btnResetSquad) {
+        btnResetSquad.addEventListener('click', () => {
+          this.resetToDefaultSquad();
+        });
+      }
 
       if (btnCenter) {
         btnCenter.addEventListener('click', () => {
@@ -1333,16 +1807,9 @@
         });
       }
 
-      if (btnClear) {
-        btnClear.addEventListener('click', () => {
-          if (confirm('Reset Swarm Pipeline canvas to default configuration?')) {
-            localStorage.removeItem(this.STORAGE_KEY);
-            this.selectedNodeId = null;
-            this.selectedConnId = null;
-            this._initDefaultNodes();
-            this.render();
-            this.saveState();
-          }
+      if (btnClearAll) {
+        btnClearAll.addEventListener('click', () => {
+          this.clearAllNodes();
         });
       }
 
@@ -1351,6 +1818,247 @@
           this.executePipelineSimulation();
         });
       }
+    }
+
+    /**
+     * Topologically arranges triggers -> leaders -> specialists in a clean horizontal grid
+     */
+    autoArrangeNodes() {
+      if (!this.nodes || this.nodes.length === 0) return;
+
+      const triggers = this.nodes.filter(n => n.type === 'trigger');
+      const leaders = this.nodes.filter(n => (n.type === 'leader' || n.agentId === 'leader') && n.type !== 'trigger');
+      const specialists = this.nodes.filter(n => !triggers.includes(n) && !leaders.includes(n));
+
+      const connMap = new Map();
+      const inDegree = new Map();
+      this.nodes.forEach(n => {
+        connMap.set(n.id, []);
+        inDegree.set(n.id, 0);
+      });
+      (this.connections || []).forEach(c => {
+        if (connMap.has(c.from) && inDegree.has(c.to)) {
+          connMap.get(c.from).push(c.to);
+          inDegree.set(c.to, (inDegree.get(c.to) || 0) + 1);
+        }
+      });
+
+      const depth = new Map();
+      triggers.forEach(n => depth.set(n.id, 0));
+      const leaderBaseDepth = triggers.length > 0 ? 1 : 0;
+      leaders.forEach(n => depth.set(n.id, leaderBaseDepth));
+
+      const queue = [...triggers, ...leaders];
+      specialists.forEach(n => {
+        if ((inDegree.get(n.id) || 0) === 0 && !depth.has(n.id)) {
+          depth.set(n.id, leaderBaseDepth + (leaders.length > 0 ? 1 : 0));
+          queue.push(n);
+        }
+      });
+
+      while (queue.length > 0) {
+        const curr = queue.shift();
+        const currDepth = depth.get(curr.id) || 0;
+        const nexts = connMap.get(curr.id) || [];
+        for (const nextId of nexts) {
+          const nextNode = this.nodes.find(n => n.id === nextId);
+          const existingDepth = depth.get(nextId);
+          if (existingDepth === undefined || existingDepth < currDepth + 1) {
+            depth.set(nextId, currDepth + 1);
+            if (nextNode && !queue.includes(nextNode)) {
+              queue.push(nextNode);
+            }
+          }
+        }
+      }
+
+      let maxCol = 0;
+      depth.forEach(d => { if (d > maxCol) maxCol = d; });
+      let fallbackCol = maxCol + 1;
+      this.nodes.forEach(n => {
+        if (!depth.has(n.id)) {
+          depth.set(n.id, fallbackCol++);
+        }
+      });
+
+      const colGroups = new Map();
+      this.nodes.forEach(n => {
+        const col = depth.get(n.id) || 0;
+        if (!colGroups.has(col)) colGroups.set(col, []);
+        colGroups.get(col).push(n);
+      });
+
+      const sortedCols = Array.from(colGroups.keys()).sort((a, b) => a - b);
+      sortedCols.forEach((colKey, colIdx) => {
+        const group = colGroups.get(colKey);
+        group.forEach((node, rowIdx) => {
+          node.x = 100 + colIdx * 340;
+          node.y = 180 + rowIdx * 240;
+        });
+      });
+
+      this.panX = 40;
+      this.panY = 40;
+      this.scale = 1.0;
+      this.render();
+      this.saveState();
+    }
+
+    /**
+     * Resets canvas to the pristine squad definition of current preset
+     */
+    resetToDefaultSquad() {
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+
+      if (DEFAULT_SWARM_PRESETS[this.activePresetId]) {
+        const pristine = DEFAULT_SWARM_PRESETS[this.activePresetId];
+        this.nodes = JSON.parse(JSON.stringify(pristine.nodes));
+        this.connections = JSON.parse(JSON.stringify(pristine.connections));
+        this.panX = pristine.panX !== undefined ? pristine.panX : 40;
+        this.panY = pristine.panY !== undefined ? pristine.panY : 40;
+        this.scale = pristine.scale !== undefined ? pristine.scale : 1.0;
+      } else {
+        this.nodes = [
+          {
+            id: 'node-0-leader',
+            agentId: 'leader',
+            type: 'leader',
+            name: 'Swarm Leader',
+            role: 'Swarm Leader',
+            icon: '👑',
+            x: 100,
+            y: 180,
+            isLocked: true,
+            taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
+            rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
+            toolGovernance: {
+              allowAll: true,
+              allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
+              deniedTools: []
+            }
+          },
+          {
+            id: 'node-1-backend',
+            agentId: 'backend-engineer',
+            type: 'agent',
+            name: 'Backend Engineer',
+            role: 'Backend & Systems Specialist',
+            icon: '⚙️',
+            x: 440,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
+            rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
+          },
+          {
+            id: 'node-2-frontend',
+            agentId: 'frontend-engineer',
+            type: 'agent',
+            name: 'Frontend Engineer',
+            role: 'UI/UX & Client Specialist',
+            icon: '🎨',
+            x: 780,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
+            rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
+          },
+          {
+            id: 'node-3-security',
+            agentId: 'security-auditor',
+            type: 'agent',
+            name: 'Security Auditor',
+            role: 'Security & Reverse Engineering Specialist',
+            icon: '🛡️',
+            x: 1120,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
+            rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
+          },
+          {
+            id: 'node-4-qc',
+            agentId: 'quality-control',
+            type: 'agent',
+            name: 'Quality Control',
+            role: 'Quality Control & Release Gatekeeper',
+            icon: '🧪',
+            x: 1460,
+            y: 180,
+            isLocked: false,
+            taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
+            rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
+          }
+        ];
+
+        this.connections = [
+          {
+            id: 'conn-0-1',
+            from: 'node-0-leader',
+            fromPort: 'out-1',
+            to: 'node-1-backend',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-1-2',
+            from: 'node-1-backend',
+            fromPort: 'out-1',
+            to: 'node-2-frontend',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-2-3',
+            from: 'node-2-frontend',
+            fromPort: 'out-1',
+            to: 'node-3-security',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          },
+          {
+            id: 'conn-3-4',
+            from: 'node-3-security',
+            fromPort: 'out-1',
+            to: 'node-4-qc',
+            toPort: 'input',
+            type: 'normal',
+            guardianEnabled: true
+          }
+        ];
+        this.panX = 40;
+        this.panY = 40;
+        this.scale = 1.0;
+      }
+
+      this.nodes.forEach(n => this._ensureNodeStructures(n));
+      this.render();
+      this.saveState(true);
+
+      const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
+      if (indicator) {
+        const curr = this.presets?.[this.activePresetId];
+        indicator.textContent = `🔄 Reset [${curr?.name || this.activePresetId}] to Pristine Squad`;
+        indicator.classList.remove('save-indicator-flash');
+        void indicator.offsetWidth;
+        indicator.classList.add('save-indicator-flash');
+      }
+    }
+
+    /**
+     * Clears all nodes and connections from canvas immediately
+     */
+    clearAllNodes() {
+      this.nodes = [];
+      this.connections = [];
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+      this.render();
+      this.saveState(true);
     }
 
     /**
@@ -1378,6 +2086,47 @@
         this.render();
         this.debouncedSave(300);
       }, { passive: false });
+
+      // HTML5 Drag and Drop Ingress: Drop nodes anywhere on canvas
+      board.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+
+      board.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+      });
+
+      board.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        let data = null;
+        try {
+          const raw = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+          if (raw) data = JSON.parse(raw);
+        } catch (_) {}
+
+        if (data) {
+          const boardRect = this.boardEl.getBoundingClientRect();
+          const mouseCanvasX = (e.clientX - boardRect.left - this.panX) / this.scale;
+          const mouseCanvasY = (e.clientY - boardRect.top - this.panY) / this.scale;
+
+          this.addNode({
+            type: data.type || 'agent',
+            agentId: data.agentId || data.id,
+            name: data.name,
+            role: data.role || (data.type === 'trigger' ? 'Trigger Endpoint' : 'Specialist Agent'),
+            icon: data.icon || (data.type === 'trigger' ? '⚡' : '🤖'),
+            description: data.description || '',
+            x: Math.max(40, Math.round(mouseCanvasX - 125)),
+            y: Math.max(40, Math.round(mouseCanvasY - 40)),
+            taskPrompt: data.taskPrompt || '',
+            rulePrompt: data.rulePrompt || ''
+          });
+          this.render();
+          this.saveState(true);
+        }
+      });
     }
 
     _bindGlobalEvents() {
@@ -1418,9 +2167,7 @@
         const node = this.nodes.find(n => n.id === this.selectedNodeId);
         if (node) {
           e.preventDefault();
-          if (confirm(`Delete selected node "${node.role || node.id}"?`)) {
-            this.deleteNode(node.id);
-          }
+          this.deleteNode(node.id);
         }
       }
     }
@@ -1455,8 +2202,8 @@
         const fromNode = this.nodes.find(n => n.id === this.wireStartNodeId);
         if (!fromNode) return;
 
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 118 : 59);
 
         const boardRect = this.boardEl.getBoundingClientRect();
         const mouseCanvasX = (e.clientX - boardRect.left - this.panX) / this.scale;
@@ -1568,15 +2315,32 @@
         };
       }
       if (!n.triggerConfig) {
-        n.triggerConfig = {
-          enabled: n.type === 'trigger',
-          events: n.triggerEvents || ['terminal_execution'],
-          monitoredTools: n.concreteTools || ['run_command'],
-          filePatterns: n.triggerConditions?.file_patterns ? n.triggerConditions.file_patterns.join(', ') : '*.rs, *.js',
-          exitCodeFilter: 'any',
-          triggerPrompt: '',
-          promptFile: n.promptFile || ''
-        };
+        // Find matching predefined trigger config if available
+        const matched = SOVEREIGN_MULTIDOMAIN_TRIGGERS.find(t => 
+          t.id === n.triggerId || 
+          t.id === n.id || 
+          t.name === n.role || 
+          (n.role && n.role.includes(t.name)) ||
+          (n.name && n.name.includes(t.name))
+        );
+        if (matched) {
+          n.triggerConfig = JSON.parse(JSON.stringify(matched.triggerConfig));
+          if (!n.domain) n.domain = matched.domain;
+        } else {
+          n.triggerConfig = {
+            enabled: n.type === 'trigger',
+            ingressType: 'webhook',
+            channel: '/api/webhook/pipeline',
+            method: 'POST',
+            conditionExpr: 'payload.event != null',
+            samplePayload: JSON.stringify({ event: 'INGRESS_SIGNAL', timestamp: new Date().toISOString() }, null, 2),
+            daemonActive: true,
+            events: n.triggerEvents || ['ingress_signal'],
+            exitCodeFilter: 'Port 1 (Match) / Port 2 (Else)',
+            triggerPrompt: '',
+            promptFile: n.promptFile || ''
+          };
+        }
       }
     }
 
@@ -1588,6 +2352,9 @@
       const newNode = {
         id: nodeData.id || `node-${Date.now().toString(36)}-${Math.random().toString(36).substring(2, 5)}`,
         type: type,
+        triggerId: nodeData.triggerId,
+        domain: nodeData.domain || '',
+        triggerConfig: nodeData.triggerConfig,
         agentId: nodeData.agentId || (type === 'leader' ? 'leader' : (nodeData.id?.includes('leader') ? 'leader' : 'mr.flow')),
         name: nodeData.name || '',
         role: nodeData.role || (type === 'trigger' ? 'Trigger Endpoint' : 'Specialist Agent'),
@@ -1724,16 +2491,18 @@
       menu.querySelector('#ctx-btn-configure')?.addEventListener('click', (e) => {
         e.stopPropagation();
         this.closeContextMenu();
-        this.openFullPromptModal(node, null, null);
+        if (isTriggerNode) {
+          this.openTriggerCockpitModal(node);
+        } else {
+          this.openFullPromptModal(node, null, null);
+        }
       });
 
       // Delete button click
       menu.querySelector('#ctx-btn-delete')?.addEventListener('click', (e) => {
         e.stopPropagation();
         this.closeContextMenu();
-        if (confirm(`Delete node "${roleText}" from canvas?`)) {
-          this.deleteNode(node.id);
-        }
+        this.deleteNode(node.id);
       });
 
       // Auto close on document click or contextmenu elsewhere
@@ -1779,10 +2548,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
 
         const pathData = this._calculateBezier(x1, y1, x2, y2);
         const isTrigger = fromNode.type === 'trigger';
@@ -1832,10 +2601,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const midX = Math.round((x1 + x2) / 2);
         const midY = Math.round((y1 + y2) / 2);
 
@@ -1915,17 +2684,23 @@
         nodeEl.style.left = `${node.x}px`;
         nodeEl.style.top = `${node.y}px`;
 
+        const tc = node.triggerConfig || {};
+        const sensorType = tc.ingressType || 'webhook';
+        const channelDisplay = tc.channel || tc.symbol || tc.watchPath || tc.interval || '/api/webhook/pipeline';
+        const trigRuleSnippet = tc.conditionExpr ? (tc.conditionExpr.length > 28 ? tc.conditionExpr.substring(0, 26) + '...' : tc.conditionExpr) : 'All Ingress Fired';
+        const domainTag = node.domain || 'Sovereign Sensor';
+
         const bodyContent = isTriggerNode ? `
             <div style="font-size:10px; display:flex; flex-direction:column; gap:4px;">
-              <div><strong style="color:#00f2fe;">⚡ Event Hook:</strong> <span style="font-size:9.5px; color:#38bdf8;">${triggerEventsSnippet}</span></div>
-              <div><strong style="color:#a855f7;">🎯 Target:</strong> <span style="font-size:9.5px;">${node.triggerConfig?.filePatterns || '*.rs, *.js'}</span></div>
+              <div><strong style="color:#00f2fe;">📡 Sensor Channel:</strong> <span style="font-size:9.5px; color:#38bdf8; font-family:monospace; word-break:break-all;">${channelDisplay}</span></div>
+              <div><strong style="color:#a855f7;">⚖️ Port 1 Rule:</strong> <span style="font-size:9.5px; color:#e2e8f0; font-family:monospace;">${trigRuleSnippet}</span></div>
             </div>
-            <div style="margin-top:6px; font-size:9.5px; color:#34d399; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.25); border-radius:4px; padding:3px 6px; display:flex; align-items:center; justify-content:space-between;">
-              <span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px;">🛡️ Exit Code: ${node.triggerConfig?.exitCodeFilter || 'any'}</span>
-              <span style="color:#00f2fe; font-weight:800; font-size:9px;">PORT 1 / 2</span>
+            <div style="margin-top:6px; font-size:9.5px; color:#34d399; background:rgba(16,185,129,0.08); border:1px solid rgba(16,185,129,0.25); border-radius:4px; padding:3px 6px; display:flex; align-items:center; justify-content:space-between;">
+              <span style="color:#10b981; font-weight:700;">🟢 Port 1: Match</span>
+              <span style="color:#f59e0b; font-weight:700;">🟠 Port 2: Else</span>
             </div>
-            <button class="dag-node-prompt-btn" style="margin-top:6px; width:100%; font-size:10px; font-weight:800; background:rgba(0,242,254,0.18); border:1px solid rgba(0,242,254,0.45); color:#00f2fe; border-radius:5px; padding:5px; cursor:pointer;">
-              ⚡ Configure Trigger Engine
+            <button class="dag-node-prompt-btn" style="margin-top:6px; width:100%; font-size:10px; font-weight:800; background:linear-gradient(135deg, rgba(0,242,254,0.18), rgba(6,182,212,0.25)); border:1px solid rgba(0,242,254,0.45); color:#00f2fe; border-radius:5px; padding:5px; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:5px; transition:all 0.2s ease;">
+              ⚡ Configure & Test Ingress
             </button>
         ` : `
             <div style="font-size:10px; display:flex; flex-direction:column; gap:3px;">
@@ -1952,6 +2727,7 @@
               <span>${node.role}</span>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
+              <span class="dag-node-status-indicator" style="display:none;"></span>
               <span class="dag-node-type-badge ${badgeClass}">${badgeText}</span>
               <button type="button" class="dag-node-delete-btn" data-node-id="${node.id}" title="Delete node from canvas">✕</button>
             </div>
@@ -1963,19 +2739,19 @@
           </div>
 
           <!-- Mandatory 2 Output Ports -->
-          <div class="dag-port dag-port-out-1" data-node-id="${node.id}" data-port-id="out-1" title="Output 1 (${isTriggerNode ? 'Condition Match / Primary' : 'Pass / Primary Route'})">1</div>
-          <div class="dag-port dag-port-out-2" data-node-id="${node.id}" data-port-id="out-2" title="Output 2 (${isTriggerNode ? 'Else / Fallback' : 'Fail / Fallback Route'})">2</div>
+          <div class="dag-port dag-port-out-1" data-node-id="${node.id}" data-port-id="out-1" title="Output 1 (${isTriggerNode ? 'Condition Match / Primary Signal' : 'Pass / Primary Route'})">1</div>
+          <div class="dag-port dag-port-out-2" data-node-id="${node.id}" data-port-id="out-2" title="Output 2 (${isTriggerNode ? 'Else / Fallback Route' : 'Fail / Fallback Route'})">2</div>
         `;
 
         // Node delete button
         const delBtn = nodeEl.querySelector('.dag-node-delete-btn');
         if (delBtn) {
+          delBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+          delBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
           delBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             e.preventDefault();
-            if (confirm(`Delete node "${node.role || node.id}" from canvas?`)) {
-              this.deleteNode(node.id);
-            }
+            this.deleteNode(node.id);
           });
         }
 
@@ -2002,24 +2778,36 @@
           this.dragOffsetY = mouseCanvasY - node.y;
         });
 
-        // Double click header -> Open Full Popup Prompt Editor
+        // Double click header -> Open Full Popup Prompt Editor or Trigger Cockpit
         header.addEventListener('dblclick', (e) => {
           e.stopPropagation();
-          this.openFullPromptModal(node, null, null);
+          if (isTriggerNode) {
+            this.openTriggerCockpitModal(node);
+          } else {
+            this.openFullPromptModal(node, null, null);
+          }
         });
 
-        // Clicking body -> Selects node AND Opens Full Popup Prompt Editor
+        // Clicking body -> Selects node AND Opens Full Popup Prompt Editor or Trigger Cockpit
         nodeEl.querySelector('.dag-node-body')?.addEventListener('click', (e) => {
           e.stopPropagation();
           this.selectNode(node.id);
-          this.openFullPromptModal(node, null, null);
+          if (isTriggerNode) {
+            this.openTriggerCockpitModal(node);
+          } else {
+            this.openFullPromptModal(node, null, null);
+          }
         });
 
         // Prompt button explicit click
         nodeEl.querySelector('.dag-node-prompt-btn')?.addEventListener('click', (e) => {
           e.stopPropagation();
           this.selectNode(node.id);
-          this.openFullPromptModal(node, null, null);
+          if (isTriggerNode) {
+            this.openTriggerCockpitModal(node);
+          } else {
+            this.openFullPromptModal(node, null, null);
+          }
         });
 
         // Mandatory 2 Output Ports Wiring
@@ -2056,10 +2844,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const pathData = this._calculateBezier(x1, y1, x2, y2);
 
         const cables = g.querySelectorAll('path');
@@ -2095,6 +2883,10 @@
 
     openFullPromptModal(node, focusedToolId = null, initialTab = null) {
       if (!node) return;
+      if (node.type === 'trigger' || (node.id && node.id.startsWith('trg-'))) {
+        this.openTriggerCockpitModal(node);
+        return;
+      }
       this._ensureNodeStructures(node);
       this.selectedNodeId = node.id;
       this.activeModalNode = node;
@@ -4185,41 +4977,639 @@
     }
 
     /**
-     * Executes pipeline cyber photon simulation
+     * Opens the Sovereign Multi-Domain Trigger Cockpit & Test Bed Modal
      */
-    executePipelineSimulation() {
-      console.log('[SwarmPipeline] ⚡ Executing pipeline run...');
-      const statusBadge = this.boardEl.querySelector('.pipeline-status-badge');
-      if (statusBadge) {
-        statusBadge.textContent = '⚡ Running Pipeline...';
-        statusBadge.style.color = '#00f2fe';
-        statusBadge.style.borderColor = '#00f2fe';
-        statusBadge.style.background = 'rgba(0,242,254,0.15)';
-      }
+    openTriggerCockpitModal(node) {
+      if (!node) return;
+      this._ensureNodeStructures(node);
+      this.selectedNodeId = node.id;
+      this.activeModalNode = node;
 
-      const photons = this.svgLayer.querySelectorAll('.pipeline-photon-stream');
-      photons.forEach(p => {
-        p.style.stroke = '#00f2fe';
-        p.style.strokeWidth = '4px';
-        p.style.animation = 'photonFlow 0.4s linear infinite';
-      });
+      let overlay = document.getElementById('pipeline-trigger-modal-overlay');
+      if (!overlay) {
+        overlay = document.createElement('div');
+        overlay.id = 'pipeline-trigger-modal-overlay';
+        overlay.className = 'pipeline-prompt-modal-overlay';
+        overlay.innerHTML = `<div class="pipeline-trigger-modal-box" id="pipeline-trigger-modal-box"></div>`;
+        document.body.appendChild(overlay);
 
-      setTimeout(() => {
-        if (statusBadge) {
-          statusBadge.textContent = '✓ Mission Completed (Exit Code 0)';
-          statusBadge.style.color = '#10b981';
-          statusBadge.style.borderColor = '#10b981';
-          statusBadge.style.background = 'rgba(16,185,129,0.15)';
-        }
-
-        photons.forEach(p => {
-          p.style.stroke = '#ffffff';
-          p.style.strokeWidth = '3px';
-          p.style.animation = 'photonFlow 1s linear infinite';
+        overlay.addEventListener('click', (e) => {
+          if (e.target === overlay) this.closeTriggerCockpitModal();
         });
 
-        console.log('[SwarmPipeline] ⚡ Pipeline simulation completed successfully with Exit Code 0.');
-      }, 1500);
+        window.addEventListener('keydown', (e) => {
+          if (e.key === 'Escape' && overlay.classList.contains('active')) {
+            this.closeTriggerCockpitModal();
+          }
+        });
+      }
+
+      const box = overlay.querySelector('#pipeline-trigger-modal-box');
+      if (!box) return;
+
+      const tc = node.triggerConfig || {};
+      const ingressType = tc.ingressType || 'webhook';
+      const channelVal = tc.channel || tc.symbol || tc.watchPath || tc.interval || '/api/webhook/pipeline';
+      const condVal = tc.conditionExpr || 'payload.event != null';
+      const samplePayloadVal = tc.samplePayload || JSON.stringify({
+        event: "SIGNAL",
+        symbol: "EURUSD",
+        rsi: 28.4,
+        spread: 0.2
+      }, null, 2);
+
+      // Get downstream targets for Port 1 and Port 2
+      const out1Conn = this.connections.find(c => c.from === node.id && (c.fromPort || 'out-1') === 'out-1');
+      const out2Conn = this.connections.find(c => c.from === node.id && c.fromPort === 'out-2');
+      const target1Node = out1Conn ? this.nodes.find(n => n.id === out1Conn.to) : null;
+      const target2Node = out2Conn ? this.nodes.find(n => n.id === out2Conn.to) : null;
+      const target1Text = target1Node 
+        ? `➡️ Connected to: <strong style="color:#00f2fe;">${target1Node.icon || '🤖'} ${target1Node.role || target1Node.name}</strong>` 
+        : `<span style="color:#64748b; font-style:italic;">No agent connected to Port 1 (Drag cable from Port 1)</span>`;
+      const target2Text = target2Node 
+        ? `➡️ Connected to: <strong style="color:#f59e0b;">${target2Node.icon || '🤖'} ${target2Node.role || target2Node.name}</strong>` 
+        : `<span style="color:#64748b; font-style:italic;">No agent connected to Port 2 (Drag cable from Port 2)</span>`;
+
+      box.innerHTML = `
+        <!-- Header -->
+        <div class="prompt-modal-header" style="padding:16px 20px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center;">
+          <div style="display:flex; align-items:center; gap:12px;">
+            <div style="font-size:26px; line-height:1; padding:8px; background:rgba(0,242,254,0.12); border:1px solid rgba(0,242,254,0.3); border-radius:8px;">${node.icon || '⚡'}</div>
+            <div>
+              <div style="display:flex; align-items:center; gap:8px;">
+                <h3 style="margin:0; font-size:16px; color:#f8fafc; font-weight:700;">${node.role || node.name || 'Trigger Ingress Sensor'}</h3>
+                <span style="font-size:10px; background:rgba(0,242,254,0.15); border:1px solid rgba(0,242,254,0.3); color:#00f2fe; padding:2px 8px; border-radius:12px; font-weight:700;">${node.domain || 'Sovereign Sensor'}</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; margin-top:2px;">Sovereign Multi-Domain Ingress Cockpit • Universal Signal & Event Router</div>
+            </div>
+          </div>
+          <div style="display:flex; align-items:center; gap:10px;">
+            <div style="display:flex; align-items:center; gap:6px; background:rgba(16,185,129,0.12); border:1px solid rgba(16,185,129,0.3); padding:4px 10px; border-radius:20px; font-size:11px; color:#34d399; font-weight:600;">
+              <span style="width:7px; height:7px; border-radius:50%; background:#10b981; display:inline-block; box-shadow:0 0 6px #10b981;"></span>
+              <span>LISTENING</span>
+            </div>
+            <button type="button" class="prompt-modal-close" id="btn-close-trigger-modal" style="background:none; border:none; color:#94a3b8; font-size:18px; cursor:pointer; padding:4px 8px;">✕</button>
+          </div>
+        </div>
+
+        <!-- Navigation Tabs -->
+        <div class="prompt-modal-tabs" style="display:flex; gap:4px; padding:0 20px; background:rgba(15,23,42,0.4); border-bottom:1px solid rgba(255,255,255,0.08);">
+          <button type="button" class="prompt-tab-btn active" data-trig-tab="protocol" style="padding:10px 16px; font-size:12px; font-weight:600; color:#00f2fe; background:none; border:none; border-bottom:2px solid #00f2fe; cursor:pointer;">📡 Protocol & Source</button>
+          <button type="button" class="prompt-tab-btn" data-trig-tab="rules" style="padding:10px 16px; font-size:12px; font-weight:600; color:#94a3b8; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer;">⚖️ Rules & Port Routing</button>
+          <button type="button" class="prompt-tab-btn" data-trig-tab="simulation" style="padding:10px 16px; font-size:12px; font-weight:600; color:#94a3b8; background:none; border:none; border-bottom:2px solid transparent; cursor:pointer;">🧪 Live Test Bed & Signal Flow</button>
+        </div>
+
+        <!-- Tab Bodies -->
+        <div class="prompt-modal-content" style="flex:1; overflow-y:auto; padding:20px;">
+          <!-- TAB 1: Protocol & Source -->
+          <div class="trig-tab-pane active" id="trig-pane-protocol" style="display:flex; flex-direction:column; gap:16px;">
+            <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:14px;">
+              <label style="display:block; font-size:12px; font-weight:700; color:#e2e8f0; margin-bottom:6px;">Ingress Sensor Type</label>
+              <select id="trig-cfg-type" style="width:100%; padding:8px 12px; background:#0f172a; border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#f8fafc; font-size:12.5px;">
+                <option value="market_tick" ${ingressType === 'market_tick' ? 'selected' : ''}>📈 Forex / Crypto Market Tick Sensor (Price / Volatility / Spread)</option>
+                <option value="webhook" ${ingressType === 'webhook' ? 'selected' : ''}>⚡ HTTP Webhook Ingress (TradingView / Stripe / Telegram / GitHub)</option>
+                <option value="file_watcher" ${ingressType === 'file_watcher' ? 'selected' : ''}>📁 Directory & Document Observer (Contracts / CSVs / Tick Data)</option>
+                <option value="chat_ingress" ${ingressType === 'chat_ingress' ? 'selected' : ''}>💬 Client Consultation & Message Intake (Psychology / Support / Inquiries)</option>
+                <option value="cron" ${ingressType === 'cron' ? 'selected' : ''}>⏰ Chrono / Cron Recurring Scheduler (Periodic Audit / Time Ticker)</option>
+                <option value="system_sentinel" ${ingressType === 'system_sentinel' ? 'selected' : ''}>🛡️ System Sentinel & Safety Guard (Telemetry / Resource Health)</option>
+              </select>
+            </div>
+
+            <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:14px;">
+              <label style="display:block; font-size:12px; font-weight:700; color:#e2e8f0; margin-bottom:6px;">Channel / Target / Endpoint Identifier</label>
+              <input type="text" id="trig-cfg-channel" value="${escapeHtml(channelVal)}" placeholder="e.g. EURUSD, XAUUSD or /api/webhook/pipeline or vault/incoming/" style="width:100%; padding:8px 12px; background:#0f172a; border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#38bdf8; font-family:monospace; font-size:12.5px;" />
+              <div style="font-size:11px; color:#64748b; margin-top:6px;">Specify target asset pair(s), HTTP endpoint path, local directory, or cron interval.</div>
+            </div>
+
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:12px;">
+              <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:12px;">
+                <label style="display:block; font-size:11.5px; font-weight:700; color:#e2e8f0; margin-bottom:4px;">Authentication / Ingress Policy</label>
+                <select id="trig-cfg-auth" style="width:100%; padding:6px 10px; background:#0f172a; border:1px solid rgba(255,255,255,0.15); border-radius:6px; color:#f8fafc; font-size:11.5px;">
+                  <option value="open">Open Ingress (Local / Internal Signal)</option>
+                  <option value="bearer">Bearer Secret Token Validation</option>
+                  <option value="hmac">HMAC SHA-256 Webhook Signature</option>
+                </select>
+              </div>
+              <div style="background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.06); border-radius:8px; padding:12px;">
+                <label style="display:block; font-size:11.5px; font-weight:700; color:#e2e8f0; margin-bottom:4px;">Execution Architecture</label>
+                <div style="font-size:11px; color:#94a3b8; display:flex; align-items:center; gap:8px; margin-top:6px;">
+                  <span style="color:#10b981; font-weight:700;">⚡ Real-time Asynchronous Ingress</span>
+                  <span>(Zero Thread Blocking)</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 2: Rules & Port Routing -->
+          <div class="trig-tab-pane" id="trig-pane-rules" style="display:none; flex-direction:column; gap:16px;">
+            <!-- Port 1 Rule -->
+            <div style="background:rgba(16,185,129,0.04); border:1px solid rgba(16,185,129,0.25); border-radius:8px; padding:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="background:#10b981; color:#060911; font-weight:800; font-size:11px; width:20px; height:20px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center;">1</span>
+                  <strong style="color:#34d399; font-size:13px;">Port 1: Primary Route (Condition Satisfied / Signal Fired)</strong>
+                </div>
+                <span style="font-size:10px; color:#10b981; font-weight:700; background:rgba(16,185,129,0.15); padding:2px 8px; border-radius:10px;">PRIMARY EMISSION</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; margin-bottom:8px;">When incoming payload satisfies this condition, signal flows through Port 1 to downstream agent:</div>
+              <input type="text" id="trig-cfg-rule-1" value="${escapeHtml(condVal)}" placeholder="e.g. payload.spread <= 1.2 && payload.rsi < 30" style="width:100%; padding:8px 12px; background:#0b1322; border:1px solid rgba(16,185,129,0.3); border-radius:6px; color:#6ee7b7; font-family:monospace; font-size:12px;" />
+              <div style="margin-top:8px; font-size:11px; color:#cbd5e1; background:rgba(0,0,0,0.3); padding:8px 12px; border-radius:6px;">
+                ${target1Text}
+              </div>
+            </div>
+
+            <!-- Port 2 Rule -->
+            <div style="background:rgba(245,158,11,0.04); border:1px solid rgba(245,158,11,0.25); border-radius:8px; padding:14px;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="background:#f59e0b; color:#060911; font-weight:800; font-size:11px; width:20px; height:20px; border-radius:50%; display:inline-flex; align-items:center; justify-content:center;">2</span>
+                  <strong style="color:#fbbf24; font-size:13px;">Port 2: Fallback Route (Condition Unmet / Risk Escalation / Else)</strong>
+                </div>
+                <span style="font-size:10px; color:#f59e0b; font-weight:700; background:rgba(245,158,11,0.15); padding:2px 8px; border-radius:10px;">FALLBACK / NOISE FILTER</span>
+              </div>
+              <div style="font-size:11px; color:#94a3b8; margin-bottom:8px;">If condition is FALSE or signal is rejected/filtered, routes through Port 2:</div>
+              <div style="margin-top:8px; font-size:11px; color:#cbd5e1; background:rgba(0,0,0,0.3); padding:8px 12px; border-radius:6px;">
+                ${target2Text}
+              </div>
+            </div>
+          </div>
+
+          <!-- TAB 3: Live Test Bed & Simulation -->
+          <div class="trig-tab-pane" id="trig-pane-simulation" style="display:none; flex-direction:column; gap:14px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+              <label style="font-size:12px; font-weight:700; color:#e2e8f0;">Mock Ingress Payload (JSON)</label>
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <button type="button" class="trig-preset-btn" data-preset="forex" style="font-size:10px; padding:3px 8px; background:rgba(0,242,254,0.1); border:1px solid rgba(0,242,254,0.3); color:#00f2fe; border-radius:4px; cursor:pointer;">📈 Forex Breakout</button>
+                <button type="button" class="trig-preset-btn" data-preset="legal" style="font-size:10px; padding:3px 8px; background:rgba(168,85,247,0.1); border:1px solid rgba(168,85,247,0.3); color:#c084fc; border-radius:4px; cursor:pointer;">📁 Legal Contract</button>
+                <button type="button" class="trig-preset-btn" data-preset="psychology" style="font-size:10px; padding:3px 8px; background:rgba(236,72,153,0.1); border:1px solid rgba(236,72,153,0.3); color:#f472b6; border-radius:4px; cursor:pointer;">💬 Client Intake</button>
+                <button type="button" class="trig-preset-btn" data-preset="webhook" style="font-size:10px; padding:3px 8px; background:rgba(16,185,129,0.1); border:1px solid rgba(16,185,129,0.3); color:#34d399; border-radius:4px; cursor:pointer;">⚡ Webhook POST</button>
+              </div>
+            </div>
+
+            <textarea id="trig-cfg-payload" rows="8" style="width:100%; padding:10px 14px; background:#070d19; border:1px solid rgba(0,242,254,0.3); border-radius:6px; color:#e2e8f0; font-family:monospace; font-size:12px; line-height:1.5; resize:vertical;">${escapeHtml(samplePayloadVal)}</textarea>
+
+            <button type="button" id="btn-trig-test-fire" style="padding:12px 20px; font-size:13px; font-weight:800; background:linear-gradient(135deg, #00f2fe 0%, #0284c7 100%); border:none; border-radius:6px; color:#060911; cursor:pointer; display:flex; align-items:center; justify-content:center; gap:8px; box-shadow:0 0 20px rgba(0,242,254,0.4); transition:all 0.2s cubic-bezier(0.4, 0, 0.2, 1);">
+              <span>⚡ Test Fire Trigger & Trace Live Signal Flow</span>
+            </button>
+
+            <!-- Live Ingress Execution Console -->
+            <div>
+              <div style="font-size:11px; font-weight:700; color:#94a3b8; margin-bottom:4px; display:flex; justify-content:space-between;">
+                <span>Live Ingress Telemetry Console</span>
+                <span id="trig-sim-eval-badge" style="font-size:10px; font-weight:700; color:#38bdf8;">Idle</span>
+              </div>
+              <pre id="trig-sim-console" style="margin:0; padding:10px 14px; background:#030712; border:1px solid rgba(255,255,255,0.08); border-radius:6px; color:#34d399; font-family:monospace; font-size:11px; height:120px; overflow-y:auto; line-height:1.4;">[SYSTEM] Sovereign Ingress Engine initialized. Ready for incoming signal event...</pre>
+            </div>
+          </div>
+        </div>
+
+        <!-- Footer -->
+        <div class="prompt-modal-footer" style="padding:14px 20px; border-top:1px solid rgba(255,255,255,0.08); display:flex; justify-content:space-between; align-items:center; background:rgba(15,23,42,0.4);">
+          <div style="font-size:11px; color:#64748b;">Changes are automatically synchronized to persistent DAG storage.</div>
+          <div style="display:flex; gap:10px;">
+            <button type="button" class="btn-cancel" id="btn-cancel-trig-modal" style="padding:8px 16px; font-size:12px; background:rgba(255,255,255,0.06); border:1px solid rgba(255,255,255,0.12); color:#cbd5e1; border-radius:6px; cursor:pointer;">Cancel</button>
+            <button type="button" class="btn-save" id="btn-save-trig-modal" style="padding:8px 18px; font-size:12px; font-weight:700; background:#00f2fe; border:none; color:#060911; border-radius:6px; cursor:pointer; box-shadow:0 0 12px rgba(0,242,254,0.3);">Save & Apply</button>
+          </div>
+        </div>
+      `;
+
+      overlay.classList.add('active');
+
+      // Bind Tabs
+      const tabBtns = box.querySelectorAll('.prompt-tab-btn');
+      tabBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          tabBtns.forEach(b => {
+            b.classList.remove('active');
+            b.style.color = '#94a3b8';
+            b.style.borderBottomColor = 'transparent';
+          });
+          btn.classList.add('active');
+          btn.style.color = '#00f2fe';
+          btn.style.borderBottomColor = '#00f2fe';
+
+          const targetTab = btn.getAttribute('data-trig-tab');
+          box.querySelectorAll('.trig-tab-pane').forEach(p => p.style.display = 'none');
+          const targetPane = box.querySelector(`#trig-pane-${targetTab}`);
+          if (targetPane) targetPane.style.display = 'flex';
+        });
+      });
+
+      // Bind Presets
+      const presetBtns = box.querySelectorAll('.trig-preset-btn');
+      presetBtns.forEach(btn => {
+        btn.addEventListener('click', () => {
+          const p = btn.getAttribute('data-preset');
+          const txtPayload = box.querySelector('#trig-cfg-payload');
+          const inpRule = box.querySelector('#trig-cfg-rule-1');
+          const inpChannel = box.querySelector('#trig-cfg-channel');
+          const simConsole = box.querySelector('#trig-sim-console');
+
+          if (p === 'forex') {
+            if (txtPayload) txtPayload.value = JSON.stringify({
+              symbol: "EURUSD",
+              bid: 1.0848,
+              ask: 1.0850,
+              spread: 0.2,
+              rsi: 28.4,
+              timeframe: "M15",
+              volatility: "HIGH"
+            }, null, 2);
+            if (inpRule) inpRule.value = 'payload.spread <= 1.2 && payload.rsi < 30';
+            if (inpChannel) inpChannel.value = 'EURUSD, XAUUSD';
+            if (simConsole) simConsole.textContent += `\n[PRESET] Loaded Forex Breakout Sensor preset.`;
+          } else if (p === 'legal') {
+            if (txtPayload) txtPayload.value = JSON.stringify({
+              event: "FILE_CREATED",
+              file_name: "Master_Service_Agreement_2026.pdf",
+              path: "vault/incoming/Master_Service_Agreement_2026.pdf",
+              mime: "application/pdf",
+              file_size_kb: 412,
+              jurisdiction: "International Commercial Law"
+            }, null, 2);
+            if (inpRule) inpRule.value = 'payload.file_size_kb > 0 && !payload.file_name.startsWith(".")';
+            if (inpChannel) inpChannel.value = 'vault/incoming/';
+            if (simConsole) simConsole.textContent += `\n[PRESET] Loaded Legal Document Observer preset.`;
+          } else if (p === 'psychology') {
+            if (txtPayload) txtPayload.value = JSON.stringify({
+              client_id: "CL-908",
+              intake_form: "Initial Clinical Assessment",
+              urgency: 4,
+              primary_concern: "acute cognitive fatigue & burnout",
+              session_type: "CBT"
+            }, null, 2);
+            if (inpRule) inpRule.value = 'payload.urgency >= 3 || payload.sentiment === "distressed"';
+            if (inpChannel) inpChannel.value = 'web_portal_intake';
+            if (simConsole) simConsole.textContent += `\n[PRESET] Loaded Client Consultation Intake preset.`;
+          } else if (p === 'webhook') {
+            if (txtPayload) txtPayload.value = JSON.stringify({
+              event: "ORDER_SIGNAL",
+              pair: "EURUSD",
+              signal: "BUY",
+              price: 1.0845,
+              tp: 1.0920,
+              sl: 1.0810,
+              confidence: 0.94
+            }, null, 2);
+            if (inpRule) inpRule.value = 'payload.event != null';
+            if (inpChannel) inpChannel.value = '/api/webhook/pipeline';
+            if (simConsole) simConsole.textContent += `\n[PRESET] Loaded HTTP Webhook Gateway preset.`;
+          }
+        });
+      });
+
+      // Bind Test Fire Button
+      box.querySelector('#btn-trig-test-fire')?.addEventListener('click', async () => {
+        const txtPayload = box.querySelector('#trig-cfg-payload');
+        const inpRule = box.querySelector('#trig-cfg-rule-1');
+        const simConsole = box.querySelector('#trig-sim-console');
+        const evalBadge = box.querySelector('#trig-sim-eval-badge');
+
+        let payloadObj = {};
+        try {
+          payloadObj = JSON.parse(txtPayload ? txtPayload.value : '{}');
+        } catch (e) {
+          if (simConsole) simConsole.textContent += `\n[ERROR] Invalid JSON payload: ${e.message}`;
+          return;
+        }
+
+        const condExpr = inpRule ? inpRule.value.trim() : '';
+        let passes = true;
+        if (condExpr) {
+          try {
+            const evalFn = new Function('payload', `try { return Boolean(${condExpr}); } catch(e) { return false; }`);
+            passes = evalFn(payloadObj);
+          } catch (e) {
+            passes = true;
+          }
+        }
+
+        if (evalBadge) {
+          evalBadge.textContent = passes ? '🟢 Port 1 Emitted' : '🟠 Port 2 Fallback';
+          evalBadge.style.color = passes ? '#10b981' : '#f59e0b';
+        }
+
+        if (simConsole) {
+          simConsole.textContent += `\n[EVAL] Rule: "${condExpr || 'ANY'}" -> Result: ${passes ? 'TRUE (Port 1 Fired)' : 'FALSE (Port 2 Fallback)'}`;
+          simConsole.textContent += `\n[DISPATCH] ⚡ Signal packet travelling along canvas cables...`;
+          simConsole.scrollTop = simConsole.scrollHeight;
+        }
+
+        // Trigger real flow on canvas!
+        this.runPipelineFlow(node.id, payloadObj);
+      });
+
+      // Bind Close and Save buttons
+      box.querySelector('#btn-close-trigger-modal')?.addEventListener('click', () => this.closeTriggerCockpitModal());
+      box.querySelector('#btn-cancel-trig-modal')?.addEventListener('click', () => this.closeTriggerCockpitModal());
+      box.querySelector('#btn-save-trig-modal')?.addEventListener('click', () => this.saveAndCloseTriggerModal());
+    }
+
+    closeTriggerCockpitModal() {
+      const overlay = document.getElementById('pipeline-trigger-modal-overlay');
+      if (overlay) overlay.classList.remove('active');
+      this.activeModalNode = null;
+    }
+
+    saveAndCloseTriggerModal() {
+      const box = document.getElementById('pipeline-trigger-modal-box');
+      if (box && this.activeModalNode) {
+        const node = this.activeModalNode;
+        const selType = box.querySelector('#trig-cfg-type');
+        const inpChannel = box.querySelector('#trig-cfg-channel');
+        const selAuth = box.querySelector('#trig-cfg-auth');
+        const inpRule1 = box.querySelector('#trig-cfg-rule-1');
+        const txtPayload = box.querySelector('#trig-cfg-payload');
+
+        if (!node.triggerConfig) node.triggerConfig = {};
+        if (selType) node.triggerConfig.ingressType = selType.value;
+        if (inpChannel) {
+          node.triggerConfig.channel = inpChannel.value.trim();
+          node.triggerConfig.symbol = inpChannel.value.trim();
+          node.triggerConfig.watchPath = inpChannel.value.trim();
+          node.triggerConfig.interval = inpChannel.value.trim();
+        }
+        if (selAuth) node.triggerConfig.authMode = selAuth.value;
+        if (inpRule1) node.triggerConfig.conditionExpr = inpRule1.value.trim();
+        if (txtPayload) node.triggerConfig.samplePayload = txtPayload.value.trim();
+
+        this.saveState();
+        this.render();
+      }
+      this.closeTriggerCockpitModal();
+    }
+
+    /**
+     * Autonomous Sovereign Multi-Domain Pipeline Workflow Execution Engine
+     */
+    async runPipelineFlow(startTriggerId = null, customPayload = null) {
+      console.log('[SwarmPipeline] 🚀 Initiating sovereign multi-domain pipeline execution...');
+
+      const statusBadge = this.boardEl?.querySelector('.pipeline-status-badge');
+      const updateStatus = (text, color = '#00f2fe', bg = 'rgba(0,242,254,0.15)') => {
+        if (statusBadge) {
+          statusBadge.textContent = text;
+          statusBadge.style.color = color;
+          statusBadge.style.borderColor = color;
+          statusBadge.style.background = bg;
+        }
+      };
+
+      // 1. Identify Entry / Ingress Trigger Node(s)
+      let startingNodes = [];
+      if (startTriggerId) {
+        const trg = this.nodes.find(n => n.id === startTriggerId);
+        if (trg) startingNodes.push(trg);
+      } else {
+        startingNodes = this.nodes.filter(n => n.type === 'trigger' || (n.id && n.id.startsWith('trg-')) || (n.id && n.id.includes('ingress')));
+        if (startingNodes.length === 0) {
+          const leader = this.nodes.find(n => n.type === 'leader' || (n.id && n.id.includes('leader')));
+          if (leader) startingNodes.push(leader);
+          else if (this.nodes.length > 0) startingNodes.push(this.nodes[0]);
+        }
+      }
+
+      if (startingNodes.length === 0) {
+        updateStatus('⚠️ Empty DAG Canvas (Add nodes to run)', '#f59e0b', 'rgba(245,158,11,0.15)');
+        return;
+      }
+
+      // Reset previous visual execution states
+      this.boardEl?.querySelectorAll('.dag-node').forEach(el => el.classList.remove('node-firing', 'node-processing', 'node-success'));
+      this.svgLayer?.querySelectorAll('.pipeline-photon-stream').forEach(el => el.classList.remove('active-flow-1', 'active-flow-2'));
+
+      const log = (msg) => {
+        const time = new Date().toLocaleTimeString();
+        const line = `[${time}] ${msg}`;
+        console.log(`[SwarmPipeline] ${line}`);
+        const simConsole = document.getElementById('trig-sim-console');
+        if (simConsole) {
+          simConsole.textContent += `\n${line}`;
+          simConsole.scrollTop = simConsole.scrollHeight;
+        }
+      };
+
+      // 2. Cascade Execution
+      for (const startNode of startingNodes) {
+        const isTrigger = startNode.type === 'trigger' || (startNode.id && startNode.id.includes('ingress'));
+        const nodeEl = document.getElementById(`dag-node-${startNode.id}`);
+
+        if (isTrigger) {
+          updateStatus(`⚡ Ingress Firing: ${startNode.role || startNode.name}...`, '#00f2fe');
+          if (nodeEl) nodeEl.classList.add('node-firing');
+
+          // Parse Payload
+          let payload = customPayload;
+          if (!payload && startNode.triggerConfig?.samplePayload) {
+            try {
+              payload = JSON.parse(startNode.triggerConfig.samplePayload);
+            } catch (e) {
+              payload = { raw: startNode.triggerConfig.samplePayload };
+            }
+          }
+          if (!payload) payload = { event: 'TRIGGER_DISPATCH', timestamp: new Date().toISOString() };
+
+          log(`⚡ Ingress Trigger [${startNode.role || startNode.name}] activated.`);
+
+          // Evaluate condition
+          const condExpr = startNode.triggerConfig?.conditionExpr || '';
+          let conditionPassed = true;
+          if (condExpr && condExpr.trim() !== '') {
+            try {
+              const evalFn = new Function('payload', `try { return Boolean(${condExpr}); } catch(e) { return false; }`);
+              conditionPassed = evalFn(payload);
+            } catch (err) {
+              conditionPassed = true;
+            }
+          }
+
+          const activePort = conditionPassed ? 'out-1' : 'out-2';
+          log(`⚖️ Condition [${condExpr || 'ANY'}]: ${conditionPassed ? 'MATCHED (Port 1)' : 'UNMET (Port 2)'}`);
+
+          await new Promise(r => setTimeout(r, 600));
+
+          // Find Outgoing Connection for activePort
+          const outgoingConns = this.connections.filter(c => c.from === startNode.id && (c.fromPort || 'out-1') === activePort);
+          if (outgoingConns.length > 0) {
+            for (const conn of outgoingConns) {
+              const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+              const photon = connGroup?.querySelector('.pipeline-photon-stream');
+              if (photon) {
+                photon.classList.add(activePort === 'out-1' ? 'active-flow-1' : 'active-flow-2');
+              }
+
+              const targetNode = this.nodes.find(n => n.id === conn.to);
+              if (targetNode) {
+                log(`🌐 Dispatched packet via ${activePort === 'out-1' ? 'Port 1 (Primary)' : 'Port 2 (Fallback)'} -> [${targetNode.role || targetNode.name}]`);
+                await new Promise(r => setTimeout(r, 700));
+
+                await this._cascadeExecuteNode(targetNode, payload, log, updateStatus);
+              }
+            }
+          } else {
+            log(`ℹ️ Ingress fired, but no cable wired from ${activePort}. Standing by.`);
+          }
+
+          if (nodeEl) {
+            nodeEl.classList.remove('node-firing');
+            nodeEl.classList.add('node-success');
+          }
+        } else {
+          await this._cascadeExecuteNode(startNode, { initial: true }, log, updateStatus);
+        }
+      }
+
+      // 3. Execution Finished
+      updateStatus('✓ Multi-Domain Consensus Reached (Goal Met & Approved)', '#10b981', 'rgba(16,185,129,0.15)');
+      log('🎯 Sovereign Swarm Flow execution completed successfully.');
+
+      setTimeout(() => {
+        this.svgLayer?.querySelectorAll('.pipeline-photon-stream').forEach(el => el.classList.remove('active-flow-1', 'active-flow-2'));
+        this.boardEl?.querySelectorAll('.dag-node').forEach(el => el.classList.remove('node-firing', 'node-processing', 'node-success'));
+      }, 3500);
+    }
+
+    async _cascadeExecuteNode(node, incomingData, log, updateStatus) {
+      const nodeEl = document.getElementById(`dag-node-${node.id}`);
+      if (nodeEl) nodeEl.classList.add('node-processing');
+
+      updateStatus(`🤖 ${node.role || node.name}: Processing Ingress...`, '#38bdf8');
+      log(`🤖 Agent [${node.role || node.name}] ingesting data packet...`);
+
+      await new Promise(r => setTimeout(r, 650));
+
+      log(`✓ [${node.role || node.name}] task completed with Consensus Verified.`);
+      if (nodeEl) {
+        nodeEl.classList.remove('node-processing');
+        nodeEl.classList.add('node-success');
+      }
+
+      // Propagate down Port 1 (Primary Route)
+      const outConns = this.connections.filter(c => c.from === node.id && (c.fromPort || 'out-1') === 'out-1');
+      for (const conn of outConns) {
+        const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+        const photon = connGroup?.querySelector('.pipeline-photon-stream');
+        if (photon) photon.classList.add('active-flow-1');
+
+        const next = this.nodes.find(n => n.id === conn.to);
+        if (next) {
+          log(`➡️ [${node.role || node.name}] handed off signal -> [${next.role || next.name}]`);
+          await new Promise(r => setTimeout(r, 650));
+          await this._cascadeExecuteNode(next, incomingData, log, updateStatus);
+        }
+      }
+    }
+
+    /**
+     * Retrieves the currently active preset object
+     */
+    getActivePreset() {
+      if (this.presets && this.activePresetId && this.presets[this.activePresetId]) {
+        return this.presets[this.activePresetId];
+      }
+      return {
+        id: this.activePresetId || 'coding',
+        name: this.activePresetId || 'Coding',
+        nodes: this.nodes || [],
+        connections: this.connections || []
+      };
+    }
+
+    /**
+     * Dynamically lights up agent node and connected cables based on real-time task execution.
+     * @param {string} agentId - The agent ID, role, or name
+     * @param {string} state - 'working' | 'processing' | 'done' | 'idle' | 'firing'
+     */
+    setAgentActivityState(agentId, state, options = {}) {
+      if (!agentId || !this.nodes || this.nodes.length === 0) return;
+
+      const cleanId = String(agentId).toLowerCase().replace(/^(agent-|session-)/, '');
+      const isWorking = (state === 'working' || state === 'processing' || state === 'busy');
+      const isDone = (state === 'done' || state === 'success' || state === 'completed');
+
+      const matchedNodes = this.nodes.filter(n => {
+        const nAgent = String(n.agentId || '').toLowerCase();
+        const nId = String(n.id || '').toLowerCase();
+        const nRole = String(n.role || '').toLowerCase();
+        const nName = String(n.name || '').toLowerCase();
+        return nAgent === cleanId ||
+               nId === cleanId ||
+               nId.includes(cleanId) ||
+               cleanId.includes(nId) ||
+               nRole.includes(cleanId) ||
+               cleanId.includes(nRole) ||
+               nName.includes(cleanId) ||
+               cleanId.includes(nName) ||
+               (cleanId === 'leader' && n.type === 'leader') ||
+               (cleanId.includes('backend') && (nId.includes('backend') || nRole.includes('backend'))) ||
+               (cleanId.includes('frontend') && (nId.includes('frontend') || nRole.includes('frontend'))) ||
+               (cleanId.includes('security') && (nId.includes('security') || nRole.includes('security'))) ||
+               (cleanId.includes('qc') && (nId.includes('qc') || nRole.includes('qc') || nRole.includes('quality')));
+      });
+
+      if (matchedNodes.length === 0) return;
+
+      matchedNodes.forEach(node => {
+        const nodeEl = document.getElementById(`dag-node-${node.id}`);
+        const statusEl = nodeEl?.querySelector('.dag-node-status-indicator');
+        const connectedConns = this.connections.filter(c => c.from === node.id || c.to === node.id);
+
+        if (isWorking) {
+          if (nodeEl) {
+            nodeEl.classList.remove('node-success');
+            nodeEl.classList.add('node-processing');
+          }
+          if (statusEl) {
+            statusEl.textContent = '⚡ RUNNING';
+            statusEl.style.display = 'inline-flex';
+          }
+          connectedConns.forEach(conn => {
+            const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+            const cable = connGroup?.querySelector('.pipeline-cable');
+            const photon = connGroup?.querySelector('.pipeline-photon-stream');
+            if (cable) cable.classList.add('cable-active');
+            if (photon) photon.classList.add('active-flow-1');
+          });
+        } else if (isDone) {
+          if (nodeEl) {
+            nodeEl.classList.remove('node-processing');
+            nodeEl.classList.add('node-success');
+          }
+          if (statusEl) {
+            statusEl.textContent = '✓ DONE';
+            statusEl.style.display = 'inline-flex';
+          }
+          setTimeout(() => {
+            if (nodeEl) nodeEl.classList.remove('node-success');
+            if (statusEl) statusEl.style.display = 'none';
+            connectedConns.forEach(conn => {
+              const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+              const cable = connGroup?.querySelector('.pipeline-cable');
+              const photon = connGroup?.querySelector('.pipeline-photon-stream');
+              if (cable) cable.classList.remove('cable-active');
+              if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
+            });
+          }, 2500);
+        } else {
+          // Idle
+          if (nodeEl) nodeEl.classList.remove('node-processing', 'node-success', 'node-firing');
+          if (statusEl) statusEl.style.display = 'none';
+          connectedConns.forEach(conn => {
+            const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
+            const cable = connGroup?.querySelector('.pipeline-cable');
+            const photon = connGroup?.querySelector('.pipeline-photon-stream');
+            if (cable) cable.classList.remove('cable-active');
+            if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
+          });
+        }
+      });
+    }
+
+    /**
+     * Executes pipeline cyber photon simulation (Universal Entry Point)
+     */
+    executePipelineSimulation() {
+      return this.runPipelineFlow();
     }
   }
 
@@ -4227,6 +5617,7 @@
   window.SwarmPipelineEngine = SwarmPipelineEngine;
   window.swarmPipelineInstance = new SwarmPipelineEngine();
   window.swarmPipelineEngine = window.swarmPipelineInstance;
+  window.swarmPipeline = window.swarmPipelineInstance;
 
   // Universal Sovereign Agent Studio Opener
   window.openAgentStudio = function(agentIdOrData) {
