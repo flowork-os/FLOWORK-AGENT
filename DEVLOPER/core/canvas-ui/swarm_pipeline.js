@@ -865,435 +865,43 @@
   ];
 
   const DEFAULT_SWARM_PRESETS = {
-    trading: {
-      id: 'trading',
-      name: 'Forex & Quant Trading',
-      icon: '📈',
-      domain: 'Forex / Quant Finance',
-      description: 'Real-time FX tick sensor, Quant VaR modeling, Capital Preservation Risk Manager, and Autonomous Order Dispatcher.',
+    default: {
+      id: 'default',
+      name: 'Default Sovereign Swarm',
+      icon: '⚡',
+      domain: 'Core Orchestration',
+      description: 'Pristine sovereign foundation with Mr. Flow at executive command.',
       panX: 40,
       panY: 40,
       scale: 1.0,
       nodes: [
         {
-          id: 'node-fx-sensor',
-          type: 'trigger',
-          triggerId: 'market_tick_sensor',
-          name: 'Forex Market Volatility Sensor',
-          role: 'Forex / Crypto Market Sensor',
-          domain: 'Forex / Quant Finance',
-          icon: '📈',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'market_tick',
-            channel: 'EURUSD, XAUUSD, BTCUSDT',
-            symbol: 'EURUSD, XAUUSD, BTCUSDT',
-            threshold: 'Spread <= 1.2 pips && RSI < 30',
-            conditionExpr: 'payload.spread <= 1.2 && payload.rsi < 30',
-            samplePayload: JSON.stringify({
-              symbol: "EURUSD",
-              bid: 1.0848,
-              ask: 1.0850,
-              spread: 0.2,
-              rsi: 28.4,
-              volatility: "HIGH"
-            }, null, 2)
-          }
-        },
-        {
-          id: 'node-fx-quant',
-          type: 'agent',
-          name: 'Quantitative Analyst',
-          role: 'Quantitative Analyst',
-          icon: '📊',
-          x: 450,
-          y: 200,
-          taskPrompt: 'Analyze price action, volume momentum, and portfolio value-at-risk.',
-          rulePrompt: 'Reject high-spread slippage anomalies and enforce statistical edge.'
-        },
-        {
-          id: 'node-fx-risk',
-          type: 'agent',
-          name: 'Risk Manager',
-          role: 'Risk Manager',
-          icon: '💼',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Perform capital preservation check, margin audit, and drawdown limits.',
-          rulePrompt: 'Never authorize position size exceeding 1.5% portfolio equity.'
-        },
-        {
-          id: 'node-fx-trader',
-          type: 'agent',
-          name: 'Trading Director',
-          role: 'Trading Director',
-          icon: '👑',
-          x: 1150,
-          y: 200,
-          taskPrompt: 'Execute sovereign order routing with dynamic position sizing.',
-          rulePrompt: 'Only execute orders with dual risk-manager confirmation.'
-        },
-        {
-          id: 'node-fx-escalator',
-          type: 'agent',
-          name: 'Risk Escalation Auditor',
-          role: 'Risk Escalation Auditor',
-          icon: '🛡️',
-          x: 450,
-          y: 450,
-          taskPrompt: 'Intervene on high-spread spikes, news volatility, or slippage anomalies.',
-          rulePrompt: 'Trigger hedging and margin lock when condition threshold fails.'
-        }
-      ],
-      connections: [
-        { id: 'conn-fx-1', from: 'node-fx-sensor', fromPort: 'out-1', to: 'node-fx-quant', guardianEnabled: true },
-        { id: 'conn-fx-2', from: 'node-fx-quant', fromPort: 'out-1', to: 'node-fx-risk', guardianEnabled: true },
-        { id: 'conn-fx-3', from: 'node-fx-risk', fromPort: 'out-1', to: 'node-fx-trader', guardianEnabled: true },
-        { id: 'conn-fx-4', from: 'node-fx-sensor', fromPort: 'out-2', to: 'node-fx-escalator', guardianEnabled: true }
-      ]
-    },
-    coding: {
-      id: 'coding',
-      name: 'Software Systems & Coding',
-      icon: '💻',
-      domain: 'Engineering / Software Systems',
-      description: 'End-to-end full-stack software development, automated test gatekeeping, and security compliance.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-dev-ingress',
-          type: 'trigger',
-          triggerId: 'webhook_ingress',
-          name: 'Webhook Ingress Gateway',
-          role: 'Webhook Ingress Gateway',
-          domain: 'Universal / API Ingress',
+          id: 'node-mrflow',
+          agentId: 'mr.flow',
+          name: 'Mr. Flow',
+          role: 'Grand Chief AI Overseer & Executive Architect',
           icon: '⚡',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'webhook',
-            channel: '/api/webhook/pipeline',
-            conditionExpr: 'payload.event != null',
-            samplePayload: JSON.stringify({ event: 'GIT_PUSH', branch: 'main', commits: 3 }, null, 2)
-          }
-        },
-        {
-          id: 'node-dev-leader',
-          agentId: 'leader',
-          type: 'leader',
-          name: 'Swarm Leader',
-          role: 'Swarm Leader',
-          icon: '👑',
+          type: 'agent',
           x: 450,
-          y: 200,
-          isLocked: true,
-          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
-          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
-        },
-        {
-          id: 'node-dev-backend',
-          agentId: 'backend-engineer',
-          type: 'agent',
-          name: 'Backend Engineer',
-          role: 'Backend & Systems Specialist',
-          icon: '⚙️',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Build sovereign, lightweight, multi-OS portable backend services.',
-          rulePrompt: 'Zero zombie code. Strict exit code 0.'
-        },
-        {
-          id: 'node-dev-frontend',
-          agentId: 'frontend-engineer',
-          type: 'agent',
-          name: 'Frontend Engineer',
-          role: 'Frontend Interface Craftsman',
-          icon: '🎨',
-          x: 1150,
-          y: 200,
-          taskPrompt: 'Implement modern, responsive, glassmorphic UI components.',
-          rulePrompt: 'Pixel-perfect CSS containment and zero global DOM leaks.'
-        },
-        {
-          id: 'node-dev-security',
-          agentId: 'security-auditor',
-          type: 'agent',
-          name: 'Security Auditor',
-          role: 'Security & Penetration Specialist',
-          icon: '🛡️',
-          x: 800,
-          y: 450,
-          taskPrompt: 'Scrutinize attack surfaces, credentials, and reverse engineering defenses.',
-          rulePrompt: 'Zero credential leaks. Strict circuit breaker isolation.'
-        },
-        {
-          id: 'node-dev-qc',
-          agentId: 'quality-control',
-          type: 'agent',
-          name: 'Quality Control',
-          role: 'Quality Control & Regression Sentinel',
-          icon: '🧪',
-          x: 1150,
-          y: 450,
-          taskPrompt: 'Run rigorous headless browser verification, smoke tests, and lint audits.',
-          rulePrompt: 'Claim success ONLY with empirical evidence and exit code 0.'
+          y: 240,
+          taskPrompt: 'Executive architecture, system supervision, and autonomous orchestration.',
+          rulePrompt: 'Enforce zero-trust and empirical proof (Exit Code 0).',
+          modelConfig: {
+            accountMode: 'combo',
+            modelId: 'gemini-3.8-flash-high',
+            modelName: 'Gemini 3.8 Flash (High)',
+            provider: 'google',
+            temperature: 0.2
+          },
+          toolGovernance: {
+            allowAll: true,
+            allowedTools: [],
+            deniedTools: []
+          }
         }
       ],
-      connections: [
-        { id: 'conn-dev-1', from: 'node-dev-ingress', fromPort: 'out-1', to: 'node-dev-leader', guardianEnabled: true },
-        { id: 'conn-dev-2', from: 'node-dev-leader', fromPort: 'out-1', to: 'node-dev-backend', guardianEnabled: true },
-        { id: 'conn-dev-3', from: 'node-dev-backend', fromPort: 'out-1', to: 'node-dev-frontend', guardianEnabled: true },
-        { id: 'conn-dev-4', from: 'node-dev-leader', fromPort: 'out-2', to: 'node-dev-security', guardianEnabled: true },
-        { id: 'conn-dev-5', from: 'node-dev-frontend', fromPort: 'out-1', to: 'node-dev-qc', guardianEnabled: true }
-      ]
-    },
-    seo: {
-      id: 'seo',
-      name: 'SEO & Growth Marketing',
-      icon: '🚀',
-      domain: 'Marketing / Growth / SEO',
-      description: 'Keyword research, competitive SERP intelligence, viral copywriting, and conversion optimization.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-seo-sched',
-          type: 'trigger',
-          triggerId: 'cron_scheduler',
-          name: 'Autonomous Chrono Scheduler',
-          role: 'Autonomous Chrono Scheduler',
-          domain: 'Universal / Timing',
-          icon: '⏰',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'cron',
-            interval: '1h',
-            conditionExpr: 'payload.is_active === true',
-            samplePayload: JSON.stringify({ task: 'serp_rank_scan', is_active: true }, null, 2)
-          }
-        },
-        {
-          id: 'node-seo-strategist',
-          type: 'agent',
-          name: 'Marketing & Growth Strategist',
-          role: 'Marketing & Growth Strategist',
-          icon: '🤖',
-          x: 450,
-          y: 200,
-          taskPrompt: 'Analyze high-intent keywords, backlink profiles, and competitor content gaps.'
-        },
-        {
-          id: 'node-seo-copywriter',
-          type: 'agent',
-          name: 'SEO Content Specialist',
-          role: 'SEO Content Specialist',
-          icon: '✍️',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Draft high-converting SEO articles, meta schemas, and EEAT authority clusters.'
-        },
-        {
-          id: 'node-seo-cro',
-          type: 'agent',
-          name: 'Conversion Rate Specialist',
-          role: 'Conversion Rate Specialist',
-          icon: '📊',
-          x: 1150,
-          y: 200,
-          taskPrompt: 'Optimize CTA placement, user engagement loops, and page conversion funnels.'
-        }
-      ],
-      connections: [
-        { id: 'conn-seo-1', from: 'node-seo-sched', fromPort: 'out-1', to: 'node-seo-strategist', guardianEnabled: true },
-        { id: 'conn-seo-2', from: 'node-seo-strategist', fromPort: 'out-1', to: 'node-seo-copywriter', guardianEnabled: true },
-        { id: 'conn-seo-3', from: 'node-seo-copywriter', fromPort: 'out-1', to: 'node-seo-cro', guardianEnabled: true }
-      ]
-    },
-    legal: {
-      id: 'legal',
-      name: 'Corporate Law & Contract Audit',
-      icon: '⚖️',
-      domain: 'Corporate Law / Governance',
-      description: 'Automated contract clause audit, indemnity liability scrutiny, counter-redlining, and partner sign-off.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-law-ingress',
-          type: 'trigger',
-          triggerId: 'file_watcher',
-          name: 'Document & File Observer',
-          role: 'Document & File Observer',
-          domain: 'Corporate Law / Data / Research',
-          icon: '📁',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'file_watcher',
-            watchPath: 'vault/incoming/',
-            conditionExpr: 'payload.file_size_kb > 0',
-            samplePayload: JSON.stringify({ event: 'FILE_CREATED', file_name: 'Vendor_Agreement_2026.pdf', file_size_kb: 350 }, null, 2)
-          }
-        },
-        {
-          id: 'node-law-auditor',
-          type: 'agent',
-          name: 'Contract Clause Auditor',
-          role: 'Contract Clause Auditor',
-          icon: '⚖️',
-          x: 450,
-          y: 200,
-          taskPrompt: 'Detect hidden indemnity traps, ambiguous termination clauses, and jurisdiction liabilities.'
-        },
-        {
-          id: 'node-law-partner',
-          type: 'agent',
-          name: 'Senior Legal Partner',
-          role: 'Senior Legal Partner',
-          icon: '👨‍⚖️',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Review vetted agreement, verify statutory compliance, and approve signing seal.'
-        },
-        {
-          id: 'node-law-negotiator',
-          type: 'agent',
-          name: 'Dispute & Redline Negotiator',
-          role: 'Dispute & Redline Negotiator',
-          icon: '✍️',
-          x: 450,
-          y: 450,
-          taskPrompt: 'Draft balanced redlines, liability caps, and arbitration counter-proposals.'
-        }
-      ],
-      connections: [
-        { id: 'conn-law-1', from: 'node-law-ingress', fromPort: 'out-1', to: 'node-law-auditor', guardianEnabled: true },
-        { id: 'conn-law-2', from: 'node-law-auditor', fromPort: 'out-1', to: 'node-law-partner', guardianEnabled: true },
-        { id: 'conn-law-3', from: 'node-law-auditor', fromPort: 'out-2', to: 'node-law-negotiator', guardianEnabled: true }
-      ]
-    },
-    psychology: {
-      id: 'psychology',
-      name: 'Psychology & CBT Consultation',
-      icon: '🧠',
-      domain: 'Psychology / Mental Health',
-      description: 'Intake assessment, empathetic triage, cognitive reframing coaching, and clinical supervision.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-psy-ingress',
-          type: 'trigger',
-          triggerId: 'chat_ingress',
-          name: 'Client Consultation Intake',
-          role: 'Client Consultation Intake',
-          domain: 'Psychology / Advisory / Support',
-          icon: '💬',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'chat_ingress',
-            conditionExpr: 'payload.urgency >= 3 || payload.sentiment === "distressed"',
-            samplePayload: JSON.stringify({ client_id: 'CL-104', urgency: 4, sentiment: 'distressed' }, null, 2)
-          }
-        },
-        {
-          id: 'node-psy-intake',
-          type: 'agent',
-          name: 'Empathetic Intake Specialist',
-          role: 'Empathetic Intake Specialist',
-          icon: '💬',
-          x: 450,
-          y: 200,
-          taskPrompt: 'Perform compassionate client intake, active listening, and somatic symptom triage.'
-        },
-        {
-          id: 'node-psy-cbt',
-          type: 'agent',
-          name: 'CBT Behavioral Coach',
-          role: 'CBT Behavioral Coach',
-          icon: '🛋️',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Guide cognitive reframing, thought records, and behavioral homework.'
-        },
-        {
-          id: 'node-psy-crisis',
-          type: 'agent',
-          name: 'Crisis Intervention Specialist',
-          role: 'Crisis Intervention Specialist',
-          icon: '🚨',
-          x: 450,
-          y: 450,
-          taskPrompt: 'Execute immediate de-escalation protocol and professional safety network routing.'
-        }
-      ],
-      connections: [
-        { id: 'conn-psy-1', from: 'node-psy-ingress', fromPort: 'out-1', to: 'node-psy-intake', guardianEnabled: true },
-        { id: 'conn-psy-2', from: 'node-psy-intake', fromPort: 'out-1', to: 'node-psy-cbt', guardianEnabled: true },
-        { id: 'conn-psy-3', from: 'node-psy-intake', fromPort: 'out-2', to: 'node-psy-crisis', guardianEnabled: true }
-      ]
-    },
-    media: {
-      id: 'media',
-      name: 'Creative Media & YouTube',
-      icon: '🎬',
-      domain: 'Creative / Media / Content',
-      description: 'YouTube spy intelligence, viral hook generation, scriptwriting, and autonomous video asset rendering.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-med-ingress',
-          type: 'trigger',
-          triggerId: 'webhook_ingress',
-          name: 'Webhook Ingress Gateway',
-          role: 'Webhook Ingress Gateway',
-          domain: 'Universal / API Ingress',
-          icon: '⚡',
-          x: 100,
-          y: 200,
-          triggerConfig: {
-            ingressType: 'webhook',
-            conditionExpr: 'payload.event != null',
-            samplePayload: JSON.stringify({ event: 'TREND_ALERT', niche: 'ai_tools' }, null, 2)
-          }
-        },
-        {
-          id: 'node-med-automator',
-          type: 'agent',
-          name: 'youtube-automator',
-          role: 'youtube-automator',
-          icon: '🎬',
-          x: 450,
-          y: 200,
-          taskPrompt: 'Analyze viral competitor formats, retention drop-offs, and high-CTR thumbnails.'
-        },
-        {
-          id: 'node-med-engineer',
-          type: 'agent',
-          name: 'media-engineer',
-          role: 'media-engineer',
-          icon: '🎥',
-          x: 800,
-          y: 200,
-          taskPrompt: 'Render multi-track audio mixes, visual clips, and timed subtitles.'
-        }
-      ],
-      connections: [
-        { id: 'conn-med-1', from: 'node-med-ingress', fromPort: 'out-1', to: 'node-med-automator', guardianEnabled: true },
-        { id: 'conn-med-2', from: 'node-med-automator', fromPort: 'out-1', to: 'node-med-engineer', guardianEnabled: true }
-      ]
-    }
-  };
+      connections: []
+    }  };
 
   class SwarmPipelineEngine {
     constructor() {
@@ -1308,7 +916,7 @@
       this.PRESETS_STORAGE_KEY = 'flowork_swarm_presets_v1';
       this.ACTIVE_PRESET_KEY = 'flowork_swarm_active_preset_id';
       this._saveTimer = null;
-      this.activePresetId = 'trading';
+      this.activePresetId = 'default';
       this.presets = {};
       this.dynamicAgents = [];
       this.dynamicTriggers = [];
@@ -1509,7 +1117,7 @@
         return;
       }
 
-      // If no saved state, load the active preset (default: trading)
+      // If no saved state, load the active preset (default: default)
       this.loadPreset(this.activePresetId, false);
       this.populatePresetDropdown();
       this.updateStatusBadge();
@@ -1545,10 +1153,10 @@
         if (savedActive && this.presets[savedActive]) {
           this.activePresetId = savedActive;
         } else if (!this.presets[this.activePresetId]) {
-          this.activePresetId = 'trading';
+          this.activePresetId = 'default';
         }
       } catch (e) {
-        this.activePresetId = 'trading';
+        this.activePresetId = 'default';
       }
 
       return this.presets;

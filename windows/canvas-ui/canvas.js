@@ -294,7 +294,7 @@ function initOffice3DSystem() {
     // 3D Office Agent Selection: Pure spatial focus + open Cockpit Model Selection
     currentInspectedAgent = agentData;
     if (agentData) {
-      const targetAgentId = agentData.persona || (agentData.id ? agentData.id.replace(/^agent-/, '') : 'backend-engineer');
+      const targetAgentId = agentData.persona || (agentData.id ? agentData.id.replace(/^agent-/, '') : 'mr.flow');
       if (window.swarmPipeline && typeof window.swarmPipeline.openFullPromptModal === 'function') {
         const targetNode = {
           id: targetAgentId,
@@ -543,7 +543,7 @@ function getInstalledSet(type) {
   } catch (_) {}
   if (pluralKey === 'skills') return new Set(['software_company_sop', 'ui_ux_pro_max']);
   if (pluralKey === 'tools') return new Set(['crypto_scanner', 'file_ops', 'mcp_flowork_system_inspect_workspace', 'mcp_flowork_system_system_status', 'semantic_search']);
-  if (pluralKey === 'agents') return new Set(['backend-engineer', 'frontend-engineer', 'quality-control', 'security-auditor']);
+  if (pluralKey === 'agents') return new Set(['mr.flow']);
   if (pluralKey === 'triggers') return new Set(['bitcoin_threshold', 'webhook_receiver', 'document_companion', 'zombie_process_hunter']);
   return new Set();
 }
@@ -4916,11 +4916,8 @@ function filterAndRenderCards() {
 
   const agentIds = getInstalledSet('agents');
   const installedAgents = (ecosystemState.agents.length > 0 ? ecosystemState.agents : [
-    { id: 'backend-engineer', name: 'Backend Engineer', role: 'Autonomous Backend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist backend-engineer with deterministic execution.' },
-    { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Autonomous Frontend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist frontend-engineer for high-fidelity UI.' },
-    { id: 'quality-control', name: 'Quality Control', role: 'Autonomous Quality Control', version: '1.0.0', department: 'engineering', description: 'Verification gatekeeper: validates tests with Exit Code 0.' },
-    { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Reverse Engineering Specialist', version: '1.0.0', department: 'security', description: 'Specialist in AST code auditing, reverse engineering, and threat modeling.' }
-  ]).filter(a => agentIds.has(a.id)).map(a => ({ ...a, icon: '🤖', _moduleType: 'agents', _itemType: 'agent' }));
+    { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', version: '1.0.0', department: 'engineering', description: 'Grand Chief AI Overseer and Sovereign Executive Architect of Flowork OS.' }
+  ]).filter(a => agentIds.has(a.id)).map(a => ({ ...a, icon: '⚡', _moduleType: 'agents', _itemType: 'agent' }));
 
   const triggerIds = getInstalledSet('triggers');
   const installedTriggers = (ecosystemState.triggers.length > 0 ? ecosystemState.triggers : [
@@ -8749,10 +8746,7 @@ function updateAgentPillDisplay() {
 }
 
 const FALLBACK_SWARM_AGENTS = [
-  { id: 'backend-engineer', name: 'Backend Engineer', role: 'Backend & System Specialist', icon: '⚙️', description: 'APIs, database schemas, test-driven logic, performance located in system/subagent/backend-engineer.' },
-  { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Frontend & UI Specialist', icon: '🎨', description: 'Canvas UI, responsive CSS, brand themes, visual QC located in system/subagent/frontend-engineer.' },
-  { id: 'quality-control', name: 'Quality Control', role: 'Verification & QA Specialist', icon: '🧪', description: 'Terminal verification, Exit Code 0, regression testing located in system/subagent/quality-control.' },
-  { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Audit Specialist', icon: '🛡️', description: 'Zero-leak audit, token safety, AST & binary inspection located in system/subagent/security-auditor.' }
+  { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', icon: '⚡', description: 'Grand Chief AI Overseer and Sovereign Executive Architect of Flowork OS.' }
 ];
 
 async function fetchAvailablePersonas() {

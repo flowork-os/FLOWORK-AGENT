@@ -1587,10 +1587,7 @@ class SovereignOffice3D {
 
       if (!agents.length) {
         agents = [
-          { id: 'backend-engineer', name: 'Backend Engineer', role: 'Specialist Backend Engineer', icon: '⚙️' },
-          { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Specialist Frontend Engineer', icon: '🎨' },
-          { id: 'quality-control', name: 'Quality Control', role: 'Specialist Quality Control', icon: '🧪' },
-          { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Reverse Engineering Specialist', icon: '🛡️' }
+          { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', icon: '⚡' }
         ];
       }
 

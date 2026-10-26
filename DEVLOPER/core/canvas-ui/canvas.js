@@ -94,15 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (raw) savedOpenTabIds = JSON.parse(raw);
   } catch (_) {}
 
-  // If saved tab is neither standard (office, copilot, home) nor an open plugin tab, fallback immediately
-  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home') {
+  // If saved tab is neither standard (office, copilot, home, pipeline) nor an open plugin tab, fallback immediately
+  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home' && preSavedActiveTab !== 'pipeline') {
     if (!Array.isArray(savedOpenTabIds) || !savedOpenTabIds.includes(preSavedActiveTab)) {
       preSavedActiveTab = 'office';
       try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
     }
   }
 
-  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot') {
+  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot' || preSavedActiveTab === 'pipeline') {
     switchTab(preSavedActiveTab);
   } else if (preSavedActiveTab === 'office') {
     const layout = document.querySelector('.canvas-layout');
@@ -294,7 +294,7 @@ function initOffice3DSystem() {
     // 3D Office Agent Selection: Pure spatial focus + open Cockpit Model Selection
     currentInspectedAgent = agentData;
     if (agentData) {
-      const targetAgentId = agentData.persona || (agentData.id ? agentData.id.replace(/^agent-/, '') : 'backend-engineer');
+      const targetAgentId = agentData.persona || (agentData.id ? agentData.id.replace(/^agent-/, '') : 'mr.flow');
       if (window.swarmPipeline && typeof window.swarmPipeline.openFullPromptModal === 'function') {
         const targetNode = {
           id: targetAgentId,
@@ -316,13 +316,6 @@ function initOffice3DSystem() {
 let currentOfficeSubtab = 'office'; // 'office' | 'pipeline' | 'blackboard'
 
 function switchOfficeSubtab(targetSubtab) {
-  if (targetSubtab === 'pipeline') {
-    if (typeof window.openAgentStudio === 'function') {
-      window.openAgentStudio();
-    }
-    targetSubtab = 'office';
-  }
-
   if (!targetSubtab || targetSubtab === 'boardroom' || targetSubtab === '3d') {
     targetSubtab = 'office';
   }
@@ -332,7 +325,7 @@ function switchOfficeSubtab(targetSubtab) {
   } catch (_) {}
 
   // 1. Update sub-nav button active classes
-  const btns = document.querySelectorAll('.group-subnav-btn');
+  const btns = document.querySelectorAll('#office-subnav-bar .group-subnav-btn, .group-subnav-bar .group-subnav-btn');
   btns.forEach(btn => {
     const s = btn.getAttribute('data-subtab');
     if (s === targetSubtab || (s === 'office' && (targetSubtab === 'office' || targetSubtab === 'boardroom'))) {
@@ -345,10 +338,12 @@ function switchOfficeSubtab(targetSubtab) {
   // 2. Pane visibility inside Office
   const paneOffice = document.getElementById('office-pane-3d');
   const paneBlackboard = document.getElementById('office-pane-blackboard');
+  const panePipeline = document.getElementById('view-pipeline');
 
-  if (paneOffice) paneOffice.style.display = targetSubtab === 'office' ? 'block' : 'none';
+  if (paneOffice) paneOffice.style.display = (targetSubtab === 'office') ? 'block' : 'none';
+
   if (paneBlackboard) {
-    paneBlackboard.style.display = targetSubtab === 'blackboard' ? 'block' : 'none';
+    paneBlackboard.style.display = (targetSubtab === 'blackboard') ? 'flex' : 'none';
     if (targetSubtab === 'blackboard' && window.swarmTelemetry) {
       if (!window.swarmTelemetry.isInitialized && typeof window.swarmTelemetry.bindUI === 'function') {
         window.swarmTelemetry.bindUI();
@@ -359,21 +354,43 @@ function switchOfficeSubtab(targetSubtab) {
     }
   }
 
-  // 2b. CHAT VISIBILITY POLICY:
+  if (panePipeline) {
+    const isPipeline = (targetSubtab === 'pipeline');
+    panePipeline.style.setProperty('display', isPipeline ? 'flex' : 'none', 'important');
+    panePipeline.style.setProperty('visibility', isPipeline ? 'visible' : 'hidden', 'important');
+    panePipeline.style.setProperty('content-visibility', isPipeline ? 'visible' : 'hidden', 'important');
+    panePipeline.classList.toggle('active', isPipeline);
+    if (isPipeline) {
+      const engine = window.swarmPipelineInstance || window.swarmPipeline;
+      if (engine) {
+        if (!panePipeline.classList.contains('swarm-pipeline-container') || !panePipeline.querySelector('.pipeline-palette-sidebar')) {
+          engine.mount(panePipeline);
+        } else {
+          engine.render();
+        }
+      }
+    }
+  }
+
+  // 2b. CHAT & LAYOUT VISIBILITY POLICY:
   const rightbarChat = document.getElementById('rightbar-chat');
   const resizerRight = document.getElementById('resizer-right');
   const canvasLayout = document.querySelector('.canvas-layout');
 
-  if (rightbarChat) {
-    rightbarChat.style.removeProperty('display');
-    rightbarChat.classList.remove('collapsed');
-  }
-  if (resizerRight) {
-    resizerRight.style.removeProperty('display');
-    resizerRight.classList.remove('collapsed');
-  }
-  if (canvasLayout) {
-    canvasLayout.classList.remove('pipeline-active');
+  if (targetSubtab === 'pipeline') {
+    if (rightbarChat) rightbarChat.style.setProperty('display', 'none', 'important');
+    if (resizerRight) resizerRight.style.setProperty('display', 'none', 'important');
+    if (canvasLayout) canvasLayout.classList.add('pipeline-active');
+  } else {
+    if (rightbarChat) {
+      rightbarChat.style.removeProperty('display');
+      rightbarChat.classList.remove('collapsed');
+    }
+    if (resizerRight) {
+      resizerRight.style.removeProperty('display');
+      resizerRight.classList.remove('collapsed');
+    }
+    if (canvasLayout) canvasLayout.classList.remove('pipeline-active');
   }
   if (typeof window.__updateLayoutResizers === 'function') {
     window.__updateLayoutResizers();
@@ -398,7 +415,7 @@ function switchOfficeSubtab(targetSubtab) {
       window.office3DInstance.onWindowResize();
     }
   } else {
-    // Blackboard: 0 FPS, 0 GPU draw calls!
+    // Blackboard & Swarm Flow: 0 FPS, 0 GPU draw calls!
     if (window.office3DInstance && typeof window.office3DInstance.pause === 'function') {
       window.office3DInstance.pause();
     }
@@ -442,7 +459,7 @@ const ECOSYSTEM_REGISTRIES = {
     title: 'X-Flow App Store',
     subtitle: 'Browse, install, and update verified polyglot extensions directly from GitHub repository',
     metaPill: 'CLOUD FEDERATION REPOSITORY',
-    catalogUrl: 'https://raw.githubusercontent.com/flowork-os/apps/main/apps.json',
+    catalogUrl: 'https://auth.floworkos.com/api/store/catalog',
     itemsKey: 'plugins',
     accentColor: '#10b981',
     accentRgb: '16, 185, 129',
@@ -526,7 +543,7 @@ function getInstalledSet(type) {
   } catch (_) {}
   if (pluralKey === 'skills') return new Set(['software_company_sop', 'ui_ux_pro_max']);
   if (pluralKey === 'tools') return new Set(['crypto_scanner', 'file_ops', 'mcp_flowork_system_inspect_workspace', 'mcp_flowork_system_system_status', 'semantic_search']);
-  if (pluralKey === 'agents') return new Set(['backend-engineer', 'frontend-engineer', 'quality-control', 'security-auditor']);
+  if (pluralKey === 'agents') return new Set(['mr.flow']);
   if (pluralKey === 'triggers') return new Set(['bitcoin_threshold', 'webhook_receiver', 'document_companion', 'zombie_process_hunter']);
   return new Set();
 }
@@ -4356,6 +4373,11 @@ function initEventListeners() {
     tabCopilot.addEventListener('click', () => switchTab('copilot'));
   }
 
+  const tabPipeline = document.getElementById('tab-pipeline');
+  if (tabPipeline) {
+    tabPipeline.addEventListener('click', () => switchTab('pipeline'));
+  }
+
   initStoreSubnavSystem();
 
   const tabStrip = document.getElementById('tab-strip');
@@ -4364,7 +4386,7 @@ function initEventListeners() {
     tabStrip.addEventListener('auxclick', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
           e.stopPropagation();
           closePluginTab(tab.dataset.tabId);
@@ -4374,7 +4396,7 @@ function initEventListeners() {
     tabStrip.addEventListener('mousedown', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
         }
       }
@@ -4590,6 +4612,9 @@ function initSSE() {
         if (window.office3DInstance) {
           window.office3DInstance.setAgentState(agent_id, state);
         }
+        if (window.swarmPipelineInstance && typeof window.swarmPipelineInstance.setAgentActivityState === 'function') {
+          window.swarmPipelineInstance.setAgentActivityState(agent_id, state);
+        }
         if (typeof window.updateOfficeDockAgentState === 'function') {
           window.updateOfficeDockAgentState(agent_id, state);
         }
@@ -4775,6 +4800,17 @@ function initStarfieldBackground() {
   window.cosmicStarfieldController = cosmicStarfieldController;
 }
 
+function sanitizePebbleIcon(iconStr, fallback = '⚡') {
+  if (!iconStr) return fallback;
+  if (iconStr === 'fl-icon-video-editor' || iconStr === 'clapperboard') return '🎬';
+  if (iconStr === 'fl-icon-forge' || iconStr === 'forge') return '⚒️';
+  if (typeof iconStr === 'string' && (iconStr.startsWith('fl-icon-') || (iconStr.length > 5 && !/\s/.test(iconStr)))) {
+    return fallback;
+  }
+  return iconStr;
+}
+window.sanitizePebbleIcon = sanitizePebbleIcon;
+
 // 6. Filter & Render Cockpit Pebble Cards
 // 6. Filter & Render Cockpit Pebble Cards (Installed Modules)
 function filterAndRenderCards() {
@@ -4880,11 +4916,8 @@ function filterAndRenderCards() {
 
   const agentIds = getInstalledSet('agents');
   const installedAgents = (ecosystemState.agents.length > 0 ? ecosystemState.agents : [
-    { id: 'backend-engineer', name: 'Backend Engineer', role: 'Autonomous Backend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist backend-engineer with deterministic execution.' },
-    { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Autonomous Frontend Engineer', version: '1.0.0', department: 'engineering', description: 'Autonomous specialist frontend-engineer for high-fidelity UI.' },
-    { id: 'quality-control', name: 'Quality Control', role: 'Autonomous Quality Control', version: '1.0.0', department: 'engineering', description: 'Verification gatekeeper: validates tests with Exit Code 0.' },
-    { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Reverse Engineering Specialist', version: '1.0.0', department: 'security', description: 'Specialist in AST code auditing, reverse engineering, and threat modeling.' }
-  ]).filter(a => agentIds.has(a.id)).map(a => ({ ...a, icon: '🤖', _moduleType: 'agents', _itemType: 'agent' }));
+    { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', version: '1.0.0', department: 'engineering', description: 'Grand Chief AI Overseer and Sovereign Executive Architect of Flowork OS.' }
+  ]).filter(a => agentIds.has(a.id)).map(a => ({ ...a, icon: '⚡', _moduleType: 'agents', _itemType: 'agent' }));
 
   const triggerIds = getInstalledSet('triggers');
   const installedTriggers = (ecosystemState.triggers.length > 0 ? ecosystemState.triggers : [
@@ -5063,7 +5096,7 @@ function filterAndRenderCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || '⚡'}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -5417,7 +5450,7 @@ function filterAndRenderCopilotCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || tabConfig.icon}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon, tabConfig.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -5814,7 +5847,7 @@ async function restoreTabsState() {
 
     if (openTabs.has(savedActiveTab)) {
       switchTab(savedActiveTab);
-    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot') {
+    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot' || savedActiveTab === 'pipeline') {
       switchTab(savedActiveTab);
     } else if (openTabs.size > 0 && savedActiveTab !== 'office' && savedActiveTab !== 'group' && savedActiveTab !== 'canvas-stage') {
       const firstTab = Array.from(openTabs.keys())[0];
@@ -5951,6 +5984,10 @@ async function switchTab(tabId, options = {}) {
   } else if (tabId === 'copilot') {
     const saved = localStorage.getItem('xflow_store_subtab') || 'cloud';
     switchStoreSubtab(saved);
+  } else if (tabId === 'pipeline') {
+    await switchTab('office', options);
+    switchOfficeSubtab('pipeline');
+    return;
   }
 
   // Fail-safe view existence validation: NEVER switch to a non-existent panel
@@ -5971,7 +6008,7 @@ async function switchTab(tabId, options = {}) {
     item.classList.toggle('active', item.id === `dock-plugin-${tabId}`);
   });
 
-  document.querySelectorAll('.view-panel').forEach((panel) => {
+  document.querySelectorAll('#viewport-stage > .view-panel').forEach((panel) => {
     const isActive = (panel.id === `view-${tabId}`);
     panel.classList.toggle('active', isActive);
     panel.style.setProperty('display', isActive ? 'block' : 'none', 'important');
@@ -6246,6 +6283,23 @@ async function switchTab(tabId, options = {}) {
     }
   }
 
+  if (tabId !== 'office') {
+    const pipelineView = document.getElementById('view-pipeline');
+    if (pipelineView) {
+      pipelineView.style.setProperty('display', 'none', 'important');
+      pipelineView.classList.remove('active');
+    }
+    document.querySelector('.canvas-layout')?.classList.remove('pipeline-active');
+    const rightbar = document.getElementById('rightbar-chat');
+    if (rightbar && !rightbar.classList.contains('collapsed')) {
+      rightbar.style.removeProperty('display');
+    }
+    const resizer = document.getElementById('resizer-right');
+    if (resizer) {
+      resizer.style.removeProperty('display');
+    }
+  }
+
   // Sovereign Viewport Telemetry: Report active tab to Engine Host for agent context
   reportActiveViewport(tabId);
 }
@@ -6257,6 +6311,9 @@ function reportActiveViewport(tabId) {
   if (tabId === 'office') {
     title = 'Office';
     kind = 'office';
+  } else if (tabId === 'pipeline') {
+    title = 'Visual Swarm Pipeline';
+    kind = 'pipeline';
   } else if (tabId === 'canvas-stage') {
     title = 'Sovereign Solo Studio';
     kind = 'canvas_stage';
@@ -8689,10 +8746,7 @@ function updateAgentPillDisplay() {
 }
 
 const FALLBACK_SWARM_AGENTS = [
-  { id: 'backend-engineer', name: 'Backend Engineer', role: 'Backend & System Specialist', icon: '⚙️', description: 'APIs, database schemas, test-driven logic, performance located in system/subagent/backend-engineer.' },
-  { id: 'frontend-engineer', name: 'Frontend Engineer', role: 'Frontend & UI Specialist', icon: '🎨', description: 'Canvas UI, responsive CSS, brand themes, visual QC located in system/subagent/frontend-engineer.' },
-  { id: 'quality-control', name: 'Quality Control', role: 'Verification & QA Specialist', icon: '🧪', description: 'Terminal verification, Exit Code 0, regression testing located in system/subagent/quality-control.' },
-  { id: 'security-auditor', name: 'Security Auditor', role: 'Security & Audit Specialist', icon: '🛡️', description: 'Zero-leak audit, token safety, AST & binary inspection located in system/subagent/security-auditor.' }
+  { id: 'mr.flow', name: 'Mr. Flow', role: 'Grand Chief AI Overseer & Executive Architect', icon: '⚡', description: 'Grand Chief AI Overseer and Sovereign Executive Architect of Flowork OS.' }
 ];
 
 async function fetchAvailablePersonas() {
@@ -11644,8 +11698,19 @@ function renderMarkdown(md) {
     formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', () => card);
   });
 
-  return formatted;
+  return sanitizeMarkdownHtml(formatted);
 }
+
+function sanitizeMarkdownHtml(html) {
+  if (!html) return '';
+  return String(html)
+    .replace(/<script\b[^<]*(?:(?!<\/script>)<[^<]*)*<\/script>/gi, '')
+    .replace(/<\/?(?:iframe|object|embed|applet|meta|base)\b[^>]*>/gi, '')
+    .replace(/\s+on[a-zA-Z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, '')
+    .replace(/(href|src)\s*=\s*(?:["']\s*javascript:[^"']*["']|javascript:[^\s>]+)/gi, '$1="#"');
+}
+window.sanitizeMarkdownHtml = sanitizeMarkdownHtml;
+
 
 // =============================================================================
 // CHAT ATTACHMENTS & CONTEXT HANDLER (IMAGES / FILES / CLIPBOARD)
@@ -16862,9 +16927,9 @@ function renderLiveCodeForger(activeSlot, toolName, details, stepIdx) {
 
   activeSlot.querySelectorAll('.is-finished').forEach(el => el.remove());
 
-  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || 'workspace/file';
+  const filePath = d.TargetFile || d.AbsolutePath || d.target_file || d.file || d.path || d.task_description || d.task || d.arguments || 'workspace/file';
   const fileName = String(filePath).split(/[\\/]/).pop() || shortenFilePath(filePath);
-  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.content ?? d.real_content ?? ''));
+  let codeRaw = stripInternalSystemInterceptions(String(d.CodeContent ?? d.code_content ?? d.code ?? d.content ?? d.real_content ?? ''));
   let totalBytes = new Blob([codeRaw]).size || codeRaw.length || 128;
   let codeLines = codeRaw.split(/\r?\n/).filter((l, idx, arr) => !(idx === arr.length - 1 && l === '')).map((l, idx) => `${String(idx + 1).padStart(3, '0')} │ ${l}`);
   if (codeLines.length === 0) {
