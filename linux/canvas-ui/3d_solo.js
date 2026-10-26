@@ -3578,6 +3578,15 @@ class SovereignOffice3D {
 
   setAgentState(agentId, newState) {
     if (!agentId) return;
+
+    // Bridge active state to Swarm Flow DAG canvas nodes & cables
+    try {
+      const engine = window.swarmPipeline || window.swarmPipelineInstance;
+      if (engine && typeof engine.setAgentActivityState === 'function') {
+        engine.setAgentActivityState(agentId, newState);
+      }
+    } catch (_) {}
+
     const ag = this.findAgentMatching(agentId);
 
     if (ag) {

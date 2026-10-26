@@ -4612,6 +4612,9 @@ function initSSE() {
         if (window.office3DInstance) {
           window.office3DInstance.setAgentState(agent_id, state);
         }
+        if (window.swarmPipelineInstance && typeof window.swarmPipelineInstance.setAgentActivityState === 'function') {
+          window.swarmPipelineInstance.setAgentActivityState(agent_id, state);
+        }
         if (typeof window.updateOfficeDockAgentState === 'function') {
           window.updateOfficeDockAgentState(agent_id, state);
         }
