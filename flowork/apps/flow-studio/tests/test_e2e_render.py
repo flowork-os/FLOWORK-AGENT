@@ -1,0 +1,1 @@
+# [FL_INDEX: flow_studio_e2e, integration_test, ffmpeg_render_verification, zero_stub_audit, api_e2e | COT: Create comprehensive E2E integration test verifying all real endpoints and physical FFmpeg rendering| AT: 2026-10-26T09:26:45Z]
