@@ -1594,11 +1594,66 @@ class SovereignOffice3D {
       }
 
       const cleanRoster = agents.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
-      window.AVAILABLE_PERSONAS = cleanRoster;
-      this.syncPersonas(cleanRoster);
+
+      // Filter by active Swarm Flow preset to keep 3D office uncluttered
+      let activeFilteredRoster = cleanRoster;
+      try {
+        let activePreset = null;
+        const resSwarm = await fetch('/api/swarmflow/active');
+        if (resSwarm.ok) {
+          const sData = await resSwarm.json();
+          if (sData && sData.preset) activePreset = sData.preset;
+        }
+        if (!activePreset && window.swarmPipeline && typeof window.swarmPipeline.getActivePreset === 'function') {
+          activePreset = window.swarmPipeline.getActivePreset();
+        }
+
+        if (activePreset && Array.isArray(activePreset.nodes) && activePreset.nodes.length > 0) {
+          const activeSquadIds = new Set();
+          const activeSquadNames = new Set();
+          activePreset.nodes.forEach(n => {
+            if (n.type === 'trigger') return;
+            if (n.agentId) activeSquadIds.add(n.agentId.toLowerCase());
+            if (n.id) activeSquadIds.add(n.id.toLowerCase());
+            if (n.name) activeSquadNames.add(n.name.toLowerCase());
+            if (n.role) activeSquadNames.add(n.role.toLowerCase());
+          });
+
+          if (activeSquadIds.size > 0 || activeSquadNames.size > 0) {
+            const matched = cleanRoster.filter(p => {
+              const pid = (p.id || '').toLowerCase();
+              const pname = (p.name || '').toLowerCase();
+              const prole = (p.role || '').toLowerCase();
+              return activeSquadIds.has(pid) ||
+                     activeSquadNames.has(pname) ||
+                     activeSquadNames.has(prole) ||
+                     Array.from(activeSquadIds).some(id => pid.includes(id) || id.includes(pid)) ||
+                     Array.from(activeSquadNames).some(name => pname.includes(name) || name.includes(pname));
+            });
+
+            if (matched.length > 0) {
+              activeFilteredRoster = matched;
+            } else {
+              activeFilteredRoster = activePreset.nodes
+                .filter(n => n.type !== 'trigger')
+                .map(n => ({
+                  id: n.agentId || n.id,
+                  name: n.name || n.role || n.id,
+                  role: n.role || n.name || 'Specialist',
+                  icon: n.icon || '🤖'
+                }));
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[Office 3D] Swarm active preset filter error:', err);
+      }
+
+      window.AVAILABLE_PERSONAS = activeFilteredRoster;
+      this.syncPersonas(activeFilteredRoster);
 
       // Record fingerprint
-      this._lastRosterFingerprint = cleanRoster.map(a => `${a.id}:${a.name || ''}:${a.role || ''}`).sort().join('||');
+      this._lastRosterFingerprint = activeFilteredRoster.map(a => `${a.id}:${a.name || ''}:${a.role || ''}`).sort().join('||');
     } catch (err) {
       console.warn('[Office 3D] Failed to fetch agents:', err);
     }
@@ -1617,6 +1672,7 @@ class SovereignOffice3D {
       this._boundRosterEvents = true;
       window.addEventListener('flowork:subagent-updated', () => this.checkRosterChanges());
       window.addEventListener('flowork:agents-changed', () => this.checkRosterChanges());
+      window.addEventListener('flowork:preset-changed', () => this.loadPersonas());
       window.addEventListener('focus', () => this.checkRosterChanges());
       window.syncOffice3DAgents = (list) => {
         if (Array.isArray(list) && list.length > 0) {

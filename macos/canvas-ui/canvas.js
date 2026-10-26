@@ -357,12 +357,17 @@ function switchOfficeSubtab(targetSubtab) {
   if (panePipeline) {
     const isPipeline = (targetSubtab === 'pipeline');
     panePipeline.style.setProperty('display', isPipeline ? 'flex' : 'none', 'important');
+    panePipeline.style.setProperty('visibility', isPipeline ? 'visible' : 'hidden', 'important');
+    panePipeline.style.setProperty('content-visibility', isPipeline ? 'visible' : 'hidden', 'important');
     panePipeline.classList.toggle('active', isPipeline);
-    if (isPipeline && window.swarmPipelineInstance) {
-      if (!panePipeline.classList.contains('swarm-pipeline-container') || !panePipeline.querySelector('.pipeline-palette-sidebar')) {
-        window.swarmPipelineInstance.mount(panePipeline);
-      } else {
-        window.swarmPipelineInstance.render();
+    if (isPipeline) {
+      const engine = window.swarmPipelineInstance || window.swarmPipeline;
+      if (engine) {
+        if (!panePipeline.classList.contains('swarm-pipeline-container') || !panePipeline.querySelector('.pipeline-palette-sidebar')) {
+          engine.mount(panePipeline);
+        } else {
+          engine.render();
+        }
       }
     }
   }
@@ -6003,7 +6008,7 @@ async function switchTab(tabId, options = {}) {
     item.classList.toggle('active', item.id === `dock-plugin-${tabId}`);
   });
 
-  document.querySelectorAll('.view-panel').forEach((panel) => {
+  document.querySelectorAll('#viewport-stage > .view-panel').forEach((panel) => {
     const isActive = (panel.id === `view-${tabId}`);
     panel.classList.toggle('active', isActive);
     panel.style.setProperty('display', isActive ? 'block' : 'none', 'important');

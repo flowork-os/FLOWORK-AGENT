@@ -1403,7 +1403,7 @@
      * - Right Bar: REMOVED COMPLETELY
      */
     _buildLayout() {
-      this.container.classList.add('swarm-pipeline-container', 'view-panel', 'view-panel-app');
+      this.container.classList.add('swarm-pipeline-container', 'group-subview-pane');
 
       // 1. Left Zone: Palette Sidebar (Triggers & Agents only)
       const palette = document.createElement('aside');
@@ -2562,8 +2562,8 @@
         const fromNode = this.nodes.find(n => n.id === this.wireStartNodeId);
         if (!fromNode) return;
 
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (this.wireStartPort === 'out-2' ? 118 : 59);
 
         const boardRect = this.boardEl.getBoundingClientRect();
         const mouseCanvasX = (e.clientX - boardRect.left - this.panX) / this.scale;
@@ -2908,10 +2908,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
 
         const pathData = this._calculateBezier(x1, y1, x2, y2);
         const isTrigger = fromNode.type === 'trigger';
@@ -2961,10 +2961,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const midX = Math.round((x1 + x2) / 2);
         const midY = Math.round((y1 + y2) / 2);
 
@@ -3203,10 +3203,10 @@
         if (!fromNode || !toNode) return;
 
         const fromPort = conn.fromPort || 'out-1';
-        const x1 = fromNode.x + 220;
-        const y1 = fromNode.y + (fromPort === 'out-2' ? 52 : 22);
+        const x1 = fromNode.x + 250;
+        const y1 = fromNode.y + (fromPort === 'out-2' ? 118 : 59);
         const x2 = toNode.x;
-        const y2 = toNode.y + 36;
+        const y2 = toNode.y + 82;
         const pathData = this._calculateBezier(x1, y1, x2, y2);
 
         const cables = g.querySelectorAll('path');
@@ -5871,6 +5871,7 @@
   window.SwarmPipelineEngine = SwarmPipelineEngine;
   window.swarmPipelineInstance = new SwarmPipelineEngine();
   window.swarmPipelineEngine = window.swarmPipelineInstance;
+  window.swarmPipeline = window.swarmPipelineInstance;
 
   // Universal Sovereign Agent Studio Opener
   window.openAgentStudio = function(agentIdOrData) {
