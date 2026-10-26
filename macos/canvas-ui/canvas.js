@@ -76,6 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCopilotCategoryFilters();
   initEventListeners();
   initSyncDriveUI();
+  initSentinelRecordUI();
   initConnectorUI();
   initPromoRecorder();
   initWorkspaceSystem();
@@ -22610,3 +22611,122 @@ window.addEventListener('beforeunload', () => {
     });
   }
 });
+
+
+// ==========================================================================
+// FLOWORK SENTINEL ACTION RECORDER & SYNTHESIZER
+// ==========================================================================
+let sentinelRecording = false;
+let sentinelTimer = null;
+let sentinelSeconds = 0;
+let sentinelCurrentSession = null;
+let sentinelDomListener = null;
+
+function initSentinelRecordUI() {
+  const btnRecord = document.getElementById('btn-topbar-record');
+  const dot = document.getElementById('topbar-record-dot');
+  const label = document.getElementById('topbar-record-label');
+
+  if (!btnRecord) return;
+
+  btnRecord.addEventListener('click', async () => {
+    if (!sentinelRecording) {
+      // START RECORDING
+      const defaultName = `session_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}`;
+      const sessionName = prompt('Enter name for this recording session:', defaultName);
+      if (sessionName === null) return;
+
+      sentinelRecording = true;
+      sentinelSeconds = 0;
+      btnRecord.style.background = 'rgba(239, 68, 68, 0.35)';
+      btnRecord.style.borderColor = '#ef4444';
+      btnRecord.style.boxShadow = '0 0 14px rgba(239, 68, 68, 0.7)';
+      if (dot) dot.style.animation = 'pulse 1s infinite alternate';
+
+      // Start ticking timer
+      sentinelTimer = setInterval(() => {
+        sentinelSeconds++;
+        const mins = String(Math.floor(sentinelSeconds / 60)).padStart(2, '0');
+        const secs = String(sentinelSeconds % 60).padStart(2, '0');
+        if (label) label.textContent = `REC ${mins}:${secs}`;
+      }, 1000);
+      if (label) label.textContent = 'REC 00:00';
+
+      // Call Sentinel Engine
+      try {
+        const res = await fetch('http://127.0.0.1:17870/api/session/start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: sessionName || defaultName,
+            domain: 'flowork_canvas',
+            target_url: window.location.href
+          })
+        });
+        const data = await res.json();
+        sentinelCurrentSession = data.session;
+      } catch (e) {
+        console.warn('[Sentinel] Engine connection note:', e);
+      }
+
+      // Attach DOM Action Interceptor to record clicks inside Flowork OS
+      sentinelDomListener = (e) => {
+        if (!sentinelRecording) return;
+        const target = e.target.closest('button, a, input, select, textarea, .dag-node, .copilot-card') || e.target;
+        if (target === btnRecord || btnRecord.contains(target)) return;
+
+        let selector = target.id ? `#${target.id}` : (target.className && typeof target.className === 'string' ? `.${target.className.split(' ')[0]}` : target.tagName.toLowerCase());
+        const actionText = target.innerText?.slice(0, 40) || target.value || target.title || '';
+
+        // Dispatch to Sentinel Engine
+        fetch('http://127.0.0.1:17870/api/session/event', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'click',
+            selector,
+            text: actionText,
+            url: window.location.href,
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      };
+      document.addEventListener('click', sentinelDomListener, true);
+
+      if (typeof showToast === 'function') {
+        showToast('🔴 Flowork Sentinel Recording Started! Actions are being captured.');
+      }
+    } else {
+      // STOP RECORDING
+      sentinelRecording = false;
+      if (sentinelTimer) clearInterval(sentinelTimer);
+      if (sentinelDomListener) {
+        document.removeEventListener('click', sentinelDomListener, true);
+        sentinelDomListener = null;
+      }
+
+      btnRecord.style.background = 'rgba(239, 68, 68, 0.12)';
+      btnRecord.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+      btnRecord.style.boxShadow = 'none';
+      if (dot) dot.style.animation = 'none';
+      if (label) label.textContent = 'Record';
+
+      try {
+        const res = await fetch('http://127.0.0.1:17870/api/session/stop', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sentinelCurrentSession?.id })
+        });
+        const data = await res.json();
+        if (typeof showToast === 'function') {
+          showToast(`💾 Session recorded (${data.total_events || 0} events)! Opening Sentinel Studio...`);
+        }
+        window.open('http://127.0.0.1:17870', '_blank');
+      } catch (e) {
+        if (typeof showToast === 'function') {
+          showToast('💾 Recording stopped!');
+        }
+      }
+    }
+  });
+}

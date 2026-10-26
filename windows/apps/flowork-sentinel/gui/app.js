@@ -186,6 +186,55 @@ document.addEventListener('DOMContentLoaded', () => {
 
   btnRefresh.addEventListener('click', loadSessions);
 
+  // Studio Live Record Button
+  const btnStudioRec = document.getElementById('btn-studio-record');
+  const txtStudioRec = document.getElementById('studio-record-text');
+  let studioIsRecording = false;
+
+  if (btnStudioRec) {
+    btnStudioRec.addEventListener('click', async () => {
+      if (!studioIsRecording) {
+        const defaultName = `session_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}`;
+        const name = prompt('Enter session name:', defaultName);
+        if (name === null) return;
+
+        try {
+          const res = await fetch('/api/session/start', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: name || defaultName, domain: 'web_target' })
+          });
+          const data = await res.json();
+          if (data.status === 'ok') {
+            studioIsRecording = true;
+            btnStudioRec.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
+            txtStudioRec.textContent = '⏹️ STOP RECORDING';
+            alert('🔴 Recording session active! Actions sent via Chrome Extension or API will be recorded into this session.');
+          }
+        } catch (e) {
+          alert('Error starting session: ' + e.message);
+        }
+      } else {
+        try {
+          const res = await fetch('/api/session/stop', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({})
+          });
+          const data = await res.json();
+          studioIsRecording = false;
+          btnStudioRec.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
+          txtStudioRec.textContent = 'START RECORDING';
+          alert(`Session saved with ${data.total_events || 0} events!`);
+          await loadSessions();
+          if (data.session?.id) selectSession(data.session.id);
+        } catch (e) {
+          alert('Error stopping session: ' + e.message);
+        }
+      }
+    });
+  }
+
   // Auto poll sessions
   loadSessions();
   setInterval(loadSessions, 5000);
