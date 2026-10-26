@@ -864,44 +864,7 @@
     }
   ];
 
-  const DEFAULT_SWARM_PRESETS = {
-    default: {
-      id: 'default',
-      name: 'Default Sovereign Swarm',
-      icon: '⚡',
-      domain: 'Core Orchestration',
-      description: 'Pristine sovereign foundation with Mr. Flow at executive command.',
-      panX: 40,
-      panY: 40,
-      scale: 1.0,
-      nodes: [
-        {
-          id: 'node-mrflow',
-          agentId: 'mr.flow',
-          name: 'Mr. Flow',
-          role: 'Grand Chief AI Overseer & Executive Architect',
-          icon: '⚡',
-          type: 'agent',
-          x: 450,
-          y: 240,
-          taskPrompt: 'Executive architecture, system supervision, and autonomous orchestration.',
-          rulePrompt: 'Enforce zero-trust and empirical proof (Exit Code 0).',
-          modelConfig: {
-            accountMode: 'combo',
-            modelId: 'gemini-3.8-flash-high',
-            modelName: 'Gemini 3.8 Flash (High)',
-            provider: 'google',
-            temperature: 0.2
-          },
-          toolGovernance: {
-            allowAll: true,
-            allowedTools: [],
-            deniedTools: []
-          }
-        }
-      ],
-      connections: []
-    }  };
+  const DEFAULT_SWARM_PRESETS = {};
 
   class SwarmPipelineEngine {
     constructor() {
@@ -982,7 +945,8 @@
       this._initDefaultNodes();
       this._bindGlobalEvents();
       this.render();
-      this.loadDynamicRoster(); // Real-time discovery of Triggers and Agents only
+      this.loadDynamicRoster();
+      this.fetchServerPresets(false);
       this.syncServerDag();
 
       // Auto-poll subagents every 2.5s to detect additions or deletions on disk dynamically!
@@ -1054,7 +1018,7 @@
       board.className = 'pipeline-canvas-board pipeline-board';
       board.innerHTML = `
         <div class="pipeline-floating-status">
-          <span class="pipeline-status-badge" id="pipeline-active-preset-badge">📈 Forex & Quant Trading</span>
+          <span class="pipeline-status-badge" id="pipeline-active-preset-badge">⚡ Swarm Flow</span>
           <span class="pipeline-save-indicator" id="pipeline-save-indicator">💾 Auto-Saved</span>
         </div>
 
@@ -1106,10 +1070,11 @@
     }
 
     /**
-     * Initializes default nodes or restores from localStorage
+     * Initializes default nodes or restores dynamically from server filesystem (swarmflow/*.json)
      */
-    _initDefaultNodes() {
-      this.initPresets();
+    async _initDefaultNodes() {
+      // 1. Fetch live presets directly from server disk
+      await this.fetchServerPresets(false);
 
       if (this.loadSavedState()) {
         this.populatePresetDropdown();
@@ -1117,48 +1082,55 @@
         return;
       }
 
-      // If no saved state, load the active preset (default: default)
-      this.loadPreset(this.activePresetId, false);
+      // If no saved state, load the active preset from server
+      if (this.presets[this.activePresetId]) {
+        this.loadPreset(this.activePresetId, false);
+      } else if (Object.keys(this.presets).length > 0) {
+        const firstId = Object.keys(this.presets)[0];
+        this.loadPreset(firstId, false);
+      }
       this.populatePresetDropdown();
       this.updateStatusBadge();
+    }
+
+    /**
+     * Fetches live presets directly from server filesystem (/api/swarmflow/presets)
+     */
+    async fetchServerPresets(autoSelect = false) {
+      try {
+        const res = await fetch('/api/swarmflow/presets');
+        if (res.ok) {
+          const data = await res.json();
+          if (data && data.presets && typeof data.presets === 'object') {
+            const serverPresets = data.presets;
+            if (Object.keys(serverPresets).length > 0) {
+              this.presets = serverPresets;
+              if (data.activePresetId && this.presets[data.activePresetId]) {
+                this.activePresetId = data.activePresetId;
+              } else if (!this.presets[this.activePresetId]) {
+                this.activePresetId = Object.keys(this.presets)[0];
+              }
+              this.populatePresetDropdown();
+              this.updateStatusBadge();
+
+              if (autoSelect && this.presets[this.activePresetId]) {
+                this.loadPreset(this.activePresetId, false);
+              }
+              return true;
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to fetch /api/swarmflow/presets:', err);
+      }
+      return false;
     }
 
     /**
      * Initializes default and custom presets
      */
     initPresets() {
-      // 1. Start with pristine default presets
-      this.presets = JSON.parse(JSON.stringify(DEFAULT_SWARM_PRESETS));
-
-      // 2. Load stored presets if any
-      try {
-        const raw = localStorage.getItem(this.PRESETS_STORAGE_KEY);
-        if (raw) {
-          const stored = JSON.parse(raw);
-          if (stored && typeof stored === 'object') {
-            for (const [id, preset] of Object.entries(stored)) {
-              if (preset && preset.nodes) {
-                this.presets[id] = preset;
-              }
-            }
-          }
-        }
-      } catch (err) {
-        console.warn('[SwarmPipeline] Error reading presets storage:', err);
-      }
-
-      // 3. Determine active preset ID
-      try {
-        const savedActive = localStorage.getItem(this.ACTIVE_PRESET_KEY);
-        if (savedActive && this.presets[savedActive]) {
-          this.activePresetId = savedActive;
-        } else if (!this.presets[this.activePresetId]) {
-          this.activePresetId = 'default';
-        }
-      } catch (e) {
-        this.activePresetId = 'default';
-      }
-
+      this.fetchServerPresets(false);
       return this.presets;
     }
 
@@ -1170,10 +1142,20 @@
       if (!select) return;
 
       select.innerHTML = '';
-      for (const preset of Object.values(this.presets)) {
+      const list = Object.values(this.presets || {});
+      if (list.length === 0) {
+        const opt = document.createElement('option');
+        opt.value = this.activePresetId || 'default';
+        opt.textContent = '⚡ Mr. Flow';
+        select.appendChild(opt);
+        return;
+      }
+
+      for (const preset of list) {
+        if (!preset || !preset.id) continue;
         const opt = document.createElement('option');
         opt.value = preset.id;
-        opt.textContent = `${preset.icon || '📦'} ${preset.name || preset.id}`;
+        opt.textContent = `${preset.icon || '⚡'} ${preset.name || preset.id}`;
         if (preset.id === this.activePresetId) {
           opt.selected = true;
         }
@@ -1288,7 +1270,7 @@
     /**
      * Explicitly saves current preset modifications
      */
-    saveCurrentPreset() {
+    async saveCurrentPreset() {
       if (this.presets[this.activePresetId]) {
         this.presets[this.activePresetId].nodes = JSON.parse(JSON.stringify(this.nodes));
         this.presets[this.activePresetId].connections = JSON.parse(JSON.stringify(this.connections));
@@ -1299,6 +1281,20 @@
       }
 
       this.saveState(true);
+
+      // Persist directly to disk on server via /api/swarmflow/preset/:id
+      try {
+        const payload = this.presets[this.activePresetId];
+        if (payload) {
+          await fetch(`/api/swarmflow/preset/${encodeURIComponent(this.activePresetId)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+        }
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to save preset file to disk:', err);
+      }
 
       const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
       if (indicator) {
@@ -1313,19 +1309,19 @@
     /**
      * Creates a new custom preset cloned from the current canvas
      */
-    createNewPreset() {
-      const name = window.prompt('Enter a title for the new preset (e.g. Crypto Arbitrage, SEO Content Engine):');
+    async createNewPreset() {
+      const name = window.prompt('Enter a title for the new preset (e.g. Coding Squad, Research Council):');
       if (!name || !name.trim()) return;
 
       const cleanName = name.trim();
-      const id = 'custom_' + cleanName.toLowerCase().replace(/[^a-z0-9]+/g, '_') + '_' + Date.now().toString(36);
+      const id = cleanName.toLowerCase().replace(/[^a-z0-9_-]+/g, '_').replace(/^_+|_+$/g, '') || ('preset_' + Date.now().toString(36));
 
       const newPreset = {
         id,
         name: cleanName,
-        icon: '✨',
-        domain: 'Custom Swarm Domain',
-        description: `Custom sovereign pipeline preset: ${cleanName}`,
+        icon: '⚡',
+        domain: cleanName,
+        description: `Autonomous Swarm Pipeline: ${cleanName}`,
         panX: this.panX,
         panY: this.panY,
         scale: this.scale,
@@ -1340,6 +1336,22 @@
       this.populatePresetDropdown();
       this.updateStatusBadge();
       this.saveState(true);
+
+      // Save atomic .json file directly to server disk
+      try {
+        await fetch(`/api/swarmflow/preset/${encodeURIComponent(id)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newPreset)
+        });
+        await fetch('/api/swarmflow/active', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ activePresetId: id })
+        });
+      } catch (err) {
+        console.warn('[SwarmPipeline] Failed to save new preset to disk:', err);
+      }
 
       const indicator = this.boardEl?.querySelector('#pipeline-save-indicator');
       if (indicator) {
@@ -1369,7 +1381,6 @@
           version: '2026.10.18.clean',
           timestamp: Date.now(),
           activePresetId: this.activePresetId,
-          presets: this.presets,
           panX: this.panX,
           panY: this.panY,
           scale: this.scale,
@@ -1473,9 +1484,6 @@
         const res = await fetch('/api/pipeline/dag');
         const json = await res.json();
         if (json && json.status === 'ok' && json.dag && Array.isArray(json.dag.nodes) && json.dag.nodes.length > 0) {
-          if (json.dag.presets && typeof json.dag.presets === 'object') {
-            Object.assign(this.presets, json.dag.presets);
-          }
           if (json.dag.activePresetId && this.presets[json.dag.activePresetId]) {
             this.activePresetId = json.dag.activePresetId;
           }
