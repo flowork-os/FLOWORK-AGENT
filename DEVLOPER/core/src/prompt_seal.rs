@@ -1455,6 +1455,62 @@ mod tests {
         let err_hist = verify_cipher_integrity(CIPHER_URL_AUTH, &fp_spoofed);
         assert_eq!(err_hist, Err(TamperKind::HistogramMismatch));
     }
+
+    #[test]
+    fn test_granular_vowel_and_launcher_seal() {
+        use crate::sovereign_enclave::{
+            verify_granular_integrity, TamperKind,
+            CIPHER_URL_LAUNCHER, FP_URL_LAUNCHER,
+            CIPHER_URL_CANVAS_STAGE, FP_URL_CANVAS_STAGE,
+            CIPHER_URL_AUTH, FP_URL_AUTH_GRANULAR,
+        };
+
+        // 1. Verify launcher unseal fidelity
+        let launcher = crate::prompt_enclave::PromptEnclave::url_launcher();
+        assert_eq!(launcher, "https://launcher.floworkos.com");
+        assert_eq!(FP_URL_LAUNCHER.count_a, 1);
+        assert_eq!(FP_URL_LAUNCHER.count_i, 0);
+        assert_eq!(FP_URL_LAUNCHER.count_u, 1);
+        assert_eq!(FP_URL_LAUNCHER.count_e, 1);
+        assert_eq!(FP_URL_LAUNCHER.count_o, 4);
+        assert_eq!(FP_URL_LAUNCHER.space_count, 0);
+        assert_eq!(FP_URL_LAUNCHER.length, 30);
+
+        // 2. Verify canvas stage unseal fidelity
+        let canvas = crate::prompt_enclave::PromptEnclave::url_canvas_stage();
+        assert_eq!(canvas, "https://canvas.floworkos.com");
+        assert_eq!(FP_URL_CANVAS_STAGE.count_a, 2);
+        assert_eq!(FP_URL_CANVAS_STAGE.count_i, 0);
+        assert_eq!(FP_URL_CANVAS_STAGE.count_u, 0);
+        assert_eq!(FP_URL_CANVAS_STAGE.count_e, 0);
+        assert_eq!(FP_URL_CANVAS_STAGE.count_o, 4);
+        assert_eq!(FP_URL_CANVAS_STAGE.space_count, 0);
+        assert_eq!(FP_URL_CANVAS_STAGE.length, 28);
+
+        // 3. Verify auth unseal fidelity
+        let auth = crate::prompt_enclave::PromptEnclave::url_auth();
+        assert_eq!(auth, "https://auth.floworkos.com");
+        assert_eq!(FP_URL_AUTH_GRANULAR.count_a, 1);
+        assert_eq!(FP_URL_AUTH_GRANULAR.count_i, 0);
+        assert_eq!(FP_URL_AUTH_GRANULAR.count_u, 1);
+        assert_eq!(FP_URL_AUTH_GRANULAR.count_e, 0);
+        assert_eq!(FP_URL_AUTH_GRANULAR.count_o, 4);
+        assert_eq!(FP_URL_AUTH_GRANULAR.space_count, 0);
+        assert_eq!(FP_URL_AUTH_GRANULAR.length, 26);
+
+        // 4. Granular vowel tampering detection
+        let mut fp_tampered_a = FP_URL_LAUNCHER;
+        fp_tampered_a.count_a = 99;
+        assert_eq!(verify_granular_integrity(CIPHER_URL_LAUNCHER, &fp_tampered_a), Err(TamperKind::VowelAMismatch));
+
+        let mut fp_tampered_o = FP_URL_LAUNCHER;
+        fp_tampered_o.count_o = 0;
+        assert_eq!(verify_granular_integrity(CIPHER_URL_LAUNCHER, &fp_tampered_o), Err(TamperKind::VowelOMismatch));
+
+        let mut fp_tampered_spaces = FP_URL_LAUNCHER;
+        fp_tampered_spaces.space_count = 3;
+        assert_eq!(verify_granular_integrity(CIPHER_URL_LAUNCHER, &fp_tampered_spaces), Err(TamperKind::SpaceMismatch));
+    }
 }
 
 

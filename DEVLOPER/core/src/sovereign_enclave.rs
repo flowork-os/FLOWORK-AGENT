@@ -15,10 +15,28 @@ pub struct SovereignFingerprint {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GranularVowelFingerprint {
+    pub hmac: [u8; 32],
+    pub space_count: usize,
+    pub count_a: usize,
+    pub count_i: usize,
+    pub count_u: usize,
+    pub count_e: usize,
+    pub count_o: usize,
+    pub length: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TamperKind {
     HmacMismatch,
     LengthMismatch,
     HistogramMismatch,
+    VowelAMismatch,
+    VowelIMismatch,
+    VowelUMismatch,
+    VowelEMismatch,
+    VowelOMismatch,
+    SpaceMismatch,
 }
 
 pub fn unseal_verified(cipher: &[u8], fp: &SovereignFingerprint) -> String {
@@ -26,7 +44,7 @@ pub fn unseal_verified(cipher: &[u8], fp: &SovereignFingerprint) -> String {
         Ok(s) => s,
         Err(tamper) => {
             crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!(
-                "Cryptographic seal violation: {:?} (Morphological Fingerprint: length, spaces, vowels A-I-U-E-O mismatch)",
+                "Cryptographic seal violation: {:?} (Morphological Fingerprint: length, spaces, vowels mismatch)",
                 tamper
             ));
         }
@@ -49,6 +67,68 @@ pub fn verify_cipher_integrity(cipher: &[u8], fp: &SovereignFingerprint) -> Resu
     let vowels = text.chars().filter(|c| matches!(c.to_ascii_lowercase(), 'a' | 'e' | 'i' | 'o' | 'u')).count();
     if spaces != fp.space_count || vowels != fp.vowel_count {
         return Err(TamperKind::HistogramMismatch);
+    }
+    Ok(text)
+}
+
+pub fn unseal_verified_granular(cipher: &[u8], fp: &GranularVowelFingerprint) -> String {
+    match verify_granular_integrity(cipher, fp) {
+        Ok(s) => s,
+        Err(tamper) => {
+            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!(
+                "Cryptographic seal violation: {:?} (Morphological Granular Seal: length, spaces, vowel counts A-I-U-E-O mismatch)",
+                tamper
+            ));
+        }
+    }
+}
+
+pub fn verify_granular_integrity(cipher: &[u8], fp: &GranularVowelFingerprint) -> Result<String, TamperKind> {
+    if fp.length == 0 {
+        return Ok(crate::prompt_seal::unseal(cipher));
+    }
+    if cipher.len() != fp.length {
+        return Err(TamperKind::LengthMismatch);
+    }
+    let expected_hmac = crate::prompt_seal::hmac_sha256(&HMAC_INTEGRITY_KEY, cipher);
+    if expected_hmac != fp.hmac {
+        return Err(TamperKind::HmacMismatch);
+    }
+    let text = crate::prompt_seal::unseal(cipher);
+    let mut spaces = 0;
+    let mut a = 0;
+    let mut i = 0;
+    let mut u = 0;
+    let mut e = 0;
+    let mut o = 0;
+    for c in text.chars() {
+        match c.to_ascii_lowercase() {
+            ' ' => spaces += 1,
+            'a' => a += 1,
+            'i' => i += 1,
+            'u' => u += 1,
+            'e' => e += 1,
+            'o' => o += 1,
+            _ => {}
+        }
+    }
+    if spaces != fp.space_count {
+        return Err(TamperKind::SpaceMismatch);
+    }
+    if a != fp.count_a {
+        return Err(TamperKind::VowelAMismatch);
+    }
+    if i != fp.count_i {
+        return Err(TamperKind::VowelIMismatch);
+    }
+    if u != fp.count_u {
+        return Err(TamperKind::VowelUMismatch);
+    }
+    if e != fp.count_e {
+        return Err(TamperKind::VowelEMismatch);
+    }
+    if o != fp.count_o {
+        return Err(TamperKind::VowelOMismatch);
     }
     Ok(text)
 }
@@ -101,6 +181,60 @@ pub const FP_URL_AUTH: SovereignFingerprint = SovereignFingerprint {
     space_count: 0,
     vowel_count: 6,
     length: 26,
+};
+pub const FP_URL_AUTH_GRANULAR: GranularVowelFingerprint = GranularVowelFingerprint {
+    hmac: [
+        0x24, 0x8b, 0x97, 0x5f, 0xc7, 0x44, 0x22, 0x7f, 0x20, 0x9e, 0x68, 0x59, 
+        0x40, 0xd9, 0x13, 0x98, 0xb9, 0xe8, 0xb6, 0xac, 0x66, 0xb9, 0xcc, 0x60, 
+        0x16, 0x27, 0x91, 0x49, 0xe6, 0x9e, 0x61, 0x14, 
+    ],
+    space_count: 0,
+    count_a: 1,
+    count_i: 0,
+    count_u: 1,
+    count_e: 0,
+    count_o: 4,
+    length: 26,
+};
+
+pub const CIPHER_URL_LAUNCHER: &[u8] = &[
+    0x1a, 0x2c, 0x45, 0xc3, 0xb9, 0x82, 0x45, 0x0a, 0x10, 0xd7, 0x46, 0xf9, 
+    0xb6, 0x02, 0x93, 0x75, 0x45, 0x67, 0xd9, 0x52, 0xb6, 0x0c, 0xf8, 0x51, 
+    0xdd, 0x71, 0xac, 0xc3, 0x4b, 0x67, 
+];
+pub const FP_URL_LAUNCHER: GranularVowelFingerprint = GranularVowelFingerprint {
+    hmac: [
+        0xd4, 0x20, 0xc4, 0xfc, 0x6c, 0x8c, 0x58, 0x3e, 0x3f, 0x2a, 0x67, 0xf3, 
+        0x41, 0xdf, 0x00, 0x74, 0x2b, 0xeb, 0xcb, 0x2a, 0xb8, 0x8d, 0xa1, 0x30, 
+        0xa3, 0x2c, 0xd1, 0x49, 0xe2, 0xb6, 0xa6, 0x07, 
+    ],
+    space_count: 0,
+    count_a: 1,
+    count_i: 0,
+    count_u: 1,
+    count_e: 1,
+    count_o: 4,
+    length: 30,
+};
+
+pub const CIPHER_URL_CANVAS_STAGE: &[u8] = &[
+    0x1a, 0x2c, 0x45, 0xc3, 0xb9, 0x82, 0x45, 0x0a, 0x1f, 0xd7, 0x5d, 0xe1, 
+    0xb4, 0x19, 0xd8, 0x61, 0x07, 0x6e, 0xc2, 0x52, 0xb3, 0x08, 0xe5, 0x49, 
+    0x9c, 0x61, 0xed, 0xcd, 
+];
+pub const FP_URL_CANVAS_STAGE: GranularVowelFingerprint = GranularVowelFingerprint {
+    hmac: [
+        0xc9, 0x75, 0x91, 0x96, 0x5f, 0x40, 0x95, 0x27, 0x2c, 0xaa, 0x33, 0x56, 
+        0x4f, 0x9e, 0x9c, 0x53, 0xbf, 0xfd, 0xc1, 0x47, 0x7d, 0x93, 0x0c, 0x37, 
+        0xc1, 0xb1, 0x42, 0xda, 0x3f, 0x2c, 0x2e, 0xb9, 
+    ],
+    space_count: 0,
+    count_a: 2,
+    count_i: 0,
+    count_u: 0,
+    count_e: 0,
+    count_o: 4,
+    length: 28,
 };
 
 pub const CIPHER_URL_PLUGINS: &[u8] = &[

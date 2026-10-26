@@ -224,7 +224,9 @@ Autonomous Self-Healing
     #[inline] pub fn proto_https() -> String { "https://".to_string() }
     #[inline] pub fn proto_http() -> String { "http://".to_string() }
 
-    #[inline] pub fn url_auth() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_AUTH, &crate::sovereign_enclave::FP_URL_AUTH) }
+    #[inline] pub fn url_auth() -> String { crate::sovereign_enclave::unseal_verified_granular(crate::sovereign_enclave::CIPHER_URL_AUTH, &crate::sovereign_enclave::FP_URL_AUTH_GRANULAR) }
+    #[inline] pub fn url_launcher() -> String { crate::sovereign_enclave::unseal_verified_granular(crate::sovereign_enclave::CIPHER_URL_LAUNCHER, &crate::sovereign_enclave::FP_URL_LAUNCHER) }
+    #[inline] pub fn url_canvas_stage() -> String { crate::sovereign_enclave::unseal_verified_granular(crate::sovereign_enclave::CIPHER_URL_CANVAS_STAGE, &crate::sovereign_enclave::FP_URL_CANVAS_STAGE) }
     #[inline] pub fn url_plugins() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_PLUGINS, &crate::sovereign_enclave::FP_URL_PLUGINS) }
     #[inline] pub fn url_plugins_search() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_PLUGINS_SEARCH, &crate::sovereign_enclave::FP_URL_PLUGINS_SEARCH) }
     #[inline] pub fn url_plugins_contribute() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_PLUGINS_CONTRIBUTE, &crate::sovereign_enclave::FP_URL_PLUGINS_CONTRIBUTE) }

@@ -362,7 +362,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let is_restarted = std::env::args().any(|a| a == "--restarted");
     let is_headless = std::env::args().any(|a| a == "--headless" || a == "--no-window") || is_restarted;
     let window_rx = if !is_headless {
-        let url = format!("{proto_http}{addr}");
+        let is_auth = state.auth.is_authorized().await;
+        let url = if !is_auth {
+            format!("{}?port={}", crate::prompt_enclave::PromptEnclave::url_launcher(), cfg.port)
+        } else {
+            format!("{proto_http}{addr}")
+        };
         WindowManager::open_desktop_window(&url)
     } else {
         None

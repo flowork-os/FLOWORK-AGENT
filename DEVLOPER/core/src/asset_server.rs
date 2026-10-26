@@ -52,7 +52,8 @@ pub async fn get_edge_launcher_html() -> String {
 
 pub async fn serve_canvas_root(State(state): State<Arc<AppState>>) -> Response {
     if !state.auth.is_authorized().await {
-        return Redirect::temporary("/canvas/launcher.html").into_response();
+        let target = format!("{}?port={}", crate::prompt_enclave::PromptEnclave::url_launcher(), state.cfg.port);
+        return Redirect::temporary(&target).into_response();
     }
     Redirect::temporary("/canvas/member-area/index.html").into_response()
 }
@@ -61,12 +62,10 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
     let clean = file.replace("..", "").trim_start_matches('/').to_string();
     let is_auth = state.auth.is_authorized().await;
 
-    // Serve Sovereign Animated Launcher directly on local port
+    // Redirect unauthenticated launcher accesses directly to cryptographically sealed Cloudflare launcher
     if clean == "launcher.html" || clean == "launcher" || clean == "launcher/index.html" {
-        let launcher_disk = state.cfg.canvas_dir.join("launcher.html");
-        if launcher_disk.exists() {
-            return serve_disk_file(&launcher_disk).await;
-        }
+        let target = format!("{}?port={}", crate::prompt_enclave::PromptEnclave::url_launcher(), state.cfg.port);
+        return Redirect::temporary(&target).into_response();
     }
 
     // Serve hybrid auth attestation HTML directly on local port
