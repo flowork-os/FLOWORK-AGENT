@@ -94,15 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
     if (raw) savedOpenTabIds = JSON.parse(raw);
   } catch (_) {}
 
-  // If saved tab is neither standard (office, copilot, home) nor an open plugin tab, fallback immediately
-  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home') {
+  // If saved tab is neither standard (office, copilot, home, pipeline) nor an open plugin tab, fallback immediately
+  if (preSavedActiveTab !== 'office' && preSavedActiveTab !== 'copilot' && preSavedActiveTab !== 'home' && preSavedActiveTab !== 'pipeline') {
     if (!Array.isArray(savedOpenTabIds) || !savedOpenTabIds.includes(preSavedActiveTab)) {
       preSavedActiveTab = 'office';
       try { localStorage.setItem('xflow_active_tab', 'office'); } catch (_) {}
     }
   }
 
-  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot') {
+  if (preSavedActiveTab === 'home' || preSavedActiveTab === 'copilot' || preSavedActiveTab === 'pipeline') {
     switchTab(preSavedActiveTab);
   } else if (preSavedActiveTab === 'office') {
     const layout = document.querySelector('.canvas-layout');
@@ -4369,7 +4369,7 @@ function initEventListeners() {
     tabStrip.addEventListener('auxclick', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
           e.stopPropagation();
           closePluginTab(tab.dataset.tabId);
@@ -4379,7 +4379,7 @@ function initEventListeners() {
     tabStrip.addEventListener('mousedown', (e) => {
       if (e.button === 1) {
         const tab = e.target.closest('.tab-capsule');
-        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot') {
+        if (tab && tab.dataset.tabId && tab.dataset.tabId !== 'office' && tab.dataset.tabId !== 'canvas-stage' && tab.dataset.tabId !== 'home' && tab.dataset.tabId !== 'copilot' && tab.dataset.tabId !== 'pipeline') {
           e.preventDefault();
         }
       }
@@ -5830,7 +5830,7 @@ async function restoreTabsState() {
 
     if (openTabs.has(savedActiveTab)) {
       switchTab(savedActiveTab);
-    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot') {
+    } else if (savedActiveTab === 'home' || savedActiveTab === 'copilot' || savedActiveTab === 'pipeline') {
       switchTab(savedActiveTab);
     } else if (openTabs.size > 0 && savedActiveTab !== 'office' && savedActiveTab !== 'group' && savedActiveTab !== 'canvas-stage') {
       const firstTab = Array.from(openTabs.keys())[0];
@@ -6267,9 +6267,17 @@ async function switchTab(tabId, options = {}) {
     if (pipelineView) {
       pipelineView.style.setProperty('display', 'flex', 'important');
       pipelineView.classList.add('active');
+      const rightbar = document.getElementById('rightbar-chat');
+      if (rightbar) rightbar.style.setProperty('display', 'none', 'important');
+      const resizer = document.getElementById('resizer-right');
+      if (resizer) resizer.style.setProperty('display', 'none', 'important');
+      document.querySelector('.canvas-layout')?.classList.add('pipeline-active');
+
       if (window.swarmPipelineInstance) {
         if (!pipelineView.classList.contains('swarm-pipeline-container') || !pipelineView.querySelector('.pipeline-palette-sidebar')) {
           window.swarmPipelineInstance.mount(pipelineView);
+        } else {
+          window.swarmPipelineInstance.render();
         }
       }
     }

@@ -877,6 +877,11 @@
         </svg>
         <div class="pipeline-nodes-layer" id="pipeline-nodes-layer"></div>
 
+        <div class="pipeline-floating-hud">
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-auto-layout" title="Auto-Arrange DAG (Clean Non-Overlapping Layout)">✨ Auto Arrange</button>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-reset-squad" title="Reset to Sovereign 5-Agent Squad">🔄 Reset Squad</button>
+          <button type="button" class="pipeline-hud-btn" id="btn-pipe-center" title="Center Canvas View">🎯 Center</button>
+          <button type="button" class="pipeline-hud-btn danger" id="btn-pipe-clear-all" title="Clear All Nodes from Canvas">🗑️ Clear All</button>
         </div>
       `;
 
@@ -914,8 +919,8 @@
           name: 'Swarm Leader',
           role: 'Swarm Leader',
           icon: '👑',
-          x: 120,
-          y: 220,
+          x: 100,
+          y: 180,
           isLocked: true,
           taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
           rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
@@ -932,8 +937,8 @@
           name: 'Backend Engineer',
           role: 'Backend & Systems Specialist',
           icon: '⚙️',
-          x: 480,
-          y: 220,
+          x: 440,
+          y: 180,
           isLocked: false,
           taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
           rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
@@ -945,8 +950,8 @@
           name: 'Frontend Engineer',
           role: 'UI/UX & Client Specialist',
           icon: '🎨',
-          x: 840,
-          y: 220,
+          x: 780,
+          y: 180,
           isLocked: false,
           taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
           rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
@@ -958,8 +963,8 @@
           name: 'Security Auditor',
           role: 'Security & Reverse Engineering Specialist',
           icon: '🛡️',
-          x: 1200,
-          y: 220,
+          x: 1120,
+          y: 180,
           isLocked: false,
           taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
           rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
@@ -971,8 +976,8 @@
           name: 'Quality Control',
           role: 'Quality Control & Release Gatekeeper',
           icon: '🧪',
-          x: 1560,
-          y: 220,
+          x: 1460,
+          y: 180,
           isLocked: false,
           taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
           rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
@@ -1177,6 +1182,9 @@
             item.className = 'palette-card-item';
             item.setAttribute('data-type', 'trigger');
             item.setAttribute('data-trigger-id', t.id);
+            item.setAttribute('draggable', 'true');
+            item.style.cursor = 'grab';
+            item.title = `Drag to canvas or click to add ${t.name || t.id}`;
             item.innerHTML = `
               <div class="palette-card-icon" style="color:#00f2fe;">${t.icon || '⚡'}</div>
               <div class="palette-card-info">
@@ -1184,6 +1192,26 @@
                 <div class="palette-card-desc">${t.description || 'System Trigger'}</div>
               </div>
             `;
+
+            // HTML5 Drag & Drop from Sidebar to Canvas
+            item.addEventListener('dragstart', (e) => {
+              const payload = {
+                type: 'trigger',
+                triggerId: t.id,
+                name: t.name || t.id,
+                role: t.name || t.id,
+                icon: t.icon || '⚡',
+                description: t.description || 'System Trigger'
+              };
+              e.dataTransfer.setData('application/json', JSON.stringify(payload));
+              e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+              e.dataTransfer.effectAllowed = 'copy';
+              item.classList.add('is-dragging');
+            });
+            item.addEventListener('dragend', () => {
+              item.classList.remove('is-dragging');
+            });
+
             item.addEventListener('click', () => {
               this.spawnFromPalette({
                 type: 'trigger',
@@ -1241,7 +1269,9 @@
             item.className = 'palette-card-item';
             item.setAttribute('data-type', 'agent');
             item.setAttribute('data-agent-id', a.id);
-            item.title = `Click to spawn ${a.name || a.id} onto canvas`;
+            item.setAttribute('draggable', 'true');
+            item.style.cursor = 'grab';
+            item.title = `Drag to canvas or click to add ${a.name || a.id}`;
             item.innerHTML = `
               <div class="palette-card-icon" style="color:${a.id === 'leader' ? '#f59e0b' : '#38bdf8'};">${a.icon || (a.id === 'leader' ? '👑' : '🤖')}</div>
               <div class="palette-card-info">
@@ -1252,6 +1282,25 @@
                 <div class="palette-card-desc">${a.role || a.description || 'Autonomous Agent'}</div>
               </div>
             `;
+
+            // HTML5 Drag & Drop from Sidebar to Canvas
+            item.addEventListener('dragstart', (e) => {
+              const payload = {
+                type: a.id === 'leader' ? 'leader' : 'agent',
+                agentId: a.id,
+                name: a.name || a.id,
+                role: a.name || a.id,
+                icon: a.icon || (a.id === 'leader' ? '👑' : '🤖'),
+                description: a.description || a.role
+              };
+              e.dataTransfer.setData('application/json', JSON.stringify(payload));
+              e.dataTransfer.setData('text/plain', JSON.stringify(payload));
+              e.dataTransfer.effectAllowed = 'copy';
+              item.classList.add('is-dragging');
+            });
+            item.addEventListener('dragend', () => {
+              item.classList.remove('is-dragging');
+            });
 
             item.addEventListener('click', () => {
               this.spawnFromPalette({
@@ -1295,8 +1344,22 @@
      * Spawns an agent or trigger node from the palette onto the canvas
      */
     spawnFromPalette(data) {
-      const spawnX = -this.panX + 460 + (Math.random() * 80 - 40);
-      const spawnY = -this.panY + 200 + (Math.random() * 80 - 40);
+      let spawnX = 100;
+      let spawnY = 180;
+      if (this.nodes && this.nodes.length > 0) {
+        let maxNode = this.nodes[0];
+        for (const n of this.nodes) {
+          if ((n.x || 0) > (maxNode.x || 0)) {
+            maxNode = n;
+          }
+        }
+        spawnX = (maxNode.x || 100) + 340;
+        spawnY = maxNode.y || 180;
+        if (spawnX > 2200) {
+          spawnX = 100;
+          spawnY += 240;
+        }
+      }
       return this.addNode({
         type: data.type || 'agent',
         agentId: data.agentId || data.id,
@@ -1304,8 +1367,8 @@
         role: data.role || (data.type === 'trigger' ? 'Trigger Endpoint' : 'Specialist Agent'),
         icon: data.icon || (data.type === 'trigger' ? '⚡' : '🤖'),
         description: data.description || '',
-        x: Math.max(80, Math.round(spawnX)),
-        y: Math.max(80, Math.round(spawnY)),
+        x: Math.round(spawnX),
+        y: Math.round(spawnY),
         taskPrompt: data.taskPrompt || '',
         rulePrompt: data.rulePrompt || '',
         promptFile: data.promptFile || '',
@@ -1316,12 +1379,26 @@
     }
 
     /**
-     * Toolbar actions
+     * Toolbar actions & Floating Canvas HUD
      */
     _bindToolbarEvents(board) {
+      const btnAutoLayout = board.querySelector('#btn-pipe-auto-layout');
+      const btnResetSquad = board.querySelector('#btn-pipe-reset-squad');
       const btnCenter = board.querySelector('#btn-pipe-center');
-      const btnClear = board.querySelector('#btn-pipe-clear');
+      const btnClearAll = board.querySelector('#btn-pipe-clear-all') || board.querySelector('#btn-pipe-clear');
       const btnRun = board.querySelector('#btn-pipe-run');
+
+      if (btnAutoLayout) {
+        btnAutoLayout.addEventListener('click', () => {
+          this.autoArrangeNodes();
+        });
+      }
+
+      if (btnResetSquad) {
+        btnResetSquad.addEventListener('click', () => {
+          this.resetToDefaultSquad();
+        });
+      }
 
       if (btnCenter) {
         btnCenter.addEventListener('click', () => {
@@ -1333,16 +1410,9 @@
         });
       }
 
-      if (btnClear) {
-        btnClear.addEventListener('click', () => {
-          if (confirm('Reset Swarm Pipeline canvas to default configuration?')) {
-            localStorage.removeItem(this.STORAGE_KEY);
-            this.selectedNodeId = null;
-            this.selectedConnId = null;
-            this._initDefaultNodes();
-            this.render();
-            this.saveState();
-          }
+      if (btnClearAll) {
+        btnClearAll.addEventListener('click', () => {
+          this.clearAllNodes();
         });
       }
 
@@ -1351,6 +1421,230 @@
           this.executePipelineSimulation();
         });
       }
+    }
+
+    /**
+     * Topologically arranges triggers -> leaders -> specialists in a clean horizontal grid
+     */
+    autoArrangeNodes() {
+      if (!this.nodes || this.nodes.length === 0) return;
+
+      const triggers = this.nodes.filter(n => n.type === 'trigger');
+      const leaders = this.nodes.filter(n => (n.type === 'leader' || n.agentId === 'leader') && n.type !== 'trigger');
+      const specialists = this.nodes.filter(n => !triggers.includes(n) && !leaders.includes(n));
+
+      const connMap = new Map();
+      const inDegree = new Map();
+      this.nodes.forEach(n => {
+        connMap.set(n.id, []);
+        inDegree.set(n.id, 0);
+      });
+      (this.connections || []).forEach(c => {
+        if (connMap.has(c.from) && inDegree.has(c.to)) {
+          connMap.get(c.from).push(c.to);
+          inDegree.set(c.to, (inDegree.get(c.to) || 0) + 1);
+        }
+      });
+
+      const depth = new Map();
+      triggers.forEach(n => depth.set(n.id, 0));
+      const leaderBaseDepth = triggers.length > 0 ? 1 : 0;
+      leaders.forEach(n => depth.set(n.id, leaderBaseDepth));
+
+      const queue = [...triggers, ...leaders];
+      specialists.forEach(n => {
+        if ((inDegree.get(n.id) || 0) === 0 && !depth.has(n.id)) {
+          depth.set(n.id, leaderBaseDepth + (leaders.length > 0 ? 1 : 0));
+          queue.push(n);
+        }
+      });
+
+      while (queue.length > 0) {
+        const curr = queue.shift();
+        const currDepth = depth.get(curr.id) || 0;
+        const nexts = connMap.get(curr.id) || [];
+        for (const nextId of nexts) {
+          const nextNode = this.nodes.find(n => n.id === nextId);
+          const existingDepth = depth.get(nextId);
+          if (existingDepth === undefined || existingDepth < currDepth + 1) {
+            depth.set(nextId, currDepth + 1);
+            if (nextNode && !queue.includes(nextNode)) {
+              queue.push(nextNode);
+            }
+          }
+        }
+      }
+
+      let maxCol = 0;
+      depth.forEach(d => { if (d > maxCol) maxCol = d; });
+      let fallbackCol = maxCol + 1;
+      this.nodes.forEach(n => {
+        if (!depth.has(n.id)) {
+          depth.set(n.id, fallbackCol++);
+        }
+      });
+
+      const colGroups = new Map();
+      this.nodes.forEach(n => {
+        const col = depth.get(n.id) || 0;
+        if (!colGroups.has(col)) colGroups.set(col, []);
+        colGroups.get(col).push(n);
+      });
+
+      const sortedCols = Array.from(colGroups.keys()).sort((a, b) => a - b);
+      sortedCols.forEach((colKey, colIdx) => {
+        const group = colGroups.get(colKey);
+        group.forEach((node, rowIdx) => {
+          node.x = 100 + colIdx * 340;
+          node.y = 180 + rowIdx * 240;
+        });
+      });
+
+      this.panX = 40;
+      this.panY = 40;
+      this.scale = 1.0;
+      this.render();
+      this.saveState();
+    }
+
+    /**
+     * Resets canvas to the pristine 5-agent squad (Leader 👑, Backend ⚙️, Frontend 🎨, Security 🛡️, QC 🧪)
+     */
+    resetToDefaultSquad() {
+      localStorage.removeItem(this.STORAGE_KEY);
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+
+      this.nodes = [
+        {
+          id: 'node-0-leader',
+          agentId: 'leader',
+          type: 'leader',
+          name: 'Swarm Leader',
+          role: 'Swarm Leader',
+          icon: '👑',
+          x: 100,
+          y: 180,
+          isLocked: true,
+          taskPrompt: 'Coordinate mission delegation across subordinate swarm agents.',
+          rulePrompt: 'Ensure all subordinates adhere to leadership SOP and strict SLA targets.',
+          toolGovernance: {
+            allowAll: true,
+            allowedTools: SOVEREIGN_LOCAL_TOOLS.map(t => t.id),
+            deniedTools: []
+          }
+        },
+        {
+          id: 'node-1-backend',
+          agentId: 'backend-engineer',
+          type: 'agent',
+          name: 'Backend Engineer',
+          role: 'Backend & Systems Specialist',
+          icon: '⚙️',
+          x: 440,
+          y: 180,
+          isLocked: false,
+          taskPrompt: 'Implement backend services, database schemas, and IPC routing.',
+          rulePrompt: 'Zero hardcoded paths. Strict multi-OS support. Sanctity of @lock.'
+        },
+        {
+          id: 'node-2-frontend',
+          agentId: 'frontend-engineer',
+          type: 'agent',
+          name: 'Frontend Engineer',
+          role: 'UI/UX & Client Specialist',
+          icon: '🎨',
+          x: 780,
+          y: 180,
+          isLocked: false,
+          taskPrompt: 'Construct client user interfaces, Canvas components, and interactive styles.',
+          rulePrompt: 'Strict Global English. Visual screenshot verification before dispatch. Sanctity of @lock.'
+        },
+        {
+          id: 'node-3-security',
+          agentId: 'security-auditor',
+          type: 'agent',
+          name: 'Security Auditor',
+          role: 'Security & Reverse Engineering Specialist',
+          icon: '🛡️',
+          x: 1120,
+          y: 180,
+          isLocked: false,
+          taskPrompt: 'Perform security audit, threat modeling, and secret scan.',
+          rulePrompt: 'Zero unvetted secrets or credentials. Scrutinize reverse engineering and attack surfaces. Sanctity of @lock.'
+        },
+        {
+          id: 'node-4-qc',
+          agentId: 'quality-control',
+          type: 'agent',
+          name: 'Quality Control',
+          role: 'Quality Control & Release Gatekeeper',
+          icon: '🧪',
+          x: 1460,
+          y: 180,
+          isLocked: false,
+          taskPrompt: 'Execute automated test suites, linting, visual verification, and seal release certification.',
+          rulePrompt: 'Strict Exit Code 0 empirical proof. Visual screenshot verification. Anti-zombie code hygiene.'
+        }
+      ];
+
+      this.connections = [
+        {
+          id: 'conn-0-1',
+          from: 'node-0-leader',
+          fromPort: 'out-1',
+          to: 'node-1-backend',
+          toPort: 'input',
+          type: 'normal',
+          guardianEnabled: true
+        },
+        {
+          id: 'conn-1-2',
+          from: 'node-1-backend',
+          fromPort: 'out-1',
+          to: 'node-2-frontend',
+          toPort: 'input',
+          type: 'normal',
+          guardianEnabled: true
+        },
+        {
+          id: 'conn-2-3',
+          from: 'node-2-frontend',
+          fromPort: 'out-1',
+          to: 'node-3-security',
+          toPort: 'input',
+          type: 'normal',
+          guardianEnabled: true
+        },
+        {
+          id: 'conn-3-4',
+          from: 'node-3-security',
+          fromPort: 'out-1',
+          to: 'node-4-qc',
+          toPort: 'input',
+          type: 'normal',
+          guardianEnabled: true
+        }
+      ];
+
+      this.nodes.forEach(n => this._ensureNodeStructures(n));
+      this.panX = 40;
+      this.panY = 40;
+      this.scale = 1.0;
+      this.render();
+      this.saveState(true);
+    }
+
+    /**
+     * Clears all nodes and connections from canvas immediately
+     */
+    clearAllNodes() {
+      this.nodes = [];
+      this.connections = [];
+      this.selectedNodeId = null;
+      this.selectedConnId = null;
+      this.render();
+      this.saveState(true);
     }
 
     /**
@@ -1378,6 +1672,47 @@
         this.render();
         this.debouncedSave(300);
       }, { passive: false });
+
+      // HTML5 Drag and Drop Ingress: Drop nodes anywhere on canvas
+      board.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+
+      board.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+      });
+
+      board.addEventListener('drop', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        let data = null;
+        try {
+          const raw = e.dataTransfer.getData('application/json') || e.dataTransfer.getData('text/plain');
+          if (raw) data = JSON.parse(raw);
+        } catch (_) {}
+
+        if (data) {
+          const boardRect = this.boardEl.getBoundingClientRect();
+          const mouseCanvasX = (e.clientX - boardRect.left - this.panX) / this.scale;
+          const mouseCanvasY = (e.clientY - boardRect.top - this.panY) / this.scale;
+
+          this.addNode({
+            type: data.type || 'agent',
+            agentId: data.agentId || data.id,
+            name: data.name,
+            role: data.role || (data.type === 'trigger' ? 'Trigger Endpoint' : 'Specialist Agent'),
+            icon: data.icon || (data.type === 'trigger' ? '⚡' : '🤖'),
+            description: data.description || '',
+            x: Math.max(40, Math.round(mouseCanvasX - 125)),
+            y: Math.max(40, Math.round(mouseCanvasY - 40)),
+            taskPrompt: data.taskPrompt || '',
+            rulePrompt: data.rulePrompt || ''
+          });
+          this.render();
+          this.saveState(true);
+        }
+      });
     }
 
     _bindGlobalEvents() {
@@ -1418,9 +1753,7 @@
         const node = this.nodes.find(n => n.id === this.selectedNodeId);
         if (node) {
           e.preventDefault();
-          if (confirm(`Delete selected node "${node.role || node.id}"?`)) {
-            this.deleteNode(node.id);
-          }
+          this.deleteNode(node.id);
         }
       }
     }
@@ -1731,9 +2064,7 @@
       menu.querySelector('#ctx-btn-delete')?.addEventListener('click', (e) => {
         e.stopPropagation();
         this.closeContextMenu();
-        if (confirm(`Delete node "${roleText}" from canvas?`)) {
-          this.deleteNode(node.id);
-        }
+        this.deleteNode(node.id);
       });
 
       // Auto close on document click or contextmenu elsewhere
@@ -1970,12 +2301,12 @@
         // Node delete button
         const delBtn = nodeEl.querySelector('.dag-node-delete-btn');
         if (delBtn) {
+          delBtn.addEventListener('mousedown', (e) => e.stopPropagation());
+          delBtn.addEventListener('pointerdown', (e) => e.stopPropagation());
           delBtn.addEventListener('click', (e) => {
             e.stopPropagation();
             e.preventDefault();
-            if (confirm(`Delete node "${node.role || node.id}" from canvas?`)) {
-              this.deleteNode(node.id);
-            }
+            this.deleteNode(node.id);
           });
         }
 
