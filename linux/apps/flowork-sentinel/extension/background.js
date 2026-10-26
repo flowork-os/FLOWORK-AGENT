@@ -1,5 +1,19 @@
 // Flowork Sentinel - Background Service Worker
-const SENTINEL_API = 'http://127.0.0.1:17870';
+let activeApiBase = 'http://127.0.0.1:17870';
+
+async function getApiBase() {
+  try {
+    const res = await fetch('http://127.0.0.1:19890/api/plugins/flowork-sentinel/status');
+    if (res.ok) {
+      const d = await res.json();
+      if (d && d.port) {
+        activeApiBase = `http://127.0.0.1:${d.port}`;
+        return activeApiBase;
+      }
+    }
+  } catch (_) {}
+  return activeApiBase;
+}
 
 let isRecording = false;
 let currentSession = null;
@@ -34,8 +48,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
 async function startRecording(name, targetUrl) {
   try {
+    const api = await getApiBase();
     const domain = targetUrl ? new URL(targetUrl).hostname : 'web';
-    const res = await fetch(`${SENTINEL_API}/api/session/start`, {
+    const res = await fetch(`${api}/api/session/start`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, domain, target_url: targetUrl })
@@ -51,13 +66,14 @@ async function startRecording(name, targetUrl) {
     return data;
   } catch (err) {
     console.error('[Sentinel] Failed to connect to Flowork Engine:', err);
-    throw new Error('Flowork Engine not running on http://127.0.0.1:17870');
+    throw new Error('Flowork Engine not running on http://127.0.0.1:17870 or active app port');
   }
 }
 
 async function stopRecording() {
   try {
-    const res = await fetch(`${SENTINEL_API}/api/session/stop`, {
+    const api = await getApiBase();
+    const res = await fetch(`${api}/api/session/stop`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ session_id: currentSession?.id })
@@ -78,7 +94,8 @@ async function stopRecording() {
 
 async function sendEventToEngine(event) {
   try {
-    await fetch(`${SENTINEL_API}/api/session/event`, {
+    const api = await getApiBase();
+    await fetch(`${api}/api/session/event`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(event)
@@ -95,7 +112,7 @@ chrome.webRequest.onBeforeRequest.addListener(
     // Filter out static assets
     const url = details.url;
     if (url.match(/\.(png|jpg|jpeg|gif|css|woff2|woff|ttf|svg|ico)$/i)) return;
-    if (url.includes('127.0.0.1:17870')) return; // Ignore own telemetry
+    if (url.includes('127.0.0.1:') && (url.includes(':17870') || url.includes(':19890') || url.includes(activeApiBase))) return; // Ignore own telemetry
 
     // Detect internal API calls
     if (details.method === 'POST' || details.method === 'PUT' || url.includes('/api/')) {

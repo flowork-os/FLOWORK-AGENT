@@ -12,6 +12,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const eventStats = document.getElementById('event-stats');
   const btnSynthesize = document.getElementById('btn-synthesize');
   const btnDeploy = document.getElementById('btn-deploy');
+  const btnDelete = document.getElementById('btn-delete-session');
+  const btnClearAll = document.getElementById('btn-clear-all-sessions');
   const btnRefresh = document.getElementById('btn-refresh-sessions');
 
   const codeSkillPreview = document.getElementById('code-skill-preview');
@@ -21,33 +23,34 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Dynamic API Base Discovery & Safe Fetch
   let API_BASE = '';
+  function updateEngineBadge(port) {
+    const badgeText = document.querySelector('.telemetry-badge span:last-child');
+    if (badgeText) {
+      badgeText.textContent = `ENGINE PORT ${port} (ACTIVE)`;
+    }
+  }
+
   async function resolveApiBase() {
     if (API_BASE) return API_BASE;
+    if (window.location.port && window.location.port !== '19890') {
+      API_BASE = `${window.location.protocol}//${window.location.hostname}:${window.location.port}`;
+      updateEngineBadge(window.location.port);
+      return API_BASE;
+    }
     try {
-      const statusRes = await fetch('/api/plugins/flowork-sentinel/status');
+      const statusRes = await fetch('http://127.0.0.1:19890/api/plugins/flowork-sentinel/status');
       if (statusRes.ok) {
         const info = await statusRes.json();
         if (info.port) {
           API_BASE = `http://127.0.0.1:${info.port}`;
-          return API_BASE;
-        }
-      }
-      const launchRes = await fetch('/api/apps/flowork-sentinel/launch', { method: 'POST' });
-      if (launchRes.ok) {
-        const launchData = await launchRes.json();
-        if (launchData.port) {
-          API_BASE = `http://127.0.0.1:${launchData.port}`;
+          updateEngineBadge(info.port);
           return API_BASE;
         }
       }
     } catch (_) {}
 
-    if (window.location.port && window.location.port !== '19890') {
-      API_BASE = `${window.location.protocol}//${window.location.hostname}:${window.location.port}`;
-      return API_BASE;
-    }
-
     API_BASE = 'http://127.0.0.1:17870';
+    updateEngineBadge(17870);
     return API_BASE;
   }
 
@@ -106,13 +109,29 @@ document.addEventListener('DOMContentLoaded', () => {
       const card = document.createElement('div');
       card.className = `session-card ${sess.id === selectedSessionId ? 'active' : ''}`;
       card.innerHTML = `
-        <div class="card-title">${sess.name}</div>
+        <div class="card-header">
+          <div class="card-title">${sess.name}</div>
+          <button class="btn-session-delete" title="Hapus Sesi Rekaman" data-id="${sess.id}">🗑️</button>
+        </div>
         <div class="card-meta">
           <span class="card-domain">🌐 ${sess.domain || 'web'}</span>
           <span>⚡ ${sess.event_count || 0} events</span>
         </div>
       `;
-      card.addEventListener('click', () => selectSession(sess.id));
+
+      card.addEventListener('click', (e) => {
+        if (e.target.closest('.btn-session-delete')) return;
+        selectSession(sess.id);
+      });
+
+      const delBtn = card.querySelector('.btn-session-delete');
+      if (delBtn) {
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteSession(sess.id);
+        });
+      }
+
       sessionsContainer.appendChild(card);
     });
   }
@@ -128,6 +147,7 @@ document.addEventListener('DOMContentLoaded', () => {
     activeDomain.textContent = `Target Domain: ${sess.domain || 'web'}`;
     btnSynthesize.disabled = false;
     btnDeploy.disabled = true;
+    if (btnDelete) btnDelete.disabled = false;
 
     // Fetch full session details
     try {
@@ -135,6 +155,61 @@ document.addEventListener('DOMContentLoaded', () => {
       renderTimelineForSession(sess);
     } catch (err) {
       console.error(err);
+    }
+  }
+
+  function resetSessionInspector() {
+    selectedSessionId = null;
+    currentSynthesizedData = null;
+    activeTitle.textContent = 'Select a Session to Inspect';
+    activeDomain.textContent = 'Domain: None';
+    btnSynthesize.disabled = true;
+    btnDeploy.disabled = true;
+    if (btnDelete) btnDelete.disabled = true;
+    eventStats.textContent = '0 actions';
+    timelineContainer.innerHTML = '<div class="empty-timeline">Pilih sesi rekaman di samping untuk melihat riwayat aksi DOM dan API network.</div>';
+    codeSkillPreview.textContent = '// Klik "Synthesize to SKILL.md" untuk merekonstruksi Intent dan Langkah Terurut secara otomatis...';
+    codeScriptPreview.textContent = '// Skrip Puppeteer otomatis yang bisa dijalankan secara headless oleh Agen...';
+  }
+
+  async function deleteSession(id) {
+    if (!id) return;
+    const sess = sessions.find(s => s.id === id);
+    const displayName = sess ? sess.name : id;
+    if (!confirm(`Hapus sesi rekaman "${displayName}"?`)) return;
+
+    try {
+      const data = await apiCall(`/api/session/${id}`, { method: 'DELETE' });
+      if (data.status === 'ok') {
+        if (selectedSessionId === id) {
+          resetSessionInspector();
+        }
+        await loadSessions();
+      } else {
+        alert(data.message || 'Gagal menghapus sesi');
+      }
+    } catch (err) {
+      alert('Error saat menghapus sesi: ' + err.message);
+    }
+  }
+
+  async function clearAllSessions() {
+    if (sessions.length === 0) {
+      alert('Tidak ada sesi yang tersimpan.');
+      return;
+    }
+    if (!confirm(`Hapus SEMUA (${sessions.length}) sesi rekaman? Tindakan ini permanen.`)) return;
+
+    try {
+      const data = await apiCall('/api/sessions/clear', { method: 'POST' });
+      if (data.status === 'ok') {
+        resetSessionInspector();
+        await loadSessions();
+      } else {
+        alert(data.message || 'Gagal membersihkan sesi');
+      }
+    } catch (err) {
+      alert('Error saat membersihkan sesi: ' + err.message);
     }
   }
 
@@ -226,6 +301,16 @@ document.addEventListener('DOMContentLoaded', () => {
   });
 
   btnRefresh.addEventListener('click', loadSessions);
+
+  if (btnDelete) {
+    btnDelete.addEventListener('click', () => {
+      if (selectedSessionId) deleteSession(selectedSessionId);
+    });
+  }
+
+  if (btnClearAll) {
+    btnClearAll.addEventListener('click', clearAllSessions);
+  }
 
   // Studio Live Record Button
   const btnStudioRec = document.getElementById('btn-studio-record');

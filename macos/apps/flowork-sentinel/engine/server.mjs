@@ -192,19 +192,27 @@ const server = http.createServer(async (req, res) => {
   const pathname = parsedUrl.pathname;
 
   // Static GUI serving
-  if (pathname === '/' || pathname === '/index.html' || pathname.startsWith('/gui')) {
-    let filePath = path.join(ROOT_DIR, 'gui', pathname === '/' || pathname === '/gui' ? 'index.html' : pathname.replace('/gui/', ''));
+  if (!pathname.startsWith('/api')) {
+    let relPath = (pathname === '/' || pathname === '/gui' || pathname === '/gui/')
+      ? 'index.html'
+      : pathname.replace(/^\/gui\//, '').replace(/^\//, '');
+    let filePath = path.join(ROOT_DIR, 'gui', relPath);
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
-      const ext = path.extname(filePath);
+      const ext = path.extname(filePath).toLowerCase();
       const mimeTypes = {
-        '.html': 'text/html',
-        '.css': 'text/css',
-        '.js': 'application/javascript',
-        '.mjs': 'application/javascript',
-        '.json': 'application/json',
-        '.png': 'image/png'
+        '.html': 'text/html; charset=utf-8',
+        '.css': 'text/css; charset=utf-8',
+        '.js': 'application/javascript; charset=utf-8',
+        '.mjs': 'application/javascript; charset=utf-8',
+        '.json': 'application/json; charset=utf-8',
+        '.png': 'image/png',
+        '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
+        '.svg': 'image/svg+xml',
+        '.ico': 'image/x-icon'
       };
-      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'text/plain' });
+      setCorsHeaders(res);
+      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
       fs.createReadStream(filePath).pipe(res);
       return;
     }
@@ -300,6 +308,63 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { status: 'ok', sessions: list });
   }
 
+  // Delete specific session
+  if ((pathname.startsWith('/api/session/') && req.method === 'DELETE') || (pathname === '/api/session/delete' && req.method === 'POST')) {
+    let sessionId = pathname.startsWith('/api/session/') && req.method === 'DELETE'
+      ? pathname.replace('/api/session/', '')
+      : '';
+    if (!sessionId && req.method === 'POST') {
+      const body = await parseBody(req);
+      sessionId = body.id || body.session_id || '';
+    }
+
+    if (!sessionId) {
+      return sendJson(res, 400, { status: 'error', message: 'Session ID is required' });
+    }
+
+    const sessionFile = path.join(SESSIONS_DIR, `${sessionId}.json`);
+    const sessionDir = path.join(SESSIONS_DIR, sessionId);
+
+    let deleted = false;
+    if (fs.existsSync(sessionFile)) {
+      try { fs.unlinkSync(sessionFile); deleted = true; } catch (_) {}
+    }
+    if (fs.existsSync(sessionDir)) {
+      try { fs.rmSync(sessionDir, { recursive: true, force: true }); } catch (_) {}
+    }
+
+    if (activeSession && activeSession.id === sessionId) {
+      activeSession = null;
+      sessionEvents = [];
+    }
+
+    if (deleted) {
+      return sendJson(res, 200, { status: 'ok', message: 'Session deleted successfully', id: sessionId });
+    } else {
+      return sendJson(res, 404, { status: 'error', message: 'Session file not found' });
+    }
+  }
+
+  // Clear all recorded sessions
+  if (pathname === '/api/sessions/clear' && (req.method === 'POST' || req.method === 'DELETE')) {
+    const files = fs.readdirSync(SESSIONS_DIR);
+    let count = 0;
+    for (const file of files) {
+      const fullPath = path.join(SESSIONS_DIR, file);
+      try {
+        if (fs.statSync(fullPath).isDirectory()) {
+          fs.rmSync(fullPath, { recursive: true, force: true });
+        } else {
+          fs.unlinkSync(fullPath);
+          count++;
+        }
+      } catch (_) {}
+    }
+    activeSession = null;
+    sessionEvents = [];
+    return sendJson(res, 200, { status: 'ok', message: `All ${count} sessions deleted`, count });
+  }
+
   if (pathname.startsWith('/api/synthesize/') && req.method === 'POST') {
     const sessionId = pathname.replace('/api/synthesize/', '');
     const sessionFile = path.join(SESSIONS_DIR, `${sessionId}.json`);
@@ -371,3 +436,15 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Flowork-Sentinel] 🛰️ Sentinel & Synthesizer Server running on http://127.0.0.1:${PORT}`);
 });
+
+if (PORT !== 17870) {
+  try {
+    const bridgeServer = http.createServer((req, res) => server.emit('request', req, res));
+    bridgeServer.on('error', (e) => {
+      console.log(`[Flowork-Sentinel] Secondary bridge port 17870 notice: ${e.message}`);
+    });
+    bridgeServer.listen(17870, '127.0.0.1', () => {
+      console.log(`[Flowork-Sentinel] 🛰️ Chrome Extension bridge also listening on http://127.0.0.1:17870`);
+    });
+  } catch (_) {}
+}
