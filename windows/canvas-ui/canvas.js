@@ -5066,9 +5066,19 @@ function filterAndRenderCards() {
       chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip ${item.type === 'active' ? 'chip-active-daemon' : 'chip-passive-sensor'}">${item.type === 'active' ? ('Interval: ' + (item.interval_seconds || 30) + 's') : 'Sensor: JIT AST Prompt'}</span></div>`;
     }
 
+function sanitizePebbleIcon(iconStr, fallback = '⚡') {
+  if (!iconStr) return fallback;
+  if (iconStr === 'fl-icon-video-editor' || iconStr === 'clapperboard') return '🎬';
+  if (iconStr === 'fl-icon-forge' || iconStr === 'forge') return '⚒️';
+  if (typeof iconStr === 'string' && (iconStr.startsWith('fl-icon-') || (iconStr.length > 5 && !/\s/.test(iconStr)))) {
+    return fallback;
+  }
+  return iconStr;
+}
+
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || '⚡'}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -5422,7 +5432,7 @@ function filterAndRenderCopilotCards() {
 
     card.innerHTML = `
       <div class="pebble-header">
-        <div class="pebble-glyph-circle">${item.icon || tabConfig.icon}</div>
+        <div class="pebble-glyph-circle">${sanitizePebbleIcon(item.icon, tabConfig.icon)}</div>
         <div class="pebble-info">
           <div class="pebble-title" title="${escapeHtml(rawName)}">${escapeHtml(displayName)}</div>
           <div class="pebble-tags">
@@ -6257,6 +6267,16 @@ async function switchTab(tabId, options = {}) {
       if (!pipelineView.querySelector('.swarm-pipeline-container')) {
         window.swarmPipelineInstance.mount(pipelineView);
       }
+    }
+  } else {
+    document.querySelector('.canvas-layout')?.classList.remove('pipeline-active');
+    const rightbar = document.getElementById('rightbar-chat');
+    if (rightbar && !rightbar.classList.contains('collapsed')) {
+      rightbar.style.removeProperty('display');
+    }
+    const resizer = document.getElementById('resizer-right');
+    if (resizer) {
+      resizer.style.removeProperty('display');
     }
   }
 

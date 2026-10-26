@@ -568,7 +568,25 @@
       background: var(--color-accent);
       clip-path: polygon(0% 0%, 100% 0%, 50% 100%);
     }
-  </style>
+  
+    /* TikTok Portrait & Vertical Monitor Enforcement */
+    .fl-monitor-wrapper.fl-aspect-9-16,
+    .fl-aspect-9-16 .fl-monitor-wrapper,
+    [data-ratio="9-16"] .fl-monitor-wrapper {
+      width: auto !important;
+      max-width: 280px !important;
+      height: 100% !important;
+      max-height: 480px !important;
+      aspect-ratio: 9 / 16 !important;
+      margin: 0 auto !important;
+    }
+    canvas#fl-preview-canvas {
+      max-width: 100%;
+      max-height: 100%;
+      object-fit: contain;
+    }
+
+</style>
 </head>
 <body>
 
@@ -1056,6 +1074,17 @@
     const selectAspectRatio = document.getElementById('fl-aspect-ratio');
 
     function updateAspectRatio(ratio) {
+      const monitorWrapper = document.getElementById('fl-monitor-wrapper');
+      if (monitorWrapper) {
+        monitorWrapper.classList.remove('fl-aspect-9-16', 'fl-aspect-1-1', 'fl-aspect-16-9');
+        if (ratio === '9-16' || ratio === '9:16') {
+          monitorWrapper.classList.add('fl-aspect-9-16');
+        } else if (ratio === '1-1' || ratio === '1:1') {
+          monitorWrapper.classList.add('fl-aspect-1-1');
+        } else {
+          monitorWrapper.classList.add('fl-aspect-16-9');
+        }
+      }
       const monitorWrapper = document.getElementById('fl-monitor-wrapper');
       if (ratio === '9-16' || ratio === '9:16') {
         canvas.width = 720;
@@ -1686,15 +1715,37 @@
 
         const card = document.createElement('div');
         card.className = 'fl-media-card';
+        card.setAttribute('draggable', 'true');
         card.innerHTML = `
-          <div class="fl-media-thumb" style="background: ${color};">
+          <div class="fl-media-thumb" style="background: ${color}; position: relative;">
             ${icon}
+            <button class="fl-btn-add-track" title="Add to Timeline" style="position: absolute; right: 4px; bottom: 4px; background: var(--color-accent); border: none; color: #fff; border-radius: 4px; width: 22px; height: 22px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 14px; box-shadow: 0 2px 6px rgba(0,0,0,0.4);">+</button>
           </div>
           <div class="fl-media-info">
             <div class="fl-media-name" title="${file.name}">${file.name}</div>
             <div class="fl-media-meta">${sizeMb} MB • ${typeStr}</div>
           </div>
         `;
+
+        // Direct Add to Timeline button handler
+        const btnAdd = card.querySelector('.fl-btn-add-track');
+        if (btnAdd) {
+          btnAdd.addEventListener('click', (ev) => {
+            ev.stopPropagation();
+            addMediaItemToTimeline(file.name, typeStr);
+          });
+        }
+
+        // Drag to timeline handler
+        card.addEventListener('dragstart', (ev) => {
+          ev.dataTransfer.setData('text/plain', JSON.stringify({ name: file.name, type: typeStr }));
+        });
+
+        // Double click also adds to timeline
+        card.addEventListener('dblclick', () => {
+          addMediaItemToTimeline(file.name, typeStr);
+        });
+
         card.addEventListener('click', () => {
           activeClipState.name = file.name;
           document.querySelectorAll('.fl-media-card').forEach(c => c.style.borderColor = 'var(--color-border)');
@@ -1706,6 +1757,42 @@
       btnImport.innerText = `✓ Imported ${files.length}`;
       setTimeout(() => { btnImport.innerText = '+ Import'; }, 2000);
     });
+
+    // Function to add media item directly to the appropriate timeline track
+    function addMediaItemToTimeline(mediaName, mediaType) {
+      const isAud = mediaType === 'AUDIO';
+      let targetLane = isAud 
+        ? document.querySelector('.fl-track-lane[data-track-type="audio"]') || document.querySelector('.fl-track-lane[data-track-id="A1"]')
+        : document.querySelector('.fl-track-lane[data-track-type="video"]') || document.querySelector('.fl-track-lane[data-track-id="V1"]');
+
+      if (!targetLane) {
+        targetLane = document.querySelector('.fl-track-lane');
+      }
+
+      if (!targetLane) return;
+
+      // Calculate position at playhead
+      const clipWidth = 140;
+      const startX = Math.max(0, playheadX);
+
+      const newClip = document.createElement('div');
+      const isVideo = mediaType === 'VIDEO';
+      const clipClass = isVideo ? 'fl-clip-video' : isAud ? 'fl-clip-audio' : 'fl-clip-title';
+      newClip.className = `fl-clip ${clipClass}`;
+      newClip.style.left = `${startX}px`;
+      newClip.style.width = `${clipWidth}px`;
+      newClip.innerHTML = `
+        <span class="fl-clip-label">${mediaName}</span>
+        <button class="fl-clip-del" title="Delete Clip">✕</button>
+      `;
+
+      targetLane.appendChild(newClip);
+      makeClipInteractive(newClip);
+      selectClip(newClip);
+      activeClipState.name = mediaName;
+      drawPreviewFrame();
+      debouncedSaveStudioState();
+    }
 
     // ==========================================
     // 🎛️ INSPECTOR SLIDER BINDINGS (Live Reactive)
@@ -1984,23 +2071,24 @@
     const timelineContainer = document.querySelector('.fl-tracks-container');
     const playheadEl = document.getElementById('fl-playhead');
 
+    const timelineScroll = document.getElementById('fl-timeline-scroll');
+    const rulerEl = document.getElementById('fl-ruler');
+
     function updatePlayheadFromEvent(e) {
       if (!timelineContainer) return;
       const rect = timelineContainer.getBoundingClientRect();
-      // Scroll offset support if timeline is horizontally scrollable
-      const scrollOffset = timelineContainer.scrollLeft || 0;
+      const scrollOffset = timelineScroll ? timelineScroll.scrollLeft : (timelineContainer.scrollLeft || 0);
       playheadX = Math.max(0, e.clientX - rect.left + scrollOffset);
       if (playheadEl) playheadEl.style.left = playheadX + 'px';
       drawPreviewFrame();
     }
 
-    if (timelineContainer) {
-      let isScrubbing = false;
-
-      timelineContainer.addEventListener('mousedown', (e) => {
-        // If clicking on a clip or clip delete handle, let clip handler take over
+    // Attach scrubber listeners to ruler and timeline container
+    [rulerEl, timelineContainer].forEach(el => {
+      if (!el) return;
+      el.addEventListener('mousedown', (e) => {
         if (e.target.closest('.fl-clip')) return;
-        isScrubbing = true;
+        let isScrubbing = true;
         updatePlayheadFromEvent(e);
 
         const onScrubMove = (moveEvt) => {
@@ -2017,6 +2105,33 @@
 
         window.addEventListener('mousemove', onScrubMove);
         window.addEventListener('mouseup', onScrubEnd);
+      });
+    });
+
+    // Support dragover and drop on timeline tracks
+    if (timelineContainer) {
+      timelineContainer.addEventListener('dragover', (e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+      });
+
+      timelineContainer.addEventListener('drop', (e) => {
+        e.preventDefault();
+        try {
+          const rawData = e.dataTransfer.getData('text/plain');
+          if (!rawData) return;
+          const media = JSON.parse(rawData);
+          if (media && media.name) {
+            const rect = timelineContainer.getBoundingClientRect();
+            const scrollOffset = timelineScroll ? timelineScroll.scrollLeft : 0;
+            const dropX = Math.max(0, e.clientX - rect.left + scrollOffset);
+            playheadX = dropX;
+            if (playheadEl) playheadEl.style.left = playheadX + 'px';
+            addMediaItemToTimeline(media.name, media.type || 'VIDEO');
+          }
+        } catch (err) {
+          console.warn('Drop error:', err);
+        }
       });
     }
 
@@ -2447,6 +2562,7 @@ Format: ${data.details.format.toUpperCase()} (${data.details.resolution})`);
           <div class="fl-track-controls">
             <button class="fl-btn-icon btn-mute" title="Mute/Hide">👁️</button>
             <button class="fl-btn-icon btn-lock" title="Lock">🔓</button>
+            <button class="fl-btn-icon btn-del-track" title="Delete Track" style="color: #ef4444; font-weight: bold; margin-left: 4px; border: 1px solid rgba(239, 68, 68, 0.4); border-radius: 3px; padding: 0 4px; cursor: pointer;">✕</button>
           </div>
         `;
         headersContainer.appendChild(headerEl);
@@ -2546,5 +2662,46 @@ Format: ${data.details.format.toUpperCase()} (${data.details.resolution})`);
       saveProjectState();
     });
   </script>
+<script>
+    // Global Event Delegation for Delete Track Buttons
+    document.addEventListener('click', function(e) {
+      const delBtn = e.target.closest('.btn-del-track, .fl-track-del-btn');
+      if (delBtn) {
+        e.stopPropagation();
+        e.preventDefault();
+        const header = delBtn.closest('.fl-track-header');
+        if (!header) return;
+        const trackId = header.getAttribute('data-track-id');
+        
+        // Find matching lane
+        let lane = null;
+        if (trackId) {
+          lane = document.querySelector(`.fl-track-lane[data-track-id="${trackId}"]`);
+        }
+        if (!lane) {
+          // Fallback by index among headers
+          const allHeaders = Array.from(document.querySelectorAll('.fl-track-headers .fl-track-header'));
+          const headerIdx = allHeaders.indexOf(header);
+          const allLanes = Array.from(document.querySelectorAll('.fl-tracks-container .fl-track-lane'));
+          if (headerIdx !== -1 && allLanes[headerIdx]) {
+            lane = allLanes[headerIdx];
+          }
+        }
+        
+        // Remove both header and lane
+        header.remove();
+        if (lane) {
+          lane.remove();
+        }
+        
+        if (typeof drawPreviewFrame === 'function') drawPreviewFrame();
+        if (typeof triggerAutoSave === 'function') {
+          triggerAutoSave();
+        } else if (typeof saveProjectState === 'function') {
+          saveProjectState();
+        }
+      }
+    });
+</script>
 </body>
 </html>

@@ -861,7 +861,7 @@
 
       // 2. Center Zone: Infinite DAG Canvas Board (Full Width, Clean Canvas without Toolbar Clutter)
       const board = document.createElement('main');
-      board.className = 'pipeline-canvas-board';
+      board.className = 'pipeline-canvas-board pipeline-board';
       board.innerHTML = `
         <svg class="pipeline-svg-layer" id="pipeline-svg-layer">
           <defs>
