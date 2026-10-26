@@ -35,6 +35,8 @@ if not exist "%SCRIPT_DIR%\portable-home\.flowork\logs" mkdir "%SCRIPT_DIR%\port
 if not exist "%SCRIPT_DIR%\portable-home\.flowork\chat_sessions" mkdir "%SCRIPT_DIR%\portable-home\.flowork\chat_sessions" 2>nul
 if not exist "%SCRIPT_DIR%\.FL_BIN" mkdir "%SCRIPT_DIR%\.FL_BIN" 2>nul
 if not exist "%SCRIPT_DIR%\.FL_BIN\scratch" mkdir "%SCRIPT_DIR%\.FL_BIN\scratch" 2>nul
+if not exist "%SCRIPT_DIR%\swarmflow" mkdir "%SCRIPT_DIR%\swarmflow" 2>nul
+if not exist "%SCRIPT_DIR%\swarmflow\active.json" echo {"activePresetId": "default"} > "%SCRIPT_DIR%\swarmflow\active.json"
 
 rem 3.5 Purge Local Launcher to Enforce Cloudflare Edge Architecture
 if exist "%SCRIPT_DIR%\canvas-ui\launcher.html" del /f /q "%SCRIPT_DIR%\canvas-ui\launcher.html" 2>nul

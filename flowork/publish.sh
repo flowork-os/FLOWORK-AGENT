@@ -188,7 +188,7 @@ def clean_copy_tree(src, dst):
     shutil.copytree(src, dst, ignore=_ignore)
 
 def copy_shared_ecosystem(target_dir):
-    for shared in ["canvas-ui", "sys" + "tem", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection"]:
+    for shared in ["canvas-ui", "sys" + "tem", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection", "swarmflow"]:
         s_src = os.path.join(flowork_root, shared)
         if os.path.exists(s_src):
             clean_copy_tree(s_src, os.path.join(target_dir, shared))

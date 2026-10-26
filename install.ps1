@@ -139,6 +139,45 @@ if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887
     }
 }
 
+# 4.6 Autonomous Swarm Flow Directory & Presets Self-Healing
+$SwarmDir = Join-Path $InstallDir "swarmflow"
+if (-not (Test-Path $SwarmDir)) { New-Item -ItemType Directory -Path $SwarmDir -Force | Out-Null }
+$DefaultJson = Join-Path $SwarmDir "default.json"
+if (-not (Test-Path $DefaultJson)) {
+    $DefaultSwarmContent = @'
+{
+  "id": "default",
+  "name": "Mr. Flow",
+  "domain": "Sovereign Orchestration",
+  "icon": "⚡",
+  "description": "Pristine sovereign foundation with Mr. Flow at executive command.",
+  "nodes": [
+    {
+      "id": "node-mrflow",
+      "agentId": "mr.flow",
+      "name": "Mr. Flow",
+      "role": "Grand Chief AI Overseer & Executive Architect",
+      "icon": "⚡",
+      "type": "agent",
+      "x": 450,
+      "y": 240,
+      "taskPrompt": "Executive architecture, system supervision, and autonomous orchestration.",
+      "rulePrompt": "Enforce zero-trust and empirical proof (Exit Code 0)."
+    }
+  ],
+  "connections": [],
+  "panX": 40,
+  "panY": 40,
+  "scale": 1.0
+}
+'@
+    [System.IO.File]::WriteAllText($DefaultJson, $DefaultSwarmContent, [System.Text.Encoding]::UTF8)
+}
+$ActiveJson = Join-Path $SwarmDir "active.json"
+if (-not (Test-Path $ActiveJson)) {
+    [System.IO.File]::WriteAllText($ActiveJson, '{"activePresetId": "default"}', [System.Text.Encoding]::UTF8)
+}
+
 # 5. Add Install Directory & Portable Runtimes to User PATH
 $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
 $RuntimePaths = @(

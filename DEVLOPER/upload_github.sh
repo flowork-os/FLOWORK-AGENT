@@ -279,7 +279,7 @@ if os.path.exists(uploads_l):
     with open(os.path.join(uploads_l, ".gitkeep"), "w") as f:
         pass
 
-for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection"]:
+for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection", "swarmflow"]:
     src_dir = os.path.join(flowork_dir, shared_dir)
     if os.path.exists(src_dir):
         clean_copy_tree(src_dir, os.path.join(linux_target, shared_dir))
@@ -328,7 +328,7 @@ if os.path.exists(uploads_w):
     with open(os.path.join(uploads_w, ".gitkeep"), "w") as f:
         pass
 
-for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection"]:
+for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection", "swarmflow"]:
     src_dir = os.path.join(flowork_dir, shared_dir)
     if os.path.exists(src_dir):
         clean_copy_tree(src_dir, os.path.join(windows_target, shared_dir))
@@ -392,7 +392,7 @@ if os.path.exists(uploads_m):
     with open(os.path.join(uploads_m, ".gitkeep"), "w") as f:
         pass
 
-for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection"]:
+for shared_dir in ["system", "skills", "tools", "hooks", "mcp", "apps", "runtimes", "engine", "connection", "swarmflow"]:
     src_dir = os.path.join(flowork_dir, shared_dir)
     if os.path.exists(src_dir):
         clean_copy_tree(src_dir, os.path.join(macos_target, shared_dir))
@@ -424,6 +424,9 @@ if os.path.exists(os.path.join(macos_target, "Flowork-Agent-Installer.command"))
 # -----------------
 if os.path.exists(os.path.join(flowork_dir, "runtimes")):
     clean_copy_tree(os.path.join(flowork_dir, "runtimes"), os.path.join(staging_dir, "runtimes"))
+
+if os.path.exists(os.path.join(flowork_dir, "swarmflow")):
+    clean_copy_tree(os.path.join(flowork_dir, "swarmflow"), os.path.join(staging_dir, "swarmflow"))
 
 for rname in ["install.sh", "install.ps1", "install.bat", "Flowork-Agent-Installer.desktop", "Flowork-Agent-Installer.exe", "Flowork-Agent-Installer.command", "README.md", "README.MD", "cover.png", "STRUCTURE.MD", "VERSION", "release_checksums.json"]:
     src = os.path.join(flowork_dir, rname)
