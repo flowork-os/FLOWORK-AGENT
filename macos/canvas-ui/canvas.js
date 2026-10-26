@@ -4780,6 +4780,17 @@ function initStarfieldBackground() {
   window.cosmicStarfieldController = cosmicStarfieldController;
 }
 
+function sanitizePebbleIcon(iconStr, fallback = '⚡') {
+  if (!iconStr) return fallback;
+  if (iconStr === 'fl-icon-video-editor' || iconStr === 'clapperboard') return '🎬';
+  if (iconStr === 'fl-icon-forge' || iconStr === 'forge') return '⚒️';
+  if (typeof iconStr === 'string' && (iconStr.startsWith('fl-icon-') || (iconStr.length > 5 && !/\s/.test(iconStr)))) {
+    return fallback;
+  }
+  return iconStr;
+}
+window.sanitizePebbleIcon = sanitizePebbleIcon;
+
 // 6. Filter & Render Cockpit Pebble Cards
 // 6. Filter & Render Cockpit Pebble Cards (Installed Modules)
 function filterAndRenderCards() {
@@ -5065,16 +5076,6 @@ function filterAndRenderCards() {
       `;
       chipsHtml = `<div class="pebble-chip-row"><span class="pebble-chip ${item.type === 'active' ? 'chip-active-daemon' : 'chip-passive-sensor'}">${item.type === 'active' ? ('Interval: ' + (item.interval_seconds || 30) + 's') : 'Sensor: JIT AST Prompt'}</span></div>`;
     }
-
-function sanitizePebbleIcon(iconStr, fallback = '⚡') {
-  if (!iconStr) return fallback;
-  if (iconStr === 'fl-icon-video-editor' || iconStr === 'clapperboard') return '🎬';
-  if (iconStr === 'fl-icon-forge' || iconStr === 'forge') return '⚒️';
-  if (typeof iconStr === 'string' && (iconStr.startsWith('fl-icon-') || (iconStr.length > 5 && !/\s/.test(iconStr)))) {
-    return fallback;
-  }
-  return iconStr;
-}
 
     card.innerHTML = `
       <div class="pebble-header">
@@ -6263,12 +6264,21 @@ async function switchTab(tabId, options = {}) {
 
   if (tabId === 'pipeline') {
     const pipelineView = document.getElementById('view-pipeline');
-    if (pipelineView && window.swarmPipelineInstance) {
-      if (!pipelineView.querySelector('.swarm-pipeline-container')) {
-        window.swarmPipelineInstance.mount(pipelineView);
+    if (pipelineView) {
+      pipelineView.style.setProperty('display', 'flex', 'important');
+      pipelineView.classList.add('active');
+      if (window.swarmPipelineInstance) {
+        if (!pipelineView.classList.contains('swarm-pipeline-container') || !pipelineView.querySelector('.pipeline-palette-sidebar')) {
+          window.swarmPipelineInstance.mount(pipelineView);
+        }
       }
     }
   } else {
+    const pipelineView = document.getElementById('view-pipeline');
+    if (pipelineView) {
+      pipelineView.style.setProperty('display', 'none', 'important');
+      pipelineView.classList.remove('active');
+    }
     document.querySelector('.canvas-layout')?.classList.remove('pipeline-active');
     const rightbar = document.getElementById('rightbar-chat');
     if (rightbar && !rightbar.classList.contains('collapsed')) {

@@ -823,7 +823,7 @@
      * - Right Bar: REMOVED COMPLETELY
      */
     _buildLayout() {
-      this.container.className = 'swarm-pipeline-container';
+      this.container.classList.add('swarm-pipeline-container', 'view-panel', 'view-panel-app');
 
       // 1. Left Zone: Palette Sidebar (Triggers & Agents only)
       const palette = document.createElement('aside');
