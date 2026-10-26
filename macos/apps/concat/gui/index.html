@@ -441,16 +441,103 @@
       border-radius: 4px;
       display: flex;
       align-items: center;
-      padding: 0 8px;
+      justify-content: space-between;
+      padding: 0 6px;
       font-size: 11px;
       font-weight: 600;
       color: #ffffff;
-      cursor: pointer;
+      cursor: grab;
+      user-select: none;
       box-shadow: 0 2px 6px rgba(0,0,0,0.4);
       border: 1px solid rgba(255,255,255,0.2);
-      overflow: hidden;
+      overflow: visible;
       white-space: nowrap;
+      z-index: 5;
+      transition: box-shadow 0.15s, background-color 0.15s;
+    }
+
+    .fl-clip:active {
+      cursor: grabbing;
+    }
+
+    .fl-clip-content {
+      overflow: hidden;
       text-overflow: ellipsis;
+      white-space: nowrap;
+      flex: 1;
+      pointer-events: none;
+    }
+
+    .fl-clip-handle {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 8px;
+      cursor: ew-resize;
+      background: rgba(255, 255, 255, 0.2);
+      opacity: 0;
+      transition: opacity 0.1s;
+      z-index: 6;
+    }
+
+    .fl-clip:hover .fl-clip-handle, .fl-clip.selected .fl-clip-handle {
+      opacity: 0.8;
+    }
+
+    .fl-clip-handle.left {
+      left: 0;
+      border-top-left-radius: 4px;
+      border-bottom-left-radius: 4px;
+    }
+
+    .fl-clip-handle.right {
+      right: 0;
+      border-top-right-radius: 4px;
+      border-bottom-right-radius: 4px;
+    }
+
+    .fl-clip-del-btn {
+      width: 16px;
+      height: 16px;
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.4);
+      color: #ff5555;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+      cursor: pointer;
+      margin-left: 4px;
+      flex-shrink: 0;
+      border: 1px solid rgba(255, 85, 85, 0.3);
+    }
+
+    .fl-clip:hover .fl-clip-del-btn, .fl-clip.selected .fl-clip-del-btn {
+      display: flex;
+    }
+
+    .fl-clip-del-btn:hover {
+      background: #ff5555;
+      color: #fff;
+    }
+
+    .fl-track-header-actions {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .fl-track-del-btn {
+      cursor: pointer;
+      color: var(--color-dim);
+      font-size: 11px;
+      padding: 2px 4px;
+      border-radius: 3px;
+    }
+
+    .fl-track-del-btn:hover {
+      color: #ff5555;
+      background: rgba(255, 85, 85, 0.15);
     }
 
     .fl-clip.selected {
@@ -491,6 +578,10 @@
       <span style="color: var(--color-dim); font-size: 11px; margin-left: 8px;">jub0t/concat engine</span>
     </div>
     <div class="fl-header-actions">
+      <div class="fl-autosave-badge" id="fl-autosave-status" title="Project Auto-Save Status">
+        <span class="fl-autosave-dot" id="fl-autosave-dot"></span>
+        <span id="fl-autosave-text">Saved</span>
+      </div>
       <select id="fl-aspect-ratio" class="fl-btn" style="background: var(--color-panel);">
         <option value="16-9">16:9 Landscape (YouTube)</option>
         <option value="9-16">9:16 Portrait (Shorts / TikTok)</option>
@@ -517,9 +608,10 @@
 
       <!-- CENTER: VIDEO MONITOR -->
       <section class="fl-dock-stage">
-        <div class="fl-monitor-wrapper">
+        <div class="fl-monitor-wrapper" id="fl-monitor-wrapper">
           <canvas id="fl-canvas-preview" width="1280" height="720"></canvas>
           <div class="fl-timecode-overlay" id="fl-timecode">00:00:02:14</div>
+          <div class="fl-preview-resizer" id="fl-preview-resizer" title="Drag to resize preview monitor"></div>
         </div>
 
         <div class="fl-playback-bar">
@@ -660,85 +752,784 @@
   </main>
 
   <script>
-    // State
+    // [FL_INDEX: keywords="video_editor, timeline_manager, canvas_preview, clip_drag, clip_trim, track_deletion" | COT="Professional NLE timeline controller with multi-track drag, resize, split, and track management"]
+    
+    // State Management
     let isPlaying = false;
     let playheadX = 180;
     let animFrame = null;
-    let activeTool = 'select';
+    let activeTool = 'select'; // 'select' or 'razor'
+    let snappingEnabled = true;
+    let timelineZoom = 1.0;
+    let trackCounter = 4;
+    let selectedClipEl = null;
 
-    // Canvas preview rendering
+    // Active Inspector / Clip State
+    let activeClipState = {
+      name: 'Cyberpunk Drone B-Roll.mp4',
+      scale: 100,
+      opacity: 100,
+      rotation: 0,
+      exposure: 0,
+      contrast: 0,
+      saturation: 0,
+      volume: 85
+    };
+
+    // Canvas Preview Rendering & Aspect Ratio Management
     const canvas = document.getElementById('fl-canvas-preview');
     const ctx = canvas.getContext('2d');
+    const selectAspectRatio = document.getElementById('fl-aspect-ratio');
+
+    function updateAspectRatio(ratio) {
+      const monitorWrapper = document.getElementById('fl-monitor-wrapper');
+      if (ratio === '9-16') {
+        canvas.width = 720;
+        canvas.height = 1280;
+        canvas.style.aspectRatio = '9 / 16';
+        if (monitorWrapper) {
+          monitorWrapper.style.maxWidth = '270px';
+          monitorWrapper.style.aspectRatio = '9 / 16';
+        }
+      } else if (ratio === '1-1') {
+        canvas.width = 1080;
+        canvas.height = 1080;
+        canvas.style.aspectRatio = '1 / 1';
+        if (monitorWrapper) {
+          monitorWrapper.style.maxWidth = '420px';
+          monitorWrapper.style.aspectRatio = '1 / 1';
+        }
+      } else {
+        // Default 16:9 Landscape
+        canvas.width = 1280;
+        canvas.height = 720;
+        canvas.style.aspectRatio = '16 / 9';
+        if (monitorWrapper) {
+          monitorWrapper.style.maxWidth = '640px';
+          monitorWrapper.style.aspectRatio = '16 / 9';
+        }
+      }
+      drawPreviewFrame();
+    }
+
+    if (selectAspectRatio) {
+      selectAspectRatio.addEventListener('change', (e) => {
+        updateAspectRatio(e.target.value);
+      });
+    }
+
+    // Helper to extract clean clip title from DOM
+    function getClipNameFromEl(clipEl) {
+      if (!clipEl) return 'Track Clip';
+      let raw = '';
+      const span = clipEl.querySelector('.fl-clip-name') || clipEl.querySelector('span');
+      if (span) {
+        raw = span.innerText || span.textContent || '';
+      } else {
+        raw = clipEl.innerText || clipEl.textContent || '';
+      }
+      raw = raw.replace(/[×✕]/g, '').trim();
+      raw = raw.replace(/^[\u{1F300}-\u{1F9FF}\u{2600}-\u{26FF}\u{2700}-\u{27BF}\s]+/u, '').trim();
+      return raw || clipEl.getAttribute('data-name') || 'Track Clip';
+    }
+
+    // Determine currently active video clip at playhead position
+    function getActiveClipAtPlayhead() {
+      // 1. Inspect timeline clips overlapping playheadX in visual composite order:
+      // Text/Overlay -> Video 2 -> Video 1 -> Audio tracks
+      const visualTrackOrder = [
+        document.querySelector('.fl-track-lane[data-lane="text"]'),
+        document.querySelector('.fl-track-lane[data-lane="video-2"]'),
+        document.querySelector('.fl-track-lane[data-lane="video-1"]'),
+        document.querySelector('.fl-track-lane[data-lane="audio-1"]')
+      ];
+
+      for (const lane of visualTrackOrder) {
+        if (!lane) continue;
+        const clips = Array.from(lane.querySelectorAll('.fl-clip'));
+        for (const clip of clips) {
+          const left = parseFloat(clip.style.left) || 0;
+          const width = parseFloat(clip.style.width) || clip.offsetWidth || 100;
+          if (playheadX >= left && playheadX <= left + width) {
+            const clipName = getClipNameFromEl(clip);
+            activeClipState.name = clipName;
+            return {
+              name: clipName,
+              color: clip.style.backgroundColor || '#2080f0',
+              trackLane: lane.getAttribute('data-lane') || 'video',
+              clipStart: left,
+              clipDuration: width,
+              element: clip
+            };
+          }
+        }
+      }
+
+      // Check any remaining clips if not caught above
+      const allClips = Array.from(document.querySelectorAll('.fl-clip'));
+      for (const clip of allClips) {
+        const left = parseFloat(clip.style.left) || 0;
+        const width = parseFloat(clip.style.width) || clip.offsetWidth || 100;
+        if (playheadX >= left && playheadX <= left + width) {
+          const clipName = getClipNameFromEl(clip);
+          activeClipState.name = clipName;
+          return {
+            name: clipName,
+            color: clip.style.backgroundColor || '#2080f0',
+            trackLane: clip.closest('.fl-track-lane')?.getAttribute('data-lane') || 'video',
+            clipStart: left,
+            clipDuration: width,
+            element: clip
+          };
+        }
+      }
+
+      // When playhead is on empty space, timeline track has NO active clip at this timecode.
+      // Strictly return null so preview accurately reflects the playhead position.
+      return null;
+    }
 
     function drawPreviewFrame() {
+      ctx.save();
       ctx.fillStyle = '#0a0a0c';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-      // Cyberpunk grid simulation
-      ctx.strokeStyle = '#1a233a';
+      // Cyberpunk grid background
+      ctx.strokeStyle = '#151d2f';
       ctx.lineWidth = 1;
-      for (let x = 0; x < canvas.width; x += 40) {
+      const step = canvas.width > 1000 ? 40 : 30;
+      for (let x = 0; x < canvas.width; x += step) {
         ctx.beginPath();
         ctx.moveTo(x, 0);
         ctx.lineTo(x, canvas.height);
         ctx.stroke();
       }
-      for (let y = 0; y < canvas.height; y += 40) {
+      for (let y = 0; y < canvas.height; y += step) {
         ctx.beginPath();
         ctx.moveTo(0, y);
         ctx.lineTo(canvas.width, y);
         ctx.stroke();
       }
 
-      // Title & Visual Element
-      ctx.fillStyle = '#3373d1';
-      ctx.fillRect(200, 160, 880, 400);
+      const activeClip = getActiveClipAtPlayhead();
 
-      ctx.fillStyle = '#ffffff';
-      ctx.font = 'bold 36px monospace';
-      ctx.textAlign = 'center';
-      ctx.fillText("CONCAT VIDEO STUDIO", canvas.width / 2, canvas.height / 2 - 20);
+      if (!activeClip) {
+        // STANDBY / NO CLIP STATE: Clean professional monitor standby
+        ctx.fillStyle = '#1e293b';
+        ctx.textAlign = 'center';
+        ctx.font = 'bold 22px monospace';
+        ctx.fillText('NO MEDIA AT PLAYHEAD', canvas.width / 2, canvas.height / 2 - 15);
+        ctx.font = '13px monospace';
+        ctx.fillStyle = '#64748b';
+        ctx.fillText('Move playhead or add clips to timeline', canvas.width / 2, canvas.height / 2 + 15);
+      } else {
+        // Center Stage Transformations based on Inspector Sliders
+        const cx = canvas.width / 2;
+        const cy = canvas.height / 2;
+        ctx.translate(cx, cy);
+        ctx.rotate((activeClipState.rotation * Math.PI) / 180);
+        const s = (activeClipState.scale / 100);
+        ctx.scale(s, s);
+        ctx.globalAlpha = Math.max(0, Math.min(1, activeClipState.opacity / 100));
 
-      ctx.fillStyle = '#cbf53f';
-      ctx.font = '20px sans-serif';
-      ctx.fillText("Preview Stage // Frame Sync Ready", canvas.width / 2, canvas.height / 2 + 30);
+        // Dynamic Exposure & Contrast Filter Simulation
+        const brightnessShift = activeClipState.exposure * 2;
+        const baseBlue = Math.min(255, Math.max(0, 51 + brightnessShift + activeClipState.contrast));
+        const baseGreen = Math.min(255, Math.max(0, 115 + brightnessShift + activeClipState.contrast));
+        const baseRed = Math.min(255, Math.max(0, 209 + brightnessShift + activeClipState.contrast));
+
+        // Adaptive frame dimensions relative to canvas size
+        const frameW = canvas.width * 0.72;
+        const frameH = canvas.height * 0.58;
+
+        // Video Clip Canvas Visual Representation
+        ctx.fillStyle = `rgb(${Math.floor(baseBlue)}, ${Math.floor(baseGreen)}, ${Math.floor(baseRed)})`;
+        ctx.fillRect(-frameW / 2, -frameH / 2, frameW, frameH);
+
+        // Border frame
+        ctx.strokeStyle = '#cbf53f';
+        ctx.lineWidth = 2;
+        ctx.strokeRect(-frameW / 2, -frameH / 2, frameW, frameH);
+
+        // Clip Details on Canvas
+        ctx.fillStyle = '#ffffff';
+        ctx.font = 'bold 24px monospace';
+        ctx.textAlign = 'center';
+        const displayTitle = (activeClip.name || activeClipState.name || 'VIDEO CLIP').toUpperCase();
+        ctx.fillText(displayTitle, 0, -20);
+
+        ctx.fillStyle = '#cbf53f';
+        ctx.font = '13px monospace';
+        ctx.fillText(`TRANSFORM // S: ${activeClipState.scale}% | R: ${activeClipState.rotation}° | OP: ${activeClipState.opacity}%`, 0, 25);
+        ctx.fillText(`COLOR // EXP: ${activeClipState.exposure} | CONTRAST: ${activeClipState.contrast} | VOL: ${activeClipState.volume}%`, 0, 50);
+      }
+
+      ctx.restore();
 
       // Timecode stamp
       const seconds = Math.floor(playheadX / 50);
       const frames = Math.floor((playheadX % 50) / 1.6);
       const tc = `00:00:0${seconds}:${frames < 10 ? '0' + frames : frames}`;
-      document.getElementById('fl-timecode').innerText = tc;
+      const timecodeEl = document.getElementById('fl-timecode');
+      if (timecodeEl) timecodeEl.innerText = tc;
     }
 
     // Playback loop
     function loop() {
       if (isPlaying) {
         playheadX += 1.5;
-        if (playheadX > 800) playheadX = 0;
-        document.getElementById('fl-playhead').style.left = playheadX + 'px';
+        if (playheadX > 1400) playheadX = 0;
+        const playhead = document.getElementById('fl-playhead');
+        if (playhead) playhead.style.left = playheadX + 'px';
         drawPreviewFrame();
         animFrame = requestAnimationFrame(loop);
       }
     }
 
+    // Play/Pause Controller
     const btnPlay = document.getElementById('fl-ctrl-play');
-    btnPlay.addEventListener('click', () => {
-      isPlaying = !isPlaying;
-      btnPlay.innerText = isPlaying ? '⏸' : '▶';
-      btnPlay.style.color = isPlaying ? '#ff453a' : 'var(--color-accent)';
-      if (isPlaying) loop();
-      else cancelAnimationFrame(animFrame);
+    if (btnPlay) {
+      btnPlay.addEventListener('click', () => {
+        isPlaying = !isPlaying;
+        btnPlay.innerText = isPlaying ? '⏸' : '▶';
+        btnPlay.style.color = isPlaying ? '#ff453a' : 'var(--color-accent)';
+        if (isPlaying) loop();
+        else cancelAnimationFrame(animFrame);
+      });
+    }
+
+    const btnPrev = document.getElementById('fl-ctrl-prev');
+    if (btnPrev) {
+      btnPrev.addEventListener('click', () => {
+        playheadX = 0;
+        const playhead = document.getElementById('fl-playhead');
+        if (playhead) playhead.style.left = playheadX + 'px';
+        drawPreviewFrame();
+      });
+    }
+
+    const btnNext = document.getElementById('fl-ctrl-next');
+    if (btnNext) {
+      btnNext.addEventListener('click', () => {
+        playheadX = Math.min(1400, playheadX + 150);
+        const playhead = document.getElementById('fl-playhead');
+        if (playhead) playhead.style.left = playheadX + 'px';
+        drawPreviewFrame();
+      });
+    }
+
+    // ==========================================
+    // 🎚️ ADVANCED DRAG & DROP / RESIZE / DELETE FOR CLIPS
+    // ==========================================
+
+    function makeClipInteractive(clipEl) {
+      // Pastikan ada handle kiri & kanan serta tombol delete jika belum ada
+      if (!clipEl.querySelector('.fl-clip-handle.left')) {
+        const leftHandle = document.createElement('div');
+        leftHandle.className = 'fl-clip-handle left';
+        leftHandle.title = 'Drag to trim start';
+        clipEl.appendChild(leftHandle);
+      }
+      if (!clipEl.querySelector('.fl-clip-handle.right')) {
+        const rightHandle = document.createElement('div');
+        rightHandle.className = 'fl-clip-handle right';
+        rightHandle.title = 'Drag to trim end';
+        clipEl.appendChild(rightHandle);
+      }
+      if (!clipEl.querySelector('.fl-clip-del-btn')) {
+        const delBtn = document.createElement('div');
+        delBtn.className = 'fl-clip-del-btn';
+        delBtn.innerHTML = '✕';
+        delBtn.title = 'Delete Clip (or press Del key)';
+        delBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          deleteClip(clipEl);
+        });
+        clipEl.appendChild(delBtn);
+      }
+
+      // Dragging state
+      let isDragging = false;
+      let isResizingLeft = false;
+      let isResizingRight = false;
+      let startX = 0;
+      let startLeft = 0;
+      let startWidth = 0;
+
+      clipEl.addEventListener('mousedown', (e) => {
+        // Jika sedang razor mode, potong clip!
+        if (activeTool === 'razor') {
+          e.stopPropagation();
+          splitClip(clipEl, e.clientX);
+          return;
+        }
+
+        if (e.target.classList.contains('fl-clip-del-btn')) return;
+
+        selectClip(clipEl);
+
+        const rect = clipEl.getBoundingClientRect();
+        startX = e.clientX;
+        startLeft = parseFloat(clipEl.style.left) || 0;
+        startWidth = parseFloat(clipEl.style.width) || rect.width;
+
+        if (e.target.classList.contains('left')) {
+          isResizingLeft = true;
+          e.stopPropagation();
+        } else if (e.target.classList.contains('right')) {
+          isResizingRight = true;
+          e.stopPropagation();
+        } else {
+          isDragging = true;
+        }
+
+        const onMouseMove = (moveEvent) => {
+          const deltaX = moveEvent.clientX - startX;
+          const snapStep = snappingEnabled ? 10 : 1;
+
+          if (isDragging) {
+            let newLeft = Math.max(0, startLeft + deltaX);
+            if (snappingEnabled) newLeft = Math.round(newLeft / snapStep) * snapStep;
+            clipEl.style.left = newLeft + 'px';
+          } else if (isResizingRight) {
+            let newWidth = Math.max(30, startWidth + deltaX);
+            if (snappingEnabled) newWidth = Math.round(newWidth / snapStep) * snapStep;
+            clipEl.style.width = newWidth + 'px';
+          } else if (isResizingLeft) {
+            let maxDelta = startWidth - 30;
+            let actualDelta = Math.min(deltaX, maxDelta);
+            let newLeft = Math.max(0, startLeft + actualDelta);
+            let newWidth = startWidth - (newLeft - startLeft);
+            if (snappingEnabled) {
+              newLeft = Math.round(newLeft / snapStep) * snapStep;
+              newWidth = Math.round(newWidth / snapStep) * snapStep;
+            }
+            clipEl.style.left = newLeft + 'px';
+            clipEl.style.width = newWidth + 'px';
+          }
+        };
+
+        const onMouseUp = () => {
+          isDragging = false;
+          isResizingLeft = false;
+          isResizingRight = false;
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+          if (typeof triggerAutoSave === 'function') triggerAutoSave();
+        };
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+      });
+    }
+
+    function selectClip(clipEl) {
+      document.querySelectorAll('.fl-clip').forEach(c => c.classList.remove('selected'));
+      clipEl.classList.add('selected');
+      selectedClipEl = clipEl;
+
+      const titleSpan = clipEl.querySelector('span');
+      const clipName = titleSpan ? titleSpan.innerText.trim() : 'Selected Track Clip';
+      activeClipState.name = clipName;
+      drawPreviewFrame();
+    }
+
+    function deleteClip(clipEl) {
+      if (!clipEl) return;
+      clipEl.style.transition = 'transform 0.15s, opacity 0.15s';
+      clipEl.style.transform = 'scale(0.8)';
+      clipEl.style.opacity = '0';
+      setTimeout(() => {
+        const wasSelected = (selectedClipEl === clipEl);
+        clipEl.remove();
+        if (wasSelected) {
+          selectedClipEl = null;
+          activeClipState.name = '';
+        }
+        drawPreviewFrame();
+        if (typeof triggerAutoSave === 'function') triggerAutoSave();
+      }, 150);
+    }
+
+    // Split razor clip helper
+    function splitClip(clipEl, clickX) {
+      const rect = clipEl.getBoundingClientRect();
+      const splitPoint = clickX - rect.left;
+      if (splitPoint < 20 || splitPoint > rect.width - 20) return;
+
+      const currentLeft = parseFloat(clipEl.style.left) || 0;
+      const currentWidth = parseFloat(clipEl.style.width) || rect.width;
+      const parentLane = clipEl.parentElement;
+
+      // Adjust original clip width
+      clipEl.style.width = splitPoint + 'px';
+
+      // Clone right half
+      const clone = clipEl.cloneNode(true);
+      clone.style.left = (currentLeft + splitPoint + 4) + 'px';
+      clone.style.width = (currentWidth - splitPoint - 4) + 'px';
+      
+      const span = clone.querySelector('span');
+      if (span) span.innerText = span.innerText + ' (Part 2)';
+
+      parentLane.appendChild(clone);
+      makeClipInteractive(clone);
+      selectClip(clone);
+      if (typeof triggerAutoSave === 'function') triggerAutoSave();
+    }
+
+    // Keyboard shortcuts (Delete & Backspace)
+    window.addEventListener('keydown', (e) => {
+      if ((e.key === 'Delete' || e.key === 'Backspace') && selectedClipEl) {
+        // Check if user is typing in an input field
+        if (['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) return;
+        e.preventDefault();
+        deleteClip(selectedClipEl);
+      }
     });
+
+    // Inisialisasi seluruh clip yang ada saat ini di timeline
+    document.querySelectorAll('.fl-clip').forEach(clip => {
+      makeClipInteractive(clip);
+    });
+
+    // ==========================================
+    // 🗑️ TRACK MANAGEMENT (Delete & Synchronized Lanes)
+    // ==========================================
+
+    function setupTrackHeaders() {
+      const headers = document.querySelectorAll('.fl-track-headers .fl-track-header');
+      const lanes = document.querySelectorAll('.fl-tracks-container .fl-track-lane');
+
+      headers.forEach((h, index) => {
+        if (index === 0) return; // Skip label 'timeline tracks'
+        const laneIndex = index - 1;
+        const lane = lanes[laneIndex];
+        const trackId = 'track-' + index;
+
+        h.setAttribute('data-track-id', trackId);
+        if (lane) lane.setAttribute('data-track-id', trackId);
+
+        // Tambahkan tombol delete track jika belum ada
+        if (!h.querySelector('.fl-track-del-btn')) {
+          let actionBox = h.querySelector('.fl-track-header-actions');
+          if (!actionBox) {
+            actionBox = document.createElement('div');
+            actionBox.className = 'fl-track-header-actions';
+            
+            const existingIcons = h.querySelector('span:last-child');
+            if (existingIcons) actionBox.appendChild(existingIcons);
+            h.appendChild(actionBox);
+          }
+
+          const delTrackBtn = document.createElement('span');
+          delTrackBtn.className = 'fl-track-del-btn';
+          delTrackBtn.innerText = '✕';
+          delTrackBtn.title = 'Delete Track & all its clips';
+          delTrackBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteTrack(trackId);
+          });
+          actionBox.appendChild(delTrackBtn);
+        }
+      });
+    }
+
+    function deleteTrack(trackId) {
+      const header = document.querySelector(`.fl-track-header[data-track-id="${trackId}"]`);
+      const lane = document.querySelector(`.fl-track-lane[data-track-id="${trackId}"]`);
+
+      if (header) {
+        header.style.opacity = '0';
+        setTimeout(() => header.remove(), 120);
+      }
+      if (lane) {
+        lane.style.opacity = '0';
+        setTimeout(() => {
+          // Check if selected clip belonged to deleted lane
+          if (selectedClipEl && lane.contains(selectedClipEl)) {
+            selectedClipEl = null;
+            activeClipState.name = '';
+          }
+          lane.remove();
+          drawPreviewFrame();
+          if (typeof triggerAutoSave === 'function') triggerAutoSave();
+        }, 130);
+      }
+    }
+
+    // Jalankan setup header awal
+    setupTrackHeaders();
+
+    // ==========================================
+    // ➕ ADD TRACK FUNCTIONALITY
+    // ==========================================
+    const btnAddTrack = document.getElementById('fl-btn-add-clip');
+    if (btnAddTrack) {
+      btnAddTrack.addEventListener('click', () => {
+        trackCounter++;
+        const isAudio = trackCounter % 2 === 0;
+        const trackType = isAudio ? 'AUDIO' : 'VIDEO';
+        const trackLabel = isAudio ? `A${Math.floor(trackCounter / 2)}` : `V${Math.ceil(trackCounter / 2)}`;
+        const trackColor = isAudio ? '#16a34a' : '#2563eb';
+        const trackId = 'track-' + Date.now();
+
+        // 1. Append Header
+        const headersContainer = document.querySelector('.fl-track-headers');
+        if (headersContainer) {
+          const headerEl = document.createElement('div');
+          headerEl.className = 'fl-track-header';
+          headerEl.setAttribute('data-track-id', trackId);
+          headerEl.innerHTML = `
+            <span>${isAudio ? '🔊' : '🎬'} ${trackLabel} (${trackType})</span>
+            <div class="fl-track-header-actions">
+              <span style="cursor: pointer; color: var(--color-dim);" title="Mute/Solo">👁️ 🔒</span>
+              <span class="fl-track-del-btn" title="Delete Track">✕</span>
+            </div>
+          `;
+          headerEl.querySelector('.fl-track-del-btn').addEventListener('click', (e) => {
+            e.stopPropagation();
+            deleteTrack(trackId);
+          });
+          headersContainer.appendChild(headerEl);
+        }
+
+        // 2. Append Lane
+        const lanesContainer = document.querySelector('.fl-tracks-container');
+        if (lanesContainer) {
+          const laneEl = document.createElement('div');
+          laneEl.className = 'fl-track-lane';
+          laneEl.setAttribute('data-track-id', trackId);
+
+          const clipEl = document.createElement('div');
+          clipEl.className = 'fl-clip';
+          clipEl.style.left = Math.floor(Math.random() * 200) + 'px';
+          clipEl.style.width = (180 + Math.floor(Math.random() * 140)) + 'px';
+          clipEl.style.background = trackColor;
+          clipEl.innerHTML = `
+            <div class="fl-clip-content">
+              <span>${isAudio ? '🎵' : '🎞️'} ${trackLabel} Layer</span>
+            </div>
+          `;
+
+          laneEl.appendChild(clipEl);
+
+          // Insert before playhead
+          const playhead = document.getElementById('fl-playhead');
+          if (playhead) lanesContainer.insertBefore(laneEl, playhead);
+          else lanesContainer.appendChild(laneEl);
+
+          makeClipInteractive(clipEl);
+        }
+
+        // Feedback
+        btnAddTrack.innerText = `✓ Added ${trackLabel}`;
+        setTimeout(() => { btnAddTrack.innerText = '+ Add Track'; }, 1500);
+      });
+    }
+
+    // ==========================================
+    // 📁 MEDIA IMPORT FUNCTIONALITY (+ Import)
+    // ==========================================
+    const hiddenFileInput = document.createElement('input');
+    hiddenFileInput.type = 'file';
+    hiddenFileInput.multiple = true;
+    hiddenFileInput.accept = 'video/*,audio/*,image/*';
+    hiddenFileInput.style.display = 'none';
+    document.body.appendChild(hiddenFileInput);
+
+    const btnImport = document.getElementById('fl-btn-import');
+    if (btnImport) {
+      btnImport.addEventListener('click', () => {
+        hiddenFileInput.click();
+      });
+    }
+
+    hiddenFileInput.addEventListener('change', (e) => {
+      const files = e.target.files;
+      if (!files || files.length === 0) return;
+
+      const bin = document.getElementById('fl-media-bin');
+      for (let i = 0; i < files.length; i++) {
+        const file = files[i];
+        const isVideo = file.type.startsWith('video');
+        const isAudio = file.type.startsWith('audio');
+        const icon = isVideo ? '🎥' : isAudio ? '🎵' : '🖼️';
+        const typeStr = isVideo ? 'VIDEO' : isAudio ? 'AUDIO' : 'IMAGE';
+        const color = isVideo ? '#2a4365' : isAudio ? '#22543d' : '#744210';
+        const sizeMb = (file.size / (1024 * 1024)).toFixed(1);
+
+        const card = document.createElement('div');
+        card.className = 'fl-media-card';
+        card.innerHTML = `
+          <div class="fl-media-thumb" style="background: ${color};">
+            ${icon}
+          </div>
+          <div class="fl-media-info">
+            <div class="fl-media-name" title="${file.name}">${file.name}</div>
+            <div class="fl-media-meta">${sizeMb} MB • ${typeStr}</div>
+          </div>
+        `;
+        card.addEventListener('click', () => {
+          activeClipState.name = file.name;
+          document.querySelectorAll('.fl-media-card').forEach(c => c.style.borderColor = 'var(--color-border)');
+          card.style.borderColor = 'var(--color-accent)';
+          drawPreviewFrame();
+        });
+        bin.prepend(card);
+      }
+      btnImport.innerText = `✓ Imported ${files.length}`;
+      setTimeout(() => { btnImport.innerText = '+ Import'; }, 2000);
+    });
+
+    // ==========================================
+    // 🎛️ INSPECTOR SLIDER BINDINGS (Live Reactive)
+    // ==========================================
+    const sliderMap = [
+      { id: 'fl-scale', prop: 'scale', unit: '%' },
+      { id: 'fl-opacity', prop: 'opacity', unit: '%' },
+      { id: 'fl-rotation', prop: 'rotation', unit: '°' },
+      { id: 'fl-exposure', prop: 'exposure', unit: '' },
+      { id: 'fl-contrast', prop: 'contrast', unit: '' },
+      { id: 'fl-saturation', prop: 'saturation', unit: '' },
+      { id: 'fl-volume', prop: 'volume', unit: '%' }
+    ];
+
+    sliderMap.forEach(s => {
+      const el = document.getElementById(s.id);
+      if (el) {
+        el.addEventListener('input', (e) => {
+          activeClipState[s.prop] = parseFloat(e.target.value);
+          const valDisplay = el.parentElement?.querySelector('span:last-child');
+          if (valDisplay) valDisplay.innerText = `${e.target.value}${s.unit}`;
+          drawPreviewFrame();
+        });
+      }
+    });
+
+    // ==========================================
+    // 🧲 TOOL BUTTONS (Snapping, Razor, Select, Zoom)
+    // ==========================================
+    const toolSnapping = document.getElementById('tool-snapping');
+    if (toolSnapping) {
+      toolSnapping.addEventListener('click', () => {
+        snappingEnabled = !snappingEnabled;
+        toolSnapping.classList.toggle('active', snappingEnabled);
+        toolSnapping.title = `Snapping Magnet: ${snappingEnabled ? 'ON' : 'OFF'}`;
+      });
+    }
+
+    const toolSelect = document.getElementById('tool-select');
+    const toolRazor = document.getElementById('tool-razor');
+    if (toolSelect && toolRazor) {
+      toolSelect.addEventListener('click', function() {
+        this.classList.add('active');
+        toolRazor.classList.remove('active');
+        activeTool = 'select';
+        document.querySelectorAll('.fl-clip').forEach(c => c.style.cursor = 'grab');
+      });
+      toolRazor.addEventListener('click', function() {
+        this.classList.add('active');
+        toolSelect.classList.remove('active');
+        activeTool = 'razor';
+        document.querySelectorAll('.fl-clip').forEach(c => c.style.cursor = 'crosshair');
+      });
+    }
+
+    const zoomSlider = document.getElementById('fl-zoom');
+    if (zoomSlider) {
+      zoomSlider.addEventListener('input', (e) => {
+        timelineZoom = parseFloat(e.target.value) / 100;
+        const tracks = document.querySelector('.fl-tracks-container');
+        if (tracks) {
+          tracks.style.minWidth = `${1200 * timelineZoom}px`;
+        }
+      });
+    }
+
+    // Timeline Click and Drag Scrubbing to Move Playhead
+    const timelineContainer = document.querySelector('.fl-tracks-container');
+    const playheadEl = document.getElementById('fl-playhead');
+
+    function updatePlayheadFromEvent(e) {
+      if (!timelineContainer) return;
+      const rect = timelineContainer.getBoundingClientRect();
+      // Scroll offset support if timeline is horizontally scrollable
+      const scrollOffset = timelineContainer.scrollLeft || 0;
+      playheadX = Math.max(0, e.clientX - rect.left + scrollOffset);
+      if (playheadEl) playheadEl.style.left = playheadX + 'px';
+      drawPreviewFrame();
+    }
+
+    if (timelineContainer) {
+      let isScrubbing = false;
+
+      timelineContainer.addEventListener('mousedown', (e) => {
+        // If clicking on a clip or clip delete handle, let clip handler take over
+        if (e.target.closest('.fl-clip')) return;
+        isScrubbing = true;
+        updatePlayheadFromEvent(e);
+
+        const onScrubMove = (moveEvt) => {
+          if (isScrubbing) {
+            updatePlayheadFromEvent(moveEvt);
+          }
+        };
+
+        const onScrubEnd = () => {
+          isScrubbing = false;
+          window.removeEventListener('mousemove', onScrubMove);
+          window.removeEventListener('mouseup', onScrubEnd);
+        };
+
+        window.addEventListener('mousemove', onScrubMove);
+        window.addEventListener('mouseup', onScrubEnd);
+      });
+    }
+
+    // Enable direct dragging on the playhead scrubber bar itself
+    if (playheadEl) {
+      playheadEl.style.pointerEvents = 'auto';
+      playheadEl.style.cursor = 'ew-resize';
+      playheadEl.addEventListener('mousedown', (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        let isPlayheadDragging = true;
+
+        const onPlayheadMove = (moveEvt) => {
+          if (isPlayheadDragging) {
+            updatePlayheadFromEvent(moveEvt);
+          }
+        };
+
+        const onPlayheadUp = () => {
+          isPlayheadDragging = false;
+          window.removeEventListener('mousemove', onPlayheadMove);
+          window.removeEventListener('mouseup', onPlayheadUp);
+        };
+
+        window.addEventListener('mousemove', onPlayheadMove);
+        window.addEventListener('mouseup', onPlayheadUp);
+      });
+    }
+
+    // Dynamic API URL resolver to connect to Concat Video Studio backend
+    function getApiUrl(path) {
+      if (window.location.port === '18012') return path;
+      const params = new URLSearchParams(window.location.search);
+      const port = params.get('backend_port') || '18012';
+      const host = window.location.hostname || 'localhost';
+      return `http://${host}:${port}${path}`;
+    }
 
     // Populate media pool from server
     async function loadMediaSamples() {
       try {
-        const res = await fetch('/api/media/samples');
+        const res = await fetch(getApiUrl('/api/media/samples'));
         const data = await res.json();
         const bin = document.getElementById('fl-media-bin');
-        bin.innerHTML = '';
-
-        if (data.samples) {
+        if (bin && data.samples) {
+          bin.innerHTML = '';
           data.samples.forEach(s => {
             const card = document.createElement('div');
             card.className = 'fl-media-card';
@@ -752,7 +1543,10 @@
               </div>
             `;
             card.addEventListener('click', () => {
-              alert(`Selected clip: ${s.name}`);
+              activeClipState.name = s.name;
+              document.querySelectorAll('.fl-media-card').forEach(c => c.style.borderColor = 'var(--color-border)');
+              card.style.borderColor = 'var(--color-accent)';
+              drawPreviewFrame();
             });
             bin.appendChild(card);
           });
@@ -763,44 +1557,304 @@
     }
 
     // Export button handler
-    document.getElementById('fl-btn-export').addEventListener('click', async () => {
-      const btn = document.getElementById('fl-btn-export');
-      btn.innerText = '⏳ Rendering...';
-      try {
-        const res = await fetch('/api/project/export', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            projectName: 'Flowork Cinematic Montage',
-            resolution: '1080p',
-            fps: 30,
-            format: 'mp4'
-          })
-        });
-        const data = await res.json();
-        alert(`Render Initialized!
+    const btnExport = document.getElementById('fl-btn-export');
+    if (btnExport) {
+      btnExport.addEventListener('click', async () => {
+        btnExport.innerText = '⏳ Rendering...';
+        try {
+          const res = await fetch(getApiUrl('/api/project/export'), {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              projectName: 'Flowork Cinematic Montage',
+              resolution: document.getElementById('fl-aspect-ratio')?.value || '16-9',
+              fps: 30,
+              format: 'mp4'
+            })
+          });
+          const data = await res.json();
+          alert(`Render Initialized!
 Job ID: ${data.jobId}
 Format: ${data.details.format.toUpperCase()} (${data.details.resolution})`);
+        } catch (err) {
+          alert('Render pipeline simulated successfully!');
+        } finally {
+          btnExport.innerText = '⚡ Render & Export';
+        }
+      });
+    }
+
+    /* ==========================================================================
+       SOVEREIGN AUTO-SAVE & PREVIEW DRAG RESIZE ENGINE (V3 ROBUST)
+       ========================================================================== */
+    const STORAGE_KEY = 'fl_concat_project_state_v3';
+    let autoSaveTimer = null;
+
+    function triggerAutoSave() {
+      const dot = document.getElementById('fl-autosave-dot');
+      const text = document.getElementById('fl-autosave-text');
+      if (dot) dot.classList.add('saving');
+      if (text) text.innerText = 'Saving...';
+
+      if (autoSaveTimer) clearTimeout(autoSaveTimer);
+      autoSaveTimer = setTimeout(() => {
+        saveProjectState();
+        if (dot) dot.classList.remove('saving');
+        if (text) text.innerText = 'Saved';
+      }, 250);
+    }
+
+    function saveProjectState() {
+      try {
+        const aspectSelect = document.getElementById('fl-aspect-ratio');
+        const monitor = document.getElementById('fl-monitor-wrapper');
+
+        // Extract tracks (both headers & lanes)
+        const laneEls = document.querySelectorAll('.fl-tracks-container .fl-track-lane');
+        const tracksData = [];
+
+        laneEls.forEach((lane, laneIdx) => {
+          const trackId = lane.getAttribute('data-track-id') || ('track-' + (laneIdx + 1));
+          const header = document.querySelector(`.fl-track-header[data-track-id="${trackId}"]`);
+
+          let trackLabel = '';
+          let isAudio = false;
+          if (header) {
+            const titleSpan = header.querySelector('span:first-child');
+            if (titleSpan) {
+              trackLabel = titleSpan.innerText.trim();
+              isAudio = trackLabel.includes('Audio') || trackLabel.includes('🔊');
+            }
+          }
+
+          const clips = [];
+          const clipEls = lane.querySelectorAll('.fl-clip');
+          clipEls.forEach(clipEl => {
+            const titleEl = clipEl.querySelector('span');
+            clips.push({
+              title: titleEl ? titleEl.innerText : 'Clip',
+              left: parseFloat(clipEl.style.left) || 0,
+              width: parseFloat(clipEl.style.width) || 120,
+              background: clipEl.style.background || '',
+              className: clipEl.className || 'fl-clip'
+            });
+          });
+
+          tracksData.push({
+            trackId: trackId,
+            laneIndex: laneIdx,
+            laneType: lane.getAttribute('data-lane') || (isAudio ? 'audio' : 'video'),
+            trackLabel: trackLabel || `Track ${laneIdx + 1}`,
+            isAudio: isAudio,
+            clips: clips
+          });
+        });
+
+        const statePayload = {
+          version: 3,
+          isUserProject: true,
+          aspectRatio: aspectSelect ? aspectSelect.value : '16:9',
+          monitorWidth: monitor ? monitor.style.width : '',
+          monitorMaxWidth: monitor ? monitor.style.maxWidth : '',
+          monitorHeight: monitor ? monitor.style.height : '',
+          tracks: tracksData,
+          activeClipState: activeClipState,
+          timestamp: Date.now()
+        };
+
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(statePayload));
       } catch (err) {
-        alert('Render pipeline simulated successfully!');
-      } finally {
-        btn.innerText = '⚡ Render & Export';
+        console.error('saveProjectState error:', err);
       }
-    });
+    }
 
-    // Tool switching
-    document.getElementById('tool-select').addEventListener('click', function() {
-      this.classList.add('active');
-      document.getElementById('tool-razor').classList.remove('active');
-    });
-    document.getElementById('tool-razor').addEventListener('click', function() {
-      this.classList.add('active');
-      document.getElementById('tool-select').classList.remove('active');
-    });
+    function restoreProjectState() {
+      try {
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const state = JSON.parse(raw);
+        if (!state || !state.isUserProject) return false;
 
-    // Initial render
+        // 1. Restore Aspect Ratio
+        const aspectSelect = document.getElementById('fl-aspect-ratio');
+        if (aspectSelect && state.aspectRatio) {
+          aspectSelect.value = state.aspectRatio;
+          const monitor = document.getElementById('fl-monitor-wrapper');
+          if (monitor) {
+            if (state.aspectRatio === '16:9') monitor.style.aspectRatio = '16 / 9';
+            else if (state.aspectRatio === '9:16') monitor.style.aspectRatio = '9 / 16';
+            else if (state.aspectRatio === '1:1') monitor.style.aspectRatio = '1 / 1';
+          }
+        }
+
+        // 2. Restore Monitor dimensions
+        const monitor = document.getElementById('fl-monitor-wrapper');
+        if (monitor) {
+          if (state.monitorWidth) monitor.style.width = state.monitorWidth;
+          if (state.monitorMaxWidth) monitor.style.maxWidth = state.monitorMaxWidth;
+          if (state.monitorHeight) monitor.style.height = state.monitorHeight;
+        }
+
+        // 3. Reconstruct Tracks & Clips exactly as saved (including 0 tracks if all deleted)
+        if (Array.isArray(state.tracks)) {
+          const headersContainer = document.querySelector('.fl-track-headers');
+          const lanesContainer = document.querySelector('.fl-tracks-container');
+
+          if (headersContainer && lanesContainer) {
+            // Keep the first header label 'Timeline Tracks'
+            const firstHeader = headersContainer.querySelector('.fl-track-header:first-child');
+            headersContainer.innerHTML = '';
+            if (firstHeader) {
+              headersContainer.appendChild(firstHeader);
+            } else {
+              const defaultHeaderLabel = document.createElement('div');
+              defaultHeaderLabel.className = 'fl-track-header';
+              defaultHeaderLabel.style.fontWeight = 'bold';
+              defaultHeaderLabel.style.background = 'transparent';
+              defaultHeaderLabel.innerText = 'Timeline Tracks';
+              headersContainer.appendChild(defaultHeaderLabel);
+            }
+
+            // Clear all lanes
+            lanesContainer.innerHTML = '';
+
+            // Rebuild each track from saved state
+            state.tracks.forEach((trackData, idx) => {
+              const trackId = trackData.trackId || ('track-' + (idx + 1));
+              const isAudio = !!trackData.isAudio || trackData.laneType === 'audio';
+              const trackLabel = trackData.trackLabel || (isAudio ? `Audio ${idx + 1} (audio)` : `Track ${idx + 1} (video)`);
+
+              // Create header
+              const headerEl = document.createElement('div');
+              headerEl.className = 'fl-track-header';
+              headerEl.setAttribute('data-track-id', trackId);
+              headerEl.innerHTML = `
+                <span>${trackLabel.startsWith('🔊') || trackLabel.startsWith('🎬') ? trackLabel : (isAudio ? '🔊 ' : '🎬 ') + trackLabel}</span>
+                <div class="fl-track-header-actions">
+                  <span style="cursor: pointer; color: var(--color-dim);" title="Mute/Solo">👁️ 🔒</span>
+                  <span class="fl-track-del-btn" title="Delete Track & all its clips">✕</span>
+                </div>
+              `;
+              const delBtn = headerEl.querySelector('.fl-track-del-btn');
+              if (delBtn) {
+                delBtn.addEventListener('click', (e) => {
+                  e.stopPropagation();
+                  deleteTrack(trackId);
+                });
+              }
+              headersContainer.appendChild(headerEl);
+
+              // Create lane
+              const laneEl = document.createElement('div');
+              laneEl.className = 'fl-track-lane' + (isAudio ? ' audio-lane' : '');
+              laneEl.setAttribute('data-track-id', trackId);
+              laneEl.setAttribute('data-lane', trackData.laneType || (isAudio ? 'audio' : 'video'));
+
+              // Populate clips
+              if (Array.isArray(trackData.clips)) {
+                trackData.clips.forEach(clipData => {
+                  const clipEl = document.createElement('div');
+                  clipEl.className = clipData.className || 'fl-clip';
+                  clipEl.style.left = clipData.left + 'px';
+                  clipEl.style.width = clipData.width + 'px';
+                  if (clipData.background) clipEl.style.background = clipData.background;
+
+                  const titleSpan = document.createElement('span');
+                  titleSpan.innerText = clipData.title || 'Clip';
+                  clipEl.appendChild(titleSpan);
+
+                  const hl = document.createElement('div');
+                  hl.className = 'fl-clip-handle left';
+                  const hr = document.createElement('div');
+                  hr.className = 'fl-clip-handle right';
+                  clipEl.appendChild(hl);
+                  clipEl.appendChild(hr);
+
+                  laneEl.appendChild(clipEl);
+                  makeClipInteractive(clipEl);
+                });
+              }
+
+              lanesContainer.appendChild(laneEl);
+            });
+          }
+        }
+
+        // 4. Restore active inspector clip state if available
+        if (state.activeClipState) {
+          Object.assign(activeClipState, state.activeClipState);
+          updateInspectorUI();
+        }
+
+        drawPreviewFrame();
+        return true;
+      } catch (err) {
+        console.error('restoreProjectState error:', err);
+        return false;
+      }
+    }
+
+    // Drag-and-drop preview monitor resizer
+    function initPreviewResizer() {
+      const resizer = document.getElementById('fl-preview-resizer');
+      const monitor = document.getElementById('fl-monitor-wrapper');
+      if (!resizer || !monitor) return;
+
+      let isResizing = false;
+      let startX = 0;
+      let startWidth = 0;
+
+      resizer.addEventListener('mousedown', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        isResizing = true;
+        startX = e.clientX;
+        startWidth = monitor.getBoundingClientRect().width;
+
+        document.body.style.cursor = 'nwse-resize';
+        document.body.style.userSelect = 'none';
+
+        function onMouseMove(moveEvent) {
+          if (!isResizing) return;
+          const deltaX = moveEvent.clientX - startX;
+          const newWidth = Math.max(260, Math.min(1200, Math.round(startWidth + deltaX)));
+          monitor.style.maxWidth = 'none';
+          monitor.style.width = newWidth + 'px';
+        }
+
+        function onMouseUp() {
+          if (!isResizing) return;
+          isResizing = false;
+          document.body.style.cursor = '';
+          document.body.style.userSelect = '';
+          window.removeEventListener('mousemove', onMouseMove);
+          window.removeEventListener('mouseup', onMouseUp);
+          triggerAutoSave();
+        }
+
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+      });
+    }
+
+    // Startup restoration and initializations
+    const hasRestored = restoreProjectState();
+    initPreviewResizer();
     drawPreviewFrame();
     loadMediaSamples();
+
+    // Aspect ratio change listener with auto-save
+    const aspectSelectEl = document.getElementById('fl-aspect-ratio');
+    if (aspectSelectEl) {
+      aspectSelectEl.addEventListener('change', () => {
+        triggerAutoSave();
+      });
+    }
+
+    // Auto save on window unload before refresh/close
+    window.addEventListener('beforeunload', () => {
+      saveProjectState();
+    });
   </script>
 </body>
 </html>

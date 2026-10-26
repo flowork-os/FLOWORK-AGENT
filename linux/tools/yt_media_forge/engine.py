@@ -91,7 +91,9 @@ def main():
     if action == "synthesize_audio":
         text = payload.get("script_text", "")
         voice = payload.get("voice", "id-ID-GadisNeural")
-        out_audio = payload.get("output_path", "/home/mrflow/flowork/.FL_BIN/scratch/voiceover.mp3")
+        scratch_dir = os.path.join(os.getcwd(), ".FL_BIN", "scratch")
+        default_audio = os.path.join(scratch_dir, "voiceover.mp3")
+        out_audio = payload.get("output_path", default_audio)
         out_srt = out_audio.rsplit(".", 1)[0] + ".srt"
         os.makedirs(os.path.dirname(os.path.abspath(out_audio)), exist_ok=True)
         
@@ -105,7 +107,9 @@ def main():
     elif action in ("render_video", "render_short"):
         res = "1080x1920" if action == "render_short" else "1920x1080"
         audio = payload.get("audio_path")
-        out_mp4 = payload.get("output_path", "/home/mrflow/flowork/.FL_BIN/scratch/render_output.mp4")
+        scratch_dir = os.path.join(os.getcwd(), ".FL_BIN", "scratch")
+        default_mp4 = os.path.join(scratch_dir, "render_output.mp4")
+        out_mp4 = payload.get("output_path", default_mp4)
         scenes = payload.get("scenes", [])
         os.makedirs(os.path.dirname(os.path.abspath(out_mp4)), exist_ok=True)
         
