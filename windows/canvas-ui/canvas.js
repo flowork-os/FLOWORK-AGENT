@@ -7635,13 +7635,44 @@ async function syncConnectorCloudVault() {
 
   try {
     const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+
+    // Check if connector gateway is reachable and check auth state
+    let authRes = null;
+    try {
+      const ping = await fetch(`${routerBase}/auth/status`, { signal: AbortSignal.timeout(3500) });
+      if (ping.ok) {
+        authRes = await ping.json();
+      }
+    } catch (netErr) {
+      showToast('⚠️ Connector gateway is offline (Port 9099). Check conector.log');
+      return;
+    }
+
+    if (authRes && authRes.authenticated === false) {
+      showToast('⚠️ Flowork Sovereign Passport required to sync cloud accounts.');
+      const proceed = confirm('Flowork OS Sovereign Passport session not detected on this machine.\n\nLog in to auth.floworkos.com now to download your cloud accounts?');
+      if (proceed) {
+        const loginUrl = `${routerBase}/auth/login-url`;
+        if (typeof openSystemBrowser === 'function') {
+          await openSystemBrowser(loginUrl);
+        } else {
+          window.open(loginUrl, '_blank');
+        }
+      }
+      return;
+    }
+
     const res = await fetch(`${routerBase}/auth/router/sync-cloud`);
     const data = await res.json();
     if (data && data.success) {
-      showToast(`☁️ Cloud sync complete: ${data.total_accounts} accounts loaded`);
+      if (data.total_accounts > 0) {
+        showToast(`☁️ Cloud sync complete: ${data.total_accounts} accounts loaded`);
+      } else {
+        showToast('ℹ️ Cloud sync complete: 0 accounts found in your cloud vault');
+      }
       renderConnectorUI(data);
     } else {
-      showToast('⚠️ Cloud sync failed or no accounts returned');
+      showToast('⚠️ Cloud sync failed: ' + (data?.error || 'No accounts returned from server'));
     }
   } catch (err) {
     showToast('⚠️ Cloud sync error: ' + err.message);
@@ -22621,6 +22652,31 @@ let sentinelTimer = null;
 let sentinelSeconds = 0;
 let sentinelCurrentSession = null;
 let sentinelDomListener = null;
+let sentinelApiBase = null;
+
+async function getSentinelApiBase() {
+  if (sentinelApiBase) return sentinelApiBase;
+  try {
+    const statusRes = await fetch('/api/plugins/flowork-sentinel/status');
+    if (statusRes.ok) {
+      const info = await statusRes.json();
+      if (info.port) {
+        sentinelApiBase = `http://127.0.0.1:${info.port}`;
+        return sentinelApiBase;
+      }
+    }
+    const launchRes = await fetch('/api/apps/flowork-sentinel/launch', { method: 'POST' });
+    if (launchRes.ok) {
+      const launchData = await launchRes.json();
+      if (launchData.port) {
+        sentinelApiBase = `http://127.0.0.1:${launchData.port}`;
+        return sentinelApiBase;
+      }
+    }
+  } catch (_) {}
+  sentinelApiBase = 'http://127.0.0.1:17870';
+  return sentinelApiBase;
+}
 
 function initSentinelRecordUI() {
   const btnRecord = document.getElementById('btn-topbar-record');
@@ -22654,7 +22710,8 @@ function initSentinelRecordUI() {
 
       // Call Sentinel Engine
       try {
-        const res = await fetch('http://127.0.0.1:17870/api/session/start', {
+        const sentinelBase = await getSentinelApiBase();
+        const res = await fetch(`${sentinelBase}/api/session/start`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -22679,7 +22736,8 @@ function initSentinelRecordUI() {
         const actionText = target.innerText?.slice(0, 40) || target.value || target.title || '';
 
         // Dispatch to Sentinel Engine
-        fetch('http://127.0.0.1:17870/api/session/event', {
+        const sentinelBase = sentinelApiBase || 'http://127.0.0.1:17870';
+        fetch(`${sentinelBase}/api/session/event`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
@@ -22712,7 +22770,8 @@ function initSentinelRecordUI() {
       if (label) label.textContent = 'Record';
 
       try {
-        const res = await fetch('http://127.0.0.1:17870/api/session/stop', {
+        const sentinelBase = await getSentinelApiBase();
+        const res = await fetch(`${sentinelBase}/api/session/stop`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ session_id: sentinelCurrentSession?.id })
@@ -22721,7 +22780,7 @@ function initSentinelRecordUI() {
         if (typeof showToast === 'function') {
           showToast(`💾 Session recorded (${data.total_events || 0} events)! Opening Sentinel Studio...`);
         }
-        window.open('http://127.0.0.1:17870', '_blank');
+        window.open(sentinelBase, '_blank');
       } catch (e) {
         if (typeof showToast === 'function') {
           showToast('💾 Recording stopped!');

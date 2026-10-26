@@ -19,6 +19,54 @@ document.addEventListener('DOMContentLoaded', () => {
   const tabSkillContent = document.getElementById('tab-skill-content');
   const tabScriptContent = document.getElementById('tab-script-content');
 
+  // Dynamic API Base Discovery & Safe Fetch
+  let API_BASE = '';
+  async function resolveApiBase() {
+    if (API_BASE) return API_BASE;
+    try {
+      const statusRes = await fetch('/api/plugins/flowork-sentinel/status');
+      if (statusRes.ok) {
+        const info = await statusRes.json();
+        if (info.port) {
+          API_BASE = `http://127.0.0.1:${info.port}`;
+          return API_BASE;
+        }
+      }
+      const launchRes = await fetch('/api/apps/flowork-sentinel/launch', { method: 'POST' });
+      if (launchRes.ok) {
+        const launchData = await launchRes.json();
+        if (launchData.port) {
+          API_BASE = `http://127.0.0.1:${launchData.port}`;
+          return API_BASE;
+        }
+      }
+    } catch (_) {}
+
+    if (window.location.port && window.location.port !== '19890') {
+      API_BASE = `${window.location.protocol}//${window.location.hostname}:${window.location.port}`;
+      return API_BASE;
+    }
+
+    API_BASE = 'http://127.0.0.1:17870';
+    return API_BASE;
+  }
+
+  async function apiCall(endpoint, options = {}) {
+    const base = await resolveApiBase();
+    const url = endpoint.startsWith('http') ? endpoint : `${base}${endpoint.startsWith('/') ? '' : '/'}${endpoint}`;
+    const res = await fetch(url, options);
+    const text = await res.text();
+    if (!text || text.trim().length === 0) {
+      if (!res.ok) throw new Error(`HTTP ${res.status} from Sentinel engine`);
+      return {};
+    }
+    try {
+      return JSON.parse(text);
+    } catch (e) {
+      throw new Error(`Engine returned non-JSON response (HTTP ${res.status}): ${text.slice(0, 100)}`);
+    }
+  }
+
   // Tab switching
   document.querySelectorAll('.tab-btn').forEach(btn => {
     btn.addEventListener('click', () => {
@@ -38,8 +86,7 @@ document.addEventListener('DOMContentLoaded', () => {
   // Fetch Sessions
   async function loadSessions() {
     try {
-      const res = await fetch('/api/sessions');
-      const data = await res.json();
+      const data = await apiCall('/api/sessions');
       sessions = data.sessions || [];
       sessionCountEl.textContent = sessions.length;
       renderSessionList();
@@ -51,7 +98,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function renderSessionList() {
     sessionsContainer.innerHTML = '';
     if (sessions.length === 0) {
-      sessionsContainer.innerHTML = '<div class="empty-state">No sessions recorded yet. Start one via the browser extension!</div>';
+      sessionsContainer.innerHTML = '<div class="empty-state">No sessions recorded yet. Start one via the browser extension or studio record button!</div>';
       return;
     }
 
@@ -84,11 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Fetch full session details
     try {
-      const res = await fetch(`/api/sessions`);
-      // Re-fetch to find session with events
       timelineContainer.innerHTML = '<div class="empty-timeline">Loading captured events...</div>';
-      
-      // Request synthesis preview if already exists
       renderTimelineForSession(sess);
     } catch (err) {
       console.error(err);
@@ -133,8 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
     btnSynthesize.textContent = '⚡ Synthesizing Intent & Steps...';
 
     try {
-      const res = await fetch(`/api/synthesize/${selectedSessionId}`, { method: 'POST' });
-      const data = await res.json();
+      const data = await apiCall(`/api/synthesize/${selectedSessionId}`, { method: 'POST' });
       if (data.status === 'ok') {
         currentSynthesizedData = data;
         codeSkillPreview.textContent = data.preview_skill;
@@ -162,7 +204,7 @@ document.addEventListener('DOMContentLoaded', () => {
       const sess = sessions.find(s => s.id === selectedSessionId);
       const cleanName = (sess?.name || selectedSessionId).toLowerCase().replace(/[^a-z0-9_]/g, '_');
 
-      const res = await fetch('/api/deploy-skill', {
+      const data = await apiCall('/api/deploy-skill', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -170,7 +212,6 @@ document.addEventListener('DOMContentLoaded', () => {
           skill_name: cleanName
         })
       });
-      const data = await res.json();
       if (data.status === 'ok') {
         alert(`SUCCESS! Skill deployed to Flowork OS:\n${data.target_dir}/SKILL.md\n\nYour autonomous agents can now execute this skill!`);
       } else {
@@ -199,29 +240,29 @@ document.addEventListener('DOMContentLoaded', () => {
         if (name === null) return;
 
         try {
-          const res = await fetch('/api/session/start', {
+          const data = await apiCall('/api/session/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ name: name || defaultName, domain: 'web_target' })
           });
-          const data = await res.json();
           if (data.status === 'ok') {
             studioIsRecording = true;
             btnStudioRec.style.background = 'linear-gradient(135deg, #10b981 0%, #059669 100%)';
             txtStudioRec.textContent = '⏹️ STOP RECORDING';
             alert('🔴 Recording session active! Actions sent via Chrome Extension or API will be recorded into this session.');
+          } else {
+            alert('Could not start recording session: ' + (data.message || 'Unknown response'));
           }
         } catch (e) {
           alert('Error starting session: ' + e.message);
         }
       } else {
         try {
-          const res = await fetch('/api/session/stop', {
+          const data = await apiCall('/api/session/stop', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({})
           });
-          const data = await res.json();
           studioIsRecording = false;
           btnStudioRec.style.background = 'linear-gradient(135deg, #ef4444 0%, #dc2626 100%)';
           txtStudioRec.textContent = 'START RECORDING';

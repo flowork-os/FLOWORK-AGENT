@@ -120,22 +120,14 @@ if exist "%SCRIPT_DIR%\connection\router.js" (
 set "LOG_OUT=%SCRIPT_DIR%\portable-home\.flowork\logs\connector.log"
 set "LOG_ERR=%SCRIPT_DIR%\portable-home\.flowork\logs\connector_err.log"
 
+set "ROUTER_ACTIVE=0"
 if not "!ROUTER_BIN!"=="" (
     echo [Flowork] ⚡ Starting Native Router Connector on port 9099...
     powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '!ROUTER_BIN!' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
     if errorlevel 1 (
         start "" /B cmd /c ""!ROUTER_BIN!" >> "%LOG_OUT%" 2>&1"
     )
-) else if not "!NODE_BIN!"=="" if not "!ROUTER_JS!"=="" (
-    echo [Flowork] 🚀 Starting Universal Router Switchboard on port 9099 (Node.js fallback)...
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%NODE_BIN%' -ArgumentList '"%ROUTER_JS%"' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
-    if errorlevel 1 (
-        start "" /B cmd /c ""%NODE_BIN%" "%ROUTER_JS%" >> "%LOG_OUT%" 2>&1"
-    )
-)
-
     rem Verify port 9099 is listening
-    set "ROUTER_ACTIVE=0"
     for /L %%w in (1,1,6) do (
         if "!ROUTER_ACTIVE!"=="0" (
             netstat -a -n -o 2^>nul | findstr ":9099 " | findstr "LISTENING" >nul 2>&1
@@ -146,13 +138,33 @@ if not "!ROUTER_BIN!"=="" (
             )
         )
     )
-    if "!ROUTER_ACTIVE!"=="1" (
-        echo [Flowork] ✅ Sovereign Router Switchboard active on port 9099.
-    ) else (
-        echo [Flowork] ℹ️ Notice: Router Switchboard initializing in background.
+)
+
+rem If native binary failed to bind (e.g. older Core i3 without AVX2), auto-failover to Node.js!
+if "!ROUTER_ACTIVE!"=="0" (
+    if not "!NODE_BIN!"=="" if not "!ROUTER_JS!"=="" (
+        echo [Flowork] ⚠️ Native binary failed to bind port 9099 (CPU instruction mismatch). Engaging Universal Node.js router...
+        powershell -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%NODE_BIN%' -ArgumentList '\"%ROUTER_JS%\"' -WindowStyle Hidden -RedirectStandardOutput '%LOG_OUT%' -RedirectStandardError '%LOG_ERR%'" >nul 2>&1
+        if errorlevel 1 (
+            start "" /B cmd /c ""%NODE_BIN%" "%ROUTER_JS%" >> "%LOG_OUT%" 2>&1"
+        )
+        for /L %%w in (1,1,6) do (
+            if "!ROUTER_ACTIVE!"=="0" (
+                netstat -a -n -o 2^>nul | findstr ":9099 " | findstr "LISTENING" >nul 2>&1
+                if not errorlevel 1 (
+                    set "ROUTER_ACTIVE=1"
+                ) else (
+                    ping -n 2 127.0.0.1 >nul 2>&1
+                )
+            )
+        )
     )
+)
+
+if "!ROUTER_ACTIVE!"=="1" (
+    echo [Flowork] ✅ Sovereign Router Switchboard active on port 9099.
 ) else (
-    echo [Flowork] ⚠️ Warning: Node.js runtime or router.js not found. Router switchboard bypassed.
+    echo [Flowork] ℹ️ Notice: Router Switchboard initializing in background.
 )
 
 rem 4. Auto-detect GitHub Token if akungithub exists

@@ -76,6 +76,7 @@ document.addEventListener('DOMContentLoaded', () => {
   initCopilotCategoryFilters();
   initEventListeners();
   initSyncDriveUI();
+  initSentinelRecordUI();
   initConnectorUI();
   initPromoRecorder();
   initWorkspaceSystem();
@@ -7634,13 +7635,44 @@ async function syncConnectorCloudVault() {
 
   try {
     const routerBase = (typeof _getFloworkRouterBase === 'function') ? _getFloworkRouterBase() : 'http://127.0.0.1:9099';
+
+    // Check if connector gateway is reachable and check auth state
+    let authRes = null;
+    try {
+      const ping = await fetch(`${routerBase}/auth/status`, { signal: AbortSignal.timeout(3500) });
+      if (ping.ok) {
+        authRes = await ping.json();
+      }
+    } catch (netErr) {
+      showToast('⚠️ Connector gateway is offline (Port 9099). Check conector.log');
+      return;
+    }
+
+    if (authRes && authRes.authenticated === false) {
+      showToast('⚠️ Flowork Sovereign Passport required to sync cloud accounts.');
+      const proceed = confirm('Flowork OS Sovereign Passport session not detected on this machine.\n\nLog in to auth.floworkos.com now to download your cloud accounts?');
+      if (proceed) {
+        const loginUrl = `${routerBase}/auth/login-url`;
+        if (typeof openSystemBrowser === 'function') {
+          await openSystemBrowser(loginUrl);
+        } else {
+          window.open(loginUrl, '_blank');
+        }
+      }
+      return;
+    }
+
     const res = await fetch(`${routerBase}/auth/router/sync-cloud`);
     const data = await res.json();
     if (data && data.success) {
-      showToast(`☁️ Cloud sync complete: ${data.total_accounts} accounts loaded`);
+      if (data.total_accounts > 0) {
+        showToast(`☁️ Cloud sync complete: ${data.total_accounts} accounts loaded`);
+      } else {
+        showToast('ℹ️ Cloud sync complete: 0 accounts found in your cloud vault');
+      }
       renderConnectorUI(data);
     } else {
-      showToast('⚠️ Cloud sync failed or no accounts returned');
+      showToast('⚠️ Cloud sync failed: ' + (data?.error || 'No accounts returned from server'));
     }
   } catch (err) {
     showToast('⚠️ Cloud sync error: ' + err.message);
@@ -22610,3 +22642,150 @@ window.addEventListener('beforeunload', () => {
     });
   }
 });
+
+
+// ==========================================================================
+// FLOWORK SENTINEL ACTION RECORDER & SYNTHESIZER
+// ==========================================================================
+let sentinelRecording = false;
+let sentinelTimer = null;
+let sentinelSeconds = 0;
+let sentinelCurrentSession = null;
+let sentinelDomListener = null;
+let sentinelApiBase = null;
+
+async function getSentinelApiBase() {
+  if (sentinelApiBase) return sentinelApiBase;
+  try {
+    const statusRes = await fetch('/api/plugins/flowork-sentinel/status');
+    if (statusRes.ok) {
+      const info = await statusRes.json();
+      if (info.port) {
+        sentinelApiBase = `http://127.0.0.1:${info.port}`;
+        return sentinelApiBase;
+      }
+    }
+    const launchRes = await fetch('/api/apps/flowork-sentinel/launch', { method: 'POST' });
+    if (launchRes.ok) {
+      const launchData = await launchRes.json();
+      if (launchData.port) {
+        sentinelApiBase = `http://127.0.0.1:${launchData.port}`;
+        return sentinelApiBase;
+      }
+    }
+  } catch (_) {}
+  sentinelApiBase = 'http://127.0.0.1:17870';
+  return sentinelApiBase;
+}
+
+function initSentinelRecordUI() {
+  const btnRecord = document.getElementById('btn-topbar-record');
+  const dot = document.getElementById('topbar-record-dot');
+  const label = document.getElementById('topbar-record-label');
+
+  if (!btnRecord) return;
+
+  btnRecord.addEventListener('click', async () => {
+    if (!sentinelRecording) {
+      // START RECORDING
+      const defaultName = `session_${new Date().toISOString().slice(0, 10)}_${Date.now().toString().slice(-4)}`;
+      const sessionName = prompt('Enter name for this recording session:', defaultName);
+      if (sessionName === null) return;
+
+      sentinelRecording = true;
+      sentinelSeconds = 0;
+      btnRecord.style.background = 'rgba(239, 68, 68, 0.35)';
+      btnRecord.style.borderColor = '#ef4444';
+      btnRecord.style.boxShadow = '0 0 14px rgba(239, 68, 68, 0.7)';
+      if (dot) dot.style.animation = 'pulse 1s infinite alternate';
+
+      // Start ticking timer
+      sentinelTimer = setInterval(() => {
+        sentinelSeconds++;
+        const mins = String(Math.floor(sentinelSeconds / 60)).padStart(2, '0');
+        const secs = String(sentinelSeconds % 60).padStart(2, '0');
+        if (label) label.textContent = `REC ${mins}:${secs}`;
+      }, 1000);
+      if (label) label.textContent = 'REC 00:00';
+
+      // Call Sentinel Engine
+      try {
+        const sentinelBase = await getSentinelApiBase();
+        const res = await fetch(`${sentinelBase}/api/session/start`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: sessionName || defaultName,
+            domain: 'flowork_canvas',
+            target_url: window.location.href
+          })
+        });
+        const data = await res.json();
+        sentinelCurrentSession = data.session;
+      } catch (e) {
+        console.warn('[Sentinel] Engine connection note:', e);
+      }
+
+      // Attach DOM Action Interceptor to record clicks inside Flowork OS
+      sentinelDomListener = (e) => {
+        if (!sentinelRecording) return;
+        const target = e.target.closest('button, a, input, select, textarea, .dag-node, .copilot-card') || e.target;
+        if (target === btnRecord || btnRecord.contains(target)) return;
+
+        let selector = target.id ? `#${target.id}` : (target.className && typeof target.className === 'string' ? `.${target.className.split(' ')[0]}` : target.tagName.toLowerCase());
+        const actionText = target.innerText?.slice(0, 40) || target.value || target.title || '';
+
+        // Dispatch to Sentinel Engine
+        const sentinelBase = sentinelApiBase || 'http://127.0.0.1:17870';
+        fetch(`${sentinelBase}/api/session/event`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            type: 'click',
+            selector,
+            text: actionText,
+            url: window.location.href,
+            timestamp: Date.now()
+          })
+        }).catch(() => {});
+      };
+      document.addEventListener('click', sentinelDomListener, true);
+
+      if (typeof showToast === 'function') {
+        showToast('🔴 Flowork Sentinel Recording Started! Actions are being captured.');
+      }
+    } else {
+      // STOP RECORDING
+      sentinelRecording = false;
+      if (sentinelTimer) clearInterval(sentinelTimer);
+      if (sentinelDomListener) {
+        document.removeEventListener('click', sentinelDomListener, true);
+        sentinelDomListener = null;
+      }
+
+      btnRecord.style.background = 'rgba(239, 68, 68, 0.12)';
+      btnRecord.style.borderColor = 'rgba(239, 68, 68, 0.45)';
+      btnRecord.style.boxShadow = 'none';
+      if (dot) dot.style.animation = 'none';
+      if (label) label.textContent = 'Record';
+
+      try {
+        const sentinelBase = await getSentinelApiBase();
+        const res = await fetch(`${sentinelBase}/api/session/stop`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sentinelCurrentSession?.id })
+        });
+        const data = await res.json();
+        if (typeof showToast === 'function') {
+          showToast(`💾 Session recorded (${data.total_events || 0} events)! Opening Sentinel Studio...`);
+        }
+        window.open(sentinelBase, '_blank');
+      } catch (e) {
+        if (typeof showToast === 'function') {
+          showToast('💾 Recording stopped!');
+        }
+      }
+    }
+  });
+}
