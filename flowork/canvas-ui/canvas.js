@@ -3359,14 +3359,14 @@ async function initAuthSystem() {
   const btnLogin = document.getElementById('btn-topbar-login');
   if (btnLogin) {
     btnLogin.addEventListener('click', () => {
-      window.location.href = 'https://canvas.floworkos.com/';
+      window.location.href = '/canvas/launcher.html';
     });
   }
 
   const btnMrFlow = document.getElementById('btn-topbar-mrflow');
   if (btnMrFlow) {
     btnMrFlow.addEventListener('click', () => {
-      showToast('Mr. Flow AI Assistant active.');
+      window.open('/canvas/launcher.html?replay=1', '_blank');
     });
   }
 
@@ -3530,12 +3530,12 @@ function renderAuthUI(data) {
       authPollInterval = null;
     }
   } else {
-    // Strictly Fail-Closed: Redirect unauthorized workspace sessions to Cloudflare Edge launcher
+    // Strictly Fail-Closed: Redirect unauthorized workspace sessions to launcher
     window.__isUserAuthenticated = false;
     document.documentElement.classList.remove('xflow-authenticated');
     sessionStorage.removeItem('flowork_auth_verified');
     sessionStorage.removeItem('xflow_user_authenticated');
-    window.location.replace('https://canvas.floworkos.com/');
+    window.location.replace('/canvas/launcher.html');
   }
 }
 
@@ -3575,8 +3575,8 @@ async function logoutSession() {
   if (profileCapsule) profileCapsule.style.display = 'none';
   if (btnLogin) btnLogin.style.display = 'inline-flex';
 
-  // Redirect to authoritative animated Cloudflare Edge launcher
-  window.location.replace('https://canvas.floworkos.com/');
+  // Redirect to authoritative animated Sovereign Launcher
+  window.location.replace('/canvas/launcher.html');
 }
 
 function setupLockScreenHandlers() {

@@ -111,7 +111,11 @@ if exist "%SCRIPT_DIR%\flowork\flowork-connector.exe" (
 )
 
 set "ROUTER_JS="
-if exist "%SCRIPT_DIR%\connection\router.js" (
+if exist "%SCRIPT_DIR%\portable-home\.flowork\sealed_connector\router.js" (
+    set "ROUTER_JS=%SCRIPT_DIR%\portable-home\.flowork\sealed_connector\router.js"
+) else if exist "%SCRIPT_DIR%\portable-home\.flowork\sealed_connector\antygravity\router.js" (
+    set "ROUTER_JS=%SCRIPT_DIR%\portable-home\.flowork\sealed_connector\antygravity\router.js"
+) else if exist "%SCRIPT_DIR%\connection\router.js" (
     set "ROUTER_JS=%SCRIPT_DIR%\connection\router.js"
 ) else if exist "%SCRIPT_DIR%\connector\router.js" (
     set "ROUTER_JS=%SCRIPT_DIR%\connector\router.js"

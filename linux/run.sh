@@ -131,13 +131,8 @@ if [ "$NEEDS_SYNC" = true ] && [ -n "$REMOTE_VER" ]; then
           -C "$STAGING_DIR/extracted" \
           --exclude="FLOWORK-AGENT-main/linux/portable-home/.flowork/*" \
           --exclude="FLOWORK-AGENT-main/linux/.env" \
-          --exclude="*launcher.html*" \
-          --exclude="*canvas-ui/launcher*" \
           "FLOWORK-AGENT-main/linux" 2>/dev/null || true
 
-        # Ensure launcher remains banished from disk (Cloudflare Edge exclusively)
-        rm -f "$STAGING_DIR/extracted/canvas-ui/launcher.html" 2>/dev/null || true
-        rm -rf "$STAGING_DIR/extracted/canvas-ui/launcher" 2>/dev/null || true
 
         # Cryptographic & integrity verification against official checksum manifest
         UPDATE_VALID=true
