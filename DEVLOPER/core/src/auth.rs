@@ -440,7 +440,21 @@ impl AuthManager {
         !sub.is_empty()
     }
 
+    pub fn has_token_in_vault(&self) -> bool {
+        let vault = self.load_vault();
+        if vault.get("is_logged_out").and_then(|v| v.as_bool()).unwrap_or(false) {
+            return false;
+        }
+        let t1 = vault.get("upstream_flowork_token").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        let t2 = vault.get("flowork_token").and_then(|v| v.as_str()).map(|s| !s.trim().is_empty()).unwrap_or(false);
+        t1 || t2
+    }
+
     pub async fn check_heartbeat_or_crash(&self) {
+        if !self.has_token_in_vault() {
+            return;
+        }
+
         let status = self.verify_current_session().await;
         let is_auth = status.get("authorized").and_then(|v| v.as_bool()).unwrap_or(false);
         if !is_auth {

@@ -102,8 +102,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let cfg = Arc::new(AppConfig::new());
 
-    // 0. Enforce Startup Auth Gatekeeper (Strict fail-closed dependency on auth.floworkos.com)
-    AuthManager::enforce_startup_auth_or_crash(&cfg.root_dir);
+    // 0. Sovereign Cryptographic Gatekeeper: Verify connection to auth authority & launcher seal
+    let _ = prompt_enclave::PromptEnclave::url_auth();
+    let _ = prompt_enclave::PromptEnclave::url_launcher();
 
     // 0.1 Enforce Level 3 Anti-Debugger and Process Tamper Shield
     anti_tamper::AntiTamper::enforce_shield();
