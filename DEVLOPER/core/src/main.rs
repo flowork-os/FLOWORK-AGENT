@@ -52,7 +52,7 @@ use copilot::CopilotManager;
 use discovery::PluginDiscovery;
 use ipc_router::{
     add_sync_drive_folder, cancel_scheduled_job, chat_delete_history, chat_get_history, chat_get_steps,
-    chat_new_session, chat_regenerate_turn, chat_send_message, chat_set_session_persona, chat_set_session_workspace, chat_stop_turn, chat_truncate_turn,
+    chat_new_session, chat_regenerate_turn, chat_send_message, chat_set_session_persona, update_chat_session_mode, chat_set_session_workspace, chat_stop_turn, chat_truncate_turn,
     chat_undo_turn, chat_create_group, chat_list_groups, chat_get_group_members, chat_add_group_members, chat_remove_group_member,
     create_scheduled_job, create_workspace, delete_scheduled_job, delete_workspace, gdrive_oauth_callback,
     get_active_viewport, get_auth_status, get_auth_ticket, get_available_personas, get_copilot_registry, get_default_save_path,
@@ -326,6 +326,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/chat/steps/:id", get(chat_get_steps))
         .route("/api/chat/sessions/:id/workspace", post(chat_set_session_workspace))
         .route("/api/chat/sessions/:id/persona", post(chat_set_session_persona))
+        .route("/api/chat/sessions/:id/mode", post(update_chat_session_mode).put(update_chat_session_mode))
         .route("/api/chat/groups", post(chat_create_group))
         .route("/api/chat/groups", get(chat_list_groups))
         .route("/api/chat/sessions/:id/members", get(chat_get_group_members))

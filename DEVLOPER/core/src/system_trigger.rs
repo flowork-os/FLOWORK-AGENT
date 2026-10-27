@@ -1245,9 +1245,17 @@ pub fn scan_and_evaluate_system_directives(
 ) -> Vec<SystemDirective> {
     let mut candidate_dirs = vec![
         engine_root.join("system").join("system_promp"),
+        engine_root.join("system").join("system_promp").join("promp"),
+        engine_root.join("system").join("system_promp").join("rules"),
         effective_ws.join("system").join("system_promp"),
+        effective_ws.join("system").join("system_promp").join("promp"),
+        effective_ws.join("system").join("system_promp").join("rules"),
         engine_root.join("flowork").join("system").join("system_promp"),
+        engine_root.join("flowork").join("system").join("system_promp").join("promp"),
+        engine_root.join("flowork").join("system").join("system_promp").join("rules"),
         effective_ws.join("flowork").join("system").join("system_promp"),
+        effective_ws.join("flowork").join("system").join("system_promp").join("promp"),
+        effective_ws.join("flowork").join("system").join("system_promp").join("rules"),
         engine_root.join("flowork").join("agents").join("system"),
         engine_root.join("agents").join("system"),
         effective_ws.join("agents").join("system"),

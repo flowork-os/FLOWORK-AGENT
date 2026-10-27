@@ -113,6 +113,11 @@ pub const NATIVE_BINARY_TOOLS: &[&str] = &[
     "c7_helper",
     "team_progress",
     "app_control",
+    "invoke_subagent",
+    "invoke_spawn",
+    "define_subagent",
+    "manage_subagents",
+    "send_message",
 ];
 
 pub fn is_native_binary_tool(name: &str) -> bool {
@@ -1867,7 +1872,7 @@ pub async fn execute_native_tool_with_discovery(
             }))
         },
 
-        "invoke_subagent" => {
+        "invoke_subagent" | "invoke_spawn" => {
             let subagents_val = args.get("Subagents")
                 .or_else(|| args.get("subagents"))
                 .or_else(|| args.get("tasks"))
@@ -1879,7 +1884,7 @@ pub async fn execute_native_tool_with_discovery(
                     return Ok(json!({
                         "status": "SUCCESS",
                         "exit_code": 0,
-                        "tool": "invoke_subagent",
+                        "tool": clean_name,
                         "output": "No subagents specified in request.",
                         "fused_context": ""
                     }));
@@ -1991,7 +1996,7 @@ pub async fn execute_native_tool_with_discovery(
                         Ok(json!({
                             "status": "SUCCESS",
                             "exit_code": 0,
-                            "tool": "invoke_subagent",
+                            "tool": clean_name,
                             "total_workers": dag.get_node().len(),
                             "workers": nodes_summary,
                             "fused_context": fused,
@@ -2006,7 +2011,7 @@ pub async fn execute_native_tool_with_discovery(
                         Ok(json!({
                             "status": "ERROR",
                             "exit_code": 1,
-                            "tool": "invoke_subagent",
+                            "tool": clean_name,
                             "error": err,
                             "output": format!("❌ [SOVEREIGN SWARM DAG ERROR] Execution halted: {}", err)
                         }))
@@ -2016,7 +2021,7 @@ pub async fn execute_native_tool_with_discovery(
                 Ok(json!({
                     "status": "ERROR",
                     "exit_code": 1,
-                    "tool": "invoke_subagent",
+                    "tool": clean_name,
                     "error": "Missing 'Subagents' array in request",
                     "output": "Error: 'Subagents' array argument is required."
                 }))
@@ -3710,6 +3715,32 @@ pub fn get_native_declarations_internal(
 
 /// Resolves a tool declaration from canvas-ui/tools/<tool_name>/manifest.json
 pub fn resolve_canvas_tool_declaration(canvas_tools_dir: &Path, tool_name: &str) -> Option<Value> {
+    if tool_name == "invoke_subagent" || tool_name == "invoke_spawn" || tool_name == "flow_delegate" || tool_name == "flow_spawn" {
+        return Some(json!({
+            "name": if tool_name == "invoke_spawn" { "invoke_spawn" } else { "invoke_subagent" },
+            "description": "Invokes one or more subagents concurrently in Solo mode to perform isolated sub-tasks with their own prompt and reports back when done.",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "Subagents": {
+                        "type": "ARRAY",
+                        "items": {
+                            "type": "OBJECT",
+                            "properties": {
+                                "TypeName": { "type": "STRING", "description": "The type name or persona of the subagent to invoke." },
+                                "Role": { "type": "STRING", "description": "A 2-5 word description of the subagent role." },
+                                "Prompt": { "type": "STRING", "description": "A clear, actionable task description for the subagent." },
+                                "Model": { "type": "STRING", "description": "Model to use (\"inherit\", \"flash\", \"pro\"). Default: \"inherit\"." }
+                            },
+                            "required": ["TypeName", "Role", "Prompt"]
+                        }
+                    }
+                },
+                "required": ["Subagents"]
+            }
+        }));
+    }
+
     if tool_name == "team_progress" || tool_name == "flow_team_progress" {
         return Some(json!({
             "name": "team_progress",
@@ -4206,7 +4237,7 @@ mod tests {
         // 8. Test exact count invariants
         assert_eq!(CORE_14_TOOLS.len(), 14, "Must have exactly 14 Core Universal Agent Tools");
         assert_eq!(PROMPT_TRIGGER_9_TOOLS.len(), 9, "Must have exactly 9 Prompt Trigger Tools");
-        assert_eq!(NATIVE_BINARY_TOOLS.len(), 29, "Must have exactly 29 Native Binary Tools");
+        assert_eq!(NATIVE_BINARY_TOOLS.len(), 34, "Must have exactly 34 Native Binary Tools");
 
         for t in NATIVE_BINARY_TOOLS {
             assert!(is_native_binary_tool(t), "Tool '{}' must be recognized as native binary tool", t);
@@ -4230,6 +4261,29 @@ mod tests {
         assert_eq!(cg_res["status"], "SUCCESS");
         assert_eq!(cg_res["exit_code"], 0);
         assert!(cg_res["under_budget"].as_bool().unwrap_or(false));
+
+        // 9c. Test native invoke_subagent and invoke_spawn execution
+        let sub_args = json!({
+            "Subagents": [
+                {
+                    "TypeName": "backend-engineer",
+                    "Role": "Backend Systems",
+                    "Prompt": "Verify API contract",
+                    "Model": "inherit"
+                }
+            ],
+            "reason": "Verify subagent dispatch in solo mode",
+            "keywords": "subagent, test, dispatch, verify, sovereign"
+        });
+        let sub_res = execute_native_tool("invoke_subagent", &sub_args, &temp_dir, &temp_dir).await.expect("native invoke_subagent");
+        assert_eq!(sub_res["status"], "SUCCESS");
+        assert_eq!(sub_res["exit_code"], 0);
+        assert_eq!(sub_res["tool"], "invoke_subagent");
+
+        let spawn_res = execute_native_tool("invoke_spawn", &sub_args, &temp_dir, &temp_dir).await.expect("native invoke_spawn");
+        assert_eq!(spawn_res["status"], "SUCCESS");
+        assert_eq!(spawn_res["exit_code"], 0);
+        assert_eq!(spawn_res["tool"], "invoke_spawn");
 
         // 10. Test unrestricted writing outside workspace
         let ext_dir = std::env::temp_dir().join(format!("flw_ext_write_{}", std::process::id()));

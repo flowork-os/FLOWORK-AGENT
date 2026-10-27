@@ -643,7 +643,12 @@ pub fn is_tool_authorized_for_agent(
         }
     }
 
-    // Sovereign Native 23 Tools: In autonomous mode, all native tools are authorized by default unless explicitly locked/denied by guardian
+    // Spawning tools strictly banned in Team/Group mode (orchestrated by Swarm pipeline)
+    if is_group_mode && (norm_tool == "invoke_subagent" || norm_tool == "invoke_spawn" || norm_tool == "define_subagent" || norm_tool == "manage_subagents" || norm_tool == "flow_delegate" || norm_tool == "flow_spawn") {
+        return false;
+    }
+
+    // Sovereign Native Tools: In autonomous mode, all native tools are authorized by default unless explicitly locked/denied by guardian
     if crate::native_tools::is_native_binary_tool(norm_tool) {
         return true;
     }
@@ -1523,10 +1528,39 @@ impl ToolEngine {
         mounted_set: &HashSet<String>,
         _agent_id: &str,
         _category: &str,
-        _is_group_mode: bool,
+        is_group_mode: bool,
         _manifest: Option<&crate::agents::AgentManifest>,
     ) -> Vec<Value> {
-        self.get_active_declarations(mounted_set)
+        let mut decls = self.get_active_declarations(mounted_set);
+
+        if is_group_mode {
+            // STRICT DOCTRINE: In TEAM / GROUP mode, subagent spawning tools MUST NOT appear!
+            // Swarm coordination is handled inherently by the team orchestrator pipeline.
+            decls.retain(|d| {
+                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                name != "invoke_subagent"
+                    && name != "invoke_spawn"
+                    && name != "define_subagent"
+                    && name != "manage_subagents"
+                    && name != "flow_delegate"
+                    && name != "flow_spawn"
+            });
+        } else {
+            // In SOLO / PERSONAL mode, subagent spawning tool (invoke_subagent) MUST appear!
+            let has_subagent = decls.iter().any(|d| {
+                let name = d.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                name == "invoke_subagent" || name == "invoke_spawn"
+            });
+            if !has_subagent {
+                let canvas_tools_dir = self.resolve_engine_root().join("canvas-ui").join("tools");
+                if let Some(mut decl) = crate::native_tools::resolve_canvas_tool_declaration(&canvas_tools_dir, "invoke_subagent") {
+                    crate::tools::inject_intercept_gate_schema(&mut decl);
+                    decls.push(decl);
+                }
+            }
+        }
+
+        decls
     }
 
     /// Pure Generic External Tool Dispatcher
@@ -1571,13 +1605,9 @@ impl ToolEngine {
 
         let tool_dir = if crate::sealed_tools::SealedToolsEnclave::is_sealed_tool(clean_name) {
             let sealed_base = crate::sealed_tools::SealedToolsEnclave::get_sealed_runtime_dir(&self.workspace_root)
-                .map_err(|e| format!("Failed to extract sealed tools: {e}"))?;
-            let specific = sealed_base.join(clean_name);
-            if specific.exists() {
-                specific
-            } else {
-                return Err(format!("Sealed tool '{clean_name}' runtime directory not found in {}", sealed_base.display()));
-            }
+                .map_err(|e| format!("Failed to resolve sealed tools runtime directory: {e}"))?;
+            crate::sealed_tools::SealedToolsEnclave::extract_single_tool(clean_name, &sealed_base)
+                .map_err(|e| format!("Failed to extract sealed tool '{clean_name}': {e}"))?
         } else {
             let candidate_dirs = [
                 self.workspace_root.join("tools").join(name),

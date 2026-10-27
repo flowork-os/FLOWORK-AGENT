@@ -122,9 +122,38 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
         state.cfg.root_dir.join(".FL_BIN").join("screenshots").join(&clean[12..])
     } else if clean.starts_with("generated_images/") {
         state.cfg.root_dir.join(".FL_BIN").join("generated_images").join(&clean[17..])
+    } else if clean.starts_with("tools/") {
+        let tool_rel = &clean[6..];
+        let direct_tool = state.cfg.canvas_dir.join("tools").join(tool_rel);
+        if direct_tool.exists() {
+            direct_tool
+        } else {
+            for (rel_path, cipher) in crate::sealed_tools::SealedToolsEnclave::manifest() {
+                if *rel_path == tool_rel {
+                    let unsealed = crate::sealed_tools::SealedToolsEnclave::unseal(cipher);
+                    let mime = mime_guess::from_path(tool_rel).first_or_octet_stream().to_string();
+                    return Response::builder()
+                        .header(axum::http::header::CONTENT_TYPE, mime)
+                        .header(axum::http::header::CACHE_CONTROL, "public, max-age=3600")
+                        .body(axum::body::Body::from(unsealed))
+                        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
+                }
+            }
+            state.cfg.canvas_dir.join(&clean)
+        }
     } else {
         state.cfg.canvas_dir.join(&clean)
     };
+
+    if !path.exists() {
+        if clean.starts_with("uploads/") {
+            let fname = &clean[8..];
+            let ss_path = state.cfg.root_dir.join(".FL_BIN").join("screenshots").join(fname);
+            if ss_path.exists() {
+                path = ss_path;
+            }
+        }
+    }
 
     if !path.exists() {
         let fallback = state.cfg.root_dir.join(&clean);

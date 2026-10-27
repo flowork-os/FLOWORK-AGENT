@@ -1,3 +1,4 @@
+// [FL_INDEX: clipboard, copy_snippet, stage_run, canvas_ui, input_dispatch | COT: Eliminate fatal infinite recursion in safeCopyToClipboard and fix stage run drawer auto-expansion| AT: 2026-10-26T21:56:38Z]
 // X-Flow Canvas Host — Organic Aerodynamic Client Runtime (2026 Edition)
 // [SOVEREIGN SEAL] Anti-Shadow DOM & Canvas Tamper-Proof Seal
 (function sealCanvasRuntime() {
@@ -10190,10 +10191,10 @@ window.safeCopyToClipboard = async function(text) {
   if (typeof text !== "string") text = String(text ?? "");
   if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
     try {
-      await window.safeCopyToClipboard(text);
+      await navigator.clipboard.writeText(text);
       return true;
     } catch (e) {
-      // Fallback to execCommand below
+      console.warn("[Flowork Canvas] navigator.clipboard.writeText failed, attempting execCommand fallback:", e);
     }
   }
   try {
@@ -10221,23 +10222,36 @@ window.safeCopyToClipboard = async function(text) {
 window.copyCodeSnippet = function(btn) {
   const card = btn.closest('.chat-code-card');
   if (!card) return;
-  const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || '';
+  const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || card.querySelector('code')?.innerText || '';
+  if (!code) {
+    showToast('No code snippet content found');
+    return;
+  }
   window.safeCopyToClipboard(code).then(() => {
     const span = btn.querySelector('span') || btn;
     const orig = span.textContent;
     span.textContent = 'Copied!';
     setTimeout(() => { span.textContent = orig; }, 1800);
-  }).catch(() => {
-    showToast('Failed to copy code');
+    showToast('Code copied to clipboard');
+  }).catch((err) => {
+    console.error('[Flowork Canvas] Copy failed:', err);
+    showToast('Failed to copy code: ' + (err?.message || 'Clipboard error'));
   });
 };
 
 window.executeSnippetInChat = function(btn) {
   const card = btn.closest('.chat-code-card');
   if (!card) return;
-  const code = card.getAttribute('data-code') || '';
+  const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || card.querySelector('code')?.innerText || '';
   const lang = (card.getAttribute('data-lang') || '').toUpperCase();
   if (!code) return;
+
+  const rightbarChat = document.getElementById('rightbar-chat');
+  if (rightbarChat && rightbarChat.classList.contains('collapsed')) {
+    rightbarChat.classList.remove('collapsed');
+    localStorage.setItem('xflow_rightbar_collapsed', 'false');
+  }
+
   const chatInput = document.getElementById('rightbar-chat-input');
   if (chatInput) {
     if (lang === 'BASH' || lang === 'SH' || lang === 'SHELL') {
@@ -10252,6 +10266,7 @@ window.executeSnippetInChat = function(btn) {
     chatInput.focus();
     chatInput.style.height = 'auto';
     chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
+    chatInput.dispatchEvent(new Event('input', { bubbles: true }));
     showToast('Snippet staged in prompt input. Ready to execute.');
   }
 };
@@ -10540,6 +10555,15 @@ window.openChatLightbox = function(src, title) {
 window.closeChatLightbox = function() {
   const modal = document.getElementById('chat-lightbox-modal');
   if (modal) modal.style.display = 'none';
+};
+
+window.handleChatAttachmentClick = function(el) {
+  if (!el) return;
+  const src = el.getAttribute('data-url') || el.src || '';
+  const title = el.getAttribute('data-title') || el.alt || 'Attachment';
+  if (src && typeof window.openChatLightbox === 'function') {
+    window.openChatLightbox(src, title);
+  }
 };
 
 window.copyFilePath = function(path, btnEl) {
@@ -11668,7 +11692,7 @@ function renderMarkdown(md) {
         </span>
         <span class="chat-media-filename">${safeAlt}</span>
       </div>
-      <div class="chat-media-preview" onclick="openChatLightbox('${resolved}', '${safeAlt}')">
+      <div class="chat-media-preview" data-url="${escapeHtml(resolved)}" data-title="${safeAlt}" onclick="window.handleChatAttachmentClick(this)">
         <img src="${resolved}" alt="${safeAlt}" loading="lazy" />
         <div class="chat-media-overlay">
           <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
@@ -13101,12 +13125,34 @@ const KNOWN_KERNEL_TOOLS = [
   'replace_file_content', 'search_tools', 'skill_control', 'ask_question', 'schedule',
   'manage_task', 'team_audit',
   'generate_image', 'read_url_content', 'search_web', 'browser_control', 'telegram_control',
-  'project_RADAR', 'symbol_outline', 'read_symbol', 'grep_search', 'find_by_name'
+  'project_RADAR', 'symbol_outline', 'read_symbol', 'grep_search', 'find_by_name',
+  'invoke_subagent', 'invoke_spawn'
 ];
 
-const DEPRECATED_TOOLS = new Set([
-  'invoke_subagent', 'define_subagent', 'manage_subagents', 'send_message', 'agent_control'
+const BASE_DEPRECATED_TOOLS = new Set([
+  'define_subagent', 'manage_subagents', 'send_message', 'agent_control'
 ]);
+
+function getActiveDeprecatedTools() {
+  const isTeam = (localStorage.getItem('xflow_session_mode') === 'team') || (window.currentSessionType === 'group');
+  const s = new Set(BASE_DEPRECATED_TOOLS);
+  if (isTeam) {
+    s.add('invoke_subagent');
+    s.add('invoke_spawn');
+    s.add('flow_delegate');
+    s.add('flow_spawn');
+  }
+  return s;
+}
+
+const DEPRECATED_TOOLS = {
+  has(tool) {
+    return getActiveDeprecatedTools().has(tool);
+  },
+  forEach(cb) {
+    getActiveDeprecatedTools().forEach(cb);
+  }
+};
 
 function stripInternalSystemInterceptions(raw) {
   if (raw === null || raw === undefined) return '';
@@ -14764,10 +14810,11 @@ async function loadChatSession(sessionId, options = {}) {
       currentActiveAgentId = targetAgentId;
       localStorage.setItem('xflow_active_agent_id', targetAgentId);
 
-      // Enforce Sovereign Solo Studio mode and sync active specialist persona for 3D Canvas
+      // Enforce Sovereign Solo Studio or Swarm War Room mode and sync active specialist persona for 3D Canvas
+      const isGroupSession = Boolean(data.data && (data.data.session_type === 'group' || data.data.mode === 'team'));
       if (window.office3DInstance) {
         if (typeof window.office3DInstance.setSessionMode === 'function') {
-          window.office3DInstance.setSessionMode('solo');
+          window.office3DInstance.setSessionMode(isGroupSession ? 'group' : 'solo');
         }
         if (typeof window.office3DInstance.setSoloSpecialist === 'function') {
           window.office3DInstance.setSoloSpecialist(effectivePersona);
@@ -16333,6 +16380,13 @@ function formatToolCard(toolName, details = {}, status = 'done') {
     }
   }
 
+  if (rawTool.includes('screenshot') || rawTool.includes('screen_shot') || rawTool.includes('snapshot') || rawTool.includes('camera') || rawTool.includes('view_screen')) {
+    return formatScreenshotCard(details, status);
+  }
+  if (rawTool.includes('brain') || rawTool.includes('memory') || rawTool.includes('synapse') || rawTool.includes('crystal')) {
+    return formatBrainCard(details, status);
+  }
+
   if (rawTool.includes('deterministic') || rawTool.includes('helper')) {
     toolTag = 'ENGINE // DETERMINISTIC';
     toolTitle = 'Deterministic Helper';
@@ -16504,6 +16558,171 @@ function formatSkillCard(details = {}, status = 'done') {
   setTimeout(() => {
     card.removeAttribute('open');
   }, 1800);
+
+  return card;
+}
+
+function formatScreenshotCard(details = {}, status = 'done') {
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  
+  // Extract image source from details
+  let imgSrc = d.web_url || d.file_path || d.relative_path || d.target || d.TargetFile || d.path || '';
+  if (!imgSrc && d.output && typeof d.output === 'string') {
+    const mdMatch = d.output.match(/!\[.*?\]\((.*?)\)/);
+    if (mdMatch) imgSrc = mdMatch[1];
+  }
+  if (!imgSrc && d.markdown_preview && typeof d.markdown_preview === 'string') {
+    const mdMatch = d.markdown_preview.match(/!\[.*?\]\((.*?)\)/);
+    if (mdMatch) imgSrc = mdMatch[1];
+  }
+  if (!imgSrc && d.image_base64) {
+    imgSrc = `data:${d.mime_type || 'image/png'};base64,${d.image_base64}`;
+  }
+
+  const resolvedUrl = (imgSrc && imgSrc.startsWith('data:')) ? imgSrc : resolveMediaUrl(imgSrc);
+  const filename = d.filename || (imgSrc ? String(imgSrc).split(/[\\/]/).pop() : 'screenshot.png');
+  const relPath = d.relative_path || d.file_path || (imgSrc.startsWith('data:') ? 'in-memory vision buffer' : shortenFilePath(imgSrc));
+  const hash = d.image_hash || d.hash || '';
+  const sizeStr = d.size_bytes ? formatFileSize(d.size_bytes) : (d.size ? formatFileSize(d.size) : '');
+  const reasonText = extractToolReason('screenshot', details);
+  const shortReason = reasonText.length > 52 ? reasonText.slice(0, 50) + '…' : reasonText;
+
+  const card = document.createElement('details');
+  card.className = `fl-tool-card fl-screenshot-card ${status === 'running' ? 'is-running' : ''}`;
+  card.open = true;
+
+  card.innerHTML = `
+    <summary class="fl-tool-header fl-screenshot-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-tool-icon">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"></path>
+          <circle cx="12" cy="13" r="4"></circle>
+        </svg>
+      </span>
+      <span class="fl-tool-tag-pill fl-screenshot-tag">📸 OPTICAL // SHUTTER</span>
+      <span class="fl-tool-title">${escapeHtml(filename)}</span>
+      ${reasonText ? `<span class="fl-tool-reason-pill" title="${escapeHtml(reasonText)}">💬 ${escapeHtml(shortReason)}</span>` : ''}
+      <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> CAPTURING' : '✓ FRAME LOCKED • EXIT CODE 0'}</span>
+    </summary>
+    <div class="fl-tool-details fl-screenshot-body">
+      ${reasonText ? `<div class="fl-tool-reason-box"><span class="fl-trb-lbl">💬 REASON:</span> <span class="fl-trb-txt">${escapeHtml(reasonText)}</span></div>` : ''}
+      <div class="fl-screenshot-viewfinder-box">
+        ${resolvedUrl ? `
+          <div class="fl-screenshot-img-wrap" data-url="${escapeHtml(resolvedUrl)}" data-title="${escapeHtml(filename)}" onclick="window.handleChatAttachmentClick(this)">
+            <img src="${resolvedUrl}" class="fl-screenshot-img" alt="${escapeHtml(filename)}" loading="lazy" />
+            <div class="fl-screenshot-hover-overlay">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
+              <span>Click to inspect high-resolution frame</span>
+            </div>
+          </div>
+        ` : `
+          <div class="fl-screenshot-empty">
+            <span>📷 Frame buffer captured and transferred to vision cortex</span>
+          </div>
+        `}
+        <div class="fl-screenshot-meta-row">
+          <div class="fl-ss-meta-item" title="${escapeHtml(relPath)}">
+            <span class="fl-ss-meta-k">PATH:</span>
+            <code class="fl-ss-meta-v">${escapeHtml(relPath)}</code>
+            <button class="fl-cmd-copy-btn" onclick="copyFilePath('${escapeHtml(relPath)}', this)">Copy</button>
+          </div>
+          ${sizeStr ? `<div class="fl-ss-meta-item"><span class="fl-ss-meta-k">SIZE:</span> <span class="fl-ss-meta-v">${escapeHtml(sizeStr)}</span></div>` : ''}
+          ${hash ? `<div class="fl-ss-meta-item" title="${escapeHtml(hash)}"><span class="fl-ss-meta-k">SHA-256:</span> <span class="fl-ss-meta-v">${escapeHtml(hash.slice(0, 10))}…</span></div>` : ''}
+          ${resolvedUrl && !resolvedUrl.startsWith('data:') ? `
+            <a href="${escapeHtml(resolvedUrl)}" download="${escapeHtml(filename)}" class="fl-ss-download-btn" title="Download Screenshot">
+              <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+              Download
+            </a>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  `;
+
+  return card;
+}
+
+function formatBrainCard(details = {}, status = 'done') {
+  const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
+  const action = String(d.action || d.Action || 'recall').toUpperCase();
+  const query = String(d.query || d.Query || d.title || d.id || d.slug || d.key || 'Memory Synapse').trim();
+  const category = String(d.category || 'architecture').toLowerCase();
+  
+  // Extract keywords
+  let keywordsList = [];
+  if (Array.isArray(d.keywords)) {
+    keywordsList = d.keywords;
+  } else if (typeof d.keywords === 'string') {
+    keywordsList = d.keywords.split(',').map(s => s.trim()).filter(Boolean);
+  }
+
+  // Extract solution or output text
+  let solutionText = d.solution || d.problem || d.root_cause || '';
+  if (!solutionText && (d.output || d.rawOutput)) {
+    const rawOut = d.output || d.rawOutput;
+    if (typeof rawOut === 'object') {
+      try {
+        solutionText = JSON.stringify(rawOut, null, 2);
+      } catch (_) {
+        solutionText = String(rawOut);
+      }
+    } else {
+      solutionText = String(rawOut);
+    }
+  }
+
+  const reasonText = extractToolReason('brain_control', details);
+  const shortReason = reasonText.length > 52 ? reasonText.slice(0, 50) + '…' : reasonText;
+
+  const card = document.createElement('details');
+  card.className = `fl-tool-card fl-brain-card ${status === 'running' ? 'is-running' : ''}`;
+  card.open = true;
+
+  const isWrite = action === 'WRITE' || action === 'INGEST' || action === 'CRYSTALLIZE';
+
+  card.innerHTML = `
+    <summary class="fl-tool-header fl-brain-header">
+      <span class="fl-tool-chevron">›</span>
+      <span class="fl-tool-icon">
+        <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"></circle>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+        </svg>
+      </span>
+      <span class="fl-tool-tag-pill fl-brain-tag-pill">🧠 BRAIN // ${escapeHtml(action)}</span>
+      <span class="fl-tool-title">${escapeHtml(query)}</span>
+      ${reasonText ? `<span class="fl-tool-reason-pill" title="${escapeHtml(reasonText)}">💬 ${escapeHtml(shortReason)}</span>` : ''}
+      <span class="fl-tool-badge ${status}">${status === 'running' ? '<span class="fl-tool-spinner"></span> SYNAPSING' : '✓ SYNAPSED • EXIT CODE 0'}</span>
+    </summary>
+    <div class="fl-tool-details fl-brain-body">
+      ${reasonText ? `<div class="fl-tool-reason-box"><span class="fl-trb-lbl">💬 REASON:</span> <span class="fl-trb-txt">${escapeHtml(reasonText)}</span></div>` : ''}
+      <div class="fl-brain-telemetry-panel">
+        <div class="fl-brain-meta-bar">
+          <span class="fl-brain-vault-pill">VAULT: <strong>.fl_brain/</strong></span>
+          <span class="fl-brain-cat-badge ${escapeHtml(category)}">${escapeHtml(category.toUpperCase())}</span>
+          <span class="fl-brain-action-pill">${isWrite ? '⚡ PERMANENT CRYSTAL' : '🔍 SYNAPTIC RECALL'}</span>
+        </div>
+        ${keywordsList.length > 0 ? `
+          <div class="fl-brain-keywords-row">
+            <span class="fl-brain-kw-title">KEYWORDS:</span>
+            <div class="fl-brain-kw-chips">
+              ${keywordsList.slice(0, 12).map(k => `<span class="fl-brain-chip">${escapeHtml(k)}</span>`).join('')}
+            </div>
+          </div>
+        ` : ''}
+        ${solutionText ? `
+          <div class="fl-tool-block fl-brain-block">
+            <div class="fl-tool-block-header">
+              <span>${isWrite ? 'CRYSTALLIZED SOLUTION' : 'SYNAPSE PAYLOAD'}</span>
+              <button class="fl-cmd-copy-btn" onclick="copyToolCode(this)">Copy</button>
+            </div>
+            <pre class="fl-tool-code fl-brain-code"><code>${escapeHtml(solutionText)}</code></pre>
+          </div>
+        ` : ''}
+      </div>
+    </div>
+  `;
 
   return card;
 }
@@ -20402,13 +20621,13 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
   const isTeamAudit = rawTool.includes('team_audit') || rawTool.includes('council_audit');
   const isGenImage = rawTool.includes('generate_image');
   const isSendMedia = rawTool.includes('send_media');
-  const isScanner = !isSearchTools && !isSearchWeb && !isReadUrl && !isWebIntel && !isYtVideo && !isYtChannel && !isYtTranscript && !isYtSummary && !isYtComments && !isYtStrategy && (rawTool.includes('read') || rawTool.includes('view') || rawTool.includes('inspect') || rawTool.includes('ingest') || rawTool.includes('recon') || rawTool.includes('search') || rawTool.includes('cat') || rawTool.includes('grep') || rawTool.includes('youtube') || rawTool.includes('yt_spy'));
+  const isCamera = rawTool.includes('screenshot') || rawTool.includes('screen_shot') || rawTool.includes('capture') || rawTool.includes('camera') || rawTool.includes('snapshot') || rawTool.includes('x11grab') || rawTool.includes('view_screen') || rawTool.includes('shoot');
+  const isMemory = rawTool.includes('brain') || rawTool.includes('memory') || rawTool.includes('synapse') || rawTool.includes('crystal');
+  const isScanner = !isCamera && !isMemory && !isSearchTools && !isSearchWeb && !isReadUrl && !isWebIntel && !isYtVideo && !isYtChannel && !isYtTranscript && !isYtSummary && !isYtComments && !isYtStrategy && (rawTool.includes('read') || rawTool.includes('view') || rawTool.includes('inspect') || rawTool.includes('ingest') || rawTool.includes('recon') || rawTool.includes('search') || rawTool.includes('cat') || rawTool.includes('grep') || rawTool.includes('youtube') || rawTool.includes('yt_spy'));
   const isForger = !isFlowLock && (rawTool.includes('write') || rawTool.includes('replace') || rawTool.includes('edit') || rawTool.includes('forge') || rawTool.includes('splice') || rawTool.includes('patch') || rawTool.includes('deterministic') || rawTool.includes('helper'));
   const isBash = rawTool.includes('run_command') || rawTool.includes('exec') || rawTool.includes('terminal');
-  const isMemory = rawTool.includes('brain') || rawTool.includes('memory');
   const isSkill = rawTool.includes('skill');
   const isAudit = !isTeamAudit && !isSysHealth && !isDetectHardcode && !isAuditPortability && !isWebSecAudit && !isGatekeeper && (rawTool.includes('audit') || rawTool.includes('security'));
-  const isCamera = rawTool.includes('screenshot') || rawTool.includes('screen_shot') || rawTool.includes('capture') || rawTool.includes('camera') || rawTool.includes('snapshot') || rawTool.includes('x11grab') || rawTool.includes('view_screen') || rawTool.includes('shoot');
   const isVisual = !isCamera && !isGenImage && !isSendMedia && (rawTool.includes('visual') || rawTool.includes('chart') || rawTool.includes('diagram') || rawTool.includes('render_visual'));
 
   // Spawn specialized live terminal animation when actively streaming or tool is running
@@ -20484,6 +20703,10 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
       renderLiveGenerateImage(activeSlot, toolName, details, stepIdx);
     } else if (isSendMedia) {
       renderLiveSendMedia(activeSlot, toolName, details, stepIdx);
+    } else if (isCamera) {
+      renderLiveCameraShutter(activeSlot, toolName, details, stepIdx);
+    } else if (isMemory) {
+      renderLiveMemoryRecall(activeSlot, toolName, details, stepIdx);
     } else if (isScanner) {
       renderLiveFileScanner(activeSlot, toolName, details, stepIdx);
     } else if (isForger) {
@@ -20492,15 +20715,11 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isBash) {
       FloworkJarvisAudio.trigger('terminal_exec');
       renderLiveBashRunner(activeSlot, toolName, details, stepIdx);
-    } else if (isMemory) {
-      renderLiveMemoryRecall(activeSlot, toolName, details, stepIdx);
     } else if (isSkill) {
       FloworkJarvisAudio.trigger('skill_pinned');
       renderLiveSkillActivator(activeSlot, toolName, details, stepIdx);
     } else if (isAudit) {
       renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx);
-    } else if (isCamera) {
-      renderLiveCameraShutter(activeSlot, toolName, details, stepIdx);
     } else if (isVisual) {
       renderLiveVisualPainter(activeSlot, toolName, details, stepIdx);
     } else {
@@ -20545,6 +20764,28 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
   // 1b. Skill Management / Pinning -> dedicated skill HUD card in capsule
   if (rawTool.includes('skill')) {
     const card = formatSkillCard(details, status);
+    if (card) {
+      if (activeToolElements) activeToolElements.set(stepIdx, card);
+      capsuleBody.appendChild(card);
+      updateToolsCapsuleHeader(capsule);
+    }
+    return card;
+  }
+
+  // 1c. Optical Screenshot Capture -> dedicated optical shutter card in capsule
+  if (isCamera) {
+    const card = formatScreenshotCard(details, status);
+    if (card) {
+      if (activeToolElements) activeToolElements.set(stepIdx, card);
+      capsuleBody.appendChild(card);
+      updateToolsCapsuleHeader(capsule);
+    }
+    return card;
+  }
+
+  // 1d. Brain Memory Access / Ingest -> dedicated neural synapse memory card in capsule
+  if (isMemory) {
+    const card = formatBrainCard(details, status);
     if (card) {
       if (activeToolElements) activeToolElements.set(stepIdx, card);
       capsuleBody.appendChild(card);
@@ -21087,7 +21328,7 @@ function parseUserPromptPayload(rawMsg) {
     attachmentsHtml = '<div class="chat-msg-attachments">' + attachments.map(att => {
       if (att.isImage) {
         return `
-          <div class="chat-msg-img-wrap" onclick="openChatLightbox('${att.webUrl}', '${escapeHtml(att.name)}')">
+          <div class="chat-msg-img-wrap" data-url="${escapeHtml(att.webUrl)}" data-title="${escapeHtml(att.name)}" onclick="window.handleChatAttachmentClick(this)">
             <img src="${att.webUrl}" class="chat-msg-attached-img" alt="${escapeHtml(att.name)}" loading="lazy" />
             <div class="chat-img-zoom-hint">
               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
@@ -21097,7 +21338,7 @@ function parseUserPromptPayload(rawMsg) {
         `;
       } else {
         return `
-          <div class="chat-msg-file-card" onclick="openChatLightbox('${att.webUrl}', '${escapeHtml(att.name)}')">
+          <div class="chat-msg-file-card" data-url="${escapeHtml(att.webUrl)}" data-title="${escapeHtml(att.name)}" onclick="window.handleChatAttachmentClick(this)">
             <span class="chat-file-icon">${getFileCategoryIcon(att.name)}</span>
             <div class="chat-file-info">
               <span class="chat-file-name">${escapeHtml(att.name)}</span>
@@ -21531,7 +21772,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       if (att.isImage) {
         const previewSrc = att.previewUrl || '';
         return `
-          <div class="chat-msg-img-wrap" onclick="openChatLightbox('${previewSrc}', '${escapeHtml(att.name)}')">
+          <div class="chat-msg-img-wrap" data-url="${escapeHtml(previewSrc)}" data-title="${escapeHtml(att.name)}" onclick="window.handleChatAttachmentClick(this)">
             <img src="${previewSrc}" class="chat-msg-attached-img" alt="${escapeHtml(att.name)}" loading="lazy" />
             <div class="chat-img-zoom-hint">
               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/><line x1="11" y1="8" x2="11" y2="14"/><line x1="8" y1="11" x2="14" y2="11"/></svg>
@@ -21541,7 +21782,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
         `;
       } else {
         return `
-          <div class="chat-msg-file-card" onclick="openChatLightbox('${att.previewUrl || ''}', '${escapeHtml(att.name)}')">
+          <div class="chat-msg-file-card" data-url="${escapeHtml(att.previewUrl || '')}" data-title="${escapeHtml(att.name)}" onclick="window.handleChatAttachmentClick(this)">
             <span class="chat-file-icon">${getFileCategoryIcon(att.name)}</span>
             <div class="chat-file-info">
               <span class="chat-file-name">${escapeHtml(att.name)}</span>
@@ -21705,6 +21946,8 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                 img.src = r.webUrl;
                 const wrap = img.closest('.chat-msg-img-wrap');
                 if (wrap) {
+                  wrap.setAttribute('data-url', r.webUrl);
+                  wrap.setAttribute('data-title', r.originalName);
                   wrap.onclick = () => openChatLightbox(r.webUrl, r.originalName);
                 }
               }
@@ -21749,6 +21992,11 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       }
     }
 
+    const isTeamMode = window.currentSessionMode === 'team' || window.currentSessionType === 'group';
+    const effectiveSessionType = isTeamMode ? 'group' : 'personal';
+    const effectiveSessionMode = isTeamMode ? 'team' : 'solo';
+    const effectivePersona = (isTeamMode ? 'leader' : (currentSessionPersonaId && currentSessionPersonaId !== 'leader' ? currentSessionPersonaId : 'mr.flow')).trim();
+
     const res = await fetch('/api/chat/message', {
       method: 'POST',
       headers: {
@@ -21760,10 +22008,12 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       body: JSON.stringify({
         message: promptPayload,
         session_id: currentChatSessionId,
+        session_type: effectiveSessionType,
+        mode: effectiveSessionMode,
         model: selectedChatModelId,
         account_id: currentSessionAccountId || 'combo',
-        agent_id: (currentSessionPersonaId || 'leader').trim(),
-        agent_persona: (currentSessionPersonaId || 'leader').trim(),
+        agent_id: effectivePersona,
+        agent_persona: effectivePersona,
         image_paths: imagePaths.length > 0 ? imagePaths : undefined,
         images: imagePaths.length > 0 ? imagePaths : undefined,
         image_base64: imageBase64List.length > 0 ? imageBase64List[0] : undefined,

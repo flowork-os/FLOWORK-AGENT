@@ -708,6 +708,7 @@ async fn pick_folder_native(initial_path: &str) -> Option<String> {
 }
 
 pub async fn save_file_to_disk(
+    State(state): State<Arc<AppState>>,
     headers: HeaderMap,
     body: Bytes,
 ) -> Json<Value> {
@@ -719,11 +720,22 @@ pub async fn save_file_to_disk(
         return Json(json!({ "status": "error", "message": "Missing X-Target-Path header" }));
     }
 
-    let mut dest = std::path::PathBuf::from(target_header);
+    let clean_target = target_header.trim().trim_start_matches("./");
+    let is_abs = std::path::Path::new(clean_target).is_absolute();
+    let mut dest = if is_abs {
+        std::path::PathBuf::from(clean_target)
+    } else if clean_target.starts_with("canvas-ui/") {
+        state.cfg.canvas_dir.join(&clean_target[10..])
+    } else if clean_target.starts_with("uploads/") {
+        state.cfg.canvas_dir.join(clean_target)
+    } else {
+        state.cfg.canvas_dir.join(clean_target)
+    };
+
     if dest.is_dir() {
         let filename = headers.get("X-Filename")
             .and_then(|v| v.to_str().ok())
-            .unwrap_or("output.mp3");
+            .unwrap_or("output_file");
         dest = dest.join(filename);
     }
 
@@ -782,11 +794,19 @@ pub async fn save_file_to_disk(
     }
 
     match tokio::fs::write(&dest, &body).await {
-        Ok(_) => Json(json!({
-            "status": "ok",
-            "path": dest.to_string_lossy().to_string(),
-            "bytes": body.len()
-        })),
+        Ok(_) => {
+            let web_url = if let Ok(rel) = dest.strip_prefix(&state.cfg.canvas_dir) {
+                format!("/canvas/{}", rel.to_string_lossy().replace('\\', "/"))
+            } else {
+                format!("/canvas/uploads/{}", dest.file_name().and_then(|n| n.to_str()).unwrap_or("file"))
+            };
+            Json(json!({
+                "status": "ok",
+                "path": dest.to_string_lossy().to_string(),
+                "web_url": web_url,
+                "bytes": body.len()
+            }))
+        },
         Err(e) => Json(json!({
             "status": "error",
             "message": format!("Failed to write file: {}", e)
@@ -1020,6 +1040,33 @@ pub async fn chat_set_session_persona(
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct UpdateSessionModeRequest {
+    #[serde(default)]
+    pub mode: Option<String>,
+    #[serde(default)]
+    pub session_type: Option<String>,
+    #[serde(default)]
+    pub persona: Option<String>,
+}
+
+pub async fn update_chat_session_mode(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<UpdateSessionModeRequest>,
+) -> Json<Value> {
+    match state.agent.update_session_mode(&id, payload.session_type.as_deref(), payload.mode.as_deref(), payload.persona).await {
+        Ok(st) => Json(json!({
+            "status": "ok",
+            "session_id": id,
+            "session_type": st,
+            "mode": if st == "group" { "team" } else { "solo" },
+            "message": format!("Session mode updated to '{}'", if st == "group" { "team" } else { "solo" })
+        })),
+        Err(e) => Json(json!({ "status": "error", "message": e })),
+    }
+}
+
 pub async fn get_available_personas(State(state): State<Arc<AppState>>) -> Json<Value> {
     let effective_ws = state.agent.get_effective_workspace_path();
     let engine_root = state.agent.resolve_engine_root();
@@ -1064,8 +1111,11 @@ pub async fn chat_send_message(
         // Notify client of active session ID
         yield Ok(Event::default().event("session").data(json!({"session_id": &session_id, "flwcore_id": &session_id}).to_string()));
 
-        // Sync locked persona if provided in message payload
-        if let Some(ref persona) = payload.agent_persona {
+        // Sync session mode / type or persona if provided in message payload
+        if payload.session_type.is_some() || payload.mode.is_some() {
+            let p_val = payload.agent_persona.clone();
+            let _ = agent.update_session_mode(&session_id, payload.session_type.as_deref(), payload.mode.as_deref(), p_val).await;
+        } else if let Some(ref persona) = payload.agent_persona {
             let p_val = if persona.trim().is_empty() || persona.trim() == "default" {
                 None
             } else {

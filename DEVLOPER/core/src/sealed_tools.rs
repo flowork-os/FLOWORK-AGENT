@@ -42080,22 +42080,60 @@ impl SealedToolsEnclave {
         Ok(())
     }
 
-    /// Returns the active sealed tools directory inside portable-home
-    pub fn get_sealed_runtime_dir(workspace_root: &Path) -> Result<PathBuf, String> {
-        let portable_home = if workspace_root.join("portable-home").exists() {
-            workspace_root.join("portable-home")
-        } else if let Some(parent) = workspace_root.parent() {
-            if parent.join("portable-home").exists() {
-                parent.join("portable-home")
-            } else {
-                workspace_root.join("portable-home")
+    /// Returns the active sealed tools directory in volatile temp (zero plaintext leak in project/portable-home)
+    pub fn get_sealed_runtime_dir(_workspace_root: &Path) -> Result<PathBuf, String> {
+        let sealed_dir = std::env::temp_dir().join(".flw_sealed_rt");
+        if !sealed_dir.exists() {
+            let _ = fs::create_dir_all(&sealed_dir);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(&sealed_dir, fs::Permissions::from_mode(0o700));
             }
-        } else {
-            workspace_root.join("portable-home")
-        };
-        let sealed_dir = portable_home.join(".flowork").join("sealed_tools");
-        Self::extract_to_dir(&sealed_dir)?;
+        }
         Ok(sealed_dir)
+    }
+
+    /// Extracts only the requested tool into volatile temp on-demand
+    pub fn extract_single_tool(clean_name: &str, target_base_dir: &Path) -> Result<PathBuf, String> {
+        let prefix = format!("{clean_name}/");
+        let tool_dir = target_base_dir.join(clean_name);
+        let _ = fs::create_dir_all(&tool_dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = fs::set_permissions(&tool_dir, fs::Permissions::from_mode(0o700));
+        }
+
+        for (rel_path, cipher) in Self::manifest() {
+            if rel_path.starts_with(&prefix) {
+                let out_file = target_base_dir.join(rel_path);
+                if let Some(parent) = out_file.parent() {
+                    if !parent.exists() {
+                        let _ = fs::create_dir_all(parent);
+                    }
+                }
+                let unsealed_data = Self::unseal(cipher);
+                let should_write = match fs::metadata(&out_file) {
+                    Ok(meta) => meta.len() as usize != unsealed_data.len(),
+                    Err(_) => true,
+                };
+                if should_write {
+                    fs::write(&out_file, &unsealed_data).map_err(|e| format!("Failed to write tool file {rel_path}: {e}"))?;
+                    #[cfg(unix)]
+                    {
+                        use std::os::unix::fs::PermissionsExt;
+                        let mode = if rel_path.ends_with(".mjs") || rel_path.ends_with(".js") || rel_path.ends_with(".sh") {
+                            0o700
+                        } else {
+                            0o600
+                        };
+                        let _ = fs::set_permissions(&out_file, fs::Permissions::from_mode(mode));
+                    }
+                }
+            }
+        }
+        Ok(tool_dir)
     }
 
     /// Resolves a tool declaration from the sealed encrypted byte arrays on-the-fly in RAM

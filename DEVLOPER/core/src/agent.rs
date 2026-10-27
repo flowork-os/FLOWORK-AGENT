@@ -35,6 +35,10 @@ pub struct ChatMessageRequest {
     pub agent_persona: Option<String>,
     #[serde(default)]
     pub agent_id: Option<String>,
+    #[serde(default)]
+    pub session_type: Option<String>,
+    #[serde(default)]
+    pub mode: Option<String>,
 }
 
 fn default_session_type() -> String {
@@ -1471,6 +1475,62 @@ impl AgentService {
         }
     }
 
+    /// Dynamically switches session mode between Solo Focus (personal) and Swarm War Room (group)
+    pub async fn update_session_mode(
+        &self,
+        session_id: &str,
+        session_type: Option<&str>,
+        mode: Option<&str>,
+        persona_id: Option<String>,
+    ) -> Result<String, String> {
+        let normalized_type = match mode.map(|m| m.to_lowercase()).as_deref() {
+            Some("team") | Some("group") | Some("warroom") => "group",
+            Some("solo") | Some("personal") => "personal",
+            _ => match session_type.map(|t| t.to_lowercase()).as_deref() {
+                Some("group") | Some("team") => "group",
+                Some("solo") | Some("personal") => "personal",
+                _ => if session_id.starts_with("group-") { "group" } else { "personal" },
+            },
+        };
+
+        let clean_persona = match persona_id {
+            Some(ref p) if p.trim().is_empty() || p.trim().eq_ignore_ascii_case("default") => {
+                if normalized_type == "group" {
+                    Some("leader".to_string())
+                } else {
+                    Some("mr.flow".to_string())
+                }
+            }
+            Some(p) => Some(p.trim().to_string()),
+            None => {
+                if normalized_type == "group" {
+                    Some("leader".to_string())
+                } else {
+                    Some("mr.flow".to_string())
+                }
+            }
+        };
+
+        let mut map = self.active_sessions.write().await;
+        if let Some(sess) = map.get_mut(session_id) {
+            sess.session_type = normalized_type.to_string();
+            sess.agent_persona = clean_persona;
+            sess.updated_at = get_current_iso_time();
+            self.save_session_to_disk(sess).await?;
+            Ok(normalized_type.to_string())
+        } else {
+            if let Some(mut sess) = self.find_session_on_disk(session_id).await {
+                sess.session_type = normalized_type.to_string();
+                sess.agent_persona = clean_persona;
+                sess.updated_at = get_current_iso_time();
+                self.save_session_to_disk(&sess).await?;
+                map.insert(session_id.to_string(), sess);
+                return Ok(normalized_type.to_string());
+            }
+            Err(format!("Session {session_id} not found"))
+        }
+    }
+
     /// Creates a new multi-agent Swarm Squad Group Room (strictly starts with 1 member: admin/default)
     pub async fn create_group_session(
         &self,
@@ -2092,7 +2152,7 @@ fn analyze_turn_context(contents: &[Value]) -> TurnContextAnalysis {
                                     }
                                 }
                             }
-                            "flow_delegate" | "invoke_subagent" => {
+                            "flow_delegate" | "invoke_subagent" | "invoke_spawn" | "flow_spawn" => {
                                 has_subagent_tool = true;
                             }
                             "flow_search_tools" | "search_tools" => {
@@ -2459,15 +2519,26 @@ impl AgentService {
             .map(|s| s.trim())
             .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("default"));
 
-        let has_team_trigger = _user_msg.map(|msg| {
-            let m = msg.to_lowercase();
-            m.contains("team") || m.contains("tim") || m.contains("squad") || m.contains("swarm") || m.contains("delegasi")
-        }).unwrap_or(false);
+        let is_session_group = if sess_id.starts_with("group-") {
+            true
+        } else if let Ok(guard) = self.active_sessions.try_read() {
+            guard.get(sess_id).map(|s| s.session_type == "group").unwrap_or(false)
+        } else {
+            false
+        };
+
+        let is_session_explicit_solo = if let Ok(guard) = self.active_sessions.try_read() {
+            guard.get(sess_id).map(|s| s.session_type == "personal").unwrap_or(false)
+        } else {
+            false
+        };
 
         let resolved_persona = match is_explicit_override {
             Some(p) => p,
             None => {
-                if sess_id.starts_with("group-") || has_team_trigger {
+                if is_session_explicit_solo {
+                    "mr.flow"
+                } else if is_session_group || sess_id.starts_with("group-") {
                     "leader"
                 } else {
                     "mr.flow"
@@ -2671,7 +2742,36 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
 </ACTIVE_WORKSPACE_TERRITORY>"#
         ));
 
-        let is_team_mode = sess_id.starts_with("group-") || target_persona == "leader";
+        // ⚡ SUPREME ZERO-QUESTION AUTONOMOUS EXECUTION MANDATE
+        prompt.push_str("\n\n");
+        prompt.push_str(
+r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
+# ⚡ DOKTRIN KEDAULATAN EKSEKUSI PENUH (ZERO-QUESTION MANDATE)
+1. DILARANG KERAS BERTANYA ATAU MEMINTA KONFIRMASI:
+   - Haram hukumnya menutup respon dengan pertanyaan atau permintaan izin seperti: "Apakah Anda ingin saya menerapkan perbaikan ini?", "Silakan konfirmasi", "Ketik Lanjut", "Mau dibuatkan fitur apa?", atau meminta persetujuan untuk langkah perbaikan berikutnya.
+   - Haram hukumnya menyajikan opsi pasif (Opsi 1 vs Opsi 2) lalu menunggu arahan user. Jika ada beberapa pilihan teknis, pilih opsi arsitektur terbaik secara mandiri dan LANGSUNG EKSEKUSI!
+2. LANGSUNG EKSEKUSI & MUTASI KODE:
+   - Dilarang terjebak dalam loop inspeksi pasif (membaca file berulang-ulang tanpa melakukan perubahan).
+   - Segera terapkan perubahan nyata menggunakan perkakas mutasi file (replace_file_content / write_to_file) atau jalankan perintah shell (run_command).
+3. VERIFIKASI TERMINAL EXIT CODE 0:
+   - Validasi hasil perubahan secara empiris (compile, test, syntax check, DOM check).
+   - Pastikan Exit Code 0 sebelum menyatakan pekerjaan selesai.
+4. HANYA BERTANYA PADA KONDISI DARURAT MUTLAK:
+   - Pertanyaan ke operator HANYA diizinkan jika terjadi deadlock fatal akibat kehilangan kredensial privat (API key eksternal yang tidak ada di environment/vault) atau tindakan destruktif irreversible (penghapusan data permanen tanpa cadangan).
+5. PRINSIP EFISIENSI & ANTI-LOOPING:
+   - Alur Wajib: Maksimal 2-3 kali inspeksi -> Lakukan mutasi kode -> Maksimal 1 kali verifikasi terminal/screenshot -> SEGERA BERHENTI MEMANGGIL TOOL (STOP TOOL CALLS) dan hasilkan sintesis jawaban teks akhir yang komprehensif.
+   - DILARANG melakukan inspeksi berulang-ulang tanpa mutasi.
+   - Setelah kode berhasil diperbaiki dan diverifikasi (Exit Code 0), DILARANG memanggil tool tambahan. Langsung laporkan hasilnya secara lengkap dan jelas kepada operator.
+</AUTONOMOUS_DIRECT_EXECUTION_MANDATE>"#
+        );
+
+        let is_team_mode = if is_session_explicit_solo {
+            false
+        } else if is_session_group || sess_id.starts_with("group-") {
+            true
+        } else {
+            target_persona == "leader"
+        };
         if !is_team_mode {
             prompt.push_str("\n\n");
             prompt.push_str(&crate::prompt_seal::PromptSeal::kubah_solo_template()
@@ -2811,7 +2911,7 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
                         if let Some(fc) = p.get("functionCall") {
                             if let Some(name) = fc.get("name").and_then(|n| n.as_str()) {
                                 let norm_name = name.trim_start_matches("default_api:").trim_start_matches("mcp_");
-                                if norm_name == "send_message" || norm_name == "invoke_subagent" || norm_name == "manage_subagents" {
+                                if norm_name == "send_message" || norm_name == "invoke_subagent" || norm_name == "invoke_spawn" || norm_name == "manage_subagents" {
                                     is_subagent_dispatch_active = true;
                                 }
                             }
@@ -2998,7 +3098,7 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
                                 has_audit_executed_global = true;
                                 last_audit_seq = Some(idx);
                             }
-                            if is_recent_turn && (fn_name == "send_message" || fn_name == "invoke_subagent" || fn_name == "manage_subagents") {
+                            if is_recent_turn && (fn_name == "send_message" || fn_name == "invoke_subagent" || fn_name == "invoke_spawn" || fn_name == "manage_subagents") {
                                 is_subagent_dispatch_active = true;
                             }
                         }
@@ -3006,7 +3106,7 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
                         if let Some(fr) = p.get("functionResponse") {
                             let raw_name = fr.get("name").and_then(|n| n.as_str()).unwrap_or("");
                             let fn_name = raw_name.trim_start_matches("default_api:").trim_start_matches("mcp_");
-                            if is_recent_turn && (fn_name == "send_message" || fn_name == "invoke_subagent" || fn_name == "manage_subagents") {
+                            if is_recent_turn && (fn_name == "send_message" || fn_name == "invoke_subagent" || fn_name == "invoke_spawn" || fn_name == "manage_subagents") {
                                 is_subagent_report_received = true;
                             }
                             if fn_name == "detect_hardcode" || fn_name == "audit_security" || fn_name == "audit_portability" {
@@ -4041,6 +4141,11 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
 
     /// Calls CONECTION Brain Gateway with optional active turn persona override
     pub async fn call_conection_brain_raw_with_persona(&self, contents: &[Value], session_id: &str, active_persona: Option<&str>) -> Result<ModelTurnOutput, String> {
+        self.call_conection_brain_raw_internal(contents, session_id, active_persona, true).await
+    }
+
+    /// Internal brain gateway call with configurable tool declaration injection (allow_tools: false for pure text synthesis)
+    pub async fn call_conection_brain_raw_internal(&self, contents: &[Value], session_id: &str, active_persona: Option<&str>, allow_tools: bool) -> Result<ModelTurnOutput, String> {
         let effective_ws = if let Some(ref ws_mgr) = self.workspace_mgr {
             ws_mgr.get_active_path_sync()
         } else {
@@ -4093,7 +4198,15 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
             None
         };
 
-        let is_group_mode = if session_id.starts_with("group-") {
+        let is_explicit_solo = if let Ok(guard) = self.active_sessions.try_read() {
+            guard.get(session_id).map(|s| s.session_type == "personal").unwrap_or(false)
+        } else {
+            false
+        };
+
+        let is_group_mode = if is_explicit_solo {
+            false
+        } else if session_id.starts_with("group-") {
             true
         } else {
             let from_mem = if let Ok(guard) = self.active_sessions.try_read() {
@@ -4114,21 +4227,15 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
             }
         };
 
-        let is_team_intent = search_text.contains("team")
-            || search_text.contains("tim")
-            || search_text.contains("squad")
-            || search_text.contains("swarm")
-            || search_text.contains("delegasi")
-            || search_text.contains("orchestrat")
-            || search_text.contains("spesialis");
-
         let mut effective_persona = active_persona.map(|s| s.to_string())
             .or(session_persona)
             .or(pinned_agent);
 
         if effective_persona.as_deref().map(|p| p.is_empty() || p.eq_ignore_ascii_case("default")).unwrap_or(true) {
-            if is_group_mode || is_team_intent {
+            if is_group_mode {
                 effective_persona = Some("leader".to_string());
+            } else {
+                effective_persona = Some("mr.flow".to_string());
             }
         }
 
@@ -4297,19 +4404,21 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
             });
         }
 
-        // Inject sovereign function declarations directly into Gemini request payload
-        let decls = self.tools.get_active_declarations_for_session(
-            &mounted_tools,
-            eff_agent_id,
-            &eff_agent_category,
-            is_group_mode,
-            agent_manifest.as_ref(),
-        );
+        // Inject sovereign function declarations directly into Gemini request payload (only when allowed)
+        if allow_tools {
+            let decls = self.tools.get_active_declarations_for_session(
+                &mounted_tools,
+                eff_agent_id,
+                &eff_agent_category,
+                is_group_mode,
+                agent_manifest.as_ref(),
+            );
 
-        if !decls.is_empty() {
-            request_obj["tools"] = json!([{
-                "functionDeclarations": decls
-            }]);
+            if !decls.is_empty() {
+                request_obj["tools"] = json!([{
+                    "functionDeclarations": decls
+                }]);
+            }
         }
 
         let session_model = if let Ok(guard) = self.active_sessions.try_read() {
@@ -4324,7 +4433,9 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
         let payload = json!({
             "project": "aicode-consumers",
             "model": effective_model,
-            "request": request_obj
+            "request": request_obj,
+            "session_mode": if is_group_mode { "team" } else { "solo" },
+            "is_group_mode": is_group_mode
         });
 
         // Write payload to temporary file in .FL_BIN to avoid command line arg length limit
@@ -4573,20 +4684,17 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
             c
         } else {
             // Fallback for developer environment only
-            let conection_dir = if self.workspace_dir.join("connection").join("router.js").exists() {
+            let conection_dir = if self.workspace_dir.join("DEVLOPER").join("connector").join("router.js").exists() {
+                self.workspace_dir.join("DEVLOPER").join("connector")
+            } else if self.workspace_dir.join("connection").join("router.js").exists() {
                 self.workspace_dir.join("connection")
             } else if self.workspace_dir.join("flowork").join("connection").join("router.js").exists() {
                 self.workspace_dir.join("flowork").join("connection")
-            } else if let Some(parent_conn) = self.workspace_dir.parent().filter(|p| p.join("connection").join("router.js").exists()).map(|p| p.join("connection")) {
+            } else if let Some(parent_conn) = self.workspace_dir.parent().filter(|p| p.join("DEVLOPER").join("connector").join("router.js").exists()).map(|p| p.join("DEVLOPER").join("connector")) {
                 parent_conn
             } else {
-                match crate::connector_enclave::ConnectorEnclave::get_sealed_runtime_dir(&portable_home) {
-                    Ok(sealed_path) => sealed_path,
-                    Err(e) => {
-                        eprintln!("[AgentService] ⚠️ Failed to extract sealed connector enclave: {e}, falling back to legacy path");
-                        self.resolve_conection_dir()
-                    }
-                }
+                eprintln!("[AgentService] 🔒 Standalone binary '{}' required. Plaintext connector extraction denied.", connector_name);
+                return;
             };
 
             let router_script = conection_dir.join("router.js");
@@ -5632,11 +5740,11 @@ source: "circuit_breaker_crystallization"
         let mut turn_count = 0;
         let (max_turns, warn_step_1, warn_step_2, read_only_step, cb_read_limit) = {
             let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 300;
-            let mut w1 = 250;
-            let mut w2 = 275;
-            let mut ro = 290;
-            let mut cb_rl = 15; // Production safe default (15 inspection calls allowed)
+            let mut mt = 18; // Hard cap of 18 turns to prevent runaway loops
+            let mut w1 = 10;
+            let mut w2 = 13;
+            let mut ro = 15;
+            let mut cb_rl = 4; // Max 4 consecutive read-only commands
             if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
                     if let Some(limits) = v.get("limits") {
@@ -5660,6 +5768,10 @@ source: "circuit_breaker_crystallization"
             }
             (mt, w1, w2, ro, cb_rl)
         };
+        let cb_total_read_limit = 6; // Max 6 total read-only operations across whole trajectory
+        let mut total_read_count = 0;
+        let mut file_mutation_count = 0;
+        let mut post_mutation_tools = 0;
         let mut tool_call_signatures: Vec<(String, String)> = Vec::new();
         let mut last_call_sig: Option<(String, String)> = None;
         let mut consecutive_repeat_count = 0;
@@ -5787,7 +5899,7 @@ source: "circuit_breaker_crystallization"
                     }
 
                     // 3. Detect Subagent Dispatches and Verification Audits
-                    if norm_tool_name == "invoke_subagent" || norm_tool_name == "send_message" || norm_tool_name == "manage_subagents" {
+                    if norm_tool_name == "invoke_subagent" || norm_tool_name == "invoke_spawn" || norm_tool_name == "send_message" || norm_tool_name == "manage_subagents" {
                         subagent_dispatched = true;
                         subagent_report_received = true;
                         subagent_audit_verified = false;
@@ -5870,33 +5982,32 @@ source: "circuit_breaker_crystallization"
 
                     let is_read_action = if is_mutation_action {
                         false
-                    } else if norm_tool_name.contains("run_command") || norm_tool_name.contains("exec") || norm_tool_name.contains("bash") {
+                    } else if norm_tool_name.contains("run_command") || norm_tool_name.contains("exec") || norm_tool_name.contains("bash") || norm_tool_name.contains("terminal") {
                         let cmd_str = args.get("CommandLine")
                             .or_else(|| args.get("commandLine"))
                             .or_else(|| args.get("command"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
-                        let cmd_trimmed = cmd_str.trim();
-                        cmd_trimmed.starts_with("ls ") || cmd_trimmed == "ls"
-                            || cmd_trimmed.starts_with("cat ")
-                            || cmd_trimmed.starts_with("tail ")
-                            || cmd_trimmed.starts_with("head ")
-                            || cmd_trimmed.starts_with("grep ")
-                            || cmd_trimmed.starts_with("find ")
-                            || cmd_trimmed.starts_with("file ")
-                            || cmd_trimmed.starts_with("which ")
-                            || cmd_trimmed.starts_with("git status")
-                            || cmd_trimmed.starts_with("git log")
-                            || cmd_trimmed.starts_with("python3 -c")
-                            || cmd_trimmed.starts_with("node -e")
+                        let c_lower = cmd_str.to_lowercase();
+                        let has_write = c_lower.contains(" > ") || c_lower.contains(" >> ") || c_lower.contains("cat <<") || c_lower.contains("tee ")
+                            || c_lower.starts_with("mkdir ") || c_lower.starts_with("touch ") || c_lower.starts_with("rm ")
+                            || c_lower.starts_with("cp ") || c_lower.starts_with("mv ") || c_lower.starts_with("sed ")
+                            || c_lower.starts_with("npm install") || c_lower.starts_with("cargo install") || c_lower.starts_with("git commit");
+                        !has_write
                     } else {
                         true
                     };
 
-                    if is_read_action {
-                        consecutive_read_count += 1;
-                    } else {
+                    if is_mutation_action {
+                        file_mutation_count += 1;
                         consecutive_read_count = 0;
+                    } else if is_read_action {
+                        consecutive_read_count += 1;
+                        total_read_count += 1;
+                    }
+
+                    if file_mutation_count >= 1 && !is_mutation_action {
+                        post_mutation_tools += 1;
                     }
 
                     tool_call_signatures.push((name.clone(), args_str.clone()));
@@ -6080,12 +6191,21 @@ source: "circuit_breaker_crystallization"
 
                     println!("[X-Flow Intercept Gate] 🔓 Tool `{}` auto-harmonized with English reason: '{}' and keywords: '{}'", name, final_reason, final_keywords);
 
-                    let mut tool_result_val = if consecutive_repeat_count >= 3 || tool_consecutive_failures >= 3 || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit) {
+                    let mut tool_result_val = if consecutive_repeat_count >= 3
+                        || tool_consecutive_failures >= 3
+                        || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit)
+                        || (cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit)
+                        || (file_mutation_count >= 1 && post_mutation_tools >= 2)
+                    {
                         circuit_breaker_triggered = true;
                         let warn_msg = if tool_consecutive_failures >= 3 {
                             format!("Circuit Breaker Engaged: Tool '{}' has failed 3 times consecutively with non-zero exit code. Cease repetitive failing invocations and synthesize your response.", name)
                         } else if consecutive_repeat_count >= 3 {
                             format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments 3 times consecutively. Synthesize your final answer immediately.", name)
+                        } else if file_mutation_count >= 1 && post_mutation_tools >= 2 {
+                            format!("Circuit Breaker Engaged: Mutation completed and verified ({} verification steps executed). Cease tool calls and provide your final comprehensive summary now.", post_mutation_tools)
+                        } else if cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit {
+                            format!("Circuit Breaker Engaged: Cumulative read-only limit reached ({} total reads). Cease exploratory commands and synthesize your response immediately.", total_read_count)
                         } else {
                             format!("Circuit Breaker Engaged: You have executed {} consecutive read-only exploratory commands without modifying state. Synthesize your findings immediately.", cb_read_limit)
                         };
@@ -6361,8 +6481,29 @@ source: "circuit_breaker_crystallization"
                         "parts": tool_turn_parts
                     }));
 
-                    // Flowork Self-Healing Advisory Injection (3x Mandate Pre-Tripping Warnings)
-                    if consecutive_repeat_count == 2 {
+                    // Flowork Self-Healing Advisory & Circuit Breaker Enforcement
+                    if circuit_breaker_triggered || turn_count >= max_turns {
+                        // ANTIGRAVITY ADOPTION 2: Graceful Two-Phase Closure (Fix Premature Break Defect)
+                        contents.push(json!({
+                            "role": "user",
+                            "parts": [{
+                                "text": "<EPHEMERAL_MESSAGE>\nCRITICAL ADVISORY: Tool budget exhausted or circuit breaker engaged. Conclude your tool invocations immediately and provide your comprehensive final response detailing completed actions, verified Exit Code 0 statuses, and next steps.\n</EPHEMERAL_MESSAGE>"
+                            }]
+                        }));
+
+                        // Execute ONE final synthesis turn with pure text generation so model speaks (ZERO TOOLS INJECTED: allow_tools = false)
+                        if let Ok(out) = self.call_conection_brain_raw_internal(&contents, &session_id, active_persona_arg, false).await {
+                            match out {
+                                ModelTurnOutput::Text(ai_text) => {
+                                    final_response = ai_text;
+                                }
+                                ModelTurnOutput::FunctionCall { .. } => {
+                                    final_response = format!("⚡ Sesi selesai (Batas Putaran {} tercapai). Trajectory tersimpan aman.", max_turns);
+                                }
+                            }
+                        }
+                        break;
+                    } else if consecutive_repeat_count == 2 {
                         contents.push(json!({
                             "role": "user",
                             "parts": [{
@@ -6417,27 +6558,6 @@ source: "circuit_breaker_crystallization"
                                 )
                             }]
                         }));
-                    } else if circuit_breaker_triggered || turn_count >= max_turns {
-                        // ANTIGRAVITY ADOPTION 2: Graceful Two-Phase Closure (Fix Premature Break Defect)
-                        contents.push(json!({
-                            "role": "user",
-                            "parts": [{
-                                "text": "<EPHEMERAL_MESSAGE>\nCRITICAL ADVISORY: Tool budget exhausted or circuit breaker engaged. Conclude your tool invocations immediately and provide your comprehensive final response detailing completed actions, verified Exit Code 0 statuses, and next steps.\n</EPHEMERAL_MESSAGE>"
-                            }]
-                        }));
-
-                        // Execute ONE final synthesis turn with pure text generation so model speaks (ZERO TOOLS INJECTED)
-                        if let Ok(out) = self.call_conection_brain_raw_with_persona(&contents, &session_id, active_persona_arg).await {
-                            match out {
-                                ModelTurnOutput::Text(ai_text) => {
-                                    final_response = ai_text;
-                                }
-                                ModelTurnOutput::FunctionCall { name, .. } => {
-                                    final_response = format!("⚡ Sesi selesai (Batas Putaran {} tercapai). Trajectory tersimpan aman.", max_turns);
-                                }
-                            }
-                        }
-                        break;
                     }
 
                     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
