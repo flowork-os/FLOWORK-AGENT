@@ -368,6 +368,11 @@ impl SovereignTriggerEngine {
         let mut scored_memories: Vec<(i32, String, Value)> = Vec::new();
 
         for file_path in all_files {
+            let filename = file_path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            if filename.starts_with("incident_") {
+                continue;
+            }
+
             let content = match fs::read_to_string(&file_path) {
                 Ok(c) => c,
                 Err(_) => continue,
@@ -375,6 +380,12 @@ impl SovereignTriggerEngine {
 
             let (fm, body) = parse_markdown_frontmatter(&content);
             if fm.is_empty() {
+                continue;
+            }
+
+            let category_val = fm.get("category").map(|s| s.trim().trim_matches('"').trim_matches('\'')).unwrap_or("");
+            let source_val = fm.get("source").map(|s| s.trim().trim_matches('"').trim_matches('\'')).unwrap_or("");
+            if category_val == "incident_remediation" || source_val == "circuit_breaker_crystallization" {
                 continue;
             }
 
@@ -2727,6 +2738,60 @@ Fix docker permission with chmod 666 /var/run/docker.sock.
 
         let _ = fs::remove_dir_all(&temp_dir);
         println!("✅ ZERO MEMORY CONTAMINATION VERIFIED: Memories cleanly isolated at memories/{{username}}/{{agent_id}}!");
+    }
+
+    #[test]
+    fn test_eval_intercept_gate_filters_out_incidents() {
+        let temp_dir = std::env::temp_dir().join(format!("test_intercept_incidents_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let shared_dir = temp_dir.join(".fl_brain/memories/shared");
+        fs::create_dir_all(&shared_dir).unwrap();
+
+        // 1. Legitimate memory
+        let valid_mem = r#"---
+id: "valid_helper_sol"
+title: "Deterministic Helper Standard Operating Procedure"
+category: "architecture"
+keywords: ["helper", "deterministic", "procedure", "solution", "framework"]
+---
+Verified solution for helper functions.
+"#;
+        fs::write(shared_dir.join("valid_helper_sol.md"), valid_mem).unwrap();
+
+        // 2. Incident file starting with incident_
+        let inc_file = r#"---
+id: "incident_helper_fail"
+title: "Circuit Breaker Post-Mortem: deterministic_helper Failure"
+category: "incident_remediation"
+source: "circuit_breaker_crystallization"
+keywords: ["helper", "deterministic", "failure_recovery", "incident"]
+---
+Faulting tool: deterministic_helper
+"#;
+        fs::write(shared_dir.join("incident_helper_12345.md"), inc_file).unwrap();
+
+        // 3. Incident with different filename but category == "incident_remediation"
+        let inc_cat = r#"---
+id: "post_mortem_helper"
+title: "Post-Mortem helper breakdown"
+category: "incident_remediation"
+keywords: ["helper", "deterministic", "crash"]
+---
+Helper crashed.
+"#;
+        fs::write(shared_dir.join("post_mortem_helper.md"), inc_cat).unwrap();
+
+        let (injected, recalled) = SovereignTriggerEngine::eval_intercept_gate(
+            "Working on deterministic helper procedure",
+            &temp_dir,
+            &temp_dir,
+        );
+
+        assert!(injected.contains("Deterministic Helper Standard Operating Procedure"), "Must recall valid solution");
+        assert!(!injected.contains("incident_helper_fail"), "Must NOT recall incident file");
+        assert!(!injected.contains("post_mortem_helper"), "Must NOT recall incident_remediation category");
+        assert_eq!(recalled.len(), 1, "Only valid memory must be recalled");
+
+        let _ = fs::remove_dir_all(&temp_dir);
     }
 
     #[test]

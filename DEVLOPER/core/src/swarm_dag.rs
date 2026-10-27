@@ -28,7 +28,7 @@ pub struct DagNode {
     pub prompt: String,
     pub target_paths: Vec<String>,
     pub timeout_seconds: u64,
-    pub output_token_budget: usize, // Role-based output token ceiling (Harness² c1..c8 asymmetric budget)
+    pub output_token_budget: usize, // Role-based output token ceiling (Sovereign Swarm asymmetric budget)
     pub status: NodeStatus,
     pub result_summary: Option<String>,
     pub error_message: Option<String>,
@@ -37,7 +37,7 @@ pub struct DagNode {
 
 impl DagNode {
     /// Determines the default asymmetric output token budget based on subagent role/category.
-    /// Follows the Google Harness² principle: "Massive Input -> Diamond Output"
+    /// Follows the Sovereign Swarm Architecture principle: "Massive Input -> Diamond Output"
     pub fn default_budget_for_agent(agent_id: &str) -> usize {
         let clean = agent_id.to_lowercase();
         if clean.contains("auditor") || clean.contains("security") {
@@ -374,7 +374,7 @@ pub struct ContextFusion;
 
 impl ContextFusion {
     /// Fuses completed worker outputs from a wave into a compact, structured semantic bridge.
-    /// Enforces asymmetric role-based token budgeting per worker (Harness² c1..c8 paradigm).
+    /// Enforces asymmetric role-based token budgeting per worker (Sovereign Swarm Architecture paradigm).
     pub fn fuse_wave_results(nodes: &[&DagNode], max_chars_per_node: usize) -> String {
         if nodes.is_empty() {
             return String::new();

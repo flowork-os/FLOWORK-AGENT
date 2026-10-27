@@ -42,7 +42,7 @@ pub async fn list_skills(State(state): State<Arc<AppState>>) -> Json<Value> {
 
 pub async fn launch_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
     if !state.auth.is_authorized().await {
-        eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized launch_plugin attempted without auth.floworkos.com clearance.");
+        eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized launch_plugin attempted without sovereign authentication clearance.");
         eprintln!("💥 Hard crash enforced (Exit Code 137).\n");
         std::process::exit(137);
     }
@@ -954,7 +954,7 @@ pub async fn chat_new_session(
     body: Option<Json<Value>>,
 ) -> Json<Value> {
     if !state.auth.is_authorized().await {
-        eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized chat_new_session attempted without auth.floworkos.com clearance.");
+        eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized chat_new_session attempted without sovereign authentication clearance.");
         eprintln!("💥 Hard crash enforced (Exit Code 137).\n");
         std::process::exit(137);
     }
@@ -1046,7 +1046,7 @@ pub async fn chat_send_message(
 
     let stream = async_stream::stream! {
         if !auth.is_authorized().await {
-            eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized chat_send_message attempted without auth.floworkos.com clearance.");
+            eprintln!("\n🛑 [FATAL LOCKDOWN] Unauthorized chat_send_message attempted without sovereign authentication clearance.");
             eprintln!("💥 Hard crash enforced (Exit Code 137).\n");
             std::process::exit(137);
         }

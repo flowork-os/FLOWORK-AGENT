@@ -90,7 +90,7 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
     // Pre-member boundary enforcement: Unauthenticated requests cannot access member-area
     // FAIL-CLOSED CRASH: If user is not authenticated with auth.floworkos.com and attempts to access member-area, trigger immediate shutdown.
     if clean.starts_with("member-area") && !is_auth {
-        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to bypass sovereign launcher and enter protected member-area without valid session from auth.floworkos.com");
+        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to bypass sovereign launcher and enter protected member-area without valid authentication session");
     }
 
     // Redirect legacy /canvas/index.html to /canvas/member-area/index.html
@@ -101,7 +101,7 @@ pub async fn serve_canvas_file(AxPath(file): AxPath<String>, State(state): State
                 return Redirect::temporary("/canvas/member-area/index.html").into_response();
             }
         } else {
-            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to load protected canvas index without valid session from auth.floworkos.com");
+            crate::anti_tamper::AntiTamper::trigger_fatal_quarantine("Unauthorized attempt to load protected canvas index without valid authentication session");
         }
     }
 
@@ -179,7 +179,7 @@ pub async fn serve_app_gui(
     State(state): State<Arc<AppState>>,
 ) -> Response {
     if !state.auth.is_authorized().await {
-        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!("Unauthorized access to app '{}' without valid session from auth.floworkos.com", id));
+        crate::anti_tamper::AntiTamper::trigger_fatal_quarantine(&format!("Unauthorized access to app '{}' without valid authentication session", id));
     }
 
     if let Some(plugin) = state.discovery.get(&id).await {

@@ -344,8 +344,8 @@ impl AuthManager {
             eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Auth Gatekeeper");
             eprintln!("================================================================================");
             eprintln!("❌ Missing authentication credentials: vault not found at {}", vault_path.display());
-            eprintln!("🔒 Strict lifecycle dependence on https://auth.floworkos.com enforced.");
-            eprintln!("💥 Hard crash triggered (Exit Code 137). Please authenticate via auth.floworkos.com.");
+            eprintln!("🔒 Strict lifecycle dependence on {} enforced.", crate::prompt_enclave::PromptEnclave::url_auth());
+            eprintln!("💥 Hard crash triggered (Exit Code 137). Please authenticate via {}.", crate::prompt_enclave::PromptEnclave::url_auth());
             eprintln!("================================================================================\n");
             std::process::exit(137);
         }
@@ -390,13 +390,13 @@ impl AuthManager {
             eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Auth Gatekeeper");
             eprintln!("================================================================================");
             eprintln!("❌ No valid cryptographic passport issued by {} found in vault.", auth_authority);
-            eprintln!("🔒 Strict lifecycle dependence on https://auth.floworkos.com enforced.");
+            eprintln!("🔒 Strict lifecycle dependence on {} enforced.", auth_authority);
             eprintln!("💥 Hard crash triggered (Exit Code 137). Unauthorized binary execution denied.");
             eprintln!("================================================================================\n");
             std::process::exit(137);
         }
 
-        println!("[X-Flow Core] 🛡️ Startup Gatekeeper: Cryptographic Passport (https://auth.floworkos.com) verified successfully.");
+        println!("[X-Flow Core] 🛡️ Startup Gatekeeper: Cryptographic Passport ({}) verified successfully.", auth_authority);
     }
 
     pub fn validate_passport_token(token: &str) -> bool {
@@ -461,7 +461,7 @@ impl AuthManager {
             eprintln!("\n================================================================================");
             eprintln!("🛑 [FATAL LOCKDOWN] Flowork Sovereign Heartbeat Gatekeeper");
             eprintln!("================================================================================");
-            eprintln!("❌ Session revoked or invalidated by auth.floworkos.com.");
+            eprintln!("❌ Session revoked or invalidated by sovereign authority.");
             eprintln!("💥 Hard crash enforced (Exit Code 137). Terminating immediately.");
             eprintln!("================================================================================\n");
             std::process::exit(137);
@@ -536,7 +536,7 @@ mod tests {
 
         // 3. Token expired rejected
         let expired_payload = json!({
-            "iss": "https://auth.floworkos.com",
+            "iss": crate::prompt_enclave::PromptEnclave::url_auth(),
             "sub": "usr_test",
             "exp": 1000000000 // In the past (2001)
         });
@@ -547,7 +547,7 @@ mod tests {
 
         // 4. Valid authentic token accepted
         let valid_payload = json!({
-            "iss": "https://auth.floworkos.com",
+            "iss": crate::prompt_enclave::PromptEnclave::url_auth(),
             "sub": "usr_sovereign",
             "username": "sovereign",
             "exp": 2147483647

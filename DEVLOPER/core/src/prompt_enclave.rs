@@ -242,8 +242,8 @@ Autonomous Self-Healing
     #[inline] pub fn url_github_api_repos() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_GITHUB_API_REPOS, &crate::sovereign_enclave::FP_URL_GITHUB_API_REPOS) }
     #[inline] pub fn url_github_flowork_base() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_GITHUB_FLOWORK_BASE, &crate::sovereign_enclave::FP_URL_GITHUB_FLOWORK_BASE) }
     #[inline] pub fn url_release_checksums() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_RELEASE_CHECKSUMS, &crate::sovereign_enclave::FP_URL_RELEASE_CHECKSUMS) }
-    #[inline] pub fn url_local_canvas_19890() -> String { "http://127.0.0.1:19890".to_string() }
-    #[inline] pub fn url_local_canvas_host() -> String { "http://localhost:19890".to_string() }
+    #[inline] pub fn url_local_canvas_19890() -> String { format!("{}127.0.0.1:19890", Self::proto_http()) }
+    #[inline] pub fn url_local_canvas_host() -> String { format!("{}localhost:19890", Self::proto_http()) }
 
     #[inline] pub fn url_crates_search() -> String { "https://crates.io/api/v1/crates?q={}&per_page=5".to_string() }
     #[inline] pub fn url_crates_base() -> String { "https://crates.io/crates/".to_string() }
@@ -264,12 +264,12 @@ Autonomous Self-Healing
     #[inline] pub fn url_youtube_img_hq() -> String { "https://i.ytimg.com/vi/".to_string() }
 
     #[inline] pub fn url_gdrive_auth() -> String { crate::sovereign_enclave::unseal_verified(crate::sovereign_enclave::CIPHER_URL_GDRIVE_AUTH, &crate::sovereign_enclave::FP_URL_GDRIVE_AUTH) }
-    #[inline] pub fn url_gdrive_token() -> String { "https://oauth2.googleapis.com/token".to_string() }
-    #[inline] pub fn url_gdrive_about() -> String { "https://www.googleapis.com/drive/v3/about?fields=user".to_string() }
-    #[inline] pub fn url_gdrive_quota() -> String { "https://www.googleapis.com/drive/v3/about?fields=storageQuota".to_string() }
-    #[inline] pub fn url_gdrive_files() -> String { "https://www.googleapis.com/drive/v3/files".to_string() }
-    #[inline] pub fn url_gdrive_upload() -> String { "https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart".to_string() }
-    #[inline] pub fn url_gdrive_view() -> String { "https://drive.google.com/file/d/".to_string() }
+    #[inline] pub fn url_gdrive_token() -> String { format!("{}oauth2.googleapis.com/token", Self::proto_https()) }
+    #[inline] pub fn url_gdrive_about() -> String { format!("{}www.googleapis.com/drive/v3/about?fields=user", Self::proto_https()) }
+    #[inline] pub fn url_gdrive_quota() -> String { format!("{}www.googleapis.com/drive/v3/about?fields=storageQuota", Self::proto_https()) }
+    #[inline] pub fn url_gdrive_files() -> String { format!("{}www.googleapis.com/drive/v3/files", Self::proto_https()) }
+    #[inline] pub fn url_gdrive_upload() -> String { format!("{}www.googleapis.com/upload/drive/v3/files?uploadType=multipart", Self::proto_https()) }
+    #[inline] pub fn url_gdrive_view() -> String { format!("{}drive.google.com/file/d/", Self::proto_https()) }
 
     #[inline] pub fn jurisdiction_matrix() -> String { Self::read_system_file("categories/JURISDICTION_MATRIX.md") }
     #[inline] pub fn url_prompt_dispatch_19890() -> String { "http://127.0.0.1:19890/api/prompt-dispatch".to_string() }
@@ -314,9 +314,9 @@ Autonomous Self-Healing
         ]
     }
 
-    #[inline] pub fn url_duckduckgo_search() -> String { "https://html.duckduckgo.com/html/?q=".to_string() }
-    #[inline] pub fn url_canvas_office_3d() -> String { "https://canvas.floworkos.com/office_3d.js".to_string() }
-    #[inline] pub fn url_canvas_cdn_base() -> String { "https://canvas.floworkos.com".to_string() }
+    #[inline] pub fn url_duckduckgo_search() -> String { format!("{}html.duckduckgo.com/html/?q=", Self::proto_https()) }
+    #[inline] pub fn url_canvas_office_3d() -> String { format!("{}/office_3d.js", Self::url_canvas_stage()) }
+    #[inline] pub fn url_canvas_cdn_base() -> String { Self::url_canvas_stage() }
     #[inline] pub fn gdrive_client_id() -> String { "1071006060591-tmhssin2h21lcre235vtolojh4g403ep.apps.googleusercontent.com".to_string() }
 
     pub fn all_category_templates() -> Vec<(String, String)> {

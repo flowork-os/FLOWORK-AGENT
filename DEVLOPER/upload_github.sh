@@ -575,6 +575,7 @@ echo "🛡️ [5/7] Executing Forensic Anti-Leak Inspection Gate..."
 
 python3 - << 'EOF_PY_AUDIT'
 import os
+import sys
 import re
 
 staging_dir = os.environ.get("STAGING_DIR", os.path.join(os.environ.get("PROJECT_ROOT", os.path.abspath(".")), ".FL_BIN", "scratch", "repo_staging"))

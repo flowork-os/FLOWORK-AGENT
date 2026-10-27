@@ -3169,7 +3169,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
     }
 }
 
-/// Google Harness² c7 Deterministic Helper Engine:
+/// Flowork Sovereign Deterministic Helper Engine:
 /// Synthesizes and executes local deterministic scripts (Python, Bash, Node.js, Rust)
 /// in isolated .FL_BIN/scratch/helpers/ space. Offloads heavy regex matching, log parsing,
 /// numerical aggregation, and JSON/CSV conversions away from LLM tokens, returning only
@@ -3741,7 +3741,7 @@ pub fn resolve_canvas_tool_declaration(canvas_tools_dir: &Path, tool_name: &str)
     if tool_name == "deterministic_helper" || tool_name == "c7_helper" || tool_name == "run_helper" {
         return Some(json!({
             "name": "deterministic_helper",
-            "description": "Google Harness² c7 Deterministic Helper Engine: Synthesizes and executes local deterministic scripts (Python, Bash, Node.js, Rust) in isolated .FL_BIN/scratch/helpers/ space. Offloads heavy regex matching, log parsing, numerical aggregation, and JSON/CSV conversions away from LLM tokens, returning only concise aggregated outputs with Exit Code 0 verification.",
+            "description": "Flowork Sovereign Deterministic Helper Engine: Synthesizes and executes local deterministic scripts (Python, Bash, Node.js, Rust) in isolated .FL_BIN/scratch/helpers/ space. Offloads heavy regex matching, log parsing, numerical aggregation, and JSON/CSV conversions away from LLM tokens, returning only concise aggregated outputs with Exit Code 0 verification.",
             "parameters": {
                 "type": "OBJECT",
                 "properties": {

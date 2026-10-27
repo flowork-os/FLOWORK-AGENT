@@ -54,7 +54,7 @@ impl AntiTamper {
         eprintln!("\n═══════════════════════════════════════════════════════════════════════════");
         eprintln!("[SOVEREIGN GUARD] 🛑 FATAL AUTHENTICATION & TAMPER VIOLATION DETECTED");
         eprintln!("[SOVEREIGN GUARD] Violation: {}", reason);
-        eprintln!("[SOVEREIGN GUARD] Jurisdiction: https://auth.floworkos.com required.");
+        eprintln!("[SOVEREIGN GUARD] Jurisdiction: {} required.", crate::prompt_enclave::PromptEnclave::url_auth());
         eprintln!("[SOVEREIGN GUARD] Process terminated with Exit Code 42 (Fail-Closed Quarantine).");
         eprintln!("═══════════════════════════════════════════════════════════════════════════\n");
         std::process::exit(42);

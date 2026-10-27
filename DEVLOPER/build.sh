@@ -11,6 +11,7 @@ CORE_DIR="${SCRIPT_DIR}/core"
 OUTPUT_DIR="${SCRIPT_DIR}/build_output"
 
 export PATH="${HOME}/.cargo/bin:${HOME}/.local/zig-linux-x86_64-0.13.0:$PATH"
+export SDKROOT="${SDKROOT:-/home/mrflow/.cache/macos-sdk/MacOSX12.3.sdk}"
 
 mkdir -p "${OUTPUT_DIR}/linux" "${OUTPUT_DIR}/windows" "${OUTPUT_DIR}/macos"
 
@@ -37,8 +38,9 @@ build_linux() {
     echo -e "\n📦 [1/4] Compiling Linux Release Binary (Fat LTO + Stripped)..."
     cargo build --manifest-path "${CORE_DIR}/Cargo.toml" --release --bin flowork
     cp -v "${CORE_DIR}/target/release/flowork" "${OUTPUT_DIR}/linux/x-flow"
-    chmod +x "${OUTPUT_DIR}/linux/x-flow"
-    echo "   ✓ Linux binary: ${OUTPUT_DIR}/linux/x-flow"
+    cp -v "${CORE_DIR}/target/release/flowork" "${OUTPUT_DIR}/flowork"
+    chmod +x "${OUTPUT_DIR}/linux/x-flow" "${OUTPUT_DIR}/flowork"
+    echo "   ✓ Linux binary: ${OUTPUT_DIR}/linux/x-flow and ${OUTPUT_DIR}/flowork"
 }
 
 build_windows() {
@@ -46,7 +48,8 @@ build_windows() {
     if command -v cargo-zigbuild &> /dev/null || cargo zigbuild --version &> /dev/null; then
         cargo zigbuild --manifest-path "${CORE_DIR}/Cargo.toml" --target x86_64-pc-windows-gnu --release --bin flowork
         cp -v "${CORE_DIR}/target/x86_64-pc-windows-gnu/release/flowork.exe" "${OUTPUT_DIR}/windows/x-flow.exe"
-        echo "   ✓ Windows binary: ${OUTPUT_DIR}/windows/x-flow.exe"
+        cp -v "${CORE_DIR}/target/x86_64-pc-windows-gnu/release/flowork.exe" "${OUTPUT_DIR}/flowork.exe"
+        echo "   ✓ Windows binary: ${OUTPUT_DIR}/windows/x-flow.exe and ${OUTPUT_DIR}/flowork.exe"
     else
         echo "   ⚠️ cargo-zigbuild not found, skipping Windows cross-compilation."
     fi
@@ -57,7 +60,8 @@ build_macos_x86() {
     if command -v cargo-zigbuild &> /dev/null || cargo zigbuild --version &> /dev/null; then
         cargo zigbuild --manifest-path "${CORE_DIR}/Cargo.toml" --target x86_64-apple-darwin --release --bin flowork
         cp -v "${CORE_DIR}/target/x86_64-apple-darwin/release/flowork" "${OUTPUT_DIR}/macos/x-flow-x86_64"
-        chmod +x "${OUTPUT_DIR}/macos/x-flow-x86_64"
+        cp -v "${CORE_DIR}/target/x86_64-apple-darwin/release/flowork" "${OUTPUT_DIR}/flowork-darwin-x86_64"
+        chmod +x "${OUTPUT_DIR}/macos/x-flow-x86_64" "${OUTPUT_DIR}/flowork-darwin-x86_64"
         echo "   ✓ macOS Intel binary: ${OUTPUT_DIR}/macos/x-flow-x86_64"
     else
         echo "   ⚠️ cargo-zigbuild not found, skipping macOS x86 cross-compilation."
@@ -69,7 +73,8 @@ build_macos_arm() {
     if command -v cargo-zigbuild &> /dev/null || cargo zigbuild --version &> /dev/null; then
         cargo zigbuild --manifest-path "${CORE_DIR}/Cargo.toml" --target aarch64-apple-darwin --release --bin flowork
         cp -v "${CORE_DIR}/target/aarch64-apple-darwin/release/flowork" "${OUTPUT_DIR}/macos/x-flow-arm64"
-        chmod +x "${OUTPUT_DIR}/macos/x-flow-arm64"
+        cp -v "${CORE_DIR}/target/aarch64-apple-darwin/release/flowork" "${OUTPUT_DIR}/flowork-darwin-arm64"
+        chmod +x "${OUTPUT_DIR}/macos/x-flow-arm64" "${OUTPUT_DIR}/flowork-darwin-arm64"
         echo "   ✓ macOS ARM binary: ${OUTPUT_DIR}/macos/x-flow-arm64"
     else
         echo "   ⚠️ cargo-zigbuild not found, skipping macOS ARM cross-compilation."

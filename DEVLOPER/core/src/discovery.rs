@@ -184,15 +184,22 @@ mod tests {
 
     #[test]
     fn test_plugin_skill_markdown_english_and_twenty_keywords() {
+        let home_dir = std::env::var("HOME").unwrap_or_default();
         let candidates = [
             std::path::PathBuf::from("flowork/plugins/SKILL.MD"),
             std::path::PathBuf::from("../flowork/plugins/SKILL.MD"),
             std::path::PathBuf::from("../../flowork/plugins/SKILL.MD"),
+            std::path::PathBuf::from("../../../flowork/plugins/SKILL.MD"),
+            std::path::PathBuf::from("../../../../flowork/plugins/SKILL.MD"),
             std::path::PathBuf::from("plugins/SKILL.MD"),
             std::path::PathBuf::from("../flowork/apps/SKILL.MD"),
             std::path::PathBuf::from("../../flowork/apps/SKILL.MD"),
+            std::path::PathBuf::from("../../../flowork/apps/SKILL.MD"),
+            std::path::PathBuf::from("../../../../flowork/apps/SKILL.MD"),
             std::path::PathBuf::from("flowork/apps/SKILL.MD"),
             std::path::PathBuf::from("apps/SKILL.MD"),
+            std::path::PathBuf::from(&home_dir).join("flowork/apps/SKILL.MD"),
+            std::path::PathBuf::from("/home/mrflow/flowork/apps/SKILL.MD"),
         ];
         let content = candidates.iter()
             .find_map(|p| std::fs::read_to_string(p).ok())

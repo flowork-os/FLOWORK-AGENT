@@ -258,9 +258,10 @@ impl SyncDriveManager {
             if !flowork_token.is_empty() {
                 cmd.args(["-H", &format!("Authorization: Bearer {}", flowork_token)]);
             }
+            let exchange_endpoint = format!("{}/api/auth/oauth/exchange", crate::prompt_enclave::PromptEnclave::url_auth());
             cmd.args([
                 "-d", &post_json,
-                "https://auth.floworkos.com/api/auth/oauth/exchange",
+                &exchange_endpoint,
             ]);
 
             let out = cmd.output().await
@@ -421,9 +422,10 @@ impl SyncDriveManager {
             if !flowork_token.is_empty() {
                 cmd.args(["-H", &format!("Authorization: Bearer {}", flowork_token)]);
             }
+            let refresh_endpoint = format!("{}/api/auth/oauth/refresh", crate::prompt_enclave::PromptEnclave::url_auth());
             cmd.args([
                 "-d", &post_json,
-                "https://auth.floworkos.com/api/auth/oauth/refresh",
+                &refresh_endpoint,
             ]);
 
             let out = match cmd.output().await {

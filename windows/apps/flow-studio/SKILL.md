@@ -69,7 +69,7 @@ curl -s http://127.0.0.1:18012/api/timeline
 ```bash
 curl -s -X POST http://127.0.0.1:18012/api/assets \
   -H "Content-Type: application/json" \
-  -d '{"filename": "intro.mp4", "filepath": "/home/mrflow/flowork/apps/flow-studio/uploads/intro.mp4"}'
+  -d '{"filename": "intro.mp4", "filepath": "./uploads/intro.mp4"}'
 ```
 
 ### C. Update Timeline Tracks

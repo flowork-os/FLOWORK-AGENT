@@ -3331,8 +3331,13 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
         }
 
         // Universal Intercept Gate Past Memories (Solusi A & B Chicken-and-Egg Resolution)
+        let intercept_query = if !user_input_text.trim().is_empty() {
+            &user_input_text
+        } else {
+            &text_to_scan
+        };
         let (injected_intercept, _) = crate::trigger::SovereignTriggerEngine::eval_intercept_gate(
-            &text_to_scan,
+            intercept_query,
             &effective_ws,
             &engine_root,
         );
@@ -5221,7 +5226,7 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
                             if let Some(msg) = step.get("userInput").and_then(|u| u.get("message")).and_then(|m| m.as_str()) {
                                 contents.push(json!({
                                     "role": "user",
-                                    "parts": [{ "text": format!("[RIWAYAT PERCAKAPAN SEBELUMNYA]:\n{}", msg) }]
+                                    "parts": [{ "text": msg }]
                                 }));
                             }
                         } else if st_type.ends_with("RUN_COMMAND") {
@@ -5290,7 +5295,7 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
                             if let Some(msg) = step.get("userInput").and_then(|u| u.get("message")).and_then(|m| m.as_str()) {
                                 contents.push(json!({
                                     "role": "user",
-                                    "parts": [{ "text": format!("[RIWAYAT PERCAKAPAN SEBELUMNYA]:\n{}", msg) }]
+                                    "parts": [{ "text": msg }]
                                 }));
                             }
                         } else if st_type.ends_with("RUN_COMMAND") {
@@ -5589,17 +5594,37 @@ source: "circuit_breaker_crystallization"
         if needs_append {
             if had_previous_circuit_breaker {
                 println!("[Sovereign Engine] 🔄 User chat received: Circuit Breaker RESET to 0. New operational epoch active.");
-                contents.push(json!({
-                    "role": "user",
-                    "parts": [{
-                        "text": "<SOVEREIGN_EPOCH_RESET>\n[OPERATIONAL RESET NOTICE]: User has provided fresh instructions. All previous Circuit Breaker failure counts and lockouts are RESET to 0. You are operating in a fresh epoch with full tool access and normal retry budget. Do not mention prior lockouts as an excuse to avoid tool execution.\n</SOVEREIGN_EPOCH_RESET>"
-                    }]
-                }));
+                let reset_prefix = "<SOVEREIGN_EPOCH_RESET>\n[OPERATIONAL RESET NOTICE]: User has provided fresh instructions. All previous Circuit Breaker failure counts and lockouts are RESET to 0. You are operating in a fresh epoch with full tool access and normal retry budget. Do not mention prior lockouts as an excuse to avoid tool execution.\n</SOVEREIGN_EPOCH_RESET>\n\n";
+                if let Some(first_part) = user_parts.first_mut() {
+                    if let Some(txt) = first_part.get("text").and_then(|t| t.as_str()) {
+                        let combined = format!("{}{}", reset_prefix, txt);
+                        *first_part = json!({ "text": combined });
+                    } else {
+                        user_parts.insert(0, json!({ "text": reset_prefix.trim_end() }));
+                    }
+                } else {
+                    user_parts.insert(0, json!({ "text": reset_prefix.trim_end() }));
+                }
             }
             contents.push(json!({
                 "role": "user",
                 "parts": user_parts
             }));
+        } else if had_previous_circuit_breaker {
+            println!("[Sovereign Engine] 🔄 User chat received: Circuit Breaker RESET to 0. New operational epoch active.");
+            if let Some(last_turn) = contents.last_mut() {
+                if let Some(parts) = last_turn.get_mut("parts").and_then(|p| p.as_array_mut()) {
+                    let reset_prefix = "<SOVEREIGN_EPOCH_RESET>\n[OPERATIONAL RESET NOTICE]: User has provided fresh instructions. All previous Circuit Breaker failure counts and lockouts are RESET to 0. You are operating in a fresh epoch with full tool access and normal retry budget. Do not mention prior lockouts as an excuse to avoid tool execution.\n</SOVEREIGN_EPOCH_RESET>\n\n";
+                    if let Some(first_part) = parts.first_mut() {
+                        if let Some(txt) = first_part.get("text").and_then(|t| t.as_str()) {
+                            if !txt.contains("<SOVEREIGN_EPOCH_RESET>") {
+                                let combined = format!("{}{}", reset_prefix, txt);
+                                *first_part = json!({ "text": combined });
+                            }
+                        }
+                    }
+                }
+            }
         }
 
         // Step C: Autonomous Multi-Turn Tool Execution Loop (Flowork Sovereign Circuit Breaker Mesh)

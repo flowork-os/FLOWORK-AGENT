@@ -31,8 +31,6 @@ impl CredentialShield {
     /// Approved egress domains allowed for outbound agent requests (Deny-by-default egress model)
     pub const APPROVED_EGRESS_DOMAINS: &'static [&'static str] = &[
         "floworkos.com",
-        "auth.floworkos.com",
-        "api.floworkos.com",
         "api.openai.com",
         "generativelanguage.googleapis.com",
         "api.anthropic.com",
