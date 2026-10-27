@@ -9,10 +9,20 @@ const GUI_ROOT = path.join(__dirname, 'gui');
 const OUTPUTS_DIR = path.join(__dirname, 'exports');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
 const SAMPLES_DIR = path.join(__dirname, 'samples');
+const ASSETS_DIR = path.join(__dirname, 'assets');
 
-[OUTPUTS_DIR, UPLOADS_DIR, SAMPLES_DIR].forEach((dir) => {
+const ASSET_CATEGORIES = ['media', 'audio', 'text', 'stickers', 'effects', 'transitions', 'filters', 'adjustments'];
+
+[OUTPUTS_DIR, UPLOADS_DIR, SAMPLES_DIR, ASSETS_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
+  }
+});
+
+ASSET_CATEGORIES.forEach((cat) => {
+  const catDir = path.join(ASSETS_DIR, cat);
+  if (!fs.existsSync(catDir)) {
+    fs.mkdirSync(catDir, { recursive: true });
   }
 });
 
@@ -49,6 +59,40 @@ const MIME_TYPES = {
 };
 
 const renderJobs = {};
+const PROJECT_FILE = path.join(__dirname, 'project_state.json');
+
+function getPersistedProjectState() {
+  try {
+    if (fs.existsSync(PROJECT_FILE)) {
+      return JSON.parse(fs.readFileSync(PROJECT_FILE, 'utf-8'));
+    }
+  } catch (err) {
+    console.error('[FlowStudio] Failed reading project_state.json:', err.message);
+  }
+  return {
+    version: 4,
+    isUserProject: true,
+    lastSaved: Date.now(),
+    duration: 30,
+    tracks: [
+      { id: 'v1', name: 'Main Track (V1)', type: 'video', isAudio: false, clips: [] },
+      { id: 'v2', name: 'Overlay Track (V2)', type: 'video', isAudio: false, clips: [] },
+      { id: 'a1', name: 'Main Audio (A1)', type: 'audio', isAudio: true, clips: [] },
+      { id: 'a2', name: 'SFX / BGM (A2)', type: 'audio', isAudio: true, clips: [] }
+    ]
+  };
+}
+
+function persistProjectState(state) {
+  try {
+    state.lastSaved = Date.now();
+    fs.writeFileSync(PROJECT_FILE, JSON.stringify(state, null, 2), 'utf-8');
+    return true;
+  } catch (err) {
+    console.error('[FlowStudio] Failed saving project_state.json:', err.message);
+    return false;
+  }
+}
 
 function sendJson(res, statusCode, payload) {
   res.writeHead(statusCode, {
@@ -92,11 +136,13 @@ function serveStaticFile(filePath, req, res) {
   const resolvedOutputs = path.resolve(OUTPUTS_DIR);
   const resolvedUploads = path.resolve(UPLOADS_DIR);
   const resolvedSamples = path.resolve(SAMPLES_DIR);
+  const resolvedAssets = path.resolve(ASSETS_DIR);
 
   const isAllowed = resolvedPath.startsWith(resolvedGuiRoot) ||
                     resolvedPath.startsWith(resolvedOutputs) ||
                     resolvedPath.startsWith(resolvedUploads) ||
-                    resolvedPath.startsWith(resolvedSamples);
+                    resolvedPath.startsWith(resolvedSamples) ||
+                    resolvedPath.startsWith(resolvedAssets);
 
   if (!isAllowed) {
     res.writeHead(403, { 'Content-Type': 'text/plain', 'Access-Control-Allow-Origin': '*' });
@@ -261,6 +307,112 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { status: 'success', samples });
   }
 
+  // --- Dynamic Asset Categories Engine ---
+  if (pathname === '/api/assets' && req.method === 'GET') {
+    const targetCategory = urlObj.searchParams.get('category'); // optional: 'all' or specific
+    const result = {};
+
+    const categoriesToScan = targetCategory && targetCategory !== 'all' && ASSET_CATEGORIES.includes(targetCategory)
+      ? [targetCategory]
+      : ASSET_CATEGORIES;
+
+    for (const cat of categoriesToScan) {
+      const catDir = path.join(ASSETS_DIR, cat);
+      result[cat] = [];
+      if (!fs.existsSync(catDir)) continue;
+
+      try {
+        const files = fs.readdirSync(catDir);
+        for (const file of files) {
+          if (file.startsWith('.')) continue;
+          const fullPath = path.join(catDir, file);
+          const stat = fs.statSync(fullPath);
+          if (!stat.isFile()) continue;
+
+          const ext = path.extname(file).toLowerCase();
+          const baseName = path.basename(file, ext);
+          const fileUrl = `/assets/${cat}/${encodeURIComponent(file)}`;
+
+          let item = {
+            id: `asset-${cat}-${baseName}`,
+            name: baseName.replace(/[-_]/g, ' '),
+            filename: file,
+            category: cat,
+            url: fileUrl,
+            size: stat.size,
+            updatedAt: stat.mtimeMs
+          };
+
+          // If JSON (e.g. presets for effects, filters, transitions, text, adjustments)
+          if (ext === '.json') {
+            try {
+              const content = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
+              item = { ...item, ...content, id: content.id || item.id, name: content.name || item.name };
+            } catch (jsonErr) {}
+          } else if (['.mp4', '.mov', '.webm', '.avi', '.mkv'].includes(ext)) {
+            item.type = 'video';
+            if (hasFFprobe) {
+              try {
+                const probeCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration,r_frame_rate -of default=noprint_wrappers=1:nokey=1 "${fullPath}"`;
+                const probeOut = execSync(probeCmd, { timeout: 3000 }).toString().trim().split('\n');
+                if (probeOut[0]) item.width = parseInt(probeOut[0], 10);
+                if (probeOut[1]) item.height = parseInt(probeOut[1], 10);
+                if (probeOut[2]) item.duration = parseFloat(probeOut[2]);
+                if (probeOut[3]) {
+                  const [n, d] = probeOut[3].split('/').map(Number);
+                  if (d) item.fps = Math.round(n / d);
+                }
+              } catch (probeErr) {}
+            }
+          } else if (['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.flac'].includes(ext)) {
+            item.type = 'audio';
+            if (hasFFprobe) {
+              try {
+                const probeCmd = `ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${fullPath}"`;
+                const probeOut = execSync(probeCmd, { timeout: 3000 }).toString().trim();
+                if (probeOut) item.duration = parseFloat(probeOut);
+              } catch (probeErr) {}
+            }
+          } else if (['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)) {
+            item.type = cat === 'stickers' ? 'sticker' : 'image';
+          }
+
+          result[cat].push(item);
+        }
+      } catch (err) {
+        console.error(`[FlowStudio] Error reading asset category ${cat}:`, err.message);
+      }
+    }
+
+    return sendJson(res, 200, {
+      status: 'success',
+      categories: ASSET_CATEGORIES,
+      assetsDir: ASSETS_DIR,
+      data: result
+    });
+  }
+
+  // Open asset directory in OS file manager (Linux/macOS/Windows)
+  if (pathname === '/api/assets/open-dir' && (req.method === 'POST' || req.method === 'GET')) {
+    const targetCat = urlObj.searchParams.get('category') || '';
+    const openTarget = targetCat && ASSET_CATEGORIES.includes(targetCat)
+      ? path.join(ASSETS_DIR, targetCat)
+      : ASSETS_DIR;
+
+    try {
+      const openCmd = process.platform === 'win32'
+        ? `start "" "${openTarget}"`
+        : process.platform === 'darwin'
+        ? `open "${openTarget}"`
+        : `xdg-open "${openTarget}" || nautilus "${openTarget}" || nemo "${openTarget}" || thunar "${openTarget}"`;
+
+      execSync(`${openCmd} &`, { stdio: 'ignore' });
+      return sendJson(res, 200, { status: 'success', opened: openTarget });
+    } catch (openErr) {
+      return sendJson(res, 500, { status: 'error', message: openErr.message, path: openTarget });
+    }
+  }
+
   if (pathname === '/api/media/upload' && req.method === 'POST') {
     try {
       const body = await parseJsonBody(req);
@@ -280,6 +432,61 @@ const server = http.createServer(async (req, res) => {
       });
     } catch (err) {
       return sendJson(res, 500, { status: 'error', message: err.message });
+    }
+  }
+
+  // 📥 DOWNLOAD MEDIA FROM YOUTUBE OR REMOTE URL VIA YT-DLP
+  if (pathname === '/api/media/download-yt' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody(req);
+      const videoUrl = (body.url || '').trim();
+      if (!videoUrl) {
+        return sendJson(res, 400, { status: 'error', message: 'Missing video URL' });
+      }
+
+      // Generate unique safe target file name in uploads dir
+      const timestamp = Date.now();
+      const outputTemplate = path.join(UPLOADS_DIR, `yt_${timestamp}_%(title).50s.%(ext)s`);
+
+      // Run yt-dlp with standard web-compatible format (h264 mp4 or best audio/video)
+      const ytCmd = `yt-dlp -f "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best" --no-playlist --merge-output-format mp4 -o "${outputTemplate}" "${videoUrl}"`;
+      
+      execSync(ytCmd, { timeout: 120000, encoding: 'utf-8' });
+
+      // Identify newly created file
+      const uploadedFiles = fs.readdirSync(UPLOADS_DIR);
+      const downloadedFile = uploadedFiles.find(f => f.startsWith(`yt_${timestamp}`));
+      if (!downloadedFile) {
+        return sendJson(res, 500, { status: 'error', message: 'Download finished but file could not be located' });
+      }
+
+      const filePath = path.join(UPLOADS_DIR, downloadedFile);
+      const stat = fs.statSync(filePath);
+      let duration = 30.0;
+
+      // Extract duration via ffprobe if available
+      if (hasFFprobe) {
+        try {
+          const probeOut = execSync(`ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1 "${filePath}"`, { timeout: 5000, encoding: 'utf-8' });
+          const parsedDur = parseFloat(probeOut.trim());
+          if (!isNaN(parsedDur) && parsedDur > 0) duration = parsedDur;
+        } catch (probeErr) {}
+      }
+
+      return sendJson(res, 200, {
+        status: 'success',
+        media: {
+          id: `media-yt-${timestamp}`,
+          name: downloadedFile,
+          type: 'video',
+          url: `/uploads/${encodeURIComponent(downloadedFile)}`,
+          duration: duration,
+          size: stat.size
+        }
+      });
+    } catch (err) {
+      console.error('[YT-DLP ERROR]:', err);
+      return sendJson(res, 500, { status: 'error', message: 'Failed to download YouTube video: ' + (err.stderr || err.message) });
     }
   }
 
@@ -676,6 +883,226 @@ const server = http.createServer(async (req, res) => {
     return sendJson(res, 200, { status: 'success', job });
   }
 
+  // GET /api/project/state - Retrieve active timeline state
+  if (pathname === '/api/project/state' && req.method === 'GET') {
+    const state = getPersistedProjectState();
+    return sendJson(res, 200, { status: 'success', state });
+  }
+
+  // POST /api/project/state - Sync/Save timeline state
+  if (pathname === '/api/project/state' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody(req);
+      if (body && typeof body === 'object') {
+        persistProjectState(body);
+        return sendJson(res, 200, { status: 'success', message: 'Project state saved', lastSaved: Date.now() });
+      }
+      return sendJson(res, 400, { status: 'error', message: 'Invalid state body' });
+    } catch (err) {
+      return sendJson(res, 500, { status: 'error', message: err.message });
+    }
+  }
+
+  // POST /api/agent/command - Execute AI Agent Video Editing Operations
+  if (pathname === '/api/agent/command' && req.method === 'POST') {
+    try {
+      const payload = await parseJsonBody(req);
+      const action = payload.action;
+      const state = getPersistedProjectState();
+
+      if (!state.tracks) {
+        state.tracks = [
+          { id: 'v1', name: 'Main Track (V1)', type: 'video', isAudio: false, clips: [] },
+          { id: 'v2', name: 'Overlay Track (V2)', type: 'video', isAudio: false, clips: [] },
+          { id: 'a1', name: 'Main Audio (A1)', type: 'audio', isAudio: true, clips: [] },
+          { id: 'a2', name: 'SFX / BGM (A2)', type: 'audio', isAudio: true, clips: [] }
+        ];
+      }
+
+      if (action === 'get_state') {
+        return sendJson(res, 200, { status: 'success', action, state });
+      }
+
+      if (action === 'add_clip') {
+        const trackId = payload.trackId || (payload.isAudio ? 'a1' : 'v1');
+        let track = state.tracks.find(t => t.id === trackId);
+        if (!track) {
+          track = {
+            id: trackId,
+            name: payload.trackName || (payload.isAudio ? 'Audio Track' : 'Video Track'),
+            type: payload.isAudio ? 'audio' : 'video',
+            isAudio: !!payload.isAudio,
+            clips: []
+          };
+          state.tracks.push(track);
+        }
+
+        const clipId = 'clip_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+        const duration = parseFloat(payload.duration) || 5;
+        const start = payload.start !== undefined ? parseFloat(payload.start) : (track.clips.reduce((acc, c) => Math.max(acc, (c.start || 0) + (c.duration || 0)), 0));
+
+        const newClip = {
+          id: clipId,
+          name: payload.name || 'Agent Media Clip',
+          mediaUrl: payload.mediaUrl || '',
+          start: start,
+          duration: duration,
+          inPoint: parseFloat(payload.inPoint) || 0,
+          outPoint: parseFloat(payload.outPoint) || duration,
+          posX: payload.posX !== undefined ? parseFloat(payload.posX) : 0,
+          posY: payload.posY !== undefined ? parseFloat(payload.posY) : 0,
+          scale: payload.scale !== undefined ? parseFloat(payload.scale) : 100,
+          rotation: payload.rotation !== undefined ? parseFloat(payload.rotation) : 0,
+          opacity: payload.opacity !== undefined ? parseFloat(payload.opacity) : 100,
+          blendMode: payload.blendMode || 'source-over',
+          volume: payload.volume !== undefined ? parseFloat(payload.volume) : 100,
+          speed: payload.speed !== undefined ? parseFloat(payload.speed) : 1,
+          subtitleText: payload.subtitleText || '',
+          colorGrading: payload.colorGrading || { brightness: 100, contrast: 100, saturation: 100, hue: 0, temperature: 0, tint: 0 }
+        };
+
+        track.clips.push(newClip);
+        state.duration = Math.max(state.duration || 30, start + duration);
+        persistProjectState(state);
+        return sendJson(res, 200, { status: 'success', action, clip: newClip, state });
+      }
+
+      if (action === 'split_clip') {
+        const clipId = payload.clipId;
+        const atSecond = parseFloat(payload.atSecond);
+        let found = false;
+
+        for (const track of state.tracks) {
+          const cIndex = track.clips.findIndex(c => c.id === clipId);
+          if (cIndex !== -1) {
+            const original = track.clips[cIndex];
+            const clipStart = original.start || 0;
+            const clipDur = original.duration || 5;
+
+            if (atSecond > clipStart && atSecond < clipStart + clipDur) {
+              const firstDur = atSecond - clipStart;
+              const secondDur = clipDur - firstDur;
+
+              const secondClip = JSON.parse(JSON.stringify(original));
+              secondClip.id = 'clip_' + Date.now() + '_' + Math.floor(Math.random() * 1000);
+              secondClip.start = atSecond;
+              secondClip.duration = secondDur;
+              secondClip.inPoint = (original.inPoint || 0) + firstDur;
+              secondClip.outPoint = original.outPoint || clipDur;
+
+              original.duration = firstDur;
+              original.outPoint = (original.inPoint || 0) + firstDur;
+
+              track.clips.splice(cIndex + 1, 0, secondClip);
+              found = true;
+              break;
+            }
+          }
+        }
+
+        if (found) {
+          persistProjectState(state);
+          return sendJson(res, 200, { status: 'success', action, state });
+        }
+        return sendJson(res, 400, { status: 'error', message: 'Clip not found or split point out of range' });
+      }
+
+      if (action === 'delete_clip') {
+        const clipId = payload.clipId;
+        let deleted = false;
+        for (const track of state.tracks) {
+          const idx = track.clips.findIndex(c => c.id === clipId);
+          if (idx !== -1) {
+            track.clips.splice(idx, 1);
+            deleted = true;
+            break;
+          }
+        }
+        if (deleted) {
+          persistProjectState(state);
+          return sendJson(res, 200, { status: 'success', action, clipId, state });
+        }
+        return sendJson(res, 404, { status: 'error', message: 'Clip not found' });
+      }
+
+      if (action === 'update_clip') {
+        const clipId = payload.clipId;
+        const updates = payload.updates || {};
+        let updated = false;
+
+        for (const track of state.tracks) {
+          const clip = track.clips.find(c => c.id === clipId);
+          if (clip) {
+            Object.assign(clip, updates);
+            updated = true;
+            break;
+          }
+        }
+
+        if (updated) {
+          persistProjectState(state);
+          return sendJson(res, 200, { status: 'success', action, clipId, state });
+        }
+        return sendJson(res, 404, { status: 'error', message: 'Clip not found' });
+      }
+
+      if (action === 'set_timeline') {
+        if (payload.tracks && Array.isArray(payload.tracks)) {
+          state.tracks = payload.tracks;
+          if (payload.duration) state.duration = parseFloat(payload.duration);
+          persistProjectState(state);
+          return sendJson(res, 200, { status: 'success', action, state });
+        }
+        return sendJson(res, 400, { status: 'error', message: 'Invalid tracks array' });
+      }
+
+      if (action === 'auto_caption') {
+        // Run Whisper auto captioning script on given media
+        const mediaFile = payload.mediaFile;
+        if (!mediaFile) {
+          return sendJson(res, 400, { status: 'error', message: 'mediaFile is required' });
+        }
+        const inputPath = path.isAbsolute(mediaFile) ? mediaFile : path.join(UPLOADS_DIR, mediaFile);
+        const pyScript = path.join(__dirname, 'scripts', 'auto_caption.py');
+        const cmd = `python3 "${pyScript}" --input "${inputPath}"`;
+        const pyOut = execSync(cmd, { encoding: 'utf-8', maxBuffer: 10 * 1024 * 1024 });
+        const resJson = JSON.parse(pyOut);
+
+        // If requested to inject into timeline subtitle track:
+        if (payload.injectToTimeline && resJson.segments) {
+          let textTrack = state.tracks.find(t => t.id === 'text' || t.name.toLowerCase().includes('subtitle'));
+          if (!textTrack) {
+            textTrack = { id: 'text', name: 'Subtitles & Text', type: 'video', isAudio: false, clips: [] };
+            state.tracks.push(textTrack);
+          }
+          resJson.segments.forEach((seg, idx) => {
+            textTrack.clips.push({
+              id: 'caption_' + Date.now() + '_' + idx,
+              name: seg.text || 'Caption',
+              mediaUrl: '',
+              start: seg.start,
+              duration: seg.end - seg.start,
+              inPoint: 0,
+              outPoint: seg.end - seg.start,
+              posX: 0,
+              posY: 38,
+              scale: 100,
+              subtitleText: seg.text,
+              opacity: 100
+            });
+          });
+          persistProjectState(state);
+        }
+
+        return sendJson(res, 200, { status: 'success', action, captions: resJson, state });
+      }
+
+      return sendJson(res, 400, { status: 'error', message: `Unknown agent action: ${action}` });
+    } catch (err) {
+      return sendJson(res, 500, { status: 'error', message: err.message });
+    }
+  }
+
   // Static Assets Serving
   let reqPath = pathname === '/' ? '/index.html' : pathname;
   if (reqPath.startsWith('/exports/')) {
@@ -691,6 +1118,11 @@ const server = http.createServer(async (req, res) => {
   if (reqPath.startsWith('/samples/')) {
     const rel = reqPath.replace(/^\/samples\//, '');
     const target = path.join(SAMPLES_DIR, rel);
+    return serveStaticFile(target, req, res);
+  }
+  if (reqPath.startsWith('/assets/')) {
+    const rel = reqPath.replace(/^\/assets\//, '');
+    const target = path.join(ASSETS_DIR, rel);
     return serveStaticFile(target, req, res);
   }
 

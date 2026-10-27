@@ -2680,7 +2680,31 @@
         const ruleSnippet = node.rulePrompt ? node.rulePrompt.substring(0, 32) + '...' : '<span style="color:#64748b; font-style:italic;">Not configured</span>';
         const triggerEventsSnippet = node.triggerConfig?.events?.length ? node.triggerConfig.events.join(', ') : 'terminal_execution';
 
-        nodeEl.className = `dag-node ${isTriggerNode ? 'node-trigger' : ''} ${node.isLocked ? 'node-locked' : ''} ${this.selectedNodeId === node.id ? 'selected' : ''}`;
+        // Check if node is currently working / active (persistent state)
+        let isNodeWorking = (node.activityState === 'working');
+        let isNodeDone = (node.activityState === 'done');
+
+        if (!isNodeWorking && window.office3DInstance && Array.isArray(window.office3DInstance.agents)) {
+          const matchedAgent = window.office3DInstance.agents.find(a => {
+            if (!a || !a.data) return false;
+            const agId = String(a.data.id || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+            const agPersona = String(a.data.persona || '').toLowerCase().replace(/\./g, '');
+            const nAgent = String(node.agentId || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+            const nId = String(node.id || '').toLowerCase().replace(/^node-/, '').replace(/\./g, '');
+            return agId === nAgent || agId === nId || agPersona === nAgent || agPersona === nId ||
+                   (agId === 'mrflow' && (nId === 'mrflow' || nAgent === 'mrflow'));
+          });
+          if (matchedAgent && matchedAgent.data) {
+            const st = matchedAgent.data.state;
+            if (st === 'working' || st === 'processing' || matchedAgent.data.isThinking || (matchedAgent.data.activeTool && matchedAgent.data.activeTool.name)) {
+              isNodeWorking = true;
+              node.activityState = 'working';
+            }
+          }
+        }
+
+        const processingClass = isNodeWorking ? 'node-processing' : (isNodeDone ? 'node-success' : '');
+        nodeEl.className = `dag-node ${isTriggerNode ? 'node-trigger' : ''} ${node.isLocked ? 'node-locked' : ''} ${this.selectedNodeId === node.id ? 'selected' : ''} ${processingClass}`;
         nodeEl.id = `dag-node-${node.id}`;
         nodeEl.style.left = `${node.x}px`;
         nodeEl.style.top = `${node.y}px`;
@@ -2728,7 +2752,7 @@
               <span>${node.role || node.name || node.title || node.id || 'Specialist Agent'}</span>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
-              <span class="dag-node-status-indicator" style="display:none;"></span>
+              <span class="dag-node-status-indicator" style="${isNodeWorking ? 'display:inline-flex;' : (isNodeDone ? 'display:inline-flex;' : 'display:none;')}">${isNodeWorking ? '⚡ WORKING' : (isNodeDone ? '✓ DONE' : '')}</span>
               <span class="dag-node-type-badge ${badgeClass}">${badgeText}</span>
               <button type="button" class="dag-node-delete-btn" data-node-id="${node.id}" title="Delete node from canvas">✕</button>
             </div>
@@ -5852,34 +5876,44 @@
     setAgentActivityState(agentId, state, options = {}) {
       if (!agentId || !this.nodes || this.nodes.length === 0) return;
 
-      const cleanId = String(agentId).toLowerCase().replace(/^(agent-|session-)/, '');
+      const rawId = String(agentId).toLowerCase().trim();
+      const cleanId = rawId.replace(/^(agent-|session-)/, '').replace(/-system-\d+$/, '').replace(/\./g, '');
       const isWorking = (state === 'working' || state === 'processing' || state === 'busy');
       const isDone = (state === 'done' || state === 'success' || state === 'completed');
 
       const matchedNodes = this.nodes.filter(n => {
-        const nAgent = String(n.agentId || '').toLowerCase();
-        const nId = String(n.id || '').toLowerCase();
+        const nAgent = String(n.agentId || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+        const nId = String(n.id || '').toLowerCase().replace(/^node-/, '').replace(/\./g, '');
         const nRole = String(n.role || '').toLowerCase();
         const nName = String(n.name || '').toLowerCase();
         return nAgent === cleanId ||
                nId === cleanId ||
                nId.includes(cleanId) ||
                cleanId.includes(nId) ||
+               nAgent.includes(cleanId) ||
+               cleanId.includes(nAgent) ||
                nRole.includes(cleanId) ||
                cleanId.includes(nRole) ||
                nName.includes(cleanId) ||
                cleanId.includes(nName) ||
-               (cleanId === 'leader' && n.type === 'leader') ||
-               (cleanId.includes('backend') && (nId.includes('backend') || nRole.includes('backend'))) ||
-               (cleanId.includes('frontend') && (nId.includes('frontend') || nRole.includes('frontend'))) ||
-               (cleanId.includes('security') && (nId.includes('security') || nRole.includes('security'))) ||
-               (cleanId.includes('qc') && (nId.includes('qc') || nRole.includes('qc') || nRole.includes('quality')));
+               (cleanId === 'mrflow' && (nId === 'mrflow' || nAgent === 'mrflow')) ||
+               (cleanId === 'leader' && (n.type === 'leader' || nId === 'leader' || nAgent === 'leader')) ||
+               (cleanId.includes('architect') && (nId.includes('architect') || nAgent.includes('architect'))) ||
+               (cleanId.includes('bridge') && (nId.includes('bridge') || nAgent.includes('bridge'))) ||
+               (cleanId.includes('telemetry') && (nId.includes('telemetry') || nAgent.includes('telemetry'))) ||
+               (cleanId.includes('extractor') && (nId.includes('extractor') || nAgent.includes('extractor'))) ||
+               (cleanId.includes('tester') && (nId.includes('tester') || nAgent.includes('tester'))) ||
+               (cleanId.includes('inspector') && (nId.includes('inspector') || nAgent.includes('inspector'))) ||
+               (cleanId.includes('qc') && (nId.includes('qc') || nAgent.includes('qc')));
       });
 
       if (matchedNodes.length === 0) return;
 
       matchedNodes.forEach(node => {
-        const nodeEl = document.getElementById(`dag-node-${node.id}`);
+        node.activityState = isWorking ? 'working' : (isDone ? 'done' : 'idle');
+        const nodeEl = (this.nodesLayer && this.nodesLayer.querySelector(`#dag-node-${node.id}`)) ||
+                       document.getElementById(`dag-node-${node.id}`) ||
+                       (this.boardEl && this.boardEl.querySelector(`#dag-node-${node.id}`));
         const statusEl = nodeEl?.querySelector('.dag-node-status-indicator');
         const connectedConns = this.connections.filter(c => c.from === node.id || c.to === node.id);
 
@@ -5889,7 +5923,7 @@
             nodeEl.classList.add('node-processing');
           }
           if (statusEl) {
-            statusEl.textContent = '⚡ RUNNING';
+            statusEl.textContent = '⚡ WORKING';
             statusEl.style.display = 'inline-flex';
           }
           connectedConns.forEach(conn => {
@@ -5909,6 +5943,7 @@
             statusEl.style.display = 'inline-flex';
           }
           setTimeout(() => {
+            node.activityState = 'idle';
             if (nodeEl) nodeEl.classList.remove('node-success');
             if (statusEl) statusEl.style.display = 'none';
             connectedConns.forEach(conn => {
@@ -5918,9 +5953,10 @@
               if (cable) cable.classList.remove('cable-active');
               if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
             });
-          }, 2500);
+          }, 3000);
         } else {
           // Idle
+          node.activityState = 'idle';
           if (nodeEl) nodeEl.classList.remove('node-processing', 'node-success', 'node-firing');
           if (statusEl) statusEl.style.display = 'none';
           connectedConns.forEach(conn => {

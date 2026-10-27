@@ -237,12 +237,12 @@ function initOffice3DSystem() {
           office3DInstance.pause();
           console.log('[Office 3D] 🛡️ Viewport guard: 3D Studio paused immediately (Background tab detected)');
         }
-        const savedMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+        const savedMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
         if (typeof office3DInstance.setOfficeMode === 'function') {
           office3DInstance.setOfficeMode(savedMode);
         }
         if (typeof office3DInstance.setSessionMode === 'function') {
-          office3DInstance.setSessionMode(savedMode === 'team' ? 'group' : 'solo');
+          office3DInstance.setSessionMode(savedMode === 'solo' ? 'solo' : 'group');
         } else if (Array.isArray(AVAILABLE_PERSONAS) && AVAILABLE_PERSONAS.length > 0) {
           office3DInstance.syncPersonas(AVAILABLE_PERSONAS);
         }
@@ -8154,9 +8154,9 @@ let activeTaskKeys = new Set();
 let activeTurnUserCard = null;
 let isSystemRestarting = false;
 let restartPollTimer = null;
-const initialSessionMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+const initialSessionMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
 window.currentSessionMode = initialSessionMode;
-window.currentSessionType = (initialSessionMode === 'team') ? 'group' : 'personal';
+window.currentSessionType = (initialSessionMode === 'solo') ? 'personal' : 'group';
 
 function setChatStreamingState(isStreaming) {
   isChatStreaming = isStreaming;
@@ -14441,10 +14441,10 @@ async function startNewChatSession(resetToDefault = false) {
   currentSessionFailoverPolicy = 'fallback_pool';
   updateAccountPillDisplay();
 
-  const currentModePref = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+  const currentModePref = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
   if (window.office3DInstance) {
     if (typeof window.office3DInstance.setSessionMode === 'function') {
-      window.office3DInstance.setSessionMode(currentModePref === 'team' ? 'group' : 'solo');
+      window.office3DInstance.setSessionMode(currentModePref === 'solo' ? 'solo' : 'group');
     }
     if (typeof window.office3DInstance.setOfficeMode === 'function') {
       window.office3DInstance.setOfficeMode(currentModePref);
@@ -14952,7 +14952,7 @@ async function loadChatSession(sessionId, options = {}) {
       if (existingGroupBanner) existingGroupBanner.remove();
 
       const savedUserModePref = localStorage.getItem('xflow_session_mode');
-      const isGroupSession = savedUserModePref ? (savedUserModePref === 'team') : Boolean(data.data && (data.data.session_type === 'group' || data.data.mode === 'team'));
+      const isGroupSession = (savedUserModePref === 'solo') ? false : (savedUserModePref === 'team' ? true : !(data.data && data.data.mode === 'solo'));
       const effectiveModeStr = isGroupSession ? 'team' : 'solo';
       const effectiveTypeStr = isGroupSession ? 'group' : 'personal';
       window.currentSessionMode = effectiveModeStr;
@@ -22226,8 +22226,8 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       }
     }
 
-    const persistentMode = localStorage.getItem('xflow_session_mode') || window.currentSessionMode || 'solo';
-    const isTeamMode = (persistentMode === 'team') || (window.currentSessionType === 'group');
+    const persistentMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : (window.currentSessionMode || 'team');
+    const isTeamMode = (persistentMode !== 'solo') || (window.currentSessionType === 'group');
     const effectiveSessionType = isTeamMode ? 'group' : 'personal';
     const effectiveSessionMode = isTeamMode ? 'team' : 'solo';
     const effectivePersona = (isTeamMode ? 'leader' : (currentSessionPersonaId && currentSessionPersonaId !== 'leader' ? currentSessionPersonaId : 'mr.flow')).trim();

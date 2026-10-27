@@ -62,14 +62,14 @@ class SovereignOffice3D {
     // Active Office Mode
     this.currentMode = 'office';
     try {
-      this.officeMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+      this.officeMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
     } catch (_) {
-      this.officeMode = 'solo';
+      this.officeMode = 'team';
     }
 
     // Camera targets: Overview of Modern Corporate Tech Office (Elevated Overview of 3-Wide Grid)
-    this.camTarget = new THREE.Vector3(0, 1.20, 1.10);
-    this.camPosTarget = new THREE.Vector3(0, 6.20, 11.80);
+    this.camTarget = new THREE.Vector3(0, 1.10, 0.50);
+    this.camPosTarget = new THREE.Vector3(0, 4.40, 8.20);
     this.agentRoster = [];
     this._cachedSwarmNodes = null;
 
@@ -1876,12 +1876,13 @@ class SovereignOffice3D {
   }
 
   setOfficeMode(mode) {
-    const normalized = (mode === 'solo' || mode === 'group' || mode === 'team')
-      ? (mode === 'solo' ? 'solo' : 'team')
-      : 'team';
+    const normalized = (mode === 'solo') ? 'solo' : 'team';
     this.officeMode = normalized;
     this.syncPersonas();
     this.applyOfficeModeVisuals();
+    if (this.renderer && this.scene && this.camera) {
+      try { this.renderer.render(this.scene, this.camera); } catch (_) {}
+    }
   }
 
   applyOfficeModeVisuals() {
@@ -1908,10 +1909,12 @@ class SovereignOffice3D {
       if (this.agents && this.agents.length > 0) {
         this.agents.forEach(ag => {
           if (ag.slotGroup) ag.slotGroup.visible = true;
+          if (ag.group) ag.group.visible = true;
         });
       }
-      this.camPosTarget.set(0, 7.5, 9.8);
-      this.camTarget.set(0, 0.4, -0.6);
+      // Perfectly calibrated camera framing: frames executive desk + all specialist workstations
+      this.camPosTarget.set(0, 4.40, 8.20);
+      this.camTarget.set(0, 1.10, 0.50);
     }
   }
 
@@ -3788,6 +3791,14 @@ class SovereignOffice3D {
       ag.data.state = newState;
       ag.group.visible = true;
       if (ag.slotGroup) ag.slotGroup.visible = true;
+
+      try {
+        const engine = window.swarmPipeline || window.swarmPipelineInstance;
+        if (engine && typeof engine.setAgentActivityState === 'function') {
+          if (ag.data.persona) engine.setAgentActivityState(ag.data.persona, newState);
+          if (ag.data.id) engine.setAgentActivityState(ag.data.id, newState);
+        }
+      } catch (_) {}
 
       // Update badge
       if (ag.badgeCanvas) {

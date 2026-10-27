@@ -764,9 +764,9 @@ ${escapeHtml(String(out).slice(0, 3000))}
       this.bindTabEvents();
       this.bindModeButtons();
 
-      // 🔒 Sovereign Persist Gate: Always restore user-commanded session mode
-      const savedMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
-      const isTeam = (savedMode === 'team');
+      // 🔒 Sovereign Persist Gate: Always restore user-commanded session mode (Default: Team)
+      const savedMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
+      const isTeam = (savedMode !== 'solo');
       const activeType = isTeam ? 'group' : 'personal';
 
       window.currentSessionMode = savedMode;
@@ -832,7 +832,7 @@ ${escapeHtml(String(out).slice(0, 3000))}
     },
 
     updateModeButtons(mode) {
-      const isTeam = (mode === 'team');
+      const isTeam = (mode !== 'solo');
       const btnSolo = document.querySelectorAll('#btn-mode-solo, .btn-mode-solo');
       const btnTeam = document.querySelectorAll('#btn-mode-team, .btn-mode-team');
 
@@ -957,9 +957,9 @@ ${escapeHtml(String(out).slice(0, 3000))}
       window.currentLoadedSessionData = sessionData || null;
 
       // 🔒 USER PREFERENCE SUPREME RULE:
-      // If user explicitly switched to 'team' or 'solo' in localStorage, respect that over stale session JSON files!
+      // Default is ALWAYS Team / War Room mode unless explicitly selected as solo!
       const userSelectedMode = localStorage.getItem('xflow_session_mode');
-      const isGroup = userSelectedMode ? (userSelectedMode === 'team') : Boolean(sessionData && (sessionData.session_type === 'group' || sessionData.mode === 'team'));
+      const isGroup = (userSelectedMode === 'solo') ? false : (userSelectedMode === 'team' ? true : !(sessionData && sessionData.mode === 'solo'));
       const activeMode = isGroup ? 'team' : 'solo';
       const activeType = isGroup ? 'group' : 'personal';
 
