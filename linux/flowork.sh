@@ -152,8 +152,6 @@ for root, dirs, files in os.walk(src_root):
         rel_file = os.path.join(rel_dir, f) if rel_dir else f
         if any(rel_file == p or rel_file.startswith(p + os.sep) for p in protected_prefixes):
             continue
-        if rel_file == os.path.join('swarmflow', 'active.json') and os.path.exists(dst_file):
-            continue
         src_file = os.path.join(root, f)
         dst_file = os.path.join(dst_root, rel_file)
         try:
@@ -223,41 +221,6 @@ if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de6
     fi
     rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
   fi
-fi
-
-# 4.6 Autonomous Swarm Flow Directory & Presets Self-Healing
-mkdir -p "$APP_DIR/swarmflow"
-if [ ! -f "$APP_DIR/swarmflow/default.json" ]; then
-  cat << 'EOF_SWARM' > "$APP_DIR/swarmflow/default.json"
-{
-  "id": "default",
-  "name": "Mr. Flow",
-  "domain": "Sovereign Orchestration",
-  "icon": "⚡",
-  "description": "Pristine sovereign foundation with Mr. Flow at executive command.",
-  "nodes": [
-    {
-      "id": "node-mrflow",
-      "agentId": "mr.flow",
-      "name": "Mr. Flow",
-      "role": "Grand Chief AI Overseer & Executive Architect",
-      "icon": "⚡",
-      "type": "agent",
-      "x": 450,
-      "y": 240,
-      "taskPrompt": "Executive architecture, system supervision, and autonomous orchestration.",
-      "rulePrompt": "Enforce zero-trust and empirical proof (Exit Code 0)."
-    }
-  ],
-  "connections": [],
-  "panX": 40,
-  "panY": 40,
-  "scale": 1.0
-}
-EOF_SWARM
-fi
-if [ ! -f "$APP_DIR/swarmflow/active.json" ]; then
-  echo '{"activePresetId": "default"}' > "$APP_DIR/swarmflow/active.json"
 fi
 
 # 5. Execute Flowork Runtime (Always delegate to run.sh for full port guardian & runtime injection)
