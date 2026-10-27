@@ -1,15 +1,18 @@
-// [FL_INDEX: keywords="rust, semantic_search, fastembed, onnx, cli" | purpose="Sovereign CLI engine for semantic search over local workspace files"]
+// [FL_INDEX: keywords="rust, semantic_search, fastembed, onnx, cli, vector_cache, zero_noise" | purpose="Sovereign High-Performance Cached Semantic Search Engine"]
 
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::UNIX_EPOCH;
 use anyhow::{Context, Result};
 use clap::Parser;
 use fastembed::{EmbeddingModel, InitOptions, TextEmbedding};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use walkdir::WalkDir;
 
 #[derive(Parser, Debug)]
-#[command(author = "Flowork OS", version = "0.1.0", about = "Sovereign FastEmbed Semantic Search Engine")]
+#[command(author = "Flowork OS", version = "0.2.0", about = "Sovereign Cached FastEmbed Semantic Search Engine")]
 struct Args {
     /// Semantic search query
     #[arg(short, long)]
@@ -27,9 +30,17 @@ struct Args {
     #[arg(short = 'k', long, default_value_t = 5)]
     top_k: usize,
 
+    /// Minimum semantic similarity score threshold (default: 0.50)
+    #[arg(short = 's', long, default_value_t = 0.50)]
+    min_score: f32,
+
     /// Optional explicit cache directory for models
     #[arg(long)]
     cache_dir: Option<String>,
+
+    /// Force clear and rebuild vector cache
+    #[arg(long, default_value_t = false)]
+    rebuild_cache: bool,
 
     /// Include chat sessions from portable-home/.flowork/chat_sessions
     #[arg(long, default_value_t = false)]
@@ -50,14 +61,48 @@ struct SearchResult {
     snippet: String,
 }
 
-struct IndexedDoc {
+#[derive(Serialize, Deserialize, Clone, Debug)]
+struct CachedEntry {
+    sha256: String,
+    mtime: u64,
+    title: String,
+    snippet: String,
+    vector: Vec<f32>,
+}
+
+#[derive(Serialize, Deserialize, Default, Debug)]
+struct VectorCacheStore {
+    version: String,
+    model: String,
+    entries: HashMap<String, CachedEntry>,
+}
+
+struct ReadyDoc {
+    path: String,
+    title: String,
+    snippet: String,
+    vector: Vec<f32>,
+    recency_rank: usize,
+    total_steps: usize,
+    is_chat: bool,
+}
+
+struct UncachedDoc {
     path: String,
     title: String,
     snippet: String,
     content_chunk: String,
+    sha256: String,
+    mtime: u64,
     recency_rank: usize,
     total_steps: usize,
     is_chat: bool,
+}
+
+fn compute_sha256(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
 }
 
 fn resolve_cache_dir(explicit: Option<String>) -> PathBuf {
@@ -71,9 +116,24 @@ fn resolve_cache_dir(explicit: Option<String>) -> PathBuf {
         }
     }
 
-    // Dynamic resolution relative to current working directory
-    let default_portable = PathBuf::from("portable-home").join(".flowork").join("models");
-    default_portable
+    PathBuf::from("portable-home").join(".flowork").join("models")
+}
+
+fn resolve_vector_cache_file() -> PathBuf {
+    if let Ok(portable_root) = std::env::var("FLOWORK_PORTABLE_ROOT") {
+        if !portable_root.trim().is_empty() {
+            return PathBuf::from(portable_root).join(".flowork").join("semantic_vector_cache.json");
+        }
+    }
+    let p = PathBuf::from("portable-home").join(".flowork");
+    if p.exists() {
+        return p.join("semantic_vector_cache.json");
+    }
+    let dot_fl = PathBuf::from(".flowork");
+    if dot_fl.exists() {
+        return dot_fl.join("semantic_vector_cache.json");
+    }
+    PathBuf::from("semantic_vector_cache.json")
 }
 
 fn cosine_similarity(a: &[f32], b: &[f32]) -> f32 {
@@ -105,7 +165,7 @@ fn extract_title_and_snippet(content: &str, file_name: &str) -> (String, String)
     let non_empty: Vec<&str> = lines
         .into_iter()
         .map(|l| l.trim())
-        .filter(|l| !l.is_empty() && !l.starts_with("#") && !l.starts_with("//") && !l.starts_with("<!--"))
+        .filter(|l| !l.is_empty() && !l.starts_with('#') && !l.starts_with("//") && !l.starts_with("<!--"))
         .collect();
 
     let snippet = if non_empty.is_empty() {
@@ -123,7 +183,54 @@ fn extract_title_and_snippet(content: &str, file_name: &str) -> (String, String)
     (title, snippet)
 }
 
-fn parse_jsonl_transcript(path: &Path) -> Vec<IndexedDoc> {
+fn is_blacklisted_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    let lower = path_str.to_lowercase();
+
+    // Check directory blacklist
+    if lower.contains("/target/") 
+        || lower.contains("/node_modules/") 
+        || lower.contains("/.git/") 
+        || lower.contains("/.cargo/") 
+        || lower.contains("/.flowork_spam/") 
+        || lower.contains("/.fl_spam/")
+        || lower.contains("/scratch/") 
+        || lower.contains("/archived_incidents/")
+        || lower.contains("/file_histories/") 
+        || lower.contains("/browser-profile/")
+        || lower.contains("/.system_generated/") {
+        return true;
+    }
+
+    // Check file name blacklist
+    if let Some(file_name) = path.file_name().and_then(|s| s.to_str()) {
+        let fn_lower = file_name.to_lowercase();
+        if fn_lower.starts_with("activity_") 
+            || fn_lower.contains("activity_part")
+            || fn_lower.ends_with(".jsonl") 
+            || fn_lower.ends_with(".log") 
+            || fn_lower.ends_with(".tmp")
+            || fn_lower.ends_with(".bak")
+            || fn_lower.ends_with(".lock") {
+            return true;
+        }
+    }
+
+    false
+}
+
+fn is_valid_document_extension(path: &Path, is_brain_target: bool) -> bool {
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+    if is_brain_target {
+        // Kubah Ingatan: Atomic 1 file 1 solution, strictly Markdown
+        matches!(ext, "md")
+    } else {
+        // Workspace general: Markdown, docs, config, source code
+        matches!(ext, "md" | "txt" | "rs" | "js" | "mjs" | "ts" | "py" | "sh" | "toml" | "json")
+    }
+}
+
+fn parse_jsonl_transcript(path: &Path) -> Vec<UncachedDoc> {
     let mut docs = Vec::new();
     let content = match fs::read_to_string(path) {
         Ok(c) => c,
@@ -162,12 +269,15 @@ fn parse_jsonl_transcript(path: &Path) -> Vec<IndexedDoc> {
             let snippet: String = cleaned.chars().take(240).collect();
             let title = format!("Chat [{}] Turn #{} of {}", role, idx + 1, total_lines);
             let truncated_chunk: String = cleaned.chars().take(1000).collect();
+            let chunk_sha256 = compute_sha256(truncated_chunk.as_bytes());
 
-            docs.push(IndexedDoc {
+            docs.push(UncachedDoc {
                 path: format!("{}:turn_{}", path.display(), idx + 1),
                 title,
                 snippet,
                 content_chunk: truncated_chunk,
+                sha256: chunk_sha256,
+                mtime: 0,
                 recency_rank: idx + 1,
                 total_steps: total_lines,
                 is_chat: true,
@@ -203,34 +313,93 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut indexed_files: Vec<IndexedDoc> = Vec::new();
+    let vector_cache_file = resolve_vector_cache_file();
+    let mut cache_store: VectorCacheStore = if !args.rebuild_cache && vector_cache_file.exists() {
+        fs::read_to_string(&vector_cache_file)
+            .ok()
+            .and_then(|c| serde_json::from_str::<VectorCacheStore>(&c).ok())
+            .filter(|s| s.model == args.model)
+            .unwrap_or_else(|| VectorCacheStore {
+                version: "1.0".to_string(),
+                model: args.model.clone(),
+                entries: HashMap::new(),
+            })
+    } else {
+        VectorCacheStore {
+            version: "1.0".to_string(),
+            model: args.model.clone(),
+            entries: HashMap::new(),
+        }
+    };
+
+    let mut ready_docs: Vec<ReadyDoc> = Vec::new();
+    let mut uncached_docs: Vec<UncachedDoc> = Vec::new();
+
+    let is_brain_target = target_dir.to_string_lossy().contains(".fl_brain");
 
     for entry in WalkDir::new(target_dir).into_iter().filter_map(|e| e.ok()) {
         let path = entry.path();
-        if path.is_file() {
-            let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-            if matches!(ext, "md" | "json" | "jsonl" | "txt" | "rs" | "js" | "mjs" | "ts") {
-                if let Ok(content) = fs::read_to_string(path) {
-                    if content.trim().is_empty() {
-                        continue;
-                    }
-                    let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
-                    let (title, snippet) = extract_title_and_snippet(&content, file_name);
+        if !path.is_file() {
+            continue;
+        }
 
-                    // Truncate document text to 1000 characters for semantic embedding
-                    let truncated_text: String = content.chars().take(1000).collect();
-                    indexed_files.push(IndexedDoc {
-                        path: path.display().to_string(),
-                        title,
-                        snippet,
-                        content_chunk: truncated_text,
-                        recency_rank: 0,
-                        total_steps: 0,
-                        is_chat: false,
-                    });
-                }
+        if is_blacklisted_path(path) {
+            continue;
+        }
+
+        if !is_valid_document_extension(path, is_brain_target) {
+            continue;
+        }
+
+        let mtime = fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let content = match fs::read_to_string(path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        if content.trim().is_empty() {
+            continue;
+        }
+
+        let sha256 = compute_sha256(content.as_bytes());
+        let path_key = path.display().to_string();
+
+        if let Some(cached) = cache_store.entries.get(&path_key) {
+            if cached.sha256 == sha256 {
+                ready_docs.push(ReadyDoc {
+                    path: path_key,
+                    title: cached.title.clone(),
+                    snippet: cached.snippet.clone(),
+                    vector: cached.vector.clone(),
+                    recency_rank: 0,
+                    total_steps: 0,
+                    is_chat: false,
+                });
+                continue;
             }
         }
+
+        let file_name = path.file_name().and_then(|s| s.to_str()).unwrap_or("file");
+        let (title, snippet) = extract_title_and_snippet(&content, file_name);
+        let truncated_text: String = content.chars().take(1000).collect();
+
+        uncached_docs.push(UncachedDoc {
+            path: path_key,
+            title,
+            snippet,
+            content_chunk: truncated_text,
+            sha256,
+            mtime,
+            recency_rank: 0,
+            total_steps: 0,
+            is_chat: false,
+        });
     }
 
     if args.include_chat {
@@ -239,14 +408,68 @@ fn main() -> Result<()> {
             for entry in WalkDir::new(&chat_sessions_dir).into_iter().filter_map(|e| e.ok()) {
                 let path = entry.path();
                 if path.is_file() && path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                    let mut chat_docs = parse_jsonl_transcript(path);
-                    indexed_files.append(&mut chat_docs);
+                    let chat_docs = parse_jsonl_transcript(path);
+                    for cdoc in chat_docs {
+                        if let Some(cached) = cache_store.entries.get(&cdoc.path) {
+                            if cached.sha256 == cdoc.sha256 {
+                                ready_docs.push(ReadyDoc {
+                                    path: cdoc.path,
+                                    title: cached.title.clone(),
+                                    snippet: cached.snippet.clone(),
+                                    vector: cached.vector.clone(),
+                                    recency_rank: cdoc.recency_rank,
+                                    total_steps: cdoc.total_steps,
+                                    is_chat: true,
+                                });
+                                continue;
+                            }
+                        }
+                        uncached_docs.push(cdoc);
+                    }
                 }
             }
         }
     }
 
-    if indexed_files.is_empty() {
+    if !uncached_docs.is_empty() {
+        let dirty_texts: Vec<&str> = uncached_docs.iter().map(|d| d.content_chunk.as_str()).collect();
+        let dirty_embeddings = model
+            .embed(dirty_texts, None)
+            .context("Failed to embed new or modified documents")?;
+
+        for (doc, vector) in uncached_docs.into_iter().zip(dirty_embeddings.into_iter()) {
+            cache_store.entries.insert(
+                doc.path.clone(),
+                CachedEntry {
+                    sha256: doc.sha256,
+                    mtime: doc.mtime,
+                    title: doc.title.clone(),
+                    snippet: doc.snippet.clone(),
+                    vector: vector.clone(),
+                },
+            );
+
+            ready_docs.push(ReadyDoc {
+                path: doc.path,
+                title: doc.title,
+                snippet: doc.snippet,
+                vector,
+                recency_rank: doc.recency_rank,
+                total_steps: doc.total_steps,
+                is_chat: doc.is_chat,
+            });
+        }
+
+        // Persist vector cache to disk
+        if let Some(parent) = vector_cache_file.parent() {
+            let _ = fs::create_dir_all(parent);
+        }
+        if let Ok(serialized) = serde_json::to_string(&cache_store) {
+            let _ = fs::write(&vector_cache_file, serialized);
+        }
+    }
+
+    if ready_docs.is_empty() {
         println!("[]");
         return Ok(());
     }
@@ -262,16 +485,10 @@ fn main() -> Result<()> {
         }
     };
 
-    let doc_texts: Vec<&str> = indexed_files.iter().map(|d| d.content_chunk.as_str()).collect();
-    let doc_embeddings = model
-        .embed(doc_texts, None)
-        .context("Failed to embed document chunks")?;
-
     let mut scored_results: Vec<SearchResult> = Vec::new();
 
-    for (i, doc_vector) in doc_embeddings.into_iter().enumerate() {
-        let base_score = cosine_similarity(query_vector, &doc_vector);
-        let doc = &indexed_files[i];
+    for doc in ready_docs {
+        let base_score = cosine_similarity(query_vector, &doc.vector);
 
         let recency_factor = if doc.is_chat && doc.total_steps > 0 {
             let distance_from_latest = (doc.total_steps - doc.recency_rank) as f32;
@@ -288,13 +505,18 @@ fn main() -> Result<()> {
             base_score
         };
 
+        // Minimum threshold guard to filter out semantic noise
+        if final_score < args.min_score {
+            continue;
+        }
+
         scored_results.push(SearchResult {
-            file_path: doc.path.clone(),
+            file_path: doc.path,
             score: (final_score * 1000.0).round() / 1000.0,
             base_semantic_score: (base_score * 1000.0).round() / 1000.0,
             recency_factor: (recency_factor * 1000.0).round() / 1000.0,
-            title: doc.title.clone(),
-            snippet: doc.snippet.clone(),
+            title: doc.title,
+            snippet: doc.snippet,
         });
     }
 
