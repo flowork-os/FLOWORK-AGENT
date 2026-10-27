@@ -1,3 +1,4 @@
+// [FL_INDEX: 3d_solo, office_mode, team_squad_rendering, solo_vs_team, clean_list_filtering | COT: Implement officeMode dynamic switching so team mode renders all squad workstations rather than collapsing to solo desk| AT: 2026-10-26T19:34:51Z]
 /**
  * ============================================================================
  * 🏛️ FLOWORK OS — 3D LUXURY EXECUTIVE OFFICE & BOARDROOM ENGINE
@@ -22,6 +23,11 @@
  */
 
 import * as THREE from '/canvas/vendor/three/three.module.js';
+import { MrFlowSoloLab } from './mrflow_solo_lab.js';
+
+if (typeof window !== 'undefined') {
+  window.THREE = THREE;
+}
 
 const PERSONA_PALETTE = [
   0x00f2fe, // Neon Cyan (Core Engine)
@@ -49,15 +55,21 @@ class SovereignOffice3D {
     this.mouse = new THREE.Vector2(-999, -999);
     this.hoveredAgent = null;
     this.selectedAgent = null;
+    this.mrflowLab = null;
     this.clock = new THREE.Clock();
     this.isRunning = true;
 
     // Active Office Mode
     this.currentMode = 'office';
+    try {
+      this.officeMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
+    } catch (_) {
+      this.officeMode = 'team';
+    }
 
     // Camera targets: Overview of Modern Corporate Tech Office (Elevated Overview of 3-Wide Grid)
-    this.camTarget = new THREE.Vector3(0, 1.20, 1.10);
-    this.camPosTarget = new THREE.Vector3(0, 6.20, 11.80);
+    this.camTarget = new THREE.Vector3(0, 1.10, 0.50);
+    this.camPosTarget = new THREE.Vector3(0, 4.40, 8.20);
     this.agentRoster = [];
     this._cachedSwarmNodes = null;
 
@@ -153,6 +165,13 @@ class SovereignOffice3D {
     this.workstationsGroup = new THREE.Group();
     this.workstationsGroup.name = 'WorkstationsGroup';
     this.scene.add(this.workstationsGroup);
+
+    // Initialize Modular Sovereign Mr. Flow Solo Holographic Lab
+    try {
+      this.mrflowLab = new MrFlowSoloLab(this.scene, THREE);
+    } catch (err) {
+      console.warn('[Office 3D] MrFlowSoloLab initialization notice:', err);
+    }
 
     this.initForegroundRenderer();
     this.loadPersonas();
@@ -1856,6 +1875,49 @@ class SovereignOffice3D {
     } catch (_) {}
   }
 
+  setOfficeMode(mode) {
+    const normalized = (mode === 'solo') ? 'solo' : 'team';
+    this.officeMode = normalized;
+    this.syncPersonas();
+    this.applyOfficeModeVisuals();
+    if (this.renderer && this.scene && this.camera) {
+      try { this.renderer.render(this.scene, this.camera); } catch (_) {}
+    }
+  }
+
+  applyOfficeModeVisuals() {
+    if (this.officeMode === 'solo') {
+      // 🚀 SOLO MODE: Sci-Fi Mr. Flow Holographic Lab Active
+      if (this.environmentGroup) this.environmentGroup.visible = false;
+      if (this.agents && this.agents.length > 0) {
+        this.agents.forEach(ag => {
+          if (ag.slotGroup) ag.slotGroup.visible = false;
+        });
+      }
+      if (this.mrflowLab) {
+        const soloAg = (this.agents && this.agents.length > 0) ? this.agents[0] : null;
+        this.mrflowLab.activate(soloAg);
+      }
+      this.camPosTarget.set(0, 1.85, 3.8);
+      this.camTarget.set(0, 1.15, 0);
+    } else {
+      // 🏢 TEAM MODE: Modern Corporate War Room Office (100% Preserved)
+      if (this.mrflowLab) {
+        this.mrflowLab.deactivate();
+      }
+      if (this.environmentGroup) this.environmentGroup.visible = true;
+      if (this.agents && this.agents.length > 0) {
+        this.agents.forEach(ag => {
+          if (ag.slotGroup) ag.slotGroup.visible = true;
+          if (ag.group) ag.group.visible = true;
+        });
+      }
+      // Perfectly calibrated camera framing: frames executive desk + all specialist workstations
+      this.camPosTarget.set(0, 4.40, 8.20);
+      this.camTarget.set(0, 1.10, 0.50);
+    }
+  }
+
   syncPersonas(personaList) {
     if (!personaList || !Array.isArray(personaList) || personaList.length === 0) {
       personaList = (window.AVAILABLE_PERSONAS && Array.isArray(window.AVAILABLE_PERSONAS) && window.AVAILABLE_PERSONAS.length > 0)
@@ -1864,8 +1926,17 @@ class SovereignOffice3D {
     }
 
     const nonDefault = personaList.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
-    // STRICT SWARM FLOW SQUAD FILTER: Enforce uncluttered 3D Office
-    const cleanList = this.filterPersonasByActiveSwarm(nonDefault);
+    
+    // Check office mode: 'solo' displays focused agent, 'team' displays full active squad
+    let cleanList = [];
+    if (this.officeMode === 'solo') {
+      const soloAgent = nonDefault.find(p => p.id === 'mr.flow' || p.id === 'mrflow' || p.is_default) || nonDefault[0];
+      cleanList = soloAgent ? [soloAgent] : [];
+    } else {
+      // Team / Group War Room mode: Render full squad workstations
+      const swarmFiltered = this.filterPersonasByActiveSwarm(nonDefault);
+      cleanList = (swarmFiltered && swarmFiltered.length > 1) ? swarmFiltered : nonDefault;
+    }
 
     // Sort: Mr. Flow strictly at index 0 (Executive Desk), followed by Swarm Leader, then specialists
     const sorted = [...cleanList].sort((a, b) => {
@@ -2076,6 +2147,7 @@ class SovereignOffice3D {
 
     // Auto-load custom outfits & styles from system/subagent/<id>/style.json
     this.loadAllAgentStyles();
+    this.applyOfficeModeVisuals();
   }
   updateAgentStyle(agentId, styleData) {
     if (!agentId || !styleData) return;
@@ -2200,21 +2272,13 @@ class SovereignOffice3D {
 
   setSessionMode(mode) {
     this.currentMode = 'office';
-    console.log('[Office 3D] 🏢 Sovereign Modern Corporate Office Active');
-
-    if (this.environmentGroup) this.environmentGroup.visible = true;
-    if (this.workstationsGroup) this.workstationsGroup.visible = true;
-
-    if (window.AVAILABLE_PERSONAS) {
-      this.syncPersonas(window.AVAILABLE_PERSONAS);
-    } else {
-      this.loadPersonas();
-    }
+    const effectiveOfficeMode = (mode === 'solo') ? 'solo' : 'team';
+    this.setOfficeMode(effectiveOfficeMode);
 
     const tabSymbol = document.getElementById('tab-office-symbol');
     const tabLabel = document.getElementById('tab-office-label');
-    if (tabSymbol) tabSymbol.textContent = '🏢';
-    if (tabLabel) tabLabel.textContent = 'Office';
+    if (tabSymbol) tabSymbol.textContent = effectiveOfficeMode === 'solo' ? '⚡' : '🏢';
+    if (tabLabel) tabLabel.textContent = effectiveOfficeMode === 'solo' ? 'Mr. Flow Lab' : 'Office';
   }
 
   buildDeskEquipment(data, index = 0, total = 1) {
@@ -3538,10 +3602,43 @@ class SovereignOffice3D {
     const titleEl = hud.querySelector('#agent-holo-title');
     const roleEl = hud.querySelector('#agent-holo-role');
     const iconEl = hud.querySelector('#agent-holo-icon');
+    const statusEl = hud.querySelector('#agent-holo-status');
 
     if (titleEl) titleEl.textContent = data.name || data.persona || 'Agent';
-    if (roleEl) roleEl.textContent = data.role || 'Autonomous Specialist';
     if (iconEl) iconEl.textContent = data.icon || (data.persona === 'leader' ? '👑' : '⚡');
+
+    if (statusEl) {
+      let statusText = '⚪ IDLE';
+      let statusClass = 'idle';
+      if (data.isBoss) {
+        statusText = '👑 LEADER';
+        statusClass = 'working';
+      } else if (data.activeTool) {
+        statusText = `⚡ ${String(data.activeTool.name || 'TOOL').toUpperCase()}`;
+        statusClass = 'tool';
+      } else if (data.isThinking) {
+        statusText = '🧠 REASONING';
+        statusClass = 'thinking';
+      } else if (data.state === 'running' || data.isWorking) {
+        statusText = '🟢 EXECUTING';
+        statusClass = 'working';
+      }
+      statusEl.textContent = statusText;
+      statusEl.className = `agent-holo-status-pill ${statusClass}`;
+    }
+
+    if (roleEl) {
+      let thoughtText = data.role || 'Autonomous Specialist';
+      let thoughtIcon = '💭';
+      if (data.activeTool) {
+        thoughtIcon = '🔧';
+        thoughtText = data.activeTool.action || `Running tool: ${data.activeTool.name}`;
+      } else if (data.thinkingReason) {
+        thoughtIcon = '🧠';
+        thoughtText = data.thinkingReason;
+      }
+      roleEl.textContent = `${thoughtIcon} ${thoughtText}`;
+    }
 
     if (!hud._boundActions) {
       hud._boundActions = true;
@@ -3574,7 +3671,7 @@ class SovereignOffice3D {
 
     const pos = new THREE.Vector3();
     pos.copy(this.selectedAgent.group.position);
-    pos.y += 1.45;
+    pos.y += 1.76;
     pos.project(this.camera);
 
     if (pos.z < 1.0) {
@@ -3694,6 +3791,14 @@ class SovereignOffice3D {
       ag.data.state = newState;
       ag.group.visible = true;
       if (ag.slotGroup) ag.slotGroup.visible = true;
+
+      try {
+        const engine = window.swarmPipeline || window.swarmPipelineInstance;
+        if (engine && typeof engine.setAgentActivityState === 'function') {
+          if (ag.data.persona) engine.setAgentActivityState(ag.data.persona, newState);
+          if (ag.data.id) engine.setAgentActivityState(ag.data.id, newState);
+        }
+      } catch (_) {}
 
       // Update badge
       if (ag.badgeCanvas) {
@@ -3836,8 +3941,18 @@ class SovereignOffice3D {
       });
     }
 
-    // Animate Each Agent (Typing at desk when working, autonomous wandering when idle!)
-    this.agents.forEach((ag, idx) => {
+    // Check office mode: Solo (Mr. Flow Sci-Fi Lab) vs Team (Modern Office War Room)
+    if (this.officeMode === 'solo' && this.mrflowLab) {
+      const soloAg = (this.agents && this.agents.length > 0) ? this.agents[0] : null;
+      this.mrflowLab.update(delta, time, soloAg);
+
+      if (soloAg && soloAg.badgeSprite) {
+        const isHoloActive = (this.selectedAgent === soloAg && document.getElementById('agent-holo-hud')?.style.display !== 'none');
+        soloAg.badgeSprite.visible = !isHoloActive;
+      }
+    } else {
+      // 🏢 TEAM WAR ROOM: 100% Preserved Autonomous Wandering & Workstation Animations
+      this.agents.forEach((ag, idx) => {
       if (!ag.wanderState) {
         ag.wanderState = {
           status: 'desk', // 'desk' | 'walking' | 'resting' | 'returning_to_desk'
@@ -4014,11 +4129,13 @@ class SovereignOffice3D {
         }
       }
 
-      // Billboard overhead badge toward camera
+      // Billboard overhead badge toward camera (hide on selected agent when interactive Holo HUD is active)
       if (ag.badgeSprite) {
-        ag.badgeSprite.visible = true;
+        const isHoloActive = (this.selectedAgent === ag && document.getElementById('agent-holo-hud')?.style.display !== 'none');
+        ag.badgeSprite.visible = !isHoloActive;
       }
     });
+    }
 
     this.renderer.render(this.scene, this.camera);
     this.updateHoloHudPosition();

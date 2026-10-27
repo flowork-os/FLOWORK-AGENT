@@ -760,9 +760,24 @@ ${escapeHtml(String(out).slice(0, 3000))}
     currentSessionData: null,
 
     init() {
-      console.log('[DualCanvas] ⚡ Initializing Dual-Canvas Controller...');
+      console.log('[DualCanvas] ⚡ Initializing Dual-Canvas Controller with Sovereign Persistence...');
       this.bindTabEvents();
       this.bindModeButtons();
+
+      // 🔒 Sovereign Persist Gate: Always restore user-commanded session mode (Default: Team)
+      const savedMode = (localStorage.getItem('xflow_session_mode') === 'solo') ? 'solo' : 'team';
+      const isTeam = (savedMode !== 'solo');
+      const activeType = isTeam ? 'group' : 'personal';
+
+      window.currentSessionMode = savedMode;
+      window.currentSessionType = activeType;
+
+      this.updateModeButtons(savedMode);
+
+      if (window.office3DInstance && typeof window.office3DInstance.setOfficeMode === 'function') {
+        window.office3DInstance.setOfficeMode(savedMode);
+      }
+
       const viewCanvasStage = document.getElementById('view-canvas-stage');
       if (viewCanvasStage && viewCanvasStage.classList.contains('active')) {
         this.onActivateTab();
@@ -817,7 +832,7 @@ ${escapeHtml(String(out).slice(0, 3000))}
     },
 
     updateModeButtons(mode) {
-      const isTeam = (mode === 'team');
+      const isTeam = (mode !== 'solo');
       const btnSolo = document.querySelectorAll('#btn-mode-solo, .btn-mode-solo');
       const btnTeam = document.querySelectorAll('#btn-mode-team, .btn-mode-team');
 
@@ -941,7 +956,10 @@ ${escapeHtml(String(out).slice(0, 3000))}
       this.currentSessionData = sessionData || null;
       window.currentLoadedSessionData = sessionData || null;
 
-      const isGroup = Boolean(sessionData ? (sessionData.session_type === 'group' || sessionData.mode === 'team') : (localStorage.getItem('xflow_session_mode') === 'team'));
+      // 🔒 USER PREFERENCE SUPREME RULE:
+      // Default is ALWAYS Team / War Room mode unless explicitly selected as solo!
+      const userSelectedMode = localStorage.getItem('xflow_session_mode');
+      const isGroup = (userSelectedMode === 'solo') ? false : (userSelectedMode === 'team' ? true : !(sessionData && sessionData.mode === 'solo'));
       const activeMode = isGroup ? 'team' : 'solo';
       const activeType = isGroup ? 'group' : 'personal';
 

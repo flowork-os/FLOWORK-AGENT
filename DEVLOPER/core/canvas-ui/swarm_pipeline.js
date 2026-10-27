@@ -1,3 +1,4 @@
+// [FL_INDEX: fallback_node_title, swarm_pipeline_render, defensive_null_coalesce, prevent_undefined, canvas_dag | COT: Provide defensive fallback (node.role || node.name || node.title || node.id) to permanently prevent undefined appearing on DAG node titles| AT: 2026-10-27T16:59:10Z]
 /**
  * ============================================================================
  * ⚡ FLOWORK OS — SWARM PIPELINE CANVAS ENGINE
@@ -22,10 +23,10 @@
   }
 
   // =========================================================================
-  // 🏛️ CONSTANT CATALOGS: ANTIGRAVITY MODELS, TOOLS, FILE ACTIONS, SKILLS
+  // 🏛️ CONSTANT CATALOGS: FLOWORK MATRIX MODELS, TOOLS, FILE ACTIONS, SKILLS
   // =========================================================================
 
-  const ANTIGRAVITY_MODELS = [
+  const FLOWORK_MATRIX_MODELS = [
     { id: 'gemini-3.8-flash-high', name: 'Gemini 3.8 Flash (High) [RECOMMENDED]', tier: 'Flagship Deep Thinking', latency: '0.8s (Ultra-fast)', context: '1,000,000 tokens', desc: 'Flagship high-speed reasoning model with multi-step reflection and code synthesis.' },
     { id: 'gemini-3.8-flash-medium', name: 'Gemini 3.8 Flash (Medium) [THINKING]', tier: 'Balanced Thinking', latency: '0.5s (Fast)', context: '1,000,000 tokens', desc: 'Balanced high-performance thinking for complex technical workflows.' },
     { id: 'gemini-3.8-flash-low', name: 'Gemini 3.8 Flash (Low) [FAST]', tier: 'Lightweight Fast', latency: '0.2s (Instant)', context: '1,000,000 tokens', desc: 'Ultra-low latency model for high-frequency sub-task evaluation.' }
@@ -718,13 +719,13 @@
 
   const DEFAULT_LOCAL_SKILLS = [
     { id: 'ui_ux_pro_max', name: 'UI / UX Pro Max', origin: 'Local Skills', category: 'Frontend & Design', desc: 'Pixel-perfect UI design, responsive layouts, WCAG compliance, and modern CSS/JS polish.' },
-    { id: 'antigravity_guide', name: 'Antigravity Guide & Reference', origin: 'Local Skills', category: 'Antigravity Core', desc: 'Complete architectural reference, CLI commands, SDK integration, and runtime configs.' },
-    { id: 'agy_customizations', name: 'Antigravity Customizations', origin: 'Local Skills', category: 'Antigravity Core', desc: 'Extensibility reference for skills, rules, hooks, sidecars, and MCP server management.' },
-    { id: 'generative_ui', name: 'Generative UI & Widgets', origin: 'Local Skills', category: 'Visualization', desc: 'Inline interactive HTML widgets, visual artifacts, dynamic dashboards, and charts.' },
-    { id: 'permissioned_github', name: 'Permissioned GitHub Ops', origin: 'Local Skills', category: 'DevOps & Git', desc: 'Automated GitHub branch isolation, pull request creation, and co-author compliance.' },
-    { id: 'migrate_workflows', name: 'Migrate Workflows', origin: 'Local Skills', category: 'Migration', desc: 'Scan legacy workflow scripts and migrate them into modular SKILL.md packages.' },
-    { id: 'automation', name: 'End-to-End Automation', origin: 'Local Skills', category: 'Automation', desc: 'Headless automation scripts, recurring pipelines, and event-driven swarm jobs.' },
-    { id: 'plugin', name: 'Nano-Plug Architecture', origin: 'Local Skills', category: 'Extensibility', desc: '1-file 1-logic modular nano-plugins with manifest contracts and multi-OS portability.' }
+    { id: 'swarm_orchestrator', name: 'Swarm Autonomous Orchestrator', origin: 'Local Skills', category: 'Flowork Core', desc: 'Multi-agent autonomous coordination, consensus synthesis, and DAG execution pipelines.' },
+    { id: 'software_company_sop', name: 'Software Enterprise SOP', origin: 'Local Skills', category: 'Flowork Core', desc: 'Standard operating procedures for full lifecycle agile architecture and code delivery.' },
+    { id: 'growth_marketing_engine', name: 'Growth & Marketing Intelligence', origin: 'Local Skills', category: 'Marketing', desc: 'Autonomous growth telemetry, acquisition funnels, and viral optimization matrix.' },
+    { id: 'code_concat', name: 'Codebase Synthesis & Concatenation', origin: 'Local Skills', category: 'Developer Tools', desc: 'High-speed AST extraction, recursive dependency concatenation, and code packager.' },
+    { id: 'flowork_guide', name: 'Flowork OS Guide & Architecture', origin: 'Local Skills', category: 'Flowork Core', desc: 'Complete architectural reference, CLI commands, SDK integration, and runtime configs.' },
+    { id: 'flowork_customizations', name: 'Flowork Extensibility & Plugins', origin: 'Local Skills', category: 'Flowork Core', desc: 'Extensibility reference for skills, rules, hooks, sidecars, and MCP server management.' },
+    { id: 'generative_ui', name: 'Generative UI & Widgets', origin: 'Local Skills', category: 'Visualization', desc: 'Inline interactive HTML widgets, visual artifacts, dynamic dashboards, and charts.' }
   ];
 
   let DYNAMIC_LOCAL_SKILLS = [...DEFAULT_LOCAL_SKILLS];
@@ -2311,7 +2312,7 @@
       }
       if (!n.skillsConfig) {
         n.skillsConfig = {
-          activeSkills: ['ui_ux_pro_max', 'antigravity_guide', 'code-review', 'implement-spec']
+          activeSkills: ['ui_ux_pro_max', 'swarm_orchestrator', 'software_company_sop', 'flowork_guide']
         };
       }
       if (!n.triggerConfig) {
@@ -2679,7 +2680,31 @@
         const ruleSnippet = node.rulePrompt ? node.rulePrompt.substring(0, 32) + '...' : '<span style="color:#64748b; font-style:italic;">Not configured</span>';
         const triggerEventsSnippet = node.triggerConfig?.events?.length ? node.triggerConfig.events.join(', ') : 'terminal_execution';
 
-        nodeEl.className = `dag-node ${isTriggerNode ? 'node-trigger' : ''} ${node.isLocked ? 'node-locked' : ''} ${this.selectedNodeId === node.id ? 'selected' : ''}`;
+        // Check if node is currently working / active (persistent state)
+        let isNodeWorking = (node.activityState === 'working');
+        let isNodeDone = (node.activityState === 'done');
+
+        if (!isNodeWorking && window.office3DInstance && Array.isArray(window.office3DInstance.agents)) {
+          const matchedAgent = window.office3DInstance.agents.find(a => {
+            if (!a || !a.data) return false;
+            const agId = String(a.data.id || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+            const agPersona = String(a.data.persona || '').toLowerCase().replace(/\./g, '');
+            const nAgent = String(node.agentId || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+            const nId = String(node.id || '').toLowerCase().replace(/^node-/, '').replace(/\./g, '');
+            return agId === nAgent || agId === nId || agPersona === nAgent || agPersona === nId ||
+                   (agId === 'mrflow' && (nId === 'mrflow' || nAgent === 'mrflow'));
+          });
+          if (matchedAgent && matchedAgent.data) {
+            const st = matchedAgent.data.state;
+            if (st === 'working' || st === 'processing' || matchedAgent.data.isThinking || (matchedAgent.data.activeTool && matchedAgent.data.activeTool.name)) {
+              isNodeWorking = true;
+              node.activityState = 'working';
+            }
+          }
+        }
+
+        const processingClass = isNodeWorking ? 'node-processing' : (isNodeDone ? 'node-success' : '');
+        nodeEl.className = `dag-node ${isTriggerNode ? 'node-trigger' : ''} ${node.isLocked ? 'node-locked' : ''} ${this.selectedNodeId === node.id ? 'selected' : ''} ${processingClass}`;
         nodeEl.id = `dag-node-${node.id}`;
         nodeEl.style.left = `${node.x}px`;
         nodeEl.style.top = `${node.y}px`;
@@ -2712,7 +2737,7 @@
               <span style="color:#f59e0b; font-weight:800; font-size:9px;">⚡ ${node.modelConfig?.accountMode === 'combo' ? 'Combo' : 'Direct'}</span>
             </div>
             <button class="dag-node-prompt-btn" style="margin-top:6px; width:100%; font-size:10px; font-weight:800; background:rgba(56,189,248,0.2); border:1px solid rgba(56,189,248,0.45); color:#7dd3fc; border-radius:5px; padding:5px; cursor:pointer;">
-              ⚙️ Configure Cockpit (6 Tabs)
+              ⚙️ Configure Cockpit (8 Tabs)
             </button>
         `;
 
@@ -2724,10 +2749,10 @@
           <div class="dag-node-header">
             <div class="dag-node-title">
               <span>${node.icon || (isTriggerNode ? '⚡' : '🤖')}</span>
-              <span>${node.role}</span>
+              <span>${node.role || node.name || node.title || node.id || 'Specialist Agent'}</span>
             </div>
             <div style="display:flex; align-items:center; gap:6px;">
-              <span class="dag-node-status-indicator" style="display:none;"></span>
+              <span class="dag-node-status-indicator" style="${isNodeWorking ? 'display:inline-flex;' : (isNodeDone ? 'display:inline-flex;' : 'display:none;')}">${isNodeWorking ? '⚡ WORKING' : (isNodeDone ? '✓ DONE' : '')}</span>
               <span class="dag-node-type-badge ${badgeClass}">${badgeText}</span>
               <button type="button" class="dag-node-delete-btn" data-node-id="${node.id}" title="Delete node from canvas">✕</button>
             </div>
@@ -2941,13 +2966,13 @@
       // 1. Models Table Rows Generator
       const activeModelId = node.modelConfig?.modelId || 'gemini-3.8-flash-high';
       const renderCockpitModelRows = (modelsList, currentActiveId) => {
-        const list = Array.isArray(modelsList) && modelsList.length > 0 ? modelsList : ANTIGRAVITY_MODELS;
+        const list = Array.isArray(modelsList) && modelsList.length > 0 ? modelsList : FLOWORK_MATRIX_MODELS;
         return list.map(m => {
           const isSelected = m.id === currentActiveId;
           const tier = m.tier || m.badge || (m.provider === 'ollama' ? 'Local LLM' : (m.provider === '9router' ? 'Proxy Router' : 'Flagship Thinking'));
           const latency = m.latency || (m.provider === 'ollama' ? '0.1s (Local GPU)' : (m.provider === '9router' ? 'Routed' : '0.8s (Fast)'));
           const context = m.context || '1,000,000 tokens';
-          const badgeText = m.provider === 'ollama' ? 'ACTIVE OLLAMA' : (m.provider === '9router' ? 'ACTIVE 9ROUTER' : 'ACTIVE GOOGLE');
+          const badgeText = m.provider === 'ollama' ? 'ACTIVE OLLAMA' : (m.provider === '9router' ? 'ACTIVE 9ROUTER' : 'ACTIVE MATRIX');
           const badgeClass = m.provider === 'ollama' ? 'pipeline-badge-safe' : (m.provider === '9router' ? 'pipeline-badge-high' : 'pipeline-badge-safe');
           return `
             <tr class="pipeline-model-row ${isSelected ? 'selected' : ''}" data-model-id="${m.id}" data-model-name="${m.name}" data-provider="${m.provider || 'gravity'}" style="cursor:pointer;">
@@ -2966,7 +2991,7 @@
           `;
         }).join('');
       };
-      const modelsRowsHtml = renderCockpitModelRows(ANTIGRAVITY_MODELS, activeModelId);
+      const modelsRowsHtml = renderCockpitModelRows(FLOWORK_MATRIX_MODELS, activeModelId);
 
       // 2. Tools Governance Rows
       const isMasterAllowAll = node.toolGovernance?.allowAll !== false;
@@ -3083,13 +3108,16 @@
             <span>📋</span> Task <span class="tab-badge">SLA</span>
           </button>
           <button type="button" class="pipeline-cockpit-tab-btn" data-tab="model">
-            <span>🧠</span> Model Selection <span class="tab-badge">Antigravity</span>
+            <span>🧠</span> Model Selection <span class="tab-badge">Flowork Matrix</span>
           </button>
           <button type="button" class="pipeline-cockpit-tab-btn" data-tab="tools">
             <span>🔧</span> Tools & Guardians <span class="tab-badge">${toolsList.length} Tools</span>
           </button>
           <button type="button" class="pipeline-cockpit-tab-btn" data-tab="skills">
             <span>⚡</span> Skills Catalog <span class="tab-badge" id="tab-skills-count">${activeSkillsList.length} Active</span>
+          </button>
+          <button type="button" class="pipeline-cockpit-tab-btn" data-tab="circuit-breaker">
+            <span>⚡</span> Circuit Breaker <span class="tab-badge" id="tab-cb-badge">500 Turns</span>
           </button>
         </div>
 
@@ -3104,6 +3132,7 @@
                   <span style="font-size:16px;">🎨</span>
                   <h4 style="margin:0; font-size:13px; font-weight:700; color:#f8fafc;">3D Agent Wardrobe & Character Studio</h4>
                   <span class="pipeline-chip-tag" style="color:#00f2fe; font-family:monospace; font-size:11px;">system/subagent/${effectiveAgentId}/style.json</span>
+                  <span class="pipeline-chip-tag" style="color:#00f2fe; font-weight:700;">Tab 1 of 8</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span id="style-sync-indicator" style="font-size:11px; color:#10b981; font-weight:600;">● Synced to Disk</span>
@@ -3169,7 +3198,7 @@
                   <!-- Color Pickers Row 1 -->
                   <div class="pipeline-modal-grid-2">
                     <div class="pipeline-modal-form-row">
-                      <label class="pipeline-modal-label">Primary Suit Color (Baju Utama)</label>
+                      <label class="pipeline-modal-label">Primary Suit Color</label>
                       <div class="pipeline-color-picker-wrap">
                         <input type="color" id="style-primary-color" value="#00f2fe" class="pipeline-color-input" />
                         <input type="text" id="style-primary-hex" value="#00f2fe" class="pipeline-modal-input" style="font-family:monospace; text-transform:uppercase;" />
@@ -3186,7 +3215,7 @@
                     </div>
 
                     <div class="pipeline-modal-form-row">
-                      <label class="pipeline-modal-label">Secondary / Trim Accent (Lis & Kerah)</label>
+                      <label class="pipeline-modal-label">Secondary Trim Accent</label>
                       <div class="pipeline-color-picker-wrap">
                         <input type="color" id="style-secondary-color" value="#7f00ff" class="pipeline-color-input" />
                         <input type="text" id="style-secondary-hex" value="#7f00ff" class="pipeline-modal-input" style="font-family:monospace; text-transform:uppercase;" />
@@ -3305,6 +3334,7 @@
                   <span style="font-size:16px;">👤</span>
                   <h4 style="margin:0; font-size:13px; font-weight:700; color:#f8fafc;">Persona Soul Directives</h4>
                   <span class="pipeline-chip-tag" style="color:#38bdf8; font-family:monospace; font-size:11px;">system/subagent/${effectiveAgentId}/persona.md</span>
+                  <span class="pipeline-chip-tag" style="color:#38bdf8; font-weight:700;">Tab 2 of 8</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span id="persona-sync-indicator" style="font-size:11px; color:#10b981; font-weight:600;">● Synced to Disk</span>
@@ -3319,7 +3349,7 @@
             </div>
           </div>
 
-          <!-- 2. Rules Pane (Clean 1-Column Prompt) -->
+          <!-- 3. Rules Pane (Clean 1-Column Prompt) -->
           <div class="pipeline-cockpit-pane" id="cockpit-pane-rules">
             <div class="pipeline-table-card">
               <div class="pipeline-table-header-row">
@@ -3327,6 +3357,7 @@
                   <span style="font-size:16px;">🛡️</span>
                   <h4 style="margin:0; font-size:13px; font-weight:700; color:#f8fafc;">Rules & Operational Guardrails</h4>
                   <span class="pipeline-chip-tag" style="color:#fb7185; font-family:monospace; font-size:11px;">system/subagent/${effectiveAgentId}/rules.md</span>
+                  <span class="pipeline-chip-tag" style="color:#fb7185; font-weight:700;">Tab 3 of 8</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span id="rules-sync-indicator" style="font-size:11px; color:#10b981; font-weight:600;">● Synced to Disk</span>
@@ -3343,7 +3374,7 @@
             </div>
           </div>
 
-          <!-- 3. Task Pane (Clean 1-Column Prompt) -->
+          <!-- 4. Task Pane (Clean 1-Column Prompt) -->
           <div class="pipeline-cockpit-pane" id="cockpit-pane-task">
             <div class="pipeline-table-card">
               <div class="pipeline-table-header-row">
@@ -3351,6 +3382,7 @@
                   <span style="font-size:16px;">📋</span>
                   <h4 style="margin:0; font-size:13px; font-weight:700; color:#f8fafc;">Task Scope & Mission Instructions</h4>
                   <span class="pipeline-chip-tag" style="color:#818cf8; font-family:monospace; font-size:11px;">system/subagent/${effectiveAgentId}/task.md</span>
+                  <span class="pipeline-chip-tag" style="color:#818cf8; font-weight:700;">Tab 4 of 8</span>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px;">
                   <span id="task-sync-indicator" style="font-size:11px; color:#10b981; font-weight:600;">● Synced to Disk</span>
@@ -3367,7 +3399,7 @@
             </div>
           </div>
 
-          <!-- 4. Model Selection Pane (Antigravity Models + Combo Auto-Balancer) -->
+          <!-- 5. Model Selection Pane (Flowork Matrix Models + Combo Auto-Balancer) -->
           <div class="pipeline-cockpit-pane" id="cockpit-pane-model">
             <div class="pipeline-table-card">
               <div class="pipeline-table-header-row">
@@ -3404,12 +3436,12 @@
                 <div style="display:flex; align-items:center; gap:12px;">
                   <h4><span>🧠</span> Models Catalog (Official Dropdown Match)</h4>
                   <div class="pipeline-model-provider-tabs" id="cockpit-model-provider-tabs" style="display:flex; gap:6px;">
-                    <button type="button" class="pipeline-mini-btn active" data-provider="gravity" id="btn-cockpit-prov-gravity">⚡ Gravity</button>
+                    <button type="button" class="pipeline-mini-btn active" data-provider="gravity" id="btn-cockpit-prov-gravity">⚡ Matrix</button>
                     <button type="button" class="pipeline-mini-btn" data-provider="ollama" id="btn-cockpit-prov-ollama">🦙 Ollama</button>
                     <button type="button" class="pipeline-mini-btn" data-provider="9router" id="btn-cockpit-prov-9router">🔀 9Router</button>
                   </div>
                 </div>
-                <span class="pipeline-chip-tag" id="cockpit-models-active-tag" style="color:#38bdf8;">Tab 5 of 7</span>
+                <span class="pipeline-chip-tag" id="cockpit-models-active-tag" style="color:#38bdf8;">Tab 5 of 8</span>
               </div>
               <table class="pipeline-data-table" id="table-models-list">
                 <thead>
@@ -3429,12 +3461,12 @@
             </div>
           </div>
 
-          <!-- 5. Tool Governance Pane (${toolsList.length} Local Tools • Zero Cloudflare) -->
+          <!-- 6. Tool Governance Pane (${toolsList.length} Local Tools • Zero Cloudflare) -->
           <div class="pipeline-cockpit-pane" id="cockpit-pane-tools">
             <div class="pipeline-table-card">
               <div class="pipeline-table-header-row">
                 <h4><span>🔧</span> Universal Tool Governance & Execution Sandbox (${toolsList.length} Local Tools)</h4>
-                <span class="pipeline-chip-tag" style="color:#10b981;">Tab 5 of 6</span>
+                <span class="pipeline-chip-tag" style="color:#10b981;">Tab 6 of 8</span>
                 <div class="pipeline-table-actions">
                   <button type="button" class="pipeline-mini-btn" id="btn-tools-filter-rules" style="color:#f59e0b; border-color:rgba(245,158,11,0.4); font-weight:700;">🛡️ With Rules Only (${rulesCount})</button>
                   <button type="button" class="pipeline-mini-btn primary" id="btn-tools-allow-all">✓ Allow All (${toolsList.length})</button>
@@ -3503,12 +3535,12 @@
             </div>
           </div>
 
-          <!-- 6. Skills Catalog Pane -->
+          <!-- 7. Skills Catalog Pane -->
           <div class="pipeline-cockpit-pane" id="cockpit-pane-skills">
             <div class="pipeline-table-card">
               <div class="pipeline-table-header-row">
                 <h4><span>⚡</span> Local Sovereign Skills Catalog (skills/)</h4>
-                <span class="pipeline-chip-tag" style="color:#a855f7;">Tab 6 of 6</span>
+                <span class="pipeline-chip-tag" style="color:#a855f7;">Tab 7 of 8</span>
                 <div class="pipeline-table-actions">
                   <button type="button" class="pipeline-mini-btn primary" id="btn-skills-enable-all">✓ Enable All Skills</button>
                   <button type="button" class="pipeline-mini-btn" id="btn-skills-sovereign-preset">👑 Default Sovereign Skills</button>
@@ -3532,6 +3564,172 @@
                   ${skillsRowsHtml}
                 </tbody>
               </table>
+            </div>
+          </div>
+
+          <!-- 8. Circuit Breaker & Execution Limits Pane -->
+          <div class="pipeline-cockpit-pane" id="cockpit-pane-circuit-breaker">
+            <div class="pipeline-table-card">
+              <div class="pipeline-table-header-row">
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span style="font-size:16px;">⚡</span>
+                  <h4 style="margin:0; font-size:13px; font-weight:700; color:#f8fafc;">Autonomous Loop Limits & Circuit Breaker</h4>
+                  <span class="pipeline-chip-tag" style="color:#00f2fe; font-family:monospace; font-size:11px;">system/subagent/${effectiveAgentId}/circuit_breaker.json</span>
+                  <span class="pipeline-chip-tag" style="color:#00f2fe; font-weight:700;">Tab 8 of 8</span>
+                </div>
+                <div style="display:flex; align-items:center; gap:8px;">
+                  <span id="cb-sync-indicator" style="font-size:11px; color:#10b981; font-weight:600;">● Synced to Disk</span>
+                  <button type="button" id="btn-save-agent-cb" class="pipeline-modal-btn primary" style="padding:4px 12px; font-size:11px; height:28px;">
+                    💾 Save Execution Limits
+                  </button>
+                </div>
+              </div>
+
+              <!-- Quick Presets Carousel -->
+              <div class="pipeline-style-presets-bar">
+                <span style="font-size:11px; font-weight:700; color:#94a3b8; text-transform:uppercase; letter-spacing:0.5px;">Turn Presets:</span>
+                <div class="pipeline-preset-pills" id="cb-preset-pills">
+                  <button type="button" class="pipeline-preset-pill active" data-preset="standard_500">⚡ Standard 500 (Default)</button>
+                  <button type="button" class="pipeline-preset-pill" data-preset="deep_1000">🚀 Deep Worker 1000</button>
+                  <button type="button" class="pipeline-preset-pill" data-preset="rapid_100">⚡ Rapid Scout 100</button>
+                  <button type="button" class="pipeline-preset-pill" data-preset="sovereign_300">🛡️ Sovereign 300</button>
+                  <button type="button" class="pipeline-preset-pill" data-preset="marathon_2000">🔥 Marathon 2000</button>
+                </div>
+              </div>
+
+              <!-- Grid 2 Columns: Turn Budget & Warnings vs Loop Detection & Circuit Breaker -->
+              <div class="pipeline-modal-grid-2" style="gap:20px; align-items:start;">
+                
+                <!-- Left: Turn Budget & 3-Stage Warning Escalation -->
+                <div class="circuit-breaker-card" style="margin:0;">
+                  <div class="circuit-breaker-card-header">
+                    <div>
+                      <h5><span>🎯</span> Autonomous Turn Budget & Escalation</h5>
+                      <p>Configures maximum generator steps and 3-stage warning milestones before auto-termination.</p>
+                    </div>
+                  </div>
+
+                  <!-- Max Turns Setting -->
+                  <div class="pipeline-modal-form-row" style="margin-bottom:16px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <label class="pipeline-modal-label">Maximum Autonomous Turns (Hard Ceiling)</label>
+                      <span id="disp-max-turns" style="color:#00f2fe; font-family:monospace; font-weight:700; font-size:12px;">500 Turns</span>
+                    </div>
+                    <input type="number" id="cb-max-turns" class="cb-number-input" value="500" min="10" max="5000" step="10" />
+                    <input type="range" id="cb-max-turns-slider" class="cb-range-slider" value="500" min="10" max="2000" step="10" />
+                    <span style="font-size:10px; color:#64748b;">Hard stop: Tool execution ceases and final synthesis closure is generated.</span>
+                  </div>
+
+                  <!-- Warning Milestones 1, 2, 3 -->
+                  <div style="display:flex; flex-direction:column; gap:10px;">
+                    
+                    <!-- Warning 1 -->
+                    <div class="cb-milestone-pill" style="border-left:3px solid #38bdf8;">
+                      <div class="cb-milestone-label">
+                        <span class="cb-milestone-title">⚠️ Warning 1: Memory Crystallization Milestone</span>
+                        <span class="cb-milestone-desc">Reminds agent to persist findings & solutions to .fl_brain</span>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:11px; color:#94a3b8;">Turn:</span>
+                        <input type="number" id="cb-warn-1" class="cb-number-input" style="width:75px; padding:4px 8px; font-size:11px;" value="450" />
+                      </div>
+                    </div>
+
+                    <!-- Warning 2 -->
+                    <div class="cb-milestone-pill" style="border-left:3px solid #f59e0b;">
+                      <div class="cb-milestone-label">
+                        <span class="cb-milestone-title">🚨 Warning 2: High-Urgency Countdown Milestone</span>
+                        <span class="cb-milestone-desc">Final notice before autonomous tool calling cutoff</span>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:11px; color:#94a3b8;">Turn:</span>
+                        <input type="number" id="cb-warn-2" class="cb-number-input" style="width:75px; padding:4px 8px; font-size:11px;" value="480" />
+                      </div>
+                    </div>
+
+                    <!-- Warning 3 / Termination -->
+                    <div class="cb-milestone-pill" style="border-left:3px solid #ef4444;">
+                      <div class="cb-milestone-label">
+                        <span class="cb-milestone-title">🛑 Warning 3: Hard Stop & Final Synthesis Closure</span>
+                        <span class="cb-milestone-desc">Autonomous kill-switch and pure text report generation</span>
+                      </div>
+                      <div style="display:flex; align-items:center; gap:6px;">
+                        <span style="font-size:11px; color:#94a3b8;">Turn:</span>
+                        <input type="number" id="cb-warn-3" class="cb-number-input" style="width:75px; padding:4px 8px; font-size:11px;" value="500" />
+                      </div>
+                    </div>
+
+                  </div>
+                </div>
+
+                <!-- Right: Circuit Breaker Loop & Tool Guardrails -->
+                <div class="circuit-breaker-card" style="margin:0;">
+                  <div class="circuit-breaker-card-header">
+                    <div>
+                      <h5><span>🛡️</span> Loop Breakers & Action Doctrine</h5>
+                      <p>Sovereign thresholds to intercept stuck loops and enforce action-oriented execution.</p>
+                    </div>
+                  </div>
+
+                  <div class="pipeline-modal-grid-2" style="margin-bottom:14px;">
+                    <div class="pipeline-modal-form-row">
+                      <label class="pipeline-modal-label">Consecutive Identical Calls</label>
+                      <input type="number" id="cb-repeat-limit" class="cb-number-input" value="5" min="1" max="20" />
+                      <span style="font-size:10px; color:#64748b;">Triggers circuit breaker if same tool called repeatedly with identical input.</span>
+                    </div>
+
+                    <div class="pipeline-modal-form-row">
+                      <label class="pipeline-modal-label">Read-Only Tools Budget</label>
+                      <input type="number" id="cb-read-limit" class="cb-number-input" value="0" min="0" max="100" />
+                      <span style="font-size:10px; color:#64748b;">0 = Unlimited (Zero artificial cutoff per Flowork parity).</span>
+                    </div>
+                  </div>
+
+                  <div class="pipeline-modal-grid-2" style="margin-bottom:16px;">
+                    <div class="pipeline-modal-form-row">
+                      <label class="pipeline-modal-label">Cumulative Read Limit</label>
+                      <input type="number" id="cb-total-read-limit" class="cb-number-input" value="0" min="0" max="200" />
+                      <span style="font-size:10px; color:#64748b;">0 = Disabled. Cumulative read cap across entire trajectory.</span>
+                    </div>
+
+                    <div class="pipeline-modal-form-row">
+                      <label class="pipeline-modal-label">Post-Mutation Tools Cap</label>
+                      <input type="number" id="cb-post-mutation-limit" class="cb-number-input" value="0" min="0" max="50" />
+                      <span style="font-size:10px; color:#64748b;">0 = Disabled. Enforces fast verification after file edit.</span>
+                    </div>
+                  </div>
+
+                  <!-- Autonomous Doctrine Flags -->
+                  <div style="display:flex; flex-direction:column; gap:8px; padding-top:12px; border-top:1px solid rgba(255,255,255,0.06);">
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <div>
+                        <div style="font-size:11.5px; font-weight:700; color:#f8fafc;">⚡ Anti-NATO Action Doctrine</div>
+                        <div style="font-size:10px; color:#64748b;">Reject analysis paralysis; mandate physical tool actions immediately.</div>
+                      </div>
+                      <label class="pipeline-switch"><input type="checkbox" id="cb-flag-anti-nato" checked /><span class="pipeline-slider"></span></label>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <div>
+                        <div style="font-size:11.5px; font-weight:700; color:#f8fafc;">🧠 Auto-Memory Crystallization</div>
+                        <div style="font-size:10px; color:#64748b;">Auto-save winning solutions to .fl_brain when task succeeds.</div>
+                      </div>
+                      <label class="pipeline-switch"><input type="checkbox" id="cb-flag-brain" checked /><span class="pipeline-slider"></span></label>
+                    </div>
+
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                      <div>
+                        <div style="font-size:11.5px; font-weight:700; color:#f8fafc;">🛡️ Terminal Verification Mandate</div>
+                        <div style="font-size:10px; color:#64748b;">Every claim of success requires exit code 0 terminal proof.</div>
+                      </div>
+                      <label class="pipeline-switch"><input type="checkbox" id="cb-flag-qc" checked /><span class="pipeline-slider"></span></label>
+                    </div>
+                  </div>
+
+                </div>
+
+              </div>
+
             </div>
           </div>
 
@@ -4530,7 +4728,7 @@
           } catch (_) {}
 
           if (tbodyModels) {
-            tbodyModels.innerHTML = renderCockpitModelRows(ANTIGRAVITY_MODELS, node.modelConfig?.modelId);
+            tbodyModels.innerHTML = renderCockpitModelRows(FLOWORK_MATRIX_MODELS, node.modelConfig?.modelId);
             bindModelRowsEvents();
           }
         });
@@ -4858,12 +5056,167 @@
       });
 
       box.querySelector('#btn-skills-sovereign-preset')?.addEventListener('click', () => {
-        const sovSkills = ['ui_ux_pro_max', 'antigravity_guide', 'code-review', 'implement-spec'];
+        const sovSkills = ['ui_ux_pro_max', 'swarm_orchestrator', 'software_company_sop', 'flowork_guide'];
         skillSwitches.forEach(sw => {
           sw.checked = sovSkills.includes(sw.getAttribute('data-skill-id'));
         });
         syncSkillsFromSwitches();
       });
+
+      // 8. Circuit Breaker Tab Bindings (Per-Agent Execution Budget)
+      const paneCb = box.querySelector('#cockpit-pane-circuit-breaker');
+      if (paneCb) {
+        const inpMaxTurns = paneCb.querySelector('#cb-max-turns');
+        const sliderMaxTurns = paneCb.querySelector('#cb-max-turns-slider');
+        const dispMaxTurns = paneCb.querySelector('#disp-max-turns');
+        const tabCbBadge = box.querySelector('#tab-cb-badge');
+        const inpWarn1 = paneCb.querySelector('#cb-warn-1');
+        const inpWarn2 = paneCb.querySelector('#cb-warn-2');
+        const inpWarn3 = paneCb.querySelector('#cb-warn-3');
+        const inpRepeat = paneCb.querySelector('#cb-repeat-limit');
+        const inpRead = paneCb.querySelector('#cb-read-limit');
+        const inpTotalRead = paneCb.querySelector('#cb-total-read-limit');
+        const inpPostMut = paneCb.querySelector('#cb-post-mutation-limit');
+        const chkAntiNato = paneCb.querySelector('#cb-flag-anti-nato');
+        const chkBrain = paneCb.querySelector('#cb-flag-brain');
+        const chkQc = paneCb.querySelector('#cb-flag-qc');
+        const btnSaveCb = paneCb.querySelector('#btn-save-agent-cb');
+        const cbSyncIndicator = paneCb.querySelector('#cb-sync-indicator');
+        const presetPills = paneCb.querySelectorAll('#cb-preset-pills .pipeline-preset-pill');
+
+        const updateTurnDisplay = (val) => {
+          if (dispMaxTurns) dispMaxTurns.textContent = `${val} Turns`;
+          if (tabCbBadge) tabCbBadge.textContent = `${val} Turns`;
+        };
+
+        const syncSliderAndInput = (val) => {
+          const num = parseInt(val, 10) || 500;
+          if (inpMaxTurns) inpMaxTurns.value = num;
+          if (sliderMaxTurns) sliderMaxTurns.value = Math.min(num, 2000);
+          updateTurnDisplay(num);
+          if (cbSyncIndicator) {
+            cbSyncIndicator.textContent = '○ Unsaved Changes';
+            cbSyncIndicator.style.color = '#f59e0b';
+          }
+        };
+
+        inpMaxTurns?.addEventListener('input', (e) => syncSliderAndInput(e.target.value));
+        sliderMaxTurns?.addEventListener('input', (e) => syncSliderAndInput(e.target.value));
+
+        [inpWarn1, inpWarn2, inpWarn3, inpRepeat, inpRead, inpTotalRead, inpPostMut, chkAntiNato, chkBrain, chkQc].forEach(el => {
+          el?.addEventListener('change', () => {
+            if (cbSyncIndicator) {
+              cbSyncIndicator.textContent = '○ Unsaved Changes';
+              cbSyncIndicator.style.color = '#f59e0b';
+            }
+          });
+        });
+
+        // Presets Click Handler
+        const CB_PRESETS = {
+          standard_500: { max: 500, w1: 450, w2: 480, w3: 500 },
+          deep_1000: { max: 1000, w1: 900, w2: 960, w3: 1000 },
+          rapid_100: { max: 100, w1: 80, w2: 90, w3: 100 },
+          sovereign_300: { max: 300, w1: 280, w2: 290, w3: 300 },
+          marathon_2000: { max: 2000, w1: 1800, w2: 1950, w3: 2000 }
+        };
+
+        presetPills.forEach(pill => {
+          pill.addEventListener('click', () => {
+            presetPills.forEach(p => p.classList.remove('active'));
+            pill.classList.add('active');
+            const pKey = pill.getAttribute('data-preset');
+            const cfg = CB_PRESETS[pKey];
+            if (cfg) {
+              syncSliderAndInput(cfg.max);
+              if (inpWarn1) inpWarn1.value = cfg.w1;
+              if (inpWarn2) inpWarn2.value = cfg.w2;
+              if (inpWarn3) inpWarn3.value = cfg.w3;
+            }
+          });
+        });
+
+        // Fetch initial circuit breaker config from disk
+        fetch(`/api/subagents/${encodeURIComponent(effectiveAgentId)}/circuit_breaker`)
+          .then(r => r.json())
+          .then(data => {
+            if (data && data.status === 'ok' && data.circuit_breaker) {
+              const cb = data.circuit_breaker;
+              if (cb.max_turns) syncSliderAndInput(cb.max_turns);
+              if (cb.warn_step_1 && inpWarn1) inpWarn1.value = cb.warn_step_1;
+              if (cb.warn_step_2 && inpWarn2) inpWarn2.value = cb.warn_step_2;
+              if (cb.warn_step_3 && inpWarn3) inpWarn3.value = cb.warn_step_3;
+              if (cb.consecutive_repeat_limit && inpRepeat) inpRepeat.value = cb.consecutive_repeat_limit;
+              if (cb.circuit_breaker_read_only_limit !== undefined && inpRead) inpRead.value = cb.circuit_breaker_read_only_limit;
+              if (cb.circuit_breaker_total_read_limit !== undefined && inpTotalRead) inpTotalRead.value = cb.circuit_breaker_total_read_limit;
+              if (cb.circuit_breaker_post_mutation_limit !== undefined && inpPostMut) inpPostMut.value = cb.circuit_breaker_post_mutation_limit;
+              if (cb.anti_nato !== undefined && chkAntiNato) chkAntiNato.checked = cb.anti_nato;
+              if (cb.auto_crystallize !== undefined && chkBrain) chkBrain.checked = cb.auto_crystallize;
+              if (cb.terminal_qc !== undefined && chkQc) chkQc.checked = cb.terminal_qc;
+              if (cbSyncIndicator) {
+                cbSyncIndicator.textContent = '● Synced to Disk';
+                cbSyncIndicator.style.color = '#10b981';
+              }
+            }
+          })
+          .catch(e => console.warn('[SwarmPipeline] CB fetch notice:', e));
+
+        // Save Button Handler
+        btnSaveCb?.addEventListener('click', async () => {
+          btnSaveCb.textContent = '⏳ Saving...';
+          btnSaveCb.disabled = true;
+
+          const payload = {
+            circuit_breaker: {
+              max_turns: parseInt(inpMaxTurns?.value || '500', 10),
+              warn_step_1: parseInt(inpWarn1?.value || '450', 10),
+              warn_step_2: parseInt(inpWarn2?.value || '480', 10),
+              warn_step_3: parseInt(inpWarn3?.value || '500', 10),
+              consecutive_repeat_limit: parseInt(inpRepeat?.value || '5', 10),
+              circuit_breaker_read_only_limit: parseInt(inpRead?.value || '0', 10),
+              circuit_breaker_total_read_limit: parseInt(inpTotalRead?.value || '0', 10),
+              circuit_breaker_post_mutation_limit: parseInt(inpPostMut?.value || '0', 10),
+              anti_nato: chkAntiNato ? chkAntiNato.checked : true,
+              auto_crystallize: chkBrain ? chkBrain.checked : true,
+              terminal_qc: chkQc ? chkQc.checked : true
+            }
+          };
+
+          try {
+            const res = await fetch(`/api/subagents/${encodeURIComponent(effectiveAgentId)}/circuit_breaker`, {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(payload)
+            });
+            const resData = await res.json();
+            if (res.ok && resData.status === 'ok') {
+              btnSaveCb.textContent = '✓ Saved!';
+              btnSaveCb.style.background = 'rgba(16,185,129,0.2)';
+              btnSaveCb.style.borderColor = '#10b981';
+              btnSaveCb.style.color = '#10b981';
+              if (cbSyncIndicator) {
+                cbSyncIndicator.textContent = '● Synced to Disk';
+                cbSyncIndicator.style.color = '#10b981';
+              }
+              setTimeout(() => {
+                btnSaveCb.textContent = '💾 Save Execution Limits';
+                btnSaveCb.style.background = '';
+                btnSaveCb.style.borderColor = '';
+                btnSaveCb.style.color = '';
+                btnSaveCb.disabled = false;
+              }, 2000);
+            } else {
+              alert('Save circuit breaker failed: ' + (resData.message || 'Unknown error'));
+              btnSaveCb.textContent = '💾 Save Execution Limits';
+              btnSaveCb.disabled = false;
+            }
+          } catch (err) {
+            alert('Network error saving circuit breaker: ' + err.message);
+            btnSaveCb.textContent = '💾 Save Execution Limits';
+            btnSaveCb.disabled = false;
+          }
+        });
+      }
 
       // 9. Close Modal Handler
       box.querySelector('#btn-close-modal')?.addEventListener('click', () => this.closeFullPromptModal());
@@ -5523,34 +5876,44 @@
     setAgentActivityState(agentId, state, options = {}) {
       if (!agentId || !this.nodes || this.nodes.length === 0) return;
 
-      const cleanId = String(agentId).toLowerCase().replace(/^(agent-|session-)/, '');
+      const rawId = String(agentId).toLowerCase().trim();
+      const cleanId = rawId.replace(/^(agent-|session-)/, '').replace(/-system-\d+$/, '').replace(/\./g, '');
       const isWorking = (state === 'working' || state === 'processing' || state === 'busy');
       const isDone = (state === 'done' || state === 'success' || state === 'completed');
 
       const matchedNodes = this.nodes.filter(n => {
-        const nAgent = String(n.agentId || '').toLowerCase();
-        const nId = String(n.id || '').toLowerCase();
+        const nAgent = String(n.agentId || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
+        const nId = String(n.id || '').toLowerCase().replace(/^node-/, '').replace(/\./g, '');
         const nRole = String(n.role || '').toLowerCase();
         const nName = String(n.name || '').toLowerCase();
         return nAgent === cleanId ||
                nId === cleanId ||
                nId.includes(cleanId) ||
                cleanId.includes(nId) ||
+               nAgent.includes(cleanId) ||
+               cleanId.includes(nAgent) ||
                nRole.includes(cleanId) ||
                cleanId.includes(nRole) ||
                nName.includes(cleanId) ||
                cleanId.includes(nName) ||
-               (cleanId === 'leader' && n.type === 'leader') ||
-               (cleanId.includes('backend') && (nId.includes('backend') || nRole.includes('backend'))) ||
-               (cleanId.includes('frontend') && (nId.includes('frontend') || nRole.includes('frontend'))) ||
-               (cleanId.includes('security') && (nId.includes('security') || nRole.includes('security'))) ||
-               (cleanId.includes('qc') && (nId.includes('qc') || nRole.includes('qc') || nRole.includes('quality')));
+               (cleanId === 'mrflow' && (nId === 'mrflow' || nAgent === 'mrflow')) ||
+               (cleanId === 'leader' && (n.type === 'leader' || nId === 'leader' || nAgent === 'leader')) ||
+               (cleanId.includes('architect') && (nId.includes('architect') || nAgent.includes('architect'))) ||
+               (cleanId.includes('bridge') && (nId.includes('bridge') || nAgent.includes('bridge'))) ||
+               (cleanId.includes('telemetry') && (nId.includes('telemetry') || nAgent.includes('telemetry'))) ||
+               (cleanId.includes('extractor') && (nId.includes('extractor') || nAgent.includes('extractor'))) ||
+               (cleanId.includes('tester') && (nId.includes('tester') || nAgent.includes('tester'))) ||
+               (cleanId.includes('inspector') && (nId.includes('inspector') || nAgent.includes('inspector'))) ||
+               (cleanId.includes('qc') && (nId.includes('qc') || nAgent.includes('qc')));
       });
 
       if (matchedNodes.length === 0) return;
 
       matchedNodes.forEach(node => {
-        const nodeEl = document.getElementById(`dag-node-${node.id}`);
+        node.activityState = isWorking ? 'working' : (isDone ? 'done' : 'idle');
+        const nodeEl = (this.nodesLayer && this.nodesLayer.querySelector(`#dag-node-${node.id}`)) ||
+                       document.getElementById(`dag-node-${node.id}`) ||
+                       (this.boardEl && this.boardEl.querySelector(`#dag-node-${node.id}`));
         const statusEl = nodeEl?.querySelector('.dag-node-status-indicator');
         const connectedConns = this.connections.filter(c => c.from === node.id || c.to === node.id);
 
@@ -5560,7 +5923,7 @@
             nodeEl.classList.add('node-processing');
           }
           if (statusEl) {
-            statusEl.textContent = '⚡ RUNNING';
+            statusEl.textContent = '⚡ WORKING';
             statusEl.style.display = 'inline-flex';
           }
           connectedConns.forEach(conn => {
@@ -5580,6 +5943,7 @@
             statusEl.style.display = 'inline-flex';
           }
           setTimeout(() => {
+            node.activityState = 'idle';
             if (nodeEl) nodeEl.classList.remove('node-success');
             if (statusEl) statusEl.style.display = 'none';
             connectedConns.forEach(conn => {
@@ -5589,9 +5953,10 @@
               if (cable) cable.classList.remove('cable-active');
               if (photon) photon.classList.remove('active-flow-1', 'active-flow-2');
             });
-          }, 2500);
+          }, 3000);
         } else {
           // Idle
+          node.activityState = 'idle';
           if (nodeEl) nodeEl.classList.remove('node-processing', 'node-success', 'node-firing');
           if (statusEl) statusEl.style.display = 'none';
           connectedConns.forEach(conn => {
