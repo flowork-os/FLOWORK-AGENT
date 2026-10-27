@@ -13301,12 +13301,34 @@ const KNOWN_KERNEL_TOOLS = [
   'replace_file_content', 'search_tools', 'skill_control', 'ask_question', 'schedule',
   'manage_task', 'team_audit',
   'generate_image', 'read_url_content', 'search_web', 'browser_control', 'telegram_control',
-  'project_RADAR', 'symbol_outline', 'read_symbol', 'grep_search', 'find_by_name'
+  'project_RADAR', 'symbol_outline', 'read_symbol', 'grep_search', 'find_by_name',
+  'invoke_subagent', 'invoke_spawn'
 ];
 
-const DEPRECATED_TOOLS = new Set([
-  'invoke_subagent', 'define_subagent', 'manage_subagents', 'send_message', 'agent_control'
+const BASE_DEPRECATED_TOOLS = new Set([
+  'define_subagent', 'manage_subagents', 'send_message', 'agent_control'
 ]);
+
+function getActiveDeprecatedTools() {
+  const isTeam = (localStorage.getItem('xflow_session_mode') === 'team') || (window.currentSessionType === 'group');
+  const s = new Set(BASE_DEPRECATED_TOOLS);
+  if (isTeam) {
+    s.add('invoke_subagent');
+    s.add('invoke_spawn');
+    s.add('flow_delegate');
+    s.add('flow_spawn');
+  }
+  return s;
+}
+
+const DEPRECATED_TOOLS = {
+  has(tool) {
+    return getActiveDeprecatedTools().has(tool);
+  },
+  forEach(cb) {
+    getActiveDeprecatedTools().forEach(cb);
+  }
+};
 
 function stripInternalSystemInterceptions(raw) {
   if (raw === null || raw === undefined) return '';
