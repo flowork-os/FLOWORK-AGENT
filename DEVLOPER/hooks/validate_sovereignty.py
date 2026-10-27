@@ -23,6 +23,19 @@ def log_pass(msg):
 def log_fail(msg):
     print(f"  \033[31m✗ [BUILDER REJECTED]\033[0m {msg}")
 
+def check_project_root_cleanliness():
+    print("\n🔍 [Gate 0/6] Verifying Project Root Hygiene (Strict DEVLOPER Isolation)...")
+    allowed = {"DEVLOPER", ".git", ".gitignore"}
+    if not os.path.exists(PROJECT_ROOT):
+        return True
+    current_items = set(os.listdir(PROJECT_ROOT))
+    forbidden = current_items - allowed
+    if forbidden:
+        log_fail(f"Project root is polluted with forbidden items: {sorted(list(forbidden))}. Doktrin: Only DEVLOPER/ is permitted at root!")
+        return False
+    log_pass("Project root verified pristine (strictly isolated to DEVLOPER/, .git, and .gitignore).")
+    return True
+
 def check_relative_api_calls():
     print("\n🔍 [Gate 1/5] Verifying App GUI Dynamic API Resolution (No Relative /api Fetches)...")
     violations = []
@@ -216,6 +229,7 @@ def main():
     print("=" * 65)
     
     checks = [
+        check_project_root_cleanliness,
         check_relative_api_calls,
         check_remote_launcher_redirects,
         check_swarmflow_data_integrity,
