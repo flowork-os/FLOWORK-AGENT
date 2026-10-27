@@ -25,22 +25,22 @@ echo "📁 Source Dir:      ${CONNECTOR_DIR}/router.js"
 echo "🎯 Flowork Target:  ${FLOWORK_BIN_DIR}"
 echo "============================================================"
 
-# 1. Linux x64
-echo -e "\n📦 [1/4] Compiling Linux Connector Binary..."
-bun build --compile --minify --target=bun-linux-x64 "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector"
+# 1. Linux x64 (Universal Baseline for Intel Core i3/i5/i7 & Non-AVX2 CPUs)
+echo -e "\n📦 [1/4] Compiling Linux Connector Binary (Universal Baseline)..."
+bun build --compile --minify --target=bun-linux-x64-baseline "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector"
 chmod +x "${FLOWORK_BIN_DIR}/flowork-connector"
 cp -f "${FLOWORK_BIN_DIR}/flowork-connector" "${FLOWORK_BIN_DIR}/flowork-connector-linux"
 echo "   ✓ Linux connector: ${FLOWORK_BIN_DIR}/flowork-connector"
 
-# 2. Windows x64
-echo -e "\n📦 [2/4] Cross-compiling Windows Connector Binary..."
-bun build --compile --minify --target=bun-windows-x64 "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector-windows.exe"
+# 2. Windows x64 (Universal Baseline for Intel Core i3/i5/i7 & Non-AVX2 CPUs)
+echo -e "\n📦 [2/4] Cross-compiling Windows Connector Binary (Universal Baseline)..."
+bun build --compile --minify --target=bun-windows-x64-baseline "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector-windows.exe"
 cp -f "${FLOWORK_BIN_DIR}/flowork-connector-windows.exe" "${FLOWORK_BIN_DIR}/flowork-connector.exe"
 echo "   ✓ Windows connector: ${FLOWORK_BIN_DIR}/flowork-connector-windows.exe & flowork-connector.exe"
 
-# 3. macOS Intel (x64)
-echo -e "\n📦 [3/4] Cross-compiling macOS Intel Connector Binary..."
-bun build --compile --minify --target=bun-darwin-x64 "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector-darwin-x64"
+# 3. macOS Intel x64 (Universal Baseline)
+echo -e "\n📦 [3/4] Cross-compiling macOS Intel Connector Binary (Universal Baseline)..."
+bun build --compile --minify --target=bun-darwin-x64-baseline "${CONNECTOR_DIR}/router.js" --outfile "${FLOWORK_BIN_DIR}/flowork-connector-darwin-x64"
 chmod +x "${FLOWORK_BIN_DIR}/flowork-connector-darwin-x64"
 cp -f "${FLOWORK_BIN_DIR}/flowork-connector-darwin-x64" "${FLOWORK_BIN_DIR}/flowork-connector-darwin-x86_64"
 echo "   ✓ macOS Intel connector: ${FLOWORK_BIN_DIR}/flowork-connector-darwin-x64"
