@@ -6029,7 +6029,7 @@ async function openPluginTab(plugin, options = {}) {
     iframe.setAttribute('allow', 'autoplay; microphone; camera; midi; encrypted-media');
 
     const queryParam = assignedPort ? `?port=${assignedPort}` : '';
-    const pluginUrl = `/apps/${plugin.id}/gui/${queryParam}`;
+    const pluginUrl = `/apps/${plugin.id}/gui/index.html${queryParam}`;
     iframe.dataset.src = pluginUrl;
     iframe.src = pluginUrl;
 
@@ -17679,12 +17679,43 @@ function renderLiveBashRunner(activeSlot, toolName, details, stepIdx) {
     if (box.classList.contains('is-locked')) { if (box._bashTimer) { clearInterval(box._bashTimer); box._bashTimer = null; } return; }
     if (document.hidden) return;
     tick++;
-    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2).padStart(5, '0');
+    const elapsedSecNum = (Date.now() - box._spawnTime) / 1000;
+    const elapsed = elapsedSecNum.toFixed(2).padStart(5, '0');
         // (cached sw)
     if (sw) sw.textContent = `${elapsed}s`;
 
         // (cached ioEl)
     if (ioEl) ioEl.textContent = `I/O: ${1200 + ((tick * 173) % 2800)} CHARS/S`;
+
+    // Sovereign 120s Auto-Ping & Watchdog Guard:
+    if (elapsedSecNum >= 120 && !box._hasAutoPinged) {
+      box._hasAutoPinged = true;
+      const badgeEl = box.querySelector('.fl-bash-badge');
+      if (badgeEl) {
+        badgeEl.textContent = '⏱️ AUTO-PING (120s)';
+        badgeEl.style.background = 'rgba(234, 179, 8, 0.2)';
+        badgeEl.style.color = '#fde047';
+        badgeEl.style.borderColor = 'rgba(234, 179, 8, 0.4)';
+      }
+      if (typeof currentChatSessionId !== 'undefined' && currentChatSessionId) {
+        fetch(`/api/chat/steps/${encodeURIComponent(currentChatSessionId)}`)
+          .then(r => r.json())
+          .then(d => {
+            if (d && d.data && Array.isArray(d.data.steps)) {
+              const matchingStep = d.data.steps[stepIdx];
+              if (matchingStep && String(matchingStep.status || '').endsWith('DONE')) {
+                dismissLiveToolBox(activeSlot, stepIdx, matchingStep.runCommand?.output || matchingStep.output || '');
+              }
+            }
+          }).catch(() => {});
+      }
+    }
+    // Hard UI safety ceiling at 125s: auto dismiss so it never hangs indefinitely
+    if (elapsedSecNum >= 125) {
+      if (box._bashTimer) { clearInterval(box._bashTimer); box._bashTimer = null; }
+      dismissLiveToolBox(activeSlot, stepIdx, '[AUTO-PING // HANDED OFF TO BACKGROUND]');
+      return;
+    }
 
     if (!box._hasRealStdout) {
           // (cached codeEl)

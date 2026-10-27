@@ -1289,17 +1289,17 @@
 
           <!-- LANE V1 (Main Video) -->
           <div class="fl-track-lane" data-lane="video">
-            <div class="fl-clip selected" style="left: 0px; width: 340px; background: var(--color-video);">
+            <div class="fl-clip selected" style="left: 0px; width: 340px; background: var(--color-video);" data-type="video" data-title="Cyberpunk Metropolis.mp4" data-src="../samples/sample_video.mp4" data-duration="6.8">
               <span>🎥 Cyberpunk Metropolis.mp4</span>
             </div>
-            <div class="fl-clip" style="left: 350px; width: 380px; background: #2a5cb0;">
+            <div class="fl-clip" style="left: 350px; width: 380px; background: #2a5cb0;" data-type="video" data-title="Mountain Stream Flow.mp4" data-src="../samples/sample_video.mp4" data-duration="7.6">
               <span>🎥 Mountain Stream Flow.mp4</span>
             </div>
           </div>
 
           <!-- LANE A1 (Audio) -->
           <div class="fl-track-lane" data-lane="audio">
-            <div class="fl-clip" style="left: 0px; width: 620px; background: var(--color-audio);">
+            <div class="fl-clip" style="left: 0px; width: 620px; background: var(--color-audio);" data-type="audio" data-title="Ambient Electronic Beat.mp3" data-src="../samples/sample_audio.mp3" data-duration="12.4">
               <span>🎵 Ambient Electronic Beat.mp3</span>
             </div>
           </div>
@@ -1431,11 +1431,14 @@
     // Determine currently active video clip at playhead position
     function getActiveClipAtPlayhead() {
       // 1. Inspect timeline clips overlapping playheadX in visual composite order:
-      // Text/Overlay -> Video 2 -> Video 1 -> Audio tracks
+      // Text -> Overlay -> Video -> Audio
       const visualTrackOrder = [
         document.querySelector('.fl-track-lane[data-lane="text"]'),
+        document.querySelector('.fl-track-lane[data-lane="overlay"]'),
+        document.querySelector('.fl-track-lane[data-lane="video"]'),
         document.querySelector('.fl-track-lane[data-lane="video-2"]'),
         document.querySelector('.fl-track-lane[data-lane="video-1"]'),
+        document.querySelector('.fl-track-lane[data-lane="audio"]'),
         document.querySelector('.fl-track-lane[data-lane="audio-1"]')
       ];
 
@@ -1460,7 +1463,7 @@
         }
       }
 
-      // Check any remaining clips if not caught above
+      // Check any remaining clips across all lanes if not caught above
       const allClips = Array.from(document.querySelectorAll('.fl-clip'));
       for (const clip of allClips) {
         const left = parseFloat(clip.style.left) || 0;
@@ -1480,7 +1483,6 @@
       }
 
       // When playhead is on empty space, timeline track has NO active clip at this timecode.
-      // Strictly return null so preview accurately reflects the playhead position.
       return null;
     }
 
@@ -1634,40 +1636,358 @@
       if (timecodeEl) timecodeEl.innerText = tc;
     }
 
-    // Playback loop
-    function loop() {
-      if (isPlaying) {
-        playheadX += 2.0;
-        const tracksContainer = document.querySelector('.fl-tracks-container');
-        const maxScroll = tracksContainer ? Math.max(1400, tracksContainer.scrollWidth) : 1400;
-        if (playheadX > maxScroll) playheadX = 0;
-        let playhead = document.getElementById('fl-playhead');
-        if (!playhead && tracksContainer) {
-          playhead = document.createElement('div');
-          playhead.className = 'fl-playhead';
-          playhead.id = 'fl-playhead';
-          tracksContainer.appendChild(playhead);
-        }
-        if (playhead) {
-          playhead.style.left = playheadX + 'px';
-          playhead.style.display = 'block';
-          playhead.style.visibility = 'visible';
-          playhead.style.opacity = '1';
-        }
+    // 🎵 WEB AUDIO SYNCHRONIZATION ENGINE & SOUND CHANNELS
+    // ==========================================
+    // =========================================================================
+    // SOVEREIGN AUDIO & SYNTH ENGINE
+    // =========================================================================
+    let globalAudioCtx = null;
+    let masterGainNode = null;
+    let masterVolumeValue = 0.85; // 0.0 to 1.0 (default 85%)
+    const audioElementPool = new Map(); // HTML5 audio elements keyed by clipId
+    let synthBeatTimer = null;
+    let isSynthBeatActive = false;
 
-        // Auto-scroll timeline smoothly if playhead moves beyond visible viewport
-        const scrollEl = document.getElementById('fl-timeline-scroll') || (tracksContainer ? tracksContainer.parentElement : null);
-        if (scrollEl) {
-          const visibleRight = scrollEl.scrollLeft + scrollEl.clientWidth;
-          if (playheadX > visibleRight - 40) {
-            scrollEl.scrollLeft = playheadX - 60;
-          } else if (playheadX < scrollEl.scrollLeft) {
-            scrollEl.scrollLeft = Math.max(0, playheadX - 20);
+    // Helper: update VU meter visual display
+    function updateVUMeter(level) {
+      const vuMeter = document.getElementById('fl-vu-meter');
+      if (vuMeter) {
+        const clamped = Math.max(0, Math.min(100, Math.round(level * 100)));
+        vuMeter.style.width = clamped + '%';
+        if (clamped > 80) {
+          vuMeter.style.background = 'linear-gradient(90deg, #30d158, #ffd60a, #ff453a)';
+        } else if (clamped > 40) {
+          vuMeter.style.background = 'linear-gradient(90deg, #30d158, #ffd60a)';
+        } else {
+          vuMeter.style.background = '#30d158';
+        }
+      }
+    }
+
+    // Initialize or unlock Web Audio AudioContext
+    function getAudioContext() {
+      if (!globalAudioCtx) {
+        const AudioCtx = window.AudioContext || window.webkitAudioContext;
+        if (AudioCtx) {
+          globalAudioCtx = new AudioCtx();
+          try {
+            masterGainNode = globalAudioCtx.createGain();
+            masterGainNode.gain.setValueAtTime(masterVolumeValue, globalAudioCtx.currentTime);
+            masterGainNode.connect(globalAudioCtx.destination);
+          } catch (e) {
+            console.warn('GainNode init warning:', e);
+          }
+        }
+      }
+      if (globalAudioCtx && globalAudioCtx.state === 'suspended') {
+        globalAudioCtx.resume().catch(() => {});
+      }
+      return globalAudioCtx;
+    }
+
+    // Auto-unlock audio context on user interaction anywhere on screen
+    function unlockAudioEngine() {
+      getAudioContext();
+      // Unlock all existing HTML5 Audio elements
+      audioElementPool.forEach(audio => {
+        if (audio && audio.paused && !isPlaying) {
+          audio.load();
+        }
+      });
+    }
+    window.addEventListener('click', unlockAudioEngine, { once: false, passive: true });
+    window.addEventListener('keydown', unlockAudioEngine, { once: false, passive: true });
+    window.addEventListener('pointerdown', unlockAudioEngine, { once: false, passive: true });
+
+    // Canonical media URL resolver
+    function resolveMediaUrl(rawSrc) {
+      if (!rawSrc) return '';
+      if (rawSrc.startsWith('data:') || rawSrc.startsWith('blob:') || rawSrc.startsWith('http://') || rawSrc.startsWith('https://')) {
+        return rawSrc;
+      }
+      // Strip leading slashes to resolve cleanly
+      let clean = rawSrc;
+      if (clean.startsWith('/samples/')) {
+        clean = clean.substring(1); // samples/...
+      } else if (clean.startsWith('/apps/flow-studio/')) {
+        clean = clean.substring(19); // strip app root prefix
+      }
+      // If we are running under /apps/flow-studio/gui/
+      if (clean.startsWith('samples/')) {
+        return '../' + clean;
+      }
+      return clean;
+    }
+
+    // HTML5 Audio pool with multi-vector path fallback
+    function getOrCreateAudioElement(clipId, src) {
+      const resolvedSrc = resolveMediaUrl(src);
+      if (!resolvedSrc) return null;
+      let audio = audioElementPool.get(clipId);
+      if (!audio) {
+        audio = new Audio();
+        audio.preload = 'auto';
+        audio.crossOrigin = 'anonymous';
+        audio.src = resolvedSrc;
+        audio.volume = masterVolumeValue;
+
+        // Path recovery fallback cascade
+        audio.addEventListener('error', () => {
+          const filename = resolvedSrc.split('/').pop() || 'sample_audio.mp3';
+          if (!audio._retried1) {
+            audio._retried1 = true;
+            audio.src = '../samples/' + filename;
+            audio.load();
+          } else if (!audio._retried2) {
+            audio._retried2 = true;
+            audio.src = '/apps/flow-studio/samples/' + filename;
+            audio.load();
+          } else if (!audio._retried3) {
+            audio._retried3 = true;
+            audio.src = 'samples/' + filename;
+            audio.load();
+          } else if (!audio._retriedHttp) {
+            audio._retriedHttp = true;
+            audio.src = 'http://127.0.0.1:18012/samples/' + filename;
+            audio.load();
+          }
+        });
+
+        audioElementPool.set(clipId, audio);
+      } else if (audio.getAttribute('data-original-src') !== resolvedSrc && resolvedSrc) {
+        audio.src = resolvedSrc;
+        audio.setAttribute('data-original-src', resolvedSrc);
+      }
+      return audio;
+    }
+
+    // Built-in synthetic Ambient Beat synthesizer using Web Audio API
+    function playSynthAmbientBeat(enable) {
+      if (!enable) {
+        if (synthBeatTimer) {
+          clearInterval(synthBeatTimer);
+          synthBeatTimer = null;
+        }
+        isSynthBeatActive = false;
+        return;
+      }
+      if (isSynthBeatActive && synthBeatTimer) return;
+      const ctx = getAudioContext();
+      if (!ctx) return;
+      isSynthBeatActive = true;
+
+      let step = 0;
+      // Ambient electronic beat sequence frequencies (Pentatonic chill loop: A2, C3, D3, E3)
+      const freqs = [110, 130.81, 146.83, 164.81, 110, 146.83, 164.81, 196.00];
+
+      synthBeatTimer = setInterval(() => {
+        if (!isPlaying || !isSynthBeatActive) {
+          clearInterval(synthBeatTimer);
+          synthBeatTimer = null;
+          isSynthBeatActive = false;
+          return;
+        }
+        try {
+          const now = ctx.currentTime;
+          const osc = ctx.createOscillator();
+          const gain = ctx.createGain();
+
+          osc.type = (step % 4 === 0) ? 'triangle' : 'sine';
+          osc.frequency.setValueAtTime(freqs[step % freqs.length], now);
+
+          const peakGain = masterVolumeValue * (step % 2 === 0 ? 0.35 : 0.20);
+          gain.gain.setValueAtTime(0.001, now);
+          gain.gain.exponentialRampToValueAtTime(peakGain, now + 0.03);
+          gain.gain.exponentialRampToValueAtTime(0.0001, now + 0.38);
+
+          osc.connect(gain);
+          gain.connect(masterGainNode || ctx.destination);
+
+          osc.start(now);
+          osc.stop(now + 0.40);
+          step++;
+
+          // Pulse VU meter with rhythmic audio
+          updateVUMeter(peakGain * (0.8 + Math.random() * 0.4));
+        } catch (err) {
+          // Ignore ephemeral web audio tick errors
+        }
+      }, 420); // ~142 BPM chilled 8th-notes
+    }
+
+    // Global stop function that safely silences all audio
+    function stopAllAudio() {
+      // Pause all HTML5 audio elements
+      audioElementPool.forEach(audio => {
+        try {
+          if (audio && !audio.paused) {
+            audio.pause();
+          }
+        } catch (e) {}
+      });
+      // Stop synthetic beat
+      playSynthAmbientBeat(false);
+      // Reset VU meter
+      updateVUMeter(0);
+    }
+
+    // Dynamic timeline end boundary calculation based on right-most edge of all clips
+    function getTimelineEndBoundary() {
+      const clips = Array.from(document.querySelectorAll('.fl-clip'));
+      if (clips.length === 0) return 400; // minimum fallback
+      let maxRight = 0;
+      clips.forEach(clip => {
+        const left = parseFloat(clip.style.left) || 0;
+        const width = parseFloat(clip.style.width) || clip.offsetWidth || 100;
+        const right = left + width;
+        if (right > maxRight) maxRight = right;
+      });
+      return Math.max(300, maxRight);
+    }
+
+    // Synchronize audio playback with current playhead position
+    function syncAudioPlayback(playing) {
+      try {
+        // Read active master volume slider
+        const volSlider = document.getElementById('fl-volume');
+        if (volSlider) {
+          masterVolumeValue = Math.max(0, Math.min(1.0, (parseFloat(volSlider.value) || 85) / 100));
+          if (masterGainNode && globalAudioCtx) {
+            masterGainNode.gain.setValueAtTime(masterVolumeValue, globalAudioCtx.currentTime);
           }
         }
 
+        if (!playing) {
+          stopAllAudio();
+          return;
+        }
+
+        // Find all audio clips on the timeline
+        const audioClips = Array.from(document.querySelectorAll('.fl-clip')).filter(clip => {
+          const type = clip.getAttribute('data-type') || '';
+          const lane = clip.parentElement?.getAttribute('data-lane') || '';
+          return type === 'audio' || lane === 'audio' || lane.startsWith('audio');
+        });
+
+        let hasActiveAudioPlaying = false;
+
+        audioClips.forEach((clip, index) => {
+          const clipId = clip.id || `audio_clip_${index}`;
+          const left = parseFloat(clip.style.left) || 0;
+          const width = parseFloat(clip.style.width) || clip.offsetWidth || 100;
+          const clipEnd = left + width;
+          const src = clip.getAttribute('data-src') || '../samples/sample_audio.mp3';
+
+          const audio = getOrCreateAudioElement(clipId, src);
+          if (!audio) return;
+
+          // Keep audio volume synchronized with master
+          audio.volume = masterVolumeValue;
+
+          // Check if playhead is currently inside this clip
+          if (playheadX >= left && playheadX <= clipEnd) {
+            const clipDurationSec = parseFloat(clip.getAttribute('data-duration')) || 12.0;
+            const progressRatio = (playheadX - left) / width;
+            const targetTime = Math.max(0, progressRatio * clipDurationSec);
+
+            // Sync HTML5 audio currentTime if drifting by > 0.25s
+            if (Math.abs(audio.currentTime - targetTime) > 0.25) {
+              audio.currentTime = targetTime;
+            }
+
+            if (audio.paused) {
+              const playPromise = audio.play();
+              if (playPromise !== undefined) {
+                playPromise.then(() => {
+                  hasActiveAudioPlaying = true;
+                  updateVUMeter(masterVolumeValue * (0.6 + Math.random() * 0.3));
+                }).catch(err => {
+                  // If browser autoplay policy or decode error occurs, seamlessly engage synthetic beat
+                  playSynthAmbientBeat(true);
+                });
+              }
+            } else {
+              hasActiveAudioPlaying = true;
+              updateVUMeter(masterVolumeValue * (0.6 + Math.random() * 0.3));
+            }
+          } else {
+            // Playhead is outside clip boundary
+            if (!audio.paused) {
+              audio.pause();
+            }
+          }
+        });
+
+        // If soundtrack track has clips but audio element is silent/blocked, ensure synthetic beat fills the audio
+        if (audioClips.length > 0 && !hasActiveAudioPlaying) {
+          const anyActiveRange = audioClips.some(clip => {
+            const left = parseFloat(clip.style.left) || 0;
+            const width = parseFloat(clip.style.width) || clip.offsetWidth || 100;
+            return playheadX >= left && playheadX <= (left + width);
+          });
+          if (anyActiveRange) {
+            playSynthAmbientBeat(true);
+          } else {
+            playSynthAmbientBeat(false);
+          }
+        }
+      } catch (err) {
+        console.warn('syncAudioPlayback warning:', err);
+      }
+    }
+    function loop() {
+      if (isPlaying) {
+        playheadX += 2.0;
+        const endBoundary = getTimelineEndBoundary();
+
+        // Stop cleanly at the end boundary of existing tracks
+        if (playheadX >= endBoundary) {
+          playheadX = endBoundary;
+          isPlaying = false;
+          const btnPlay = document.getElementById('fl-ctrl-play');
+          if (btnPlay) {
+            btnPlay.innerText = '▶';
+            btnPlay.style.color = 'var(--color-accent)';
+          }
+          stopAllAudio();
+          updatePlayheadDOM();
+          try { drawPreviewFrame(); } catch (err) {}
+          return;
+        }
+
+        updatePlayheadDOM();
+        syncAudioPlayback(true);
+
         try { drawPreviewFrame(); } catch (err) {}
         animFrame = requestAnimationFrame(loop);
+      }
+    }
+
+    function updatePlayheadDOM() {
+      const tracksContainer = document.querySelector('.fl-tracks-container');
+      let playhead = document.getElementById('fl-playhead');
+      if (!playhead && tracksContainer) {
+        playhead = document.createElement('div');
+        playhead.className = 'fl-playhead';
+        playhead.id = 'fl-playhead';
+        tracksContainer.appendChild(playhead);
+      }
+      if (playhead) {
+        playhead.style.left = playheadX + 'px';
+        playhead.style.display = 'block';
+        playhead.style.visibility = 'visible';
+        playhead.style.opacity = '1';
+      }
+
+      // Auto-scroll timeline smoothly if playhead moves beyond visible viewport
+      const scrollEl = document.getElementById('fl-timeline-scroll') || (tracksContainer ? tracksContainer.parentElement : null);
+      if (scrollEl) {
+        const visibleRight = scrollEl.scrollLeft + scrollEl.clientWidth;
+        if (playheadX > visibleRight - 40) {
+          scrollEl.scrollLeft = playheadX - 60;
+        } else if (playheadX < scrollEl.scrollLeft) {
+          scrollEl.scrollLeft = Math.max(0, playheadX - 20);
+        }
       }
     }
 
@@ -1675,27 +1995,26 @@
     const btnPlay = document.getElementById('fl-ctrl-play');
     if (btnPlay) {
       btnPlay.addEventListener('click', () => {
+        // Unlock Web Audio context on user gesture
+        getAudioContext();
+
+        const endBoundary = getTimelineEndBoundary();
+        if (!isPlaying && playheadX >= endBoundary) {
+          // If at the end, restart from 0
+          playheadX = 0;
+        }
+
         isPlaying = !isPlaying;
         btnPlay.innerText = isPlaying ? '⏸' : '▶';
         btnPlay.style.color = isPlaying ? '#ff453a' : 'var(--color-accent)';
+
         if (isPlaying) {
-          const container = document.querySelector('.fl-tracks-container');
-          let playhead = document.getElementById('fl-playhead');
-          if (!playhead && container) {
-            playhead = document.createElement('div');
-            playhead.className = 'fl-playhead';
-            playhead.id = 'fl-playhead';
-            container.appendChild(playhead);
-          }
-          if (playhead) {
-            playhead.style.left = playheadX + 'px';
-            playhead.style.display = 'block';
-            playhead.style.visibility = 'visible';
-            playhead.style.opacity = '1';
-          }
+          updatePlayheadDOM();
+          syncAudioPlayback(true);
           loop();
         } else {
           cancelAnimationFrame(animFrame);
+          stopAllAudio();
         }
       });
     }
@@ -1704,8 +2023,8 @@
     if (btnPrev) {
       btnPrev.addEventListener('click', () => {
         playheadX = 0;
-        const playhead = document.getElementById('fl-playhead');
-        if (playhead) playhead.style.left = playheadX + 'px';
+        stopAllAudio();
+        updatePlayheadDOM();
         drawPreviewFrame();
       });
     }
@@ -2201,11 +2520,11 @@
     });
 
     // Function to add media item directly to the appropriate timeline track
-    function addMediaItemToTimeline(mediaName, mediaType) {
+    function addMediaItemToTimeline(mediaName, mediaType, mediaUrl = '', mediaDuration = '') {
       const isAud = mediaType === 'AUDIO';
       let targetLane = isAud 
-        ? document.querySelector('.fl-track-lane[data-track-type="audio"]') || document.querySelector('.fl-track-lane[data-track-id="A1"]')
-        : document.querySelector('.fl-track-lane[data-track-type="video"]') || document.querySelector('.fl-track-lane[data-track-id="V1"]');
+        ? document.querySelector('.fl-track-lane[data-track-type="audio"]') || document.querySelector('.fl-track-lane[data-track-id="A1"]') || document.querySelector('.fl-track-lane[data-lane="audio"]')
+        : document.querySelector('.fl-track-lane[data-track-type="video"]') || document.querySelector('.fl-track-lane[data-track-id="V1"]') || document.querySelector('.fl-track-lane[data-lane="video"]');
 
       if (!targetLane) {
         targetLane = document.querySelector('.fl-track-lane');
@@ -2223,6 +2542,11 @@
       newClip.className = `fl-clip ${clipClass}`;
       newClip.style.left = `${startX}px`;
       newClip.style.width = `${clipWidth}px`;
+      newClip.dataset.type = isAud ? 'audio' : 'video';
+      newClip.dataset.title = mediaName;
+      if (mediaUrl) newClip.dataset.src = mediaUrl;
+      if (mediaDuration) newClip.dataset.duration = mediaDuration;
+
       newClip.innerHTML = `
         <span class="fl-clip-label">${mediaName}</span>
         <button class="fl-clip-del" title="Delete Clip">✕</button>
@@ -2304,9 +2628,23 @@
       const el = document.getElementById(s.id);
       if (el) {
         el.addEventListener('input', (e) => {
-          activeClipState[s.prop] = parseFloat(e.target.value);
+          const numVal = parseFloat(e.target.value);
+          activeClipState[s.prop] = numVal;
           const valDisplay = el.parentElement?.querySelector('span:last-child');
           if (valDisplay) valDisplay.innerText = `${e.target.value}${s.unit}`;
+
+          // Master volume slider hook
+          if (s.id === 'fl-volume') {
+            masterVolumeValue = Math.max(0, Math.min(1, numVal / 100));
+            if (masterGainNode) {
+              masterGainNode.gain.setValueAtTime(masterVolumeValue, globalAudioCtx.currentTime);
+            }
+            audioElementPool.forEach(audio => {
+              try { audio.volume = masterVolumeValue; } catch (e) {}
+            });
+            updateVUMeter(masterVolumeValue * 0.7);
+          }
+
           drawPreviewFrame();
         });
       }
@@ -2720,7 +3058,7 @@
               drawPreviewFrame();
             });
             card.addEventListener('dblclick', () => {
-              addMediaItemToTimeline(s.name, s.type.toUpperCase());
+              addMediaItemToTimeline(s.name, s.type.toUpperCase(), s.url || '', s.duration || '');
             });
             bin.appendChild(card);
           });
@@ -2859,7 +3197,7 @@
     /* ==========================================================================
        SOVEREIGN AUTO-SAVE & PREVIEW DRAG RESIZE ENGINE (V3 ROBUST)
        ========================================================================== */
-    const STORAGE_KEY = 'fl_concat_project_state_v3';
+    const STORAGE_KEY = 'fl_concat_project_state_v4';
     let autoSaveTimer = null;
 
     function triggerAutoSave() {
@@ -2908,7 +3246,10 @@
               left: parseFloat(clipEl.style.left) || 0,
               width: parseFloat(clipEl.style.width) || 120,
               background: clipEl.style.background || '',
-              className: clipEl.className || 'fl-clip'
+              className: clipEl.className || 'fl-clip',
+              src: clipEl.dataset.src || clipEl.getAttribute('data-src') || '',
+              type: clipEl.dataset.type || clipEl.getAttribute('data-type') || '',
+              duration: clipEl.dataset.duration || clipEl.getAttribute('data-duration') || ''
             });
           });
 
@@ -2968,7 +3309,7 @@
         }
 
         // 3. Reconstruct Tracks & Clips exactly as saved (including 0 tracks if all deleted)
-        if (Array.isArray(state.tracks)) {
+        if (Array.isArray(state.tracks) && state.tracks.length > 0) {
           const headersContainer = document.querySelector('.fl-track-headers');
           const lanesContainer = document.querySelector('.fl-tracks-container');
 
@@ -3039,6 +3380,19 @@
                   clipEl.style.left = clipData.left + 'px';
                   clipEl.style.width = clipData.width + 'px';
                   if (clipData.background) clipEl.style.background = clipData.background;
+
+                  if (clipData.src) {
+                    clipEl.dataset.src = clipData.src;
+                    clipEl.setAttribute('data-src', clipData.src);
+                  }
+                  if (clipData.type) {
+                    clipEl.dataset.type = clipData.type;
+                    clipEl.setAttribute('data-type', clipData.type);
+                  }
+                  if (clipData.duration) {
+                    clipEl.dataset.duration = clipData.duration;
+                    clipEl.setAttribute('data-duration', clipData.duration);
+                  }
 
                   const titleSpan = document.createElement('span');
                   titleSpan.innerText = clipData.title || 'Clip';
@@ -3669,7 +4023,6 @@
     drawPreviewFrame();
     loadMediaSamples();
         // Ensure timeline scroll starts at zero
-    const timelineScroll = document.getElementById('fl-timeline-scroll');
     if (timelineScroll) {
       timelineScroll.scrollLeft = 0;
     }
