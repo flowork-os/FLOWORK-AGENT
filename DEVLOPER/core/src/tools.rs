@@ -304,6 +304,8 @@ pub fn is_anchor_tool(name: &str) -> bool {
     let lower = name.to_lowercase();
     let norm = lower.trim_start_matches("default_api:").trim_start_matches("mcp_");
     ANCHOR_TOOLS.contains(&norm)
+        || norm == "team_audit"
+        || norm == "team_progress"
         || norm == "team_dispatch"
         || norm == "flow_team_dispatch"
         || norm == "agent_dispatch"
