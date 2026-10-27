@@ -698,8 +698,8 @@ start_node_router_fallback() {
 }
 
 if ! is_port_9099_listening; then
-  # Layer 1: CPU Architecture & Instruction Set Pre-flight Check (AVX2/BMI2)
-  # Legacy CPUs (e.g. Intel Sandy Bridge, Ivy Bridge i3/i5/i7) lack AVX2 and crash with SIGILL on native bun binary.
+  # Layer 1: Universal Baseline Native Connector Launcher
+  # The binary is compiled with universal baseline (runs on all Intel Core i3/i5/i7 & non-AVX2 CPUs).
   SUPPORTS_AVX2=true
   if [ -f "/proc/cpuinfo" ]; then
     if ! grep -q -E "avx2|bmi2" /proc/cpuinfo 2>/dev/null; then
@@ -708,32 +708,30 @@ if ! is_port_9099_listening; then
   fi
 
   NATIVE_LAUNCHED=false
-  if [ "$SUPPORTS_AVX2" = true ]; then
-    NATIVE_BIN=""
-    if [ -x "$SCRIPT_DIR/flowork/flowork-connector" ]; then
-      NATIVE_BIN="$SCRIPT_DIR/flowork/flowork-connector"
-    elif [ -x "$SCRIPT_DIR/flowork-connector" ]; then
-      NATIVE_BIN="$SCRIPT_DIR/flowork-connector"
-    fi
+  NATIVE_BIN=""
+  if [ -x "$SCRIPT_DIR/flowork/flowork-connector" ]; then
+    NATIVE_BIN="$SCRIPT_DIR/flowork/flowork-connector"
+  elif [ -x "$SCRIPT_DIR/flowork-connector" ]; then
+    NATIVE_BIN="$SCRIPT_DIR/flowork-connector"
+  fi
 
-    if [ -n "$NATIVE_BIN" ]; then
+  if [ -n "$NATIVE_BIN" ]; then
+    if [ "$SUPPORTS_AVX2" = true ]; then
       echo "[X-Flow] ⚡ Modern CPU detected (AVX2/BMI2 OK). Launching Native Connector Binary on port 9099..."
-      launch_router_daemon "$NATIVE_BIN"
-      NATIVE_LAUNCHED=true
-
-      # Layer 2: Crash Guard & Liveness Verification
-      # Wait up to 3 seconds for port 9099 to bind. If native binary crashes (SIGILL or abort), auto-fallback!
-      for i in {1..6}; do
-        if is_port_9099_listening; then
-          echo "[X-Flow] ✅ Native Connector bound successfully to port 9099."
-          break
-        fi
-        sleep 0.5
-      done
+    else
+      echo "[X-Flow] 🛡️ Older CPU detected (Intel Core i3 / Non-AVX2). Launching Universal Baseline Connector Binary on port 9099..."
     fi
-  else
-    echo "[X-Flow] 🛡️ CPU Instruction Guard: Older CPU without AVX2 detected (e.g. Ivy/Sandy Bridge)."
-    echo "[X-Flow] ⚡ Bypassing native AVX2 binary to prevent SIGILL crash. Engaging universal Node.js router..."
+    launch_router_daemon "$NATIVE_BIN"
+    NATIVE_LAUNCHED=true
+
+    # Layer 2: Crash Guard & Liveness Verification
+    for i in {1..6}; do
+      if is_port_9099_listening; then
+        echo "[X-Flow] ✅ Native Connector bound successfully to port 9099."
+        break
+      fi
+      sleep 0.5
+    done
   fi
 
   # Layer 3: Automatic Failover to Universal Portable Node.js Router if port 9099 is still dead
