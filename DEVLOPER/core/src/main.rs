@@ -63,6 +63,7 @@ use ipc_router::{
     list_system_prompts, get_system_prompt_content, save_system_prompt,
     get_subagent_persona, save_subagent_persona, get_subagent_rules, save_subagent_rules, get_subagent_task, save_subagent_task,
     get_subagent_style, save_subagent_style, get_subagent_skills, save_subagent_skills,
+    get_subagent_circuit_breaker, save_subagent_circuit_breaker,
     list_subagents, create_subagent, delete_subagent,
     get_pipeline_dag, save_pipeline_dag,
     list_swarmflow_presets, get_active_swarmflow_preset, set_active_swarmflow_preset,
@@ -284,6 +285,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/subagents/:id/task", get(get_subagent_task).post(save_subagent_task))
         .route("/api/subagents/:id/style", get(get_subagent_style).post(save_subagent_style))
         .route("/api/subagents/:id/skills", get(get_subagent_skills).post(save_subagent_skills))
+        .route("/api/subagents/:id/circuit_breaker", get(get_subagent_circuit_breaker).post(save_subagent_circuit_breaker))
         .route("/api/pipeline/dag", get(get_pipeline_dag).post(save_pipeline_dag))
         .route("/api/swarmflow/presets", get(list_swarmflow_presets))
         .route("/api/swarmflow/active", get(get_active_swarmflow_preset).post(set_active_swarmflow_preset))

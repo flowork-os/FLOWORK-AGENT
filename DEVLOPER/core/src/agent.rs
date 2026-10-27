@@ -5744,39 +5744,90 @@ source: "circuit_breaker_crystallization"
         // Step C: Autonomous Multi-Turn Tool Execution Loop (Flowork Sovereign Circuit Breaker Mesh)
         let mut final_response = String::new();
         let mut turn_count = 0;
-        let (max_turns, warn_step_1, warn_step_2, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
-            let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 300; // Sovereign Headroom: 300 generator turns
-            let mut w1 = 280; // Turn 280: Peringatan pertama untuk mengabadikan ingatan ke .fl_brain
-            let mut w2 = 290; // Turn 290: Peringatan kedua urgensi tinggi sebelum batas turn 300
+        let (max_turns, warn_step_1, warn_step_2, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit, cb_repeat_limit) = {
+            let mut mt = 500; // Sovereign Headroom: 500 generator turns default
+            let mut w1 = 450; // Turn 450: Warning 1 - crystallize memories to .fl_brain
+            let mut w2 = 480; // Turn 480: Warning 2 - urgent reminder (20 turns left)
             let mut cb_rl = 0; // 0 = disabled (no artificial consecutive read cutoff)
             let mut cb_trl = 0; // 0 = disabled (no cumulative read cutoff)
             let mut cb_pml = 0; // 0 = disabled (no post-mutation tool cutoff)
-            if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
-                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
-                    if let Some(limits) = v.get("limits") {
-                        if let Some(n) = limits.get("max_turns").and_then(|x| x.as_u64()) {
-                            mt = n as usize;
-                        }
-                        if let Some(n) = limits.get("warn_step_1").and_then(|x| x.as_u64()) {
-                            w1 = n as usize;
-                        }
-                        if let Some(n) = limits.get("warn_step_2").and_then(|x| x.as_u64()) {
-                            w2 = n as usize;
-                        }
-                        if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
-                            cb_rl = n as usize;
-                        }
-                        if let Some(n) = limits.get("circuit_breaker_total_read_limit").and_then(|x| x.as_u64()) {
-                            cb_trl = n as usize;
-                        }
-                        if let Some(n) = limits.get("circuit_breaker_post_mutation_limit").and_then(|x| x.as_u64()) {
-                            cb_pml = n as usize;
+            let mut cb_rep = 5; // 5 consecutive identical calls
+
+            // 1. Check per-agent circuit breaker config first: system/subagent/{agent_id}/circuit_breaker.json
+            let mut loaded_agent_cb = false;
+            if !agent_key.is_empty() && !agent_key.eq_ignore_ascii_case("default") {
+                let akey = &agent_key;
+                let candidate_cb_paths = [
+                    self.workspace_dir.join("system").join("subagent").join(akey).join("circuit_breaker.json"),
+                    self.workspace_dir.join("flowork").join("system").join("subagent").join(akey).join("circuit_breaker.json"),
+                ];
+                for cb_path in &candidate_cb_paths {
+                    if cb_path.is_file() {
+                        if let Ok(cfg_str) = std::fs::read_to_string(cb_path) {
+                            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
+                                let limits = v.get("circuit_breaker").unwrap_or(&v);
+                                if let Some(n) = limits.get("max_turns").and_then(|x| x.as_u64()) {
+                                    mt = n as usize;
+                                }
+                                if let Some(n) = limits.get("warn_step_1").and_then(|x| x.as_u64()) {
+                                    w1 = n as usize;
+                                }
+                                if let Some(n) = limits.get("warn_step_2").and_then(|x| x.as_u64()) {
+                                    w2 = n as usize;
+                                }
+                                if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
+                                    cb_rl = n as usize;
+                                }
+                                if let Some(n) = limits.get("circuit_breaker_total_read_limit").and_then(|x| x.as_u64()) {
+                                    cb_trl = n as usize;
+                                }
+                                if let Some(n) = limits.get("circuit_breaker_post_mutation_limit").and_then(|x| x.as_u64()) {
+                                    cb_pml = n as usize;
+                                }
+                                if let Some(n) = limits.get("consecutive_repeat_limit").and_then(|x| x.as_u64()) {
+                                    cb_rep = n as usize;
+                                }
+                                loaded_agent_cb = true;
+                                println!("[X-Flow Circuit Breaker] ⚡ Loaded custom per-agent limits for `{}`: mt={}, w1={}, w2={}, cb_rep={}", akey, mt, w1, w2, cb_rep);
+                                break;
+                            }
                         }
                     }
                 }
             }
-            (mt, w1, w2, cb_rl, cb_trl, cb_pml)
+
+            // 2. Global fallback from system/config.json
+            if !loaded_agent_cb {
+                let config_path = self.workspace_dir.join("system").join("config.json");
+                if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
+                        if let Some(limits) = v.get("limits") {
+                            if let Some(n) = limits.get("max_turns").and_then(|x| x.as_u64()) {
+                                mt = n as usize;
+                            }
+                            if let Some(n) = limits.get("warn_step_1").and_then(|x| x.as_u64()) {
+                                w1 = n as usize;
+                            }
+                            if let Some(n) = limits.get("warn_step_2").and_then(|x| x.as_u64()) {
+                                w2 = n as usize;
+                            }
+                            if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
+                                cb_rl = n as usize;
+                            }
+                            if let Some(n) = limits.get("circuit_breaker_total_read_limit").and_then(|x| x.as_u64()) {
+                                cb_trl = n as usize;
+                            }
+                            if let Some(n) = limits.get("circuit_breaker_post_mutation_limit").and_then(|x| x.as_u64()) {
+                                cb_pml = n as usize;
+                            }
+                            if let Some(n) = limits.get("consecutive_repeat_limit").and_then(|x| x.as_u64()) {
+                                cb_rep = n as usize;
+                            }
+                        }
+                    }
+                }
+            }
+            (mt, w1, w2, cb_rl, cb_trl, cb_pml, cb_rep)
         };
         let mut total_read_count = 0;
         let mut file_mutation_count = 0;
@@ -6200,7 +6251,7 @@ source: "circuit_breaker_crystallization"
 
                     println!("[X-Flow Intercept Gate] 🔓 Tool `{}` auto-harmonized with English reason: '{}' and keywords: '{}'", name, final_reason, final_keywords);
 
-                    let mut tool_result_val = if consecutive_repeat_count >= 3
+                    let mut tool_result_val = if consecutive_repeat_count >= cb_repeat_limit
                         || tool_consecutive_failures >= 3
                         || turn_count >= max_turns
                         || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit)
@@ -6212,8 +6263,8 @@ source: "circuit_breaker_crystallization"
                             format!("Circuit Breaker Engaged: Hard turn limit reached ({}/{} turns). Execution terminated. Synthesize your final comprehensive report now.", turn_count, max_turns)
                         } else if tool_consecutive_failures >= 3 {
                             format!("Circuit Breaker Engaged: Tool '{}' has failed 3 times consecutively with non-zero exit code. Cease repetitive failing invocations and synthesize your response.", name)
-                        } else if consecutive_repeat_count >= 3 {
-                            format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments 3 times consecutively. Synthesize your final answer immediately.", name)
+                        } else if consecutive_repeat_count >= cb_repeat_limit {
+                            format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments {} times consecutively. Synthesize your final answer immediately.", name, cb_repeat_limit)
                         } else if cb_post_mutation_limit > 0 && file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit {
                             format!("Circuit Breaker Engaged: Mutation completed and verified ({} verification steps executed). Cease tool calls and provide your final comprehensive summary now.", post_mutation_tools)
                         } else if cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit {
@@ -6520,24 +6571,24 @@ source: "circuit_breaker_crystallization"
                             }]
                         }));
                     } else if turn_count == warn_step_1 {
-                        // Turn 280: Peringatan pertama untuk mengabadikan ingatan ke .fl_brain
+                        // Warning 1: First milestone notice to crystallize memories to .fl_brain
                         contents.push(json!({
                             "role": "user",
                             "parts": [{
                                 "text": format!(
-                                    "<EPHEMERAL_MESSAGE>\n⚠️ [TURN {}/{}] Peringatan Kuota Giliran:\nSesi telah berjalan {} putaran. Segera abadikan seluruh temuan teknis, keputusan arsitektur, dan memori permanen ke `.fl_brain` via `brain_control` sebelum sesi berakhir di turn {}.\n</EPHEMERAL_MESSAGE>",
+                                    "<EPHEMERAL_MESSAGE>\n⚠️ [TURN {}/{}] Autonomous Execution Milestone Warning:\nSession has executed {} turns. Crystallize all critical technical discoveries, architecture solutions, and permanent memories to `.fl_brain` via `brain_control` before session termination at turn {}.\n</EPHEMERAL_MESSAGE>",
                                     turn_count, max_turns, turn_count, max_turns
                                 )
                             }]
                         }));
                     } else if turn_count == warn_step_2 {
-                        // Turn 290: Peringatan kedua urgensi tinggi sebelum batas turn 300
+                        // Warning 2: High-urgency countdown notice before cutoff
                         let remaining = max_turns.saturating_sub(turn_count);
                         contents.push(json!({
                             "role": "user",
                             "parts": [{
                                 "text": format!(
-                                    "<EPHEMERAL_MESSAGE>\n🚨 [TURN {}/{} - KRITIS] Peringatan Akhir Kuota Giliran:\nTersisa {} putaran sebelum sistem menghentikan eksekusi paksa pada turn {}!\nPastikan seluruh memori kritis telah tersimpan di `.fl_brain` dan segera tuntaskan respons akhir Anda.\n</EPHEMERAL_MESSAGE>",
+                                    "<EPHEMERAL_MESSAGE>\n🚨 [TURN {}/{} - HIGH URGENCY] Final Turn Budget Notice:\nOnly {} turns remaining before autonomous tool execution is terminated at turn {}!\nEnsure all critical state is persisted to `.fl_brain` and synthesize your comprehensive final answer now.\n</EPHEMERAL_MESSAGE>",
                                     turn_count, max_turns, remaining, max_turns
                                 )
                             }]

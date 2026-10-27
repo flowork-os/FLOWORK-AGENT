@@ -1887,6 +1887,62 @@ pub async fn save_subagent_skills(
     Json(json!({ "status": "error", "message": "Failed to resolve subagent directory" }))
 }
 
+pub async fn get_subagent_circuit_breaker(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+) -> Json<Value> {
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let engine_root = state.agent.resolve_engine_root();
+    let roots = crate::persona::SovereignPersonaEngine::resolve_persona_roots(&effective_ws, &engine_root);
+    if let Some(dir) = resolve_subagent_dir(&roots, &id) {
+        let cb_file = dir.join("circuit_breaker.json");
+        if cb_file.is_file() {
+            if let Ok(content) = std::fs::read_to_string(&cb_file) {
+                if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                    return Json(json!({ "status": "ok", "id": id, "circuit_breaker": val }));
+                }
+            }
+        }
+    }
+    // Default 500 turns SLA per sovereign mandate
+    Json(json!({
+        "status": "ok",
+        "id": id,
+        "circuit_breaker": {
+            "max_turns": 500,
+            "warn_step_1": 450,
+            "warn_step_2": 480,
+            "warn_step_3": 500,
+            "consecutive_repeat_limit": 5,
+            "circuit_breaker_read_only_limit": 0,
+            "circuit_breaker_total_read_limit": 0,
+            "circuit_breaker_post_mutation_limit": 0,
+            "anti_nato": true,
+            "auto_crystallize": true,
+            "terminal_qc": true
+        }
+    }))
+}
+
+pub async fn save_subagent_circuit_breaker(
+    Path(id): Path<String>,
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<Value>,
+) -> Json<Value> {
+    let effective_ws = state.agent.get_effective_workspace_path();
+    let engine_root = state.agent.resolve_engine_root();
+    let roots = crate::persona::SovereignPersonaEngine::resolve_persona_roots(&effective_ws, &engine_root);
+    if let Some(dir) = resolve_subagent_dir(&roots, &id) {
+        let _ = std::fs::create_dir_all(&dir);
+        let cb_data = payload.get("circuit_breaker").unwrap_or(&payload);
+        if let Ok(content) = serde_json::to_string_pretty(cb_data) {
+            let _ = std::fs::write(dir.join("circuit_breaker.json"), content);
+        }
+        return Json(json!({ "status": "ok", "id": id, "saved": true, "circuit_breaker": cb_data }));
+    }
+    Json(json!({ "status": "error", "message": "Failed to resolve subagent directory" }))
+}
+
 // ============================================================================
 // PIPELINE DAG ENDPOINTS
 // ============================================================================
