@@ -1,160 +1,266 @@
+<!-- [FL_INDEX: keywords="swarmflow, dag_pipeline, subagent_orchestration, node_schema, separation_of_concerns" | purpose="Authoritative specification and creation runbook for Swarm Flow presets, nodes, and connections"] -->
 # ⚡ Flowork OS — Swarm Flow Orchestration Engine
 
 > **Module Directory**: `swarmflow/`  
-> **Sovereign Principles**: 1 Preset = 1 Atomic JSON File, Multi-OS Agnostic (Zero-Hardcode Paths), Boundless Multi-Domain Intelligence.
+> **Sovereign Principles**: 1 Preset = 1 Atomic JSON File, Multi-OS Agnostic (Zero-Hardcode Paths), 1 Agent 1 Task (Strict Separation of Concerns), Boundless Multi-Domain Intelligence.
 
 ---
 
 ## 1. What is Swarm Flow?
 
-**Swarm Flow** is the autonomous multi-agent swarm orchestration engine built on Directed Acyclic Graph (DAG) architecture within Flowork OS.
+**Swarm Flow** is the autonomous multi-agent swarm orchestration engine built on Directed Acyclic Graph (DAG) architecture within Flowork OS. It coordinates autonomous specialist subagents into synchronized execution relays, enabling complex multi-stage objectives to run seamlessly from trigger ingress to verified completion.
 
 ### 🌐 Universal Multi-Domain Intelligence (Beyond Code)
 Flowork OS rejects the narrow assumption that AI multi-agent swarms are strictly for software engineering. Swarm Flow is designed from first principles as an **All-Domain Autonomous Framework**:
-- **📈 Forex & Quant Finance**: Real-time FX market tick sensor, Quantitative VaR calculation, Capital Preservation Risk Manager audits, and Autonomous Order Dispatching.
+- **📈 Forex & Quant Finance**: Real-time market tick sensors, Quantitative VaR calculation, Capital Preservation Risk audits, and autonomous order dispatching.
 - **⚖️ Corporate Law & Contract Auditing**: Automated clause scrutiny, hidden liability and indemnity detection, counter-redline generation, and Senior Partner sign-off.
-- **🧠 Psychology & CBT Consultation**: Empathetic client triage and intake, cognitive reframing coaching, somatic homework management, and immediate crisis de-escalation routing.
-- **🚀 SEO & Growth Marketing**: Autonomous Chrono SERP rank auditing, high-intent keyword gap analysis, EEAT content writing, and Conversion Rate Optimization (CRO).
-- **🎬 Creative Media & YouTube**: Viral trend intelligence, competitor retention analysis, high-CTR hook generation, multi-track audio mixing, and automated video asset rendering.
-- **💻 Software Systems & Coding**: Architecture coordination by the Leader, resilient API and database implementation by Backend, responsive glassmorphic UI by Frontend, penetration auditing by Security, and rigorous regression testing by Quality Control.
+- **🧠 Psychology & Consultation**: Empathetic client triage and intake, cognitive reframing coaching, somatic homework management, and immediate crisis de-escalation routing.
+- **🚀 SEO & Growth Marketing**: Chrono SERP rank auditing, semantic keyword clustering, technical crawl forensics, JSON-LD schema generation, and EEAT information gain architecture.
+- **🎬 Creative Media & YouTube**: Trend intelligence, competitor retention forensics, high-CTR hook writing, voice synthesis, multi-track audio mastering, and automated FFmpeg video assembly.
+- **💻 Software Systems & DevOps**: Architecture governance by Mr. Flow / Lead, backend microservices, responsive glassmorphic frontend UI, penetration testing by Security, and regression validation by Quality Control.
 
 ---
 
-## 2. Storage Architecture (1 Preset = 1 Atomic JSON File)
+## 2. Cardinal Architectural Laws
 
-All presets reside inside the `swarmflow/` directory, dynamically resolved by the native Rust kernel (`resolve_engine_root().join("swarmflow")`). **Hardcoding host absolute paths (such as `/home/...` or `C:\...`) is strictly prohibited** to ensure flawless multi-OS portability across Linux, macOS, and Windows.
+### Law 1: 1 Preset = 1 Atomic JSON File
+- Every preset is an isolated, self-contained JSON file residing in `swarmflow/{preset_id}.json`.
+- The active preset is tracked exclusively by `swarmflow/active.json`.
+- Paths MUST be dynamically resolved (`resolve_engine_root().join("swarmflow")`). **Zero hardcoded absolute paths** (`/home/...`, `C:\...`).
 
-### Directory Topology:
+### Law 2: 1 Agent = 1 Task (Strict Separation of Concerns)
+- **Zero God-Agents**: Never overload an agent with conflicting, disparate, or multiple responsibilities.
+- Each specialist subagent in `system/subagent/{agent_id}` represents **exactly one distinct domain task** (e.g., SEO Forensics, UI Overlay, Voice Synthesis, Security Audit).
+- A writer agent does NOT audit its own work; an execution worker does NOT act as its own Quality Control. The pipeline enforces clean relay handovers between distinct nodes.
+
+### Law 3: Sacred Node Header Contract (Anti-Undefined Doctrine)
+- The Canvas UI DAG card header renders:
+  ```javascript
+  <span>${node.role || node.name || node.title || node.id || 'Specialist Agent'}</span>
+  ```
+- **Every node MUST define `role` and `name` explicitly.** Omitting `role` violates the visual contract and leads to degraded UI labels or `undefined` states.
+
+---
+
+## 3. Storage & Directory Layout
+
 ```text
 swarmflow/
-├── active.json          <-- Pointer file identifying the currently active preset
-├── trading.json         <-- Forex & Quant Trading Preset
-├── coding.json          <-- Software Systems & Coding Preset
-├── seo.json             <-- Marketing & Growth SEO Preset
-├── legal.json           <-- Corporate Law & Contract Audit Preset
-├── psychology.json      <-- Psychology & CBT Consultation Preset
-├── media.json           <-- Creative Media & YouTube Preset
-└── [custom_preset].json <-- Any user-defined custom domain preset
+├── active.json                 <-- Dynamic pointer identifying the currently active preset
+├── default.json                <-- System fallback preset (Ingress -> Lead -> Dev -> QC)
+├── seo_growth_pipeline.json    <-- SEO & Web Growth Intelligence Preset
+├── stickman_studio_swarm.json  <-- 2D Animation & Stickman Video Studio Preset
+└── [custom_preset].json        <-- User-defined domain presets
 ```
 
-### Format of `active.json`:
-Tracks the active preset ID and modification timestamp:
+### Pointer File Contract (`swarmflow/active.json`):
 ```json
 {
-  "activePresetId": "coding",
-  "updatedAt": 1740000000000
+  "activePresetId": "seo_growth_pipeline",
+  "updatedAt": 1793120650000
 }
 ```
 
 ---
 
-## 3. Preset File Anatomy (`{preset_id}.json`)
+## 4. Preset Schema Specification (`{preset_id}.json`)
 
-Every preset is an atomic, self-contained JSON file containing canvas positioning metadata, nodes, and directed cable connections:
+Every preset file MUST adhere to this exact JSON schema:
 
 ```json
 {
-  "id": "trading",
-  "name": "Forex & Quant Trading",
-  "icon": "📈",
-  "domain": "Forex / Quant Finance",
-  "description": "Real-time FX tick sensor, Quant VaR modeling, Capital Preservation Risk Manager, and Autonomous Order Dispatcher.",
+  "id": "seo_growth_pipeline",
+  "name": "SEO & Web Growth Swarm Flow",
+  "domain": "Growth & Marketing Engineering",
+  "description": "Full-cycle automated SEO intelligence swarm: competitive SERP analysis, technical crawl audit, semantic clustering, and EEAT information gain architecture.",
+  "icon": "🌐",
   "panX": 40,
   "panY": 40,
   "scale": 1.0,
   "nodes": [
     {
-      "id": "node-fx-sensor",
+      "id": "trigger_input",
       "type": "trigger",
-      "triggerId": "market_tick_sensor",
-      "name": "Forex Market Volatility Sensor",
-      "role": "Forex / Crypto Market Sensor",
-      "icon": "📈",
-      "x": 100,
-      "y": 200,
-      "triggerConfig": {
-        "ingressType": "market_tick",
-        "symbol": "EURUSD, XAUUSD, BTCUSDT",
-        "conditionExpr": "payload.spread <= 1.2 && payload.rsi < 30"
-      }
+      "name": "Audit Dispatch Trigger",
+      "role": "Search Query & URL Ingress",
+      "avatar": "⚡",
+      "category": "trigger",
+      "instruction": "Receives target domain URL and seed keywords for comprehensive technical search engine evaluation.",
+      "x": 80,
+      "y": 180,
+      "width": 240,
+      "height": 130
     },
     {
-      "id": "node-fx-quant",
+      "id": "mrflow_lead",
       "type": "agent",
-      "name": "Quantitative Analyst",
-      "role": "Quantitative Analyst",
-      "icon": "📊",
-      "x": 450,
-      "y": 200,
-      "taskPrompt": "Analyze price action, volume momentum, and portfolio value-at-risk.",
-      "rulePrompt": "Reject high-spread slippage anomalies and enforce statistical edge."
+      "agentId": "mrflow",
+      "name": "Mr. Flow",
+      "role": "Grand Chief AI Overseer & Lead Strategist",
+      "avatar": "⚡",
+      "category": "management",
+      "instruction": "Directs SEO campaign strategy, scopes technical crawl parameters, and synthesizes SERP intelligence into actionable growth roadmaps.",
+      "x": 380,
+      "y": 180,
+      "width": 250,
+      "height": 130
+    },
+    {
+      "id": "seo_specialist",
+      "type": "agent",
+      "agentId": "seo-web-intelligence",
+      "name": "SEO & Web Intelligence Specialist",
+      "role": "Technical SEO & Search Engine Forensics Specialist",
+      "avatar": "🔍",
+      "category": "growth",
+      "instruction": "Executes on-page DOM inspection, Core Web Vitals profiling, semantic clustering, JSON-LD schema generation, and SERP forensics.",
+      "x": 700,
+      "y": 180,
+      "width": 260,
+      "height": 130
     }
   ],
   "connections": [
     {
-      "id": "conn-fx-1",
-      "from": "node-fx-sensor",
-      "fromPort": "out-1",
-      "to": "node-fx-quant",
+      "id": "conn_trig_lead",
+      "from": "trigger_input",
+      "to": "mrflow_lead",
+      "label": "Audit Parameters & Target Domain",
+      "guardianEnabled": true
+    },
+    {
+      "id": "conn_lead_seo",
+      "from": "mrflow_lead",
+      "to": "seo_specialist",
+      "label": "Strategic Scope & Tactical Delegation",
       "guardianEnabled": true
     }
-  ]
+  ],
+  "updatedAt": 1793120650000
 }
 ```
 
-### Core Components:
-1. **Trigger Node (`type: "trigger"`)**: Ingress gateway capturing external events (Webhook, Market Tick, Cron Scheduler, File Watcher, Client Intake).
-2. **Agent Node (`type: "agent"` or `"leader"`)**: Autonomous specialist holding an identity, `taskPrompt` directive, and `rulePrompt` constraints.
-3. **Connections**: Directed cables defining artifact and task handovers between upstream and downstream nodes, guarded by validation gates (`guardianEnabled`).
+### Complete Field Reference
+
+#### A. Preset Root Object:
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | **Yes** | Slug identifier matching filename (`{id}.json`). |
+| `name` | `string` | **Yes** | Human-readable title displayed in preset dropdown. |
+| `domain` | `string` | **Yes** | Industry or technical domain classification. |
+| `description`| `string` | **Yes** | Clear architectural summary of the swarm's objective. |
+| `icon` | `string` | **Yes** | Emoji icon representing the domain (e.g. `🌐`, `🎬`, `📈`). |
+| `panX`, `panY`| `number` | No | Canvas default camera offset (default: `40`). |
+| `scale` | `number` | No | Canvas default zoom level (default: `1.0`). |
+| `nodes` | `array` | **Yes** | List of node objects (see below). |
+| `connections`| `array` | **Yes** | List of connection cable objects (see below). |
+| `updatedAt` | `number` | No | Unix timestamp in milliseconds. |
+
+#### B. Node Object (`nodes[]`):
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | **Yes** | Unique node ID within the preset (e.g. `node-seo-worker`). |
+| `type` | `string` | **Yes** | Node kind: `"trigger"`, `"agent"`, or `"transformer"`. |
+| `agentId` | `string` | **Mandatory for agent** | **Exact directory name in `system/subagent/{agentId}`**. Links the node to its sovereign persona, rules, and skills. |
+| `name` | `string` | **Yes** | Human-readable name (e.g. `"SEO Specialist"`). |
+| `role` | `string` | **MANDATORY** | **Primary title rendered in the DAG card header.** (e.g. `"Technical SEO & Forensics Specialist"`). Prevents `undefined` rendering. |
+| `avatar` | `string` | **Yes** | Emoji icon displayed on node card (e.g. `🔍`, `⚡`, `🧪`). |
+| `category` | `string` | **Yes** | Category slug (`trigger`, `management`, `growth`, `security`, `frontend`, `qc`, etc.). |
+| `instruction`| `string` | **Yes** | Actionable single-task directive assigned to this node in the relay chain. |
+| `x`, `y` | `number` | **Yes** | Canvas grid coordinates (recommended step: +300–320px along X axis). |
+| `width` | `number` | **Yes** | Node card width (typically `240` to `260`). |
+| `height` | `number` | **Yes** | Node card height (typically `120` to `140`). |
+
+#### C. Connection Object (`connections[]`):
+| Field | Type | Required | Description |
+| :--- | :--- | :--- | :--- |
+| `id` | `string` | **Yes** | Unique connection ID (e.g. `conn_lead_to_worker`). |
+| `from` | `string` | **Yes** | Source node `id`. |
+| `to` | `string` | **Yes** | Target destination node `id`. |
+| `label` | `string` | No | Semantic description of data, task, or artifact handed over. |
+| `guardianEnabled`| `boolean`| No | If `true`, requires downstream validation gate before relay fires. |
 
 ---
 
-## 4. How Swarm Flow Works (Autonomous Sequential Relay)
+## 5. How Swarm Flow Works (Autonomous Sequential Relay)
 
-Swarm Flow executes tasks through an autonomous, uninterrupted relay chain:
+Swarm Flow executes multi-agent workflows through an uninterrupted relay chain:
 
 ```mermaid
 graph LR
-    A[⚡ Ingress Trigger] --> B[👑 Swarm Leader]
-    B --> C[⚙️ Backend Engineer]
-    C -->|Auto-Trigger on DONE| D[🎨 Frontend Engineer]
-    D -->|Auto-Trigger on DONE| E[🧪 Quality Control]
-    E -->|Exit Code 0 Verified| F[🏁 Completed]
+    A[⚡ Ingress Trigger] --> B[👑 Mr. Flow / Lead]
+    B -->|Task Delegation| C[🔍 Domain Specialist]
+    C -->|Deliverables Handover| D[🧪 Quality Control / Auditor]
+    D -->|Exit Code 0 Verified| E[🏁 Mission Accomplished]
 ```
 
-1. **Ambient Preset Awareness (Native Binary Level)**:
-   - When a user interacts in chat, the Rust binary reads `swarmflow/active.json` and injects the `<ACTIVE_SWARM_PIPELINE>` block into the system prompt.
-   - The agent immediately recognizes the active domain, its assigned role, team members, and downstream handover rules without needing manual file reads.
-2. **Autonomous Sequential Relay (Uninterrupted Multi-Agent Chain)**:
-   - When an upstream specialist (e.g., Backend Engineer) finishes their task and outputs a completion signal (**DONE**), the chat turn **DOES NOT HALT**.
-   - Instead, the Swarm Flow kernel automatically dispatches the task context to the connected downstream node (e.g., Frontend Engineer).
-   - Once Frontend completes the interface, it triggers the verification specialist (e.g., Quality Control) to perform automated verification tests until **Exit Code 0** is achieved.
-   - Each specialist operates in strict role isolation according to the active pipeline topology.
+1. **Native Context Injection (`<ACTIVE_SWARM_PIPELINE>`)**:
+   - The Rust kernel reads `swarmflow/active.json`, extracts the active preset, and injects the topology directly into the agent context window at session start.
+   - The agent immediately knows the active domain, fellow squad members, upstream trigger inputs, and downstream handover rules without executing manual filesystem reads.
+2. **Autonomous Sequential Relay**:
+   - When an upstream specialist finishes its duty, it hands off structured output to the downstream node.
+   - The relay continues until the terminal verification node (QC / Security Auditor) confirms zero errors (**Exit Code 0**).
 3. **3D Virtual Office Synchronization**:
-   - The 3D Virtual Office reads the active preset and **renders only the avatars and desks belonging to the active preset squad**.
-   - If 20 agents exist across the system, the 3D room remains clean, uncluttered, and displays only the active specialists (e.g., 4–5 agents).
+   - The 3D Virtual Office reads the active preset and **renders only the avatars and workstations belonging to the active squad**.
+   - If 30 subagents exist in `system/subagent/`, the 3D room remains clean, rendering only the active 3–5 specialists.
 
 ---
 
-## 5. How to Create a New Preset
+## 6. Runbook: How to Create a New Swarm Flow (AI Agent Standard)
 
-### Method A: Via Visual Canvas UI
-1. Navigate to the **Swarm Flow** tab in Flowork Canvas UI.
-2. In the floating top-right HUD, click **➕ New**.
-3. Enter a title for the new domain preset (e.g., `Crypto Arbitrage`, `SEO Content Engine`, `MQL5 Expert Advisor`).
-4. Drag and drop Triggers from the left sidebar onto the canvas, followed by the required Agent Specialists.
-5. Connect upstream output ports to downstream input ports using cables.
-6. Double-click on any node to configure its **Task Directive** and **Rule Constraints** in the modal editor.
-7. Click **💾 Save** on the Floating HUD. The system automatically writes the `{preset_id}.json` file and marks it active.
+When tasked to create a new Swarm Flow preset, follow this deterministic checklist:
 
-### Method B: Headless / Manual JSON File Creation
-1. Create a new file inside `swarmflow/{your_preset_id}.json`.
-2. Populate it with the standard JSON structure shown above.
-3. Update `swarmflow/active.json` to point to your new preset ID:
-   ```json
-   {
-     "activePresetId": "your_preset_id",
-     "updatedAt": 1740000000000
-   }
-   ```
-4. Reload or open Flowork OS; the Swarm Flow canvas and 3D Virtual Office will automatically load and render the new preset.
+### Step 1: Subagent Verification & Scaffolding
+- Check `system/subagent/` for existing agents matching each task.
+- If a required specialist does not exist, create it following the Sovereign Subagent standard:
+  ```text
+  system/subagent/{agent_id}/
+  ├── agent.json    <-- Manifest (id, name, role, category, avatar, skills)
+  ├── persona.md    <-- Identity, worldview, tone, and cognitive archetype
+  ├── rules.md      <-- Strict operational boundaries and negative constraints
+  ├── task.md       <-- Concrete deliverables and single-task contract
+  └── style.json    <-- Visual theme and avatar styling
+  ```
+- **Rule of Thumb**: 1 subagent directory = 1 domain role. Never bundle unrelated tasks together.
+
+### Step 2: Preset File Authoring
+- Create `swarmflow/{preset_id}.json`.
+- Populate every node with:
+  - `id`: unique string
+  - `type`: `"trigger"` or `"agent"`
+  - `agentId`: matching subagent directory name (for `"agent"`)
+  - `name`: Human-readable name
+  - **`role`**: Descriptive role title (MUST NOT BE EMPTY)
+  - `avatar`: Contextual emoji
+  - `category`: Classification
+  - `instruction`: Single-task directive
+  - Coordinates: `x`, `y`, `width`, `height`
+- Populate `connections` linking Ingress -> Lead -> Specialist(s) -> QC.
+
+### Step 3: Registration & Dual-Sync Mandate
+- Register the preset as active in `swarmflow/active.json`:
+  ```json
+  {
+    "activePresetId": "{preset_id}",
+    "updatedAt": 1793120650000
+  }
+  ```
+- Synchronize `system/pipeline_dag.json` with the new nodes and connections so that both the backend daemon and the Canvas UI reflect the active graph immediately.
+
+### Step 4: Verification Gate (QC Before Done)
+- Verify JSON syntax: `python3 -m json.tool swarmflow/{preset_id}.json > /dev/null`.
+- Query runtime endpoint: `http://127.0.0.1:19890/api/swarmflow/active` to verify that all nodes return with non-null `name` and `role`.
+- Run `audit_security` to verify zero path leaks or security regressions.
+- Ensure terminal output reports **Exit Code 0**.
+
+---
+
+## 7. Common Anti-Patterns & Post-Mortem Traps
+
+| Anti-Pattern | Root Cause | Impact | Remedy |
+| :--- | :--- | :--- | :--- |
+| **`undefined` on DAG card header** | Node JSON omitted the `role` attribute. | Card header displayed `undefined` in Canvas UI. | Always specify `role` on every node in `nodes[]`. |
+| **Orphaned Node in Cockpit** | Missing or incorrect `agentId` in `nodes[]`. | Cockpit modal cannot resolve agent persona/rules from `system/subagent/`. | Set `agentId` to match the exact subagent folder name. |
+| **God-Agent Anti-Pattern** | 1 agent assigned multiple distinct roles (e.g. writing + auditing + coding). | Cognitive overload, conflicting instructions, self-audit blind spots. | Enforce 1 Agent 1 Task. Split into distinct specialist subagents. |
+| **Hardcoded Host Paths** | Using `/home/...` or `C:\...` in presets or configs. | Breaks on other machines, violates portability doctrine. | Use engine-relative paths (`swarmflow/{preset_id}.json`). |
+| **DAG Desync** | Updating `swarmflow/{preset_id}.json` without updating `system/pipeline_dag.json`. | Canvas UI displays stale DAG state until next full reload. | Always keep `system/pipeline_dag.json` synchronized with the active preset. |

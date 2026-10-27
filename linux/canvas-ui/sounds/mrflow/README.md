@@ -1,6 +1,6 @@
-# 🎙️ JARVIS TACTICAL VOICE ASSETS DIRECTORY
+# 🎙️ MR. FLOW TACTICAL VOICE ASSETS DIRECTORY
 Place your generated MP3 audio files here. 
-Format: MP3 (128kbps stereo recommended, 1.5 - 3.5 seconds duration, British/Tactical Jarvis tone).
+Format: MP3 (128kbps stereo recommended, 1.5 - 3.5 seconds duration, British/Tactical Mr. Flow tone).
 
 ## Expected Audio Files Mapping:
 1. `target_locked.mp3`   -> "Target acquired. Scanning perimeter, sir."
@@ -14,4 +14,4 @@ Format: MP3 (128kbps stereo recommended, 1.5 - 3.5 seconds duration, British/Tac
 9. `alert_breach.mp3`    -> "Command intercepted. Security protocol triggered, sir."
 10. `system_online.mp3`  -> "Flowork OS Sovereign Engine online. All systems nominal."
 
-*Note:* If any of these MP3 files are missing, the Flowork Jarvis Audio Engine automatically falls back to native Web Speech API (with low pitch British/US robotic synthesis) + Web Audio synth bleeps.
+*Note:* If any of these MP3 files are missing, the Flowork Mr. Flow Audio Engine automatically falls back to native Web Speech API (with low pitch British/US robotic synthesis) + Web Audio synth bleeps.

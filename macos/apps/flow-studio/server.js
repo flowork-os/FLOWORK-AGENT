@@ -4,7 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { spawn, execSync } = require('child_process');
 
-const PORT = parseInt(process.env.CONCAT_PORT || process.env.APP_PORT || '18012', 10);
+const PORT = parseInt(process.env.PORT || process.env.CONCAT_PORT || process.env.APP_PORT || '18012', 10);
 const GUI_ROOT = path.join(__dirname, 'gui');
 const OUTPUTS_DIR = path.join(__dirname, 'exports');
 const UPLOADS_DIR = path.join(__dirname, 'uploads');
@@ -392,6 +392,117 @@ const server = http.createServer(async (req, res) => {
     }
   }
 
+  // ─── CAPCUT LOGIC: AUTO-CAPTION ENGINE (FASTER-WHISPER) ───
+  if (pathname === '/api/ai/auto-caption' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody(req);
+      const { mediaPath, modelSize = 'tiny', language = 'auto' } = body;
+
+      if (!mediaPath) {
+        return sendJson(res, 400, { status: 'error', message: 'Missing mediaPath parameter' });
+      }
+
+      // Resolve media path relative to flow-studio or uploads directory
+      let resolvedPath = path.isAbsolute(mediaPath) ? mediaPath : path.join(__dirname, mediaPath);
+      if (!fs.existsSync(resolvedPath)) {
+        resolvedPath = path.join(__dirname, 'uploads', path.basename(mediaPath));
+      }
+      if (!fs.existsSync(resolvedPath)) {
+        resolvedPath = path.join(__dirname, 'samples', path.basename(mediaPath));
+      }
+
+      if (!fs.existsSync(resolvedPath)) {
+        return sendJson(res, 404, { status: 'error', message: `Target media file not found: ${mediaPath}` });
+      }
+
+      const scriptPath = path.join(__dirname, 'scripts', 'auto_caption.py');
+      const pyProc = spawn('python3', [scriptPath, resolvedPath, modelSize, language]);
+
+      let stdout = '';
+      let stderr = '';
+
+      pyProc.stdout.on('data', (d) => { stdout += d.toString(); });
+      pyProc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+      pyProc.on('close', (code) => {
+        if (code !== 0) {
+          console.error(`[AutoCaption] Python error (code ${code}):`, stderr);
+          return sendJson(res, 500, {
+            status: 'error',
+            message: 'Auto caption transcription failed',
+            details: stderr.slice(-300)
+          });
+        }
+
+        try {
+          // Parse JSON output from python script
+          const parsed = JSON.parse(stdout.trim());
+          return sendJson(res, 200, parsed);
+        } catch (e) {
+          return sendJson(res, 500, {
+            status: 'error',
+            message: 'Failed to parse caption output JSON',
+            raw: stdout.slice(-200)
+          });
+        }
+      });
+      return;
+    } catch (err) {
+      return sendJson(res, 500, { status: 'error', message: err.message });
+    }
+  }
+
+  // ─── CAPCUT LOGIC: TEXT-TO-SPEECH (TTS) VOICEOVER ENGINE ───
+  if (pathname === '/api/ai/tts' && req.method === 'POST') {
+    try {
+      const body = await parseJsonBody(req);
+      const { text, voice = 'id-female', rate = '+0%', pitch = '+0Hz' } = body;
+
+      if (!text || !text.trim()) {
+        return sendJson(res, 400, { status: 'error', message: 'Missing text content for TTS voiceover' });
+      }
+
+      const voiceFileName = `tts_${Date.now()}_${Math.random().toString(36).substring(2, 6)}.mp3`;
+      const outAudioPath = path.join(__dirname, 'uploads', voiceFileName);
+
+      const scriptPath = path.join(__dirname, 'scripts', 'tts_generator.py');
+      const pyProc = spawn('python3', [scriptPath, text.trim(), outAudioPath, voice, rate, pitch]);
+
+      let stdout = '';
+      let stderr = '';
+
+      pyProc.stdout.on('data', (d) => { stdout += d.toString(); });
+      pyProc.stderr.on('data', (d) => { stderr += d.toString(); });
+
+      pyProc.on('close', (code) => {
+        if (code !== 0) {
+          console.error(`[TTS] Python error (code ${code}):`, stderr);
+          return sendJson(res, 500, {
+            status: 'error',
+            message: 'TTS Voiceover generation failed',
+            details: stderr.slice(-300)
+          });
+        }
+
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          parsed.url = `/uploads/${voiceFileName}`;
+          parsed.filename = voiceFileName;
+          return sendJson(res, 200, parsed);
+        } catch (e) {
+          return sendJson(res, 500, {
+            status: 'error',
+            message: 'Failed to parse TTS output JSON',
+            raw: stdout.slice(-200)
+          });
+        }
+      });
+      return;
+    } catch (err) {
+      return sendJson(res, 500, { status: 'error', message: err.message });
+    }
+  }
+
   if (pathname === '/api/project/export' && req.method === 'POST') {
     try {
       const body = await parseJsonBody(req);
@@ -586,6 +697,16 @@ const server = http.createServer(async (req, res) => {
   const safeRel = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, '');
   const filePath = path.join(GUI_ROOT, safeRel);
   return serveStaticFile(filePath, req, res);
+});
+
+server.on('error', (err) => {
+  if (err.code === 'EADDRINUSE') {
+    console.warn(`[Flow Studio] Port ${PORT} already active. Existing instance running smoothly.`);
+    process.exit(0);
+  } else {
+    console.error(`[Flow Studio] Server error:`, err);
+    process.exit(1);
+  }
 });
 
 server.listen(PORT, '0.0.0.0', () => {
