@@ -59,14 +59,11 @@ pub const CORE_14_TOOLS: &[&str] = &[
     "replace_file_content",
     "read_url_content",
     "search_web",
-    "ask_question",
     "schedule",
     "manage_task",
-    "team_audit",
     "generate_image",
     "screenshot",
     "code_graph",
-    "deterministic_helper",
 ];
 
 /// The Promp Inti Trigger Tools (not selectable from GUI, auto-activated on prompt triggers)
@@ -1873,158 +1870,163 @@ pub async fn execute_native_tool_with_discovery(
         },
 
         "invoke_subagent" | "invoke_spawn" => {
-            let subagents_val = args.get("Subagents")
+            let single_subagent_storage;
+            let subagent_list = if let Some(arr) = args.get("Subagents")
                 .or_else(|| args.get("subagents"))
                 .or_else(|| args.get("tasks"))
                 .or_else(|| args.get("agents"))
-                .and_then(|v| v.as_array());
-
-            if let Some(subagent_list) = subagents_val {
-                if subagent_list.is_empty() {
-                    return Ok(json!({
-                        "status": "SUCCESS",
-                        "exit_code": 0,
-                        "tool": clean_name,
-                        "output": "No subagents specified in request.",
-                        "fused_context": ""
-                    }));
-                }
-
-                let mut dag = crate::swarm_dag::TaskDagGraph::new();
-                let mut dep_map: Vec<(String, Vec<String>)> = Vec::new();
-
-                for (idx, item) in subagent_list.iter().enumerate() {
-                    let type_name = item.get("TypeName")
-                        .or_else(|| item.get("type"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("worker");
-
-                    let role = item.get("Role")
-                        .or_else(|| item.get("role"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or(type_name);
-
-                    let prompt = item.get("Prompt")
-                        .or_else(|| item.get("prompt"))
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("Autonomous task execution");
-
-                    let id = item.get("id")
-                        .or_else(|| item.get("name"))
-                        .and_then(|v| v.as_str())
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| format!("{}_{}", role.to_lowercase().replace(' ', "_"), idx + 1));
-
-                    let targets: Vec<String> = item.get("TargetPaths")
-                        .or_else(|| item.get("targets"))
-                        .or_else(|| item.get("target_paths"))
-                        .and_then(|v| v.as_array())
-                        .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|str_v| str_v.to_string())).collect())
-                        .unwrap_or_default();
-
-                    let timeout_secs = item.get("timeout_seconds")
-                        .or_else(|| item.get("timeout"))
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(120);
-
-                    let node = crate::swarm_dag::DagNode::new(&id, role, type_name, prompt)
-                        .with_targets(targets)
-                        .with_timeout(timeout_secs);
-
-                    dag.add_node(node);
-
-                    if let Some(deps) = item.get("Dependencies")
-                        .or_else(|| item.get("depends_on"))
-                        .and_then(|v| v.as_array())
-                    {
-                        let d_list: Vec<String> = deps.iter().filter_map(|s| s.as_str().map(|str_v| str_v.to_string())).collect();
-                        dep_map.push((id, d_list));
-                    }
-                }
-
-                for (dependent_id, deps) in dep_map {
-                    for dep_id in deps {
-                        let _ = dag.add_dependency(&dependent_id, &dep_id);
-                    }
-                }
-
-                let mut executor = crate::swarm_dag::SwarmDagExecutor::new(workspace_root);
-                if let Some(disc) = discovery.cloned() {
-                    executor = executor.with_event_callback(move |ev| {
-                        disc.broadcast_swarm_wave(ev.clone());
-                        for w in &ev.active_workers {
-                            let st = if ev.status == "wave_started" || w.status == "running" {
-                                "working"
-                            } else {
-                                "idle"
-                            };
-                            disc.broadcast_agent_activity(&w.agent_id, st);
-                        }
-                    });
-                }
-                let ws_path = workspace_root.to_path_buf();
-
-                let exec_result = executor.execute_all(&mut dag, move |node, _fused_ctx| {
-                    let node_role = node.title.clone();
-                    let node_agent = node.agent_id.clone();
-                    let current_ws = ws_path.clone();
-
-                    async move {
-                        // Autonomous Worker Execution Unit
-                        let summary = format!(
-                            "Worker [{}] completed task '{}' under agent '{}'. Verified workspace artifacts at {}.",
-                            node.id, node_role, node_agent, current_ws.display()
-                        );
-                        Ok(summary)
-                    }
-                }).await;
-
-                match exec_result {
-                    Ok(fused) => {
-                        let nodes_summary: Vec<Value> = dag.get_node().values().map(|n| {
-                            json!({
-                                "id": n.id,
-                                "role": n.title,
-                                "agent": n.agent_id,
-                                "status": format!("{:?}", n.status),
-                                "targets": n.target_paths,
-                                "summary": n.result_summary,
-                                "elapsed_ms": n.execution_millis
-                            })
-                        }).collect();
-
-                        Ok(json!({
-                            "status": "SUCCESS",
-                            "exit_code": 0,
-                            "tool": clean_name,
-                            "total_workers": dag.get_node().len(),
-                            "workers": nodes_summary,
-                            "fused_context": fused,
-                            "output": format!(
-                                "⚡ [SOVEREIGN SWARM DAG] Successfully dispatched and synchronized {} worker(s) with Exit Code 0.\n\n{}",
-                                dag.get_node().len(),
-                                fused
-                            )
-                        }))
-                    }
-                    Err(err) => {
-                        Ok(json!({
-                            "status": "ERROR",
-                            "exit_code": 1,
-                            "tool": clean_name,
-                            "error": err,
-                            "output": format!("❌ [SOVEREIGN SWARM DAG ERROR] Execution halted: {}", err)
-                        }))
-                    }
-                }
+                .and_then(|v| v.as_array())
+            {
+                arr.as_slice()
+            } else if args.is_object() && (args.get("TypeName").is_some() || args.get("type").is_some() || args.get("role").is_some() || args.get("Role").is_some() || args.get("prompt").is_some() || args.get("Prompt").is_some() || args.get("subagent_name").is_some()) {
+                single_subagent_storage = vec![args.clone()];
+                &single_subagent_storage[..]
             } else {
-                Ok(json!({
+                return Ok(json!({
                     "status": "ERROR",
                     "exit_code": 1,
                     "tool": clean_name,
                     "error": "Missing 'Subagents' array in request",
                     "output": "Error: 'Subagents' array argument is required."
-                }))
+                }));
+            };
+
+            if subagent_list.is_empty() {
+                return Ok(json!({
+                    "status": "SUCCESS",
+                    "exit_code": 0,
+                    "tool": clean_name,
+                    "output": "No subagents specified in request.",
+                    "fused_context": ""
+                }));
+            }
+
+            let mut dag = crate::swarm_dag::TaskDagGraph::new();
+            let mut dep_map: Vec<(String, Vec<String>)> = Vec::new();
+
+            for (idx, item) in subagent_list.iter().enumerate() {
+                let type_name = item.get("TypeName")
+                    .or_else(|| item.get("type"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("worker");
+
+                let role = item.get("Role")
+                    .or_else(|| item.get("role"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(type_name);
+
+                let prompt = item.get("Prompt")
+                    .or_else(|| item.get("prompt"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("Autonomous task execution");
+
+                let id = item.get("id")
+                    .or_else(|| item.get("name"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string())
+                    .unwrap_or_else(|| format!("{}_{}", role.to_lowercase().replace(' ', "_"), idx + 1));
+
+                let targets: Vec<String> = item.get("TargetPaths")
+                    .or_else(|| item.get("targets"))
+                    .or_else(|| item.get("target_paths"))
+                    .and_then(|v| v.as_array())
+                    .map(|arr| arr.iter().filter_map(|s| s.as_str().map(|str_v| str_v.to_string())).collect())
+                    .unwrap_or_default();
+
+                let timeout_secs = item.get("timeout_seconds")
+                    .or_else(|| item.get("timeout"))
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(120);
+
+                let node = crate::swarm_dag::DagNode::new(&id, role, type_name, prompt)
+                    .with_targets(targets)
+                    .with_timeout(timeout_secs);
+
+                dag.add_node(node);
+
+                if let Some(deps) = item.get("Dependencies")
+                    .or_else(|| item.get("depends_on"))
+                    .and_then(|v| v.as_array())
+                {
+                    let d_list: Vec<String> = deps.iter().filter_map(|s| s.as_str().map(|str_v| str_v.to_string())).collect();
+                    dep_map.push((id, d_list));
+                }
+            }
+
+            for (dependent_id, deps) in dep_map {
+                for dep_id in deps {
+                    let _ = dag.add_dependency(&dependent_id, &dep_id);
+                }
+            }
+
+            let mut executor = crate::swarm_dag::SwarmDagExecutor::new(workspace_root);
+            if let Some(disc) = discovery.cloned() {
+                executor = executor.with_event_callback(move |ev| {
+                    disc.broadcast_swarm_wave(ev.clone());
+                    for w in &ev.active_workers {
+                        let st = if ev.status == "wave_started" || w.status == "running" {
+                            "working"
+                        } else {
+                            "idle"
+                        };
+                        disc.broadcast_agent_activity(&w.agent_id, st);
+                    }
+                });
+            }
+            let ws_path = workspace_root.to_path_buf();
+
+            let exec_result = executor.execute_all(&mut dag, move |node, _fused_ctx| {
+                let node_role = node.title.clone();
+                let node_agent = node.agent_id.clone();
+                let current_ws = ws_path.clone();
+
+                async move {
+                    // Autonomous Worker Execution Unit
+                    let summary = format!(
+                        "Worker [{}] completed task '{}' under agent '{}'. Verified workspace artifacts at {}.",
+                        node.id, node_role, node_agent, current_ws.display()
+                    );
+                    Ok(summary)
+                }
+            }).await;
+
+            match exec_result {
+                Ok(fused) => {
+                    let nodes_summary: Vec<Value> = dag.get_node().values().map(|n| {
+                        json!({
+                            "id": n.id,
+                            "role": n.title,
+                            "agent": n.agent_id,
+                            "status": format!("{:?}", n.status),
+                            "targets": n.target_paths,
+                            "summary": n.result_summary,
+                            "elapsed_ms": n.execution_millis
+                        })
+                    }).collect();
+
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "tool": clean_name,
+                        "total_workers": dag.get_node().len(),
+                        "workers": nodes_summary,
+                        "fused_context": fused,
+                        "output": format!(
+                            "⚡ [SOVEREIGN SWARM DAG] Successfully dispatched and synchronized {} worker(s) with Exit Code 0.\n\n{}",
+                            dag.get_node().len(),
+                            fused
+                        )
+                    }))
+                }
+                Err(err) => {
+                    Ok(json!({
+                        "status": "ERROR",
+                        "exit_code": 1,
+                        "tool": clean_name,
+                        "error": err,
+                        "output": format!("❌ [SOVEREIGN SWARM DAG ERROR] Execution halted: {}", err)
+                    }))
+                }
             }
         },
 

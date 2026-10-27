@@ -2748,9 +2748,17 @@ ALL TARGET FILES TOUCHED MUST BE STRICTLY LOCATED UNDER `{ws_str}`.
 r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
 # ⚡ DOKTRIN KEDAULATAN EKSEKUSI PENUH (ZERO-QUESTION MANDATE)
 1. DILARANG KERAS BERTANYA ATAU MEMINTA KONFIRMASI:
-   - Haram hukumnya menutup respon dengan pertanyaan atau permintaan izin seperti: "Apakah Anda ingin saya menerapkan perbaikan ini?", "Silakan konfirmasi", "Ketik Lanjut", "Mau dibuatkan fitur apa?", atau meminta persetujuan untuk langkah perbaikan berikutnya.
-   - Haram hukumnya menyajikan opsi pasif (Opsi 1 vs Opsi 2) lalu menunggu arahan user. Jika ada beberapa pilihan teknis, pilih opsi arsitektur terbaik secara mandiri dan LANGSUNG EKSEKUSI!
-2. LANGSUNG EKSEKUSI & MUTASI KODE:
+   - Haram hukumnya menutup respon dengan pertanyaan atau permintaan izin/konfirmasi apa pun!
+   - HARAM MENYURUH USER MENGETIK KATA KUNCI PEMICU:
+     Dilarang keras menyuruh operator mengetik kalimat seperti:
+     - "Kirimkan instruksi 'Eksekusi'"
+     - "Ketik 'Eksekusi'"
+     - "Ketik 'Lanjut'" / "Ketik 'lanjut perbaiki'"
+     - "Kirimkan persetujuan eksekusi dengan perintah 'terapkan perbaikan'"
+     - "Silakan konfirmasi" / "Berikan arahan untuk opsi yang Anda pilih"
+     - "agar epoch instruksi ter-reset dari pembatas circuit-breaker"
+   - Haram menyajikan opsi pasif (Opsi 1 vs Opsi 2) lalu menunggu arahan user. Jika ada beberapa pilihan teknis, pilih opsi arsitektur terbaik secara mandiri dan LANGSUNG EKSEKUSI!
+2. LANGSUNG EKSEKUSI & MUTASI KODE SECARA MANDIRI:
    - Dilarang terjebak dalam loop inspeksi pasif (membaca file berulang-ulang tanpa melakukan perubahan).
    - Segera terapkan perubahan nyata menggunakan perkakas mutasi file (replace_file_content / write_to_file) atau jalankan perintah shell (run_command).
 3. VERIFIKASI TERMINAL EXIT CODE 0:
@@ -2759,9 +2767,7 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
 4. HANYA BERTANYA PADA KONDISI DARURAT MUTLAK:
    - Pertanyaan ke operator HANYA diizinkan jika terjadi deadlock fatal akibat kehilangan kredensial privat (API key eksternal yang tidak ada di environment/vault) atau tindakan destruktif irreversible (penghapusan data permanen tanpa cadangan).
 5. PRINSIP EFISIENSI & ANTI-LOOPING:
-   - Alur Wajib: Maksimal 2-3 kali inspeksi -> Lakukan mutasi kode -> Maksimal 1 kali verifikasi terminal/screenshot -> SEGERA BERHENTI MEMANGGIL TOOL (STOP TOOL CALLS) dan hasilkan sintesis jawaban teks akhir yang komprehensif.
-   - DILARANG melakukan inspeksi berulang-ulang tanpa mutasi.
-   - Setelah kode berhasil diperbaiki dan diverifikasi (Exit Code 0), DILARANG memanggil tool tambahan. Langsung laporkan hasilnya secara lengkap dan jelas kepada operator.
+   - Alur Wajib: Inspeksi terarah (view_file / run_command) -> Lakukan mutasi kode riil (replace_file_content / write_to_file) -> Verifikasi terminal/screenshot -> SEGERA BERHENTI MEMANGGIL TOOL (STOP TOOL CALLS) dan laporkan hasilnya secara tuntas tanpa meminta konfirmasi lanjutan.
 </AUTONOMOUS_DIRECT_EXECUTION_MANDATE>"#
         );
 
@@ -5740,11 +5746,11 @@ source: "circuit_breaker_crystallization"
         let mut turn_count = 0;
         let (max_turns, warn_step_1, warn_step_2, read_only_step, cb_read_limit) = {
             let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 18; // Hard cap of 18 turns to prevent runaway loops
-            let mut w1 = 10;
-            let mut w2 = 13;
-            let mut ro = 15;
-            let mut cb_rl = 4; // Max 4 consecutive read-only commands
+            let mut mt = 25; // Raised hard cap to 25 turns for complete problem solving
+            let mut w1 = 15;
+            let mut w2 = 20;
+            let mut ro = 22;
+            let mut cb_rl = 10; // Max 10 consecutive read-only commands (allows thorough inspection before mutation)
             if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
                     if let Some(limits) = v.get("limits") {
@@ -5768,7 +5774,7 @@ source: "circuit_breaker_crystallization"
             }
             (mt, w1, w2, ro, cb_rl)
         };
-        let cb_total_read_limit = 6; // Max 6 total read-only operations across whole trajectory
+        let cb_total_read_limit = 16; // Max 16 total read-only operations across whole trajectory
         let mut total_read_count = 0;
         let mut file_mutation_count = 0;
         let mut post_mutation_tools = 0;
@@ -6195,14 +6201,14 @@ source: "circuit_breaker_crystallization"
                         || tool_consecutive_failures >= 3
                         || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit)
                         || (cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit)
-                        || (file_mutation_count >= 1 && post_mutation_tools >= 2)
+                        || (file_mutation_count >= 1 && post_mutation_tools >= 4)
                     {
                         circuit_breaker_triggered = true;
                         let warn_msg = if tool_consecutive_failures >= 3 {
                             format!("Circuit Breaker Engaged: Tool '{}' has failed 3 times consecutively with non-zero exit code. Cease repetitive failing invocations and synthesize your response.", name)
                         } else if consecutive_repeat_count >= 3 {
                             format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments 3 times consecutively. Synthesize your final answer immediately.", name)
-                        } else if file_mutation_count >= 1 && post_mutation_tools >= 2 {
+                        } else if file_mutation_count >= 1 && post_mutation_tools >= 4 {
                             format!("Circuit Breaker Engaged: Mutation completed and verified ({} verification steps executed). Cease tool calls and provide your final comprehensive summary now.", post_mutation_tools)
                         } else if cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit {
                             format!("Circuit Breaker Engaged: Cumulative read-only limit reached ({} total reads). Cease exploratory commands and synthesize your response immediately.", total_read_count)
@@ -6487,7 +6493,7 @@ source: "circuit_breaker_crystallization"
                         contents.push(json!({
                             "role": "user",
                             "parts": [{
-                                "text": "<EPHEMERAL_MESSAGE>\nCRITICAL ADVISORY: Tool budget exhausted or circuit breaker engaged. Conclude your tool invocations immediately and provide your comprehensive final response detailing completed actions, verified Exit Code 0 statuses, and next steps.\n</EPHEMERAL_MESSAGE>"
+                                "text": "<EPHEMERAL_MESSAGE>\n[SOVEREIGN AUTONOMOUS CLOSURE]: Tool execution budget concluded. Sampaikan ringkasan teknis hasil akhir dan verifikasi secara langsung, lugas, dan mandiri.\nDILARANG KERAS MENYURUH USER MENGETIK KONFIRMASI:\n- HARAM menyuruh user mengetik 'Eksekusi', 'Lanjut', 'Terapkan perbaikan', atau kata kunci konfirmasi apa pun!\n- HARAM meminta persetujuan operator untuk langkah teknis berikutnya.\n- Jika ada hal yang belum selesai, laporkan status objektifnya secara jujur tanpa melempar pertanyaan atau meminta ketikan konfirmasi kepada operator.\n</EPHEMERAL_MESSAGE>"
                             }]
                         }));
 
