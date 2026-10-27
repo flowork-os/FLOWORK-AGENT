@@ -55,6 +55,11 @@ class SovereignOffice3D {
 
     // Active Office Mode
     this.currentMode = 'office';
+    try {
+      this.officeMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+    } catch (_) {
+      this.officeMode = 'solo';
+    }
 
     // Camera targets: Overview of Modern Corporate Tech Office (Elevated Overview of 3-Wide Grid)
     this.camTarget = new THREE.Vector3(0, 1.20, 1.10);

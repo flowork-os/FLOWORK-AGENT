@@ -760,9 +760,24 @@ ${escapeHtml(String(out).slice(0, 3000))}
     currentSessionData: null,
 
     init() {
-      console.log('[DualCanvas] ⚡ Initializing Dual-Canvas Controller...');
+      console.log('[DualCanvas] ⚡ Initializing Dual-Canvas Controller with Sovereign Persistence...');
       this.bindTabEvents();
       this.bindModeButtons();
+
+      // 🔒 Sovereign Persist Gate: Always restore user-commanded session mode
+      const savedMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+      const isTeam = (savedMode === 'team');
+      const activeType = isTeam ? 'group' : 'personal';
+
+      window.currentSessionMode = savedMode;
+      window.currentSessionType = activeType;
+
+      this.updateModeButtons(savedMode);
+
+      if (window.office3DInstance && typeof window.office3DInstance.setOfficeMode === 'function') {
+        window.office3DInstance.setOfficeMode(savedMode);
+      }
+
       const viewCanvasStage = document.getElementById('view-canvas-stage');
       if (viewCanvasStage && viewCanvasStage.classList.contains('active')) {
         this.onActivateTab();
@@ -941,7 +956,10 @@ ${escapeHtml(String(out).slice(0, 3000))}
       this.currentSessionData = sessionData || null;
       window.currentLoadedSessionData = sessionData || null;
 
-      const isGroup = Boolean(sessionData ? (sessionData.session_type === 'group' || sessionData.mode === 'team') : (localStorage.getItem('xflow_session_mode') === 'team'));
+      // 🔒 USER PREFERENCE SUPREME RULE:
+      // If user explicitly switched to 'team' or 'solo' in localStorage, respect that over stale session JSON files!
+      const userSelectedMode = localStorage.getItem('xflow_session_mode');
+      const isGroup = userSelectedMode ? (userSelectedMode === 'team') : Boolean(sessionData && (sessionData.session_type === 'group' || sessionData.mode === 'team'));
       const activeMode = isGroup ? 'team' : 'solo';
       const activeType = isGroup ? 'group' : 'personal';
 

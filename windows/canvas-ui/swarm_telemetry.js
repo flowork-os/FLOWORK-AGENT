@@ -225,13 +225,91 @@
       }
     }
 
+    getCanonicalAgentId(rawId) {
+      if (!rawId) return 'mr.flow';
+      const clean = String(rawId).toLowerCase().trim().replace(/^agent-/, '');
+      const aliasMap = {
+        'mrflow': 'mr.flow',
+        'mrflow-system-01': 'mr.flow',
+        'default': 'mr.flow',
+        'backend': 'backend-engineer',
+        'coder': 'backend-engineer',
+        'developer': 'backend-engineer',
+        'systems': 'backend-engineer',
+        'frontend': 'frontend-engineer',
+        'uiux': 'frontend-engineer',
+        'designer': 'frontend-engineer',
+        'ui': 'frontend-engineer',
+        'security': 'security-auditor',
+        'audit': 'security-auditor',
+        'auditor': 'security-auditor',
+        'scanner': 'security-auditor',
+        'qc': 'quality-control',
+        'qa': 'quality-control',
+        'tester': 'quality-control',
+        'gatekeeper': 'quality-control',
+        'leader': 'leader',
+        'leader-system-01': 'leader',
+        'orchestrator': 'leader',
+        'coordinator': 'leader',
+        'system': 'system',
+        'kernel': 'system',
+        'floworkos': 'system'
+      };
+      return aliasMap[clean] || clean;
+    }
+
+    inferAgentIdFromEvent(eventData) {
+      if (!eventData) return 'mr.flow';
+      const cleanTool = String(eventData.tool || eventData.badge || '').toLowerCase();
+      const targetFile = String(eventData.targetFile || eventData.file || eventData.path || '').toLowerCase();
+      const reason = String(eventData.reason || eventData.summary || '').toLowerCase();
+      const cmd = String(eventData.command || eventData.details || '').toLowerCase();
+
+      if (cleanTool.includes('invoke_subagent') || cleanTool.includes('dispatch') || cleanTool.includes('wave') || eventData.event === 'swarm_wave' || reason.includes('swarm wave') || reason.includes('orchestrat')) {
+        return 'leader';
+      }
+      if (cleanTool.includes('deterministic_helper') || cleanTool.includes('verify') || cleanTool.includes('test') || reason.includes('exit code 0') || reason.includes('qc') || reason.includes('gatekeeper')) {
+        return 'quality-control';
+      }
+      if (cleanTool.includes('view_file') || cleanTool.includes('read_file') || cleanTool.includes('search_web') || cleanTool.includes('read_url') || reason.includes('inspect') || reason.includes('audit') || reason.includes('check')) {
+        return 'security-auditor';
+      }
+      if (targetFile.endsWith('.html') || targetFile.endsWith('.css') || targetFile.includes('canvas-ui') || targetFile.includes('styles') || cleanTool.includes('render_visual') || cleanTool.includes('generate_image') || cleanTool.includes('uiux')) {
+        return 'frontend-engineer';
+      }
+      if (cleanTool.includes('run_command') || cleanTool.includes('replace_file') || cleanTool.includes('write_to_file') || cmd.includes('node') || cmd.includes('bash') || cmd.includes('grep') || cmd.includes('curl')) {
+        return 'backend-engineer';
+      }
+      if (cleanTool === 'tool' || reason.includes('sovereign task operation') || reason.includes('kernel') || eventData.category === 'system') {
+        return 'system';
+      }
+      return 'mr.flow';
+    }
+
     loadFromStorage() {
       try {
         const raw = localStorage.getItem(STORAGE_KEY);
         if (raw) {
-          const parsed = JSON.parse(raw);
+          let parsed = JSON.parse(raw);
           if (Array.isArray(parsed)) {
+            // Purge ghost cards created by legacy updateOnly fallthrough
+            parsed = parsed.filter(ev => !(ev.tool === 'tool' && (ev.reason === 'Executing sovereign task operation' || !ev.reason)));
+            parsed.forEach(ev => {
+              const canon = this.getCanonicalAgentId(ev.agentId);
+              if (!ev.agentId || canon === 'mr.flow') {
+                const inferred = this.inferAgentIdFromEvent(ev);
+                ev.agentId = inferred;
+              } else {
+                ev.agentId = canon;
+              }
+              const meta = this.agentMeta[ev.agentId] || this.agentMeta['mr.flow'];
+              ev.agentName = meta.name;
+              ev.agentHandle = meta.handle;
+              ev.agentIcon = meta.icon;
+            });
             this.events = parsed;
+            this.saveToStorage();
           }
         }
       } catch (e) {
@@ -403,21 +481,29 @@
       const eventId = eventData.id || `swm-${Date.now()}-${Math.random().toString(36).substr(2, 6)}`;
 
       // Handle real-time update of existing card (e.g. from 'RUNNING...' to 'Exit Code: 0')
-      if (eventData.updateOnly && eventData.id) {
-        const existing = this.events.find(t => t.id === eventData.id);
-        if (existing) {
-          if (eventData.status !== undefined) existing.status = eventData.status;
-          if (eventData.statusType !== undefined) existing.statusType = eventData.statusType;
-          if (eventData.latency !== undefined) existing.latency = eventData.latency;
-          if (eventData.exitCode !== undefined) existing.exitCode = eventData.exitCode;
-          this.saveToStorage();
-          this.updateCardInDom(existing);
-          this.renderMetrics();
-          return;
+      if (eventData.updateOnly) {
+        if (eventData.id) {
+          const existing = this.events.find(t => t.id === eventData.id);
+          if (existing) {
+            if (eventData.status !== undefined) existing.status = eventData.status;
+            if (eventData.statusType !== undefined) existing.statusType = eventData.statusType;
+            if (eventData.latency !== undefined) existing.latency = eventData.latency;
+            if (eventData.exitCode !== undefined) existing.exitCode = eventData.exitCode;
+            this.saveToStorage();
+            this.updateCardInDom(existing);
+            this.renderMetrics();
+          }
         }
+        return; // Sovereign barrier: updateOnly MUST NEVER fall through to generate dummy ghost cards
       }
 
-      const rawAgentId = String(eventData.agentId || 'mr.flow').toLowerCase().replace(/^agent-/, '');
+      let rawAgentId = this.getCanonicalAgentId(eventData.agentId);
+      if (!rawAgentId || rawAgentId === 'mr.flow') {
+        const inferred = this.inferAgentIdFromEvent(eventData);
+        if (inferred !== 'mr.flow') {
+          rawAgentId = inferred;
+        }
+      }
       const meta = this.agentMeta[rawAgentId] || this.agentMeta['mr.flow'];
 
       const targetFile = eventData.targetFile || eventData.file || eventData.path || '';
@@ -651,7 +737,8 @@
     }
 
     createTweetCardHtml(tweet, isNew = false) {
-      const meta = this.agentMeta[tweet.agentId] || this.agentMeta['mr.flow'];
+      const canonId = this.getCanonicalAgentId(tweet.agentId);
+      const meta = this.agentMeta[canonId] || this.agentMeta['mr.flow'];
       const timeStr = formatTweetTime(tweet.timestamp);
       const cleanTool = (tweet.tool || '').replace(/^(flow_|default_api:)/, '');
       const hasAttachment = !!(tweet.command && tweet.command.trim());
@@ -792,7 +879,8 @@
       if (copyBtn && tweet.command) {
         copyBtn.addEventListener('click', (e) => {
           e.stopPropagation();
-          navigator.clipboard.writeText(tweet.command).then(() => {
+          const copyFn = window.safeCopyToClipboard || (t => navigator.clipboard.writeText(t));
+          copyFn(tweet.command).then(() => {
             copyBtn.textContent = '✓ Copied!';
             setTimeout(() => { copyBtn.textContent = '📋 Copy'; }, 2000);
           }).catch(() => {});
@@ -805,7 +893,8 @@
         filePill.style.cursor = 'pointer';
         filePill.addEventListener('click', (e) => {
           e.stopPropagation();
-          navigator.clipboard.writeText(tweet.targetFile).then(() => {
+          const copyFn = window.safeCopyToClipboard || (t => navigator.clipboard.writeText(t));
+          copyFn(tweet.targetFile).then(() => {
             const valSpan = filePill.querySelector('.ops-val');
             if (valSpan) {
               const orig = valSpan.textContent;
