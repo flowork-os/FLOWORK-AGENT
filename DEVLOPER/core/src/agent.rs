@@ -5744,29 +5744,17 @@ source: "circuit_breaker_crystallization"
         // Step C: Autonomous Multi-Turn Tool Execution Loop (Flowork Sovereign Circuit Breaker Mesh)
         let mut final_response = String::new();
         let mut turn_count = 0;
-        let (max_turns, warn_step_1, warn_step_2, read_only_step, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
+        let (max_turns, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
             let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 50; // Sovereign hard cap raised to 50 turns matching Antigravity headroom
-            let mut w1 = 35;
-            let mut w2 = 42;
-            let mut ro = 46;
-            let mut cb_rl = 25; // Max 25 consecutive exploratory reads/commands
-            let mut cb_trl = 45; // Max 45 total exploratory reads across whole trajectory
-            let mut cb_pml = 12; // Max 12 post-mutation verification steps
+            let mut mt = 100; // Antigravity Sovereign Headroom: 100 generator turns
+            let mut cb_rl = 0; // 0 = disabled (Antigravity standard: no artificial consecutive read cutoff)
+            let mut cb_trl = 0; // 0 = disabled (Antigravity standard: no cumulative read cutoff)
+            let mut cb_pml = 0; // 0 = disabled (Antigravity standard: no post-mutation tool cutoff)
             if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
                     if let Some(limits) = v.get("limits") {
                         if let Some(n) = limits.get("max_turns").and_then(|x| x.as_u64()) {
                             mt = n as usize;
-                        }
-                        if let Some(n) = limits.get("warn_step_1").and_then(|x| x.as_u64()) {
-                            w1 = n as usize;
-                        }
-                        if let Some(n) = limits.get("warn_step_2").and_then(|x| x.as_u64()) {
-                            w2 = n as usize;
-                        }
-                        if let Some(n) = limits.get("read_only_step").and_then(|x| x.as_u64()) {
-                            ro = n as usize;
                         }
                         if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
                             cb_rl = n as usize;
@@ -5780,7 +5768,7 @@ source: "circuit_breaker_crystallization"
                     }
                 }
             }
-            (mt, w1, w2, ro, cb_rl, cb_trl, cb_pml)
+            (mt, cb_rl, cb_trl, cb_pml)
         };
         let mut total_read_count = 0;
         let mut file_mutation_count = 0;
@@ -6261,17 +6249,7 @@ source: "circuit_breaker_crystallization"
                             agent_manifest.as_ref(),
                         );
                         let norm_name = name.trim_start_matches("default_api:").trim_start_matches("mcp_").to_lowercase();
-                        let v = if turn_count >= read_only_step && norm_name != "brain_control" && norm_name != "fl_brain" {
-                            json!({
-                                "status": "TURN_LIMIT_BRAIN_ONLY_LOCK",
-                                "exit_code": 1,
-                                "success": false,
-                                "error": format!(
-                                    "🛑 TURN LIMIT REACHED (Turn {}/{}): Execution of tool '{}' is locked! At turn {}+, all exploratory tools are restricted. You are ONLY permitted to call `brain_control` to crystallize your permanent memories into .fl_brain before the session terminates at turn {}.",
-                                    turn_count, max_turns, name, read_only_step, max_turns
-                                )
-                            })
-                        } else if !is_auth {
+                        let v = if !is_auth {
                             json!({
                                 "status": "PERMISSION_DENIED",
                                 "exit_code": 1,
@@ -6530,47 +6508,7 @@ source: "circuit_breaker_crystallization"
                                 "text": format!("<EPHEMERAL_MESSAGE>\n⚠️ WARNING: Tool '{}' has failed 2 times consecutively. Re-evaluate your arguments, parameters, or strategy immediately. A 3rd failure will trip the Circuit Breaker.\n</EPHEMERAL_MESSAGE>", name)
                             }]
                         }));
-                    } else if cb_read_limit > 0 && consecutive_read_count >= (cb_read_limit.saturating_sub(2)) && consecutive_read_count < cb_read_limit {
-                        contents.push(json!({
-                            "role": "user",
-                            "parts": [{
-                                "text": format!("<EPHEMERAL_MESSAGE>\n⚡ CIRCUIT BREAKER ADVISORY: You have executed {} consecutive read-only inspection commands without modifying files. Do NOT execute further aimless commands. Take concrete action or conclude your findings immediately.\n</EPHEMERAL_MESSAGE>", consecutive_read_count)
-                            }]
-                        }));
-                    } else if turn_count == warn_step_1 {
-                        // 1. Step 1: Peringatan pertama buat mengabadikan ingatan ke .fl_brain
-                        contents.push(json!({
-                            "role": "user",
-                            "parts": [{
-                                "text": format!(
-                                    "<EPHEMERAL_MESSAGE>\n⚠️ [PERINGATAN TAHAP 1 - TURN {}/{}]\nBatas kuota giliran telah mencapai {} dari {} putaran.\nSegera persiapkan dan abadikan seluruh temuan, keputusan arsitektur, dan memori permanen ke `.fl_brain` via `brain_control` sebelum sesi mendekati batas akhir.\n</EPHEMERAL_MESSAGE>",
-                                    turn_count, max_turns, turn_count, max_turns
-                                )
-                            }]
-                        }));
-                    } else if turn_count == warn_step_2 {
-                        // 2. Step 2: Peringatan kedua urgensi tinggi
-                        let remaining_to_lock = read_only_step.saturating_sub(turn_count);
-                        contents.push(json!({
-                            "role": "user",
-                            "parts": [{
-                                "text": format!(
-                                    "<EPHEMERAL_MESSAGE>\n🚨 [PERINGATAN TAHAP 2 - TURN {}/{} - KRITIS]\nKuota giliran telah mencapai {} dari {} putaran! Anda hanya memiliki sisa {} putaran sebelum penguncian perkakas ketat berlaku pada turn {}.\nWAJIB SEGERA gunakan `brain_control` untuk mengkristalisasi seluruh data penting ke `.fl_brain` sekarang juga!\n</EPHEMERAL_MESSAGE>",
-                                    turn_count, max_turns, turn_count, max_turns, remaining_to_lock, read_only_step
-                                )
-                            }]
-                        }));
-                    } else if turn_count >= read_only_step && turn_count < max_turns {
-                        // 3. Step 3: Penguncian eksplorasi - HANYA brain_control yang diizinkan
-                        contents.push(json!({
-                            "role": "user",
-                            "parts": [{
-                                "text": format!(
-                                    "<EPHEMERAL_MESSAGE>\n🛑 [PENGUNCIAN DARURAT TAHAP 3 - TURN {}+/{}]\nAnda berada di zona akhir! Seluruh perkakas eksekusi/eksplorasi telah DIKUNCI.\nSistem HANYA mengizinkan pemanggilan `brain_control` untuk mengabadikan memori ke `.fl_brain`. Segera kristalkan memori dan akhiri respons teks final Anda sebelum putaran {} tercapai.\n</EPHEMERAL_MESSAGE>",
-                                    read_only_step, max_turns, max_turns
-                                )
-                            }]
-                        }));
+
                     }
 
                     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
