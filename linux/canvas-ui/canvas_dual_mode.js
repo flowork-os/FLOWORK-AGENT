@@ -1,4 +1,3 @@
-// [FL_INDEX: canvas_dual_mode, switch_mode, solo_team_buttons, interactive_switcher, group_war_room | COT: Implement interactive mode switcher handler for Solo vs Team buttons and synchronize DOM with 3D canvas| AT: 2026-10-26T19:34:24Z]
 /**
  * =============================================================================
  * FLOWORK OS — DUAL-CANVAS DYNAMIC LIFECYCLE CONTROLLER
@@ -780,93 +779,14 @@ ${escapeHtml(String(out).slice(0, 3000))}
         });
       }
 
-      // Bind Segmented Control buttons: Solo vs Team
-      const btnSolo = document.getElementById('btn-mode-solo');
-      const btnTeam = document.getElementById('btn-mode-team');
-
-      if (btnSolo) {
-        btnSolo.addEventListener('click', () => {
-          this.switchMode('solo');
-        });
-      }
-
-      if (btnTeam) {
-        btnTeam.addEventListener('click', () => {
-          this.switchMode('group');
-        });
-      }
-
       // Bind Quick Toggle button in Rightbar Chat Header
       const btnToggle = document.getElementById('btn-toggle-canvas-studio');
       if (btnToggle) {
         btnToggle.addEventListener('click', () => {
-          const isCurrentlyGroup = Boolean(this.currentSessionData && this.currentSessionData.session_type === 'group');
-          this.switchMode(isCurrentlyGroup ? 'solo' : 'group');
+          if (typeof window.switchTab === 'function') {
+            window.switchTab('canvas-stage');
+          }
         });
-      }
-    },
-
-    // Switch between Solo and Group/Team War Room modes dynamically
-    switchMode(targetMode) {
-      const isGroup = targetMode === 'group';
-      if (!this.currentSessionData) {
-        this.currentSessionData = {
-          session_id: 'active_session',
-          session_type: isGroup ? 'group' : 'solo',
-          title: isGroup ? 'Swarm Tactical War Room' : 'Solo Focus Studio'
-        };
-      } else {
-        this.currentSessionData.session_type = isGroup ? 'group' : 'solo';
-      }
-      window.currentLoadedSessionData = this.currentSessionData;
-
-      // Update Segmented Button Styles
-      const btnSolo = document.getElementById('btn-mode-solo');
-      const btnTeam = document.getElementById('btn-mode-team');
-      if (btnSolo && btnTeam) {
-        if (isGroup) {
-          btnTeam.classList.add('active');
-          btnTeam.style.background = '#2563eb';
-          btnTeam.style.color = '#ffffff';
-          btnSolo.classList.remove('active');
-          btnSolo.style.background = 'transparent';
-          btnSolo.style.color = '#94a3b8';
-        } else {
-          btnSolo.classList.add('active');
-          btnSolo.style.background = '#2563eb';
-          btnSolo.style.color = '#ffffff';
-          btnTeam.classList.remove('active');
-          btnTeam.style.background = 'transparent';
-          btnTeam.style.color = '#94a3b8';
-        }
-      }
-
-      // Update Navigation Tab Capsule
-      this.updateTabCapsule(isGroup, this.currentSessionData);
-      this.updateChatHeaderButton(isGroup, this.currentSessionData);
-
-      // Auto-switch to Canvas Stage if not active, or remount active view
-      const rootEl = document.getElementById('canvas-dynamic-root');
-      if (rootEl) {
-        if (isGroup) {
-          SoloStudio.unmount();
-          GroupWarRoom.mount(rootEl, this.currentSessionData);
-        } else {
-          GroupWarRoom.unmount();
-          SoloStudio.mount(rootEl, this.currentSessionData);
-        }
-      }
-
-      // Trigger 3D Office Squad update if 3D scene exists
-      if (window.solo3dRoom && typeof window.solo3dRoom.setOfficeMode === 'function') {
-        window.solo3dRoom.setOfficeMode(isGroup ? 'team' : 'solo');
-      } else if (window.solo3dRoom && typeof window.solo3dRoom.initAgentsAndWorkstations === 'function') {
-        window.solo3dRoom.officeMode = isGroup ? 'team' : 'solo';
-        window.solo3dRoom.initAgentsAndWorkstations();
-      }
-
-      if (typeof window.switchTab === 'function') {
-        window.switchTab('canvas-stage');
       }
     },
 
@@ -960,26 +880,6 @@ ${escapeHtml(String(out).slice(0, 3000))}
     },
 
     updateChatHeaderButton(isGroup, sessionData) {
-      const btnSolo = document.getElementById('btn-mode-solo');
-      const btnTeam = document.getElementById('btn-mode-team');
-      if (btnSolo && btnTeam) {
-        if (isGroup) {
-          btnTeam.classList.add('active');
-          btnTeam.style.background = '#2563eb';
-          btnTeam.style.color = '#ffffff';
-          btnSolo.classList.remove('active');
-          btnSolo.style.background = 'transparent';
-          btnSolo.style.color = '#94a3b8';
-        } else {
-          btnSolo.classList.add('active');
-          btnSolo.style.background = '#2563eb';
-          btnSolo.style.color = '#ffffff';
-          btnTeam.classList.remove('active');
-          btnTeam.style.background = 'transparent';
-          btnTeam.style.color = '#94a3b8';
-        }
-      }
-
       const btn = document.getElementById('btn-toggle-canvas-studio');
       if (!btn) return;
 

@@ -1,32 +1,33 @@
 ---
 trigger_id: "PLUGIN-YT-DOWNLOADER-TRIGGER"
-name: "YouTube Downloader Ambient Trigger"
+name: "YouTube & Suno Downloader Ambient Trigger"
 scopes:
   - "universal_all"
 events:
-  - "youtube_download"
-  - "media_extraction"
-  - "audio_processing"
+  - "media_download"
+  - "video_extraction"
+  - "youtube_rip"
 categories:
   - "CAT-010"
 keywords:
   - "youtube"
-  - "downloader"
-  - "yt-downloader"
+  - "download"
+  - "yt-dlp"
+  - "mp3"
+  - "mp4"
   - "suno"
   - "audio_extractor"
-  - "dsp"
-  - "media_pipeline"
-  - "video_download"
+  - "media_rip"
 exclude_keywords:
-  - "text_only_editor"
+  - "screen_record"
+  - "canvas_draw"
 conditions:
   - key: "env.is_headless"
     op: "=="
     val: false
 ---
 
-# YouTube Downloader Ambient Activation Trigger
+# YouTube & Suno Downloader Ambient Activation Trigger
 <!-- Co-authored-by: Flowork OS <agent@floworkos.com> -->
 
-This trigger manages the ambient recommendation and automated mounting of the YouTube Downloader & Suno Studio Canvas plugin when YouTube media extraction or DSP audio preparation workflows are detected.
+This trigger manages the ambient recommendation and automated mounting of the YouTube Downloader & Suno Studio Canvas plugin when media downloading or audio extraction workflows are detected.

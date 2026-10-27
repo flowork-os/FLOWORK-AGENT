@@ -1,4 +1,3 @@
-// [FL_INDEX: 3d_solo, office_mode, team_squad_rendering, solo_vs_team, clean_list_filtering | COT: Implement officeMode dynamic switching so team mode renders all squad workstations rather than collapsing to solo desk| AT: 2026-10-26T19:34:51Z]
 /**
  * ============================================================================
  * 🏛️ FLOWORK OS — 3D LUXURY EXECUTIVE OFFICE & BOARDROOM ENGINE
@@ -1857,15 +1856,6 @@ class SovereignOffice3D {
     } catch (_) {}
   }
 
-  setOfficeMode(mode) {
-    const normalized = (mode === 'solo' || mode === 'group' || mode === 'team')
-      ? (mode === 'solo' ? 'solo' : 'team')
-      : 'team';
-    if (this.officeMode === normalized) return;
-    this.officeMode = normalized;
-    this.syncPersonas();
-  }
-
   syncPersonas(personaList) {
     if (!personaList || !Array.isArray(personaList) || personaList.length === 0) {
       personaList = (window.AVAILABLE_PERSONAS && Array.isArray(window.AVAILABLE_PERSONAS) && window.AVAILABLE_PERSONAS.length > 0)
@@ -1874,17 +1864,8 @@ class SovereignOffice3D {
     }
 
     const nonDefault = personaList.filter(p => p && p.id && p.id.toLowerCase() !== 'default' && !p.id.toUpperCase().startsWith('CAT-'));
-    
-    // Check office mode: 'solo' displays focused agent, 'team' displays full active squad
-    let cleanList = [];
-    if (this.officeMode === 'solo') {
-      const soloAgent = nonDefault.find(p => p.id === 'mr.flow' || p.id === 'mrflow' || p.is_default) || nonDefault[0];
-      cleanList = soloAgent ? [soloAgent] : [];
-    } else {
-      // Team / Group War Room mode: Render full squad workstations
-      const swarmFiltered = this.filterPersonasByActiveSwarm(nonDefault);
-      cleanList = (swarmFiltered && swarmFiltered.length > 1) ? swarmFiltered : nonDefault;
-    }
+    // STRICT SWARM FLOW SQUAD FILTER: Enforce uncluttered 3D Office
+    const cleanList = this.filterPersonasByActiveSwarm(nonDefault);
 
     // Sort: Mr. Flow strictly at index 0 (Executive Desk), followed by Swarm Leader, then specialists
     const sorted = [...cleanList].sort((a, b) => {

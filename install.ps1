@@ -61,20 +61,34 @@ if ($env:FLOWORK_INSTALL_DIR) {
 Write-Host "📁 Target Directory: $InstallDir" -ForegroundColor Green
 Set-Location $InstallDir
 
-# 2. Download Official Release Zip
+# 2. Download Official Release Zip (Precompiled Standalone Bundle)
 $ZipPath = Join-Path $env:TEMP "flowork_release_$PID.zip"
-Write-Host "📥 Fetching Flowork OS official release from GitHub..." -ForegroundColor Cyan
+$ReleaseBundleUrl = "https://github.com/$Repo/releases/latest/download/Flowork-Agent-Windows-x64.zip"
+Write-Host "📥 Fetching Flowork OS official release bundle from GitHub (Flowork-Agent-Windows-x64.zip)..." -ForegroundColor Cyan
 
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ZipPath -UseBasicParsing
+$DownloadedBundle = $false
+try {
+    Invoke-WebRequest -Uri $ReleaseBundleUrl -OutFile $ZipPath -UseBasicParsing
+    $DownloadedBundle = $true
+} catch {
+    Write-Host "[Flowork] ⚠️ Release bundle download failed, falling back to repository archive..." -ForegroundColor Yellow
+    Invoke-WebRequest -Uri $ArchiveUrl -OutFile $ZipPath -UseBasicParsing
+}
 
-# 3. Extract Windows Tree to Target Directory
+# 3. Extract Components to Target Directory
 Write-Host "📦 Extracting release components..." -ForegroundColor Cyan
 $ExtractTemp = Join-Path $env:TEMP "flowork_extract_$PID"
 if (Test-Path $ExtractTemp) { Remove-Item $ExtractTemp -Recurse -Force }
 Expand-Archive -Path $ZipPath -DestinationPath $ExtractTemp -Force
 
-$SourceWindowsDir = Join-Path $ExtractTemp "FLOWORK-AGENT-$Branch\windows"
+if ($DownloadedBundle) {
+    $SourceWindowsDir = Join-Path $ExtractTemp "flowork"
+    if (-not (Test-Path $SourceWindowsDir)) { $SourceWindowsDir = $ExtractTemp }
+} else {
+    $SourceWindowsDir = Join-Path $ExtractTemp "FLOWORK-AGENT-$Branch\windows"
+}
+
 if (Test-Path $SourceWindowsDir) {
     Copy-Item -Path "$SourceWindowsDir\*" -Destination $InstallDir -Recurse -Force
 } else {
@@ -95,6 +109,73 @@ if (Test-Path $RuntimeSetupScript) {
     } catch {
         Write-Host "[Flowork] ℹ️ Runtime setup completed with notice: $($_.Exception.Message)" -ForegroundColor Yellow
     }
+}
+
+# 4.5 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
+$ModelsDir = Join-Path $InstallDir "portable-home\.flowork\models"
+$ModelTarget = Join-Path $ModelsDir "models--Xenova--bge-small-en-v1.5"
+$ModelZipUrl = "https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.zip"
+$TmpModelZip = Join-Path $ModelsDir "temp_model.zip"
+
+if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887e3f920caeb4f3e3\onnx\model.onnx"))) {
+    Write-Host "[Flowork] 🧠 Fetching official neural embedding model from GitHub Release (155 MB)..." -ForegroundColor Cyan
+    if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null }
+    try {
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
+        $ExpectedHash = "ef427bb0e8d1c0688ccdc3216cf2f41f07ed3167a36ecf9738c5b32d1862bc45"
+        $CalcHash = (Get-FileHash -Path $TmpModelZip -Algorithm SHA256).Hash.ToLower()
+        if ($CalcHash -eq $ExpectedHash) {
+            Write-Host "[Flowork] 📦 Unpacking official ONNX model bundle..." -ForegroundColor Cyan
+            Expand-Archive -Path $TmpModelZip -DestinationPath $ModelsDir -Force
+            Write-Host "[Flowork] ✅ Neural ONNX embedding model installed successfully (100% offline ready)." -ForegroundColor Green
+        } else {
+            Write-Host "[Flowork] ⚠️ Model checksum mismatch ($CalcHash vs $ExpectedHash); skipping extraction." -ForegroundColor Yellow
+        }
+        Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue
+    } catch {
+        Write-Host "[Flowork] ⚠️ Model auto-download notice: $($_.Exception.Message)" -ForegroundColor Yellow
+        Remove-Item $TmpModelZip -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# 4.6 Autonomous Swarm Flow Directory & Presets Self-Healing
+$SwarmDir = Join-Path $InstallDir "swarmflow"
+if (-not (Test-Path $SwarmDir)) { New-Item -ItemType Directory -Path $SwarmDir -Force | Out-Null }
+$DefaultJson = Join-Path $SwarmDir "default.json"
+if (-not (Test-Path $DefaultJson)) {
+    $DefaultSwarmContent = @'
+{
+  "id": "default",
+  "name": "Mr. Flow",
+  "domain": "Sovereign Orchestration",
+  "icon": "⚡",
+  "description": "Pristine sovereign foundation with Mr. Flow at executive command.",
+  "nodes": [
+    {
+      "id": "node-mrflow",
+      "agentId": "mr.flow",
+      "name": "Mr. Flow",
+      "role": "Grand Chief AI Overseer & Executive Architect",
+      "icon": "⚡",
+      "type": "agent",
+      "x": 450,
+      "y": 240,
+      "taskPrompt": "Executive architecture, system supervision, and autonomous orchestration.",
+      "rulePrompt": "Enforce zero-trust and empirical proof (Exit Code 0)."
+    }
+  ],
+  "connections": [],
+  "panX": 40,
+  "panY": 40,
+  "scale": 1.0
+}
+'@
+    [System.IO.File]::WriteAllText($DefaultJson, $DefaultSwarmContent, [System.Text.Encoding]::UTF8)
+}
+$ActiveJson = Join-Path $SwarmDir "active.json"
+if (-not (Test-Path $ActiveJson)) {
+    [System.IO.File]::WriteAllText($ActiveJson, '{"activePresetId": "default"}', [System.Text.Encoding]::UTF8)
 }
 
 # 5. Add Install Directory & Portable Runtimes to User PATH

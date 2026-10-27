@@ -151,6 +151,42 @@ if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de6
   rm -f "$TMP_MODEL_TAR" 2>/dev/null || true
 fi
 
+# 5.6 Autonomous Swarm Flow Presets Provisioning & Self-Healing
+mkdir -p "$INSTALL_DIR/swarmflow"
+if [ ! -f "$INSTALL_DIR/swarmflow/default.json" ]; then
+  echo "⚡ Initializing default Sovereign Swarm Flow preset (Mr. Flow)..."
+  cat << 'EOF_SWARM' > "$INSTALL_DIR/swarmflow/default.json"
+{
+  "id": "default",
+  "name": "Mr. Flow",
+  "domain": "Sovereign Orchestration",
+  "icon": "⚡",
+  "description": "Pristine sovereign foundation with Mr. Flow at executive command.",
+  "nodes": [
+    {
+      "id": "node-mrflow",
+      "agentId": "mr.flow",
+      "name": "Mr. Flow",
+      "role": "Grand Chief AI Overseer & Executive Architect",
+      "icon": "⚡",
+      "type": "agent",
+      "x": 450,
+      "y": 240,
+      "taskPrompt": "Executive architecture, system supervision, and autonomous orchestration.",
+      "rulePrompt": "Enforce zero-trust and empirical proof (Exit Code 0)."
+    }
+  ],
+  "connections": [],
+  "panX": 40,
+  "panY": 40,
+  "scale": 1.0
+}
+EOF_SWARM
+fi
+if [ ! -f "$INSTALL_DIR/swarmflow/active.json" ]; then
+  echo '{"activePresetId": "default"}' > "$INSTALL_DIR/swarmflow/active.json"
+fi
+
 # 6. Create Global Terminal Command (flowork) in ~/.local/bin
 BIN_DIR="$HOME/.local/bin"
 mkdir -p "$BIN_DIR" 2>/dev/null || true
