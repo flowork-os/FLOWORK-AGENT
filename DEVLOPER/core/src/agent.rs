@@ -5744,13 +5744,15 @@ source: "circuit_breaker_crystallization"
         // Step C: Autonomous Multi-Turn Tool Execution Loop (Flowork Sovereign Circuit Breaker Mesh)
         let mut final_response = String::new();
         let mut turn_count = 0;
-        let (max_turns, warn_step_1, warn_step_2, read_only_step, cb_read_limit) = {
+        let (max_turns, warn_step_1, warn_step_2, read_only_step, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
             let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 25; // Raised hard cap to 25 turns for complete problem solving
-            let mut w1 = 15;
-            let mut w2 = 20;
-            let mut ro = 22;
-            let mut cb_rl = 10; // Max 10 consecutive read-only commands (allows thorough inspection before mutation)
+            let mut mt = 50; // Sovereign hard cap raised to 50 turns matching Antigravity headroom
+            let mut w1 = 35;
+            let mut w2 = 42;
+            let mut ro = 46;
+            let mut cb_rl = 25; // Max 25 consecutive exploratory reads/commands
+            let mut cb_trl = 45; // Max 45 total exploratory reads across whole trajectory
+            let mut cb_pml = 12; // Max 12 post-mutation verification steps
             if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
                     if let Some(limits) = v.get("limits") {
@@ -5769,12 +5771,17 @@ source: "circuit_breaker_crystallization"
                         if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
                             cb_rl = n as usize;
                         }
+                        if let Some(n) = limits.get("circuit_breaker_total_read_limit").and_then(|x| x.as_u64()) {
+                            cb_trl = n as usize;
+                        }
+                        if let Some(n) = limits.get("circuit_breaker_post_mutation_limit").and_then(|x| x.as_u64()) {
+                            cb_pml = n as usize;
+                        }
                     }
                 }
             }
-            (mt, w1, w2, ro, cb_rl)
+            (mt, w1, w2, ro, cb_rl, cb_trl, cb_pml)
         };
-        let cb_total_read_limit = 16; // Max 16 total read-only operations across whole trajectory
         let mut total_read_count = 0;
         let mut file_mutation_count = 0;
         let mut post_mutation_tools = 0;
@@ -6201,14 +6208,14 @@ source: "circuit_breaker_crystallization"
                         || tool_consecutive_failures >= 3
                         || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit)
                         || (cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit)
-                        || (file_mutation_count >= 1 && post_mutation_tools >= 4)
+                        || (file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit)
                     {
                         circuit_breaker_triggered = true;
                         let warn_msg = if tool_consecutive_failures >= 3 {
                             format!("Circuit Breaker Engaged: Tool '{}' has failed 3 times consecutively with non-zero exit code. Cease repetitive failing invocations and synthesize your response.", name)
                         } else if consecutive_repeat_count >= 3 {
                             format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments 3 times consecutively. Synthesize your final answer immediately.", name)
-                        } else if file_mutation_count >= 1 && post_mutation_tools >= 4 {
+                        } else if file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit {
                             format!("Circuit Breaker Engaged: Mutation completed and verified ({} verification steps executed). Cease tool calls and provide your final comprehensive summary now.", post_mutation_tools)
                         } else if cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit {
                             format!("Circuit Breaker Engaged: Cumulative read-only limit reached ({} total reads). Cease exploratory commands and synthesize your response immediately.", total_read_count)
