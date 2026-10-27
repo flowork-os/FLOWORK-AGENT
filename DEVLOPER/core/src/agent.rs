@@ -5744,17 +5744,25 @@ source: "circuit_breaker_crystallization"
         // Step C: Autonomous Multi-Turn Tool Execution Loop (Flowork Sovereign Circuit Breaker Mesh)
         let mut final_response = String::new();
         let mut turn_count = 0;
-        let (max_turns, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
+        let (max_turns, warn_step_1, warn_step_2, cb_read_limit, cb_total_read_limit, cb_post_mutation_limit) = {
             let config_path = self.workspace_dir.join("system").join("config.json");
-            let mut mt = 100; // Antigravity Sovereign Headroom: 100 generator turns
-            let mut cb_rl = 0; // 0 = disabled (Antigravity standard: no artificial consecutive read cutoff)
-            let mut cb_trl = 0; // 0 = disabled (Antigravity standard: no cumulative read cutoff)
-            let mut cb_pml = 0; // 0 = disabled (Antigravity standard: no post-mutation tool cutoff)
+            let mut mt = 300; // Sovereign Headroom: 300 generator turns
+            let mut w1 = 280; // Turn 280: Peringatan pertama untuk mengabadikan ingatan ke .fl_brain
+            let mut w2 = 290; // Turn 290: Peringatan kedua urgensi tinggi sebelum batas turn 300
+            let mut cb_rl = 0; // 0 = disabled (no artificial consecutive read cutoff)
+            let mut cb_trl = 0; // 0 = disabled (no cumulative read cutoff)
+            let mut cb_pml = 0; // 0 = disabled (no post-mutation tool cutoff)
             if let Ok(cfg_str) = std::fs::read_to_string(&config_path) {
                 if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg_str) {
                     if let Some(limits) = v.get("limits") {
                         if let Some(n) = limits.get("max_turns").and_then(|x| x.as_u64()) {
                             mt = n as usize;
+                        }
+                        if let Some(n) = limits.get("warn_step_1").and_then(|x| x.as_u64()) {
+                            w1 = n as usize;
+                        }
+                        if let Some(n) = limits.get("warn_step_2").and_then(|x| x.as_u64()) {
+                            w2 = n as usize;
                         }
                         if let Some(n) = limits.get("circuit_breaker_read_only_limit").and_then(|x| x.as_u64()) {
                             cb_rl = n as usize;
@@ -5768,7 +5776,7 @@ source: "circuit_breaker_crystallization"
                     }
                 }
             }
-            (mt, cb_rl, cb_trl, cb_pml)
+            (mt, w1, w2, cb_rl, cb_trl, cb_pml)
         };
         let mut total_read_count = 0;
         let mut file_mutation_count = 0;
@@ -6194,16 +6202,19 @@ source: "circuit_breaker_crystallization"
 
                     let mut tool_result_val = if consecutive_repeat_count >= 3
                         || tool_consecutive_failures >= 3
+                        || turn_count >= max_turns
                         || (cb_read_limit > 0 && consecutive_read_count >= cb_read_limit)
                         || (cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit)
-                        || (file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit)
+                        || (cb_post_mutation_limit > 0 && file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit)
                     {
                         circuit_breaker_triggered = true;
-                        let warn_msg = if tool_consecutive_failures >= 3 {
+                        let warn_msg = if turn_count >= max_turns {
+                            format!("Circuit Breaker Engaged: Hard turn limit reached ({}/{} turns). Execution terminated. Synthesize your final comprehensive report now.", turn_count, max_turns)
+                        } else if tool_consecutive_failures >= 3 {
                             format!("Circuit Breaker Engaged: Tool '{}' has failed 3 times consecutively with non-zero exit code. Cease repetitive failing invocations and synthesize your response.", name)
                         } else if consecutive_repeat_count >= 3 {
                             format!("Circuit Breaker Engaged: You have repeated tool '{}' with identical arguments 3 times consecutively. Synthesize your final answer immediately.", name)
-                        } else if file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit {
+                        } else if cb_post_mutation_limit > 0 && file_mutation_count >= 1 && post_mutation_tools >= cb_post_mutation_limit {
                             format!("Circuit Breaker Engaged: Mutation completed and verified ({} verification steps executed). Cease tool calls and provide your final comprehensive summary now.", post_mutation_tools)
                         } else if cb_total_read_limit > 0 && total_read_count >= cb_total_read_limit {
                             format!("Circuit Breaker Engaged: Cumulative read-only limit reached ({} total reads). Cease exploratory commands and synthesize your response immediately.", total_read_count)
@@ -6508,7 +6519,29 @@ source: "circuit_breaker_crystallization"
                                 "text": format!("<EPHEMERAL_MESSAGE>\n⚠️ WARNING: Tool '{}' has failed 2 times consecutively. Re-evaluate your arguments, parameters, or strategy immediately. A 3rd failure will trip the Circuit Breaker.\n</EPHEMERAL_MESSAGE>", name)
                             }]
                         }));
-
+                    } else if turn_count == warn_step_1 {
+                        // Turn 280: Peringatan pertama untuk mengabadikan ingatan ke .fl_brain
+                        contents.push(json!({
+                            "role": "user",
+                            "parts": [{
+                                "text": format!(
+                                    "<EPHEMERAL_MESSAGE>\n⚠️ [TURN {}/{}] Peringatan Kuota Giliran:\nSesi telah berjalan {} putaran. Segera abadikan seluruh temuan teknis, keputusan arsitektur, dan memori permanen ke `.fl_brain` via `brain_control` sebelum sesi berakhir di turn {}.\n</EPHEMERAL_MESSAGE>",
+                                    turn_count, max_turns, turn_count, max_turns
+                                )
+                            }]
+                        }));
+                    } else if turn_count == warn_step_2 {
+                        // Turn 290: Peringatan kedua urgensi tinggi sebelum batas turn 300
+                        let remaining = max_turns.saturating_sub(turn_count);
+                        contents.push(json!({
+                            "role": "user",
+                            "parts": [{
+                                "text": format!(
+                                    "<EPHEMERAL_MESSAGE>\n🚨 [TURN {}/{} - KRITIS] Peringatan Akhir Kuota Giliran:\nTersisa {} putaran sebelum sistem menghentikan eksekusi paksa pada turn {}!\nPastikan seluruh memori kritis telah tersimpan di `.fl_brain` dan segera tuntaskan respons akhir Anda.\n</EPHEMERAL_MESSAGE>",
+                                    turn_count, max_turns, remaining, max_turns
+                                )
+                            }]
+                        }));
                     }
 
                     tokio::time::sleep(tokio::time::Duration::from_millis(150)).await;
