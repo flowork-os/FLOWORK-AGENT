@@ -762,6 +762,7 @@ ${escapeHtml(String(out).slice(0, 3000))}
     init() {
       console.log('[DualCanvas] ⚡ Initializing Dual-Canvas Controller...');
       this.bindTabEvents();
+      this.bindModeButtons();
       const viewCanvasStage = document.getElementById('view-canvas-stage');
       if (viewCanvasStage && viewCanvasStage.classList.contains('active')) {
         this.onActivateTab();
@@ -790,9 +791,125 @@ ${escapeHtml(String(out).slice(0, 3000))}
       }
     },
 
+    bindModeButtons() {
+      const btnSolo = document.querySelectorAll('#btn-mode-solo, .btn-mode-solo');
+      const btnTeam = document.querySelectorAll('#btn-mode-team, .btn-mode-team');
+
+      btnSolo.forEach(btn => {
+        if (!btn._hasModeListener) {
+          btn._hasModeListener = true;
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.switchMode('solo');
+          });
+        }
+      });
+
+      btnTeam.forEach(btn => {
+        if (!btn._hasModeListener) {
+          btn._hasModeListener = true;
+          btn.addEventListener('click', (e) => {
+            e.preventDefault();
+            this.switchMode('team');
+          });
+        }
+      });
+    },
+
+    updateModeButtons(mode) {
+      const isTeam = (mode === 'team');
+      const btnSolo = document.querySelectorAll('#btn-mode-solo, .btn-mode-solo');
+      const btnTeam = document.querySelectorAll('#btn-mode-team, .btn-mode-team');
+
+      btnSolo.forEach(btn => {
+        if (!isTeam) {
+          btn.classList.add('active');
+          btn.style.background = '#00F2FE';
+          btn.style.color = '#020617';
+          btn.style.boxShadow = '0 0 10px rgba(0, 242, 254, 0.4)';
+        } else {
+          btn.classList.remove('active');
+          btn.style.background = 'transparent';
+          btn.style.color = '#94a3b8';
+          btn.style.boxShadow = 'none';
+        }
+      });
+
+      btnTeam.forEach(btn => {
+        if (isTeam) {
+          btn.classList.add('active');
+          btn.style.background = '#a855f7';
+          btn.style.color = '#ffffff';
+          btn.style.boxShadow = '0 0 10px rgba(168, 85, 247, 0.4)';
+        } else {
+          btn.classList.remove('active');
+          btn.style.background = 'transparent';
+          btn.style.color = '#94a3b8';
+          btn.style.boxShadow = 'none';
+        }
+      });
+    },
+
+    async switchMode(targetMode) {
+      const isGroup = (targetMode === 'team');
+      const mode = isGroup ? 'team' : 'solo';
+      const sessionType = isGroup ? 'group' : 'personal';
+      const persona = isGroup ? 'leader' : 'mr.flow';
+
+      console.log(`[DualCanvas] Switching session mode to ${mode.toUpperCase()} (session_type=${sessionType}, persona=${persona})...`);
+
+      window.currentSessionMode = mode;
+      window.currentSessionType = sessionType;
+      localStorage.setItem('xflow_session_mode', mode);
+
+      this.updateModeButtons(mode);
+
+      if (this.currentSessionData) {
+        this.currentSessionData.session_type = sessionType;
+        this.currentSessionData.mode = mode;
+      }
+      if (window.currentLoadedSessionData) {
+        window.currentLoadedSessionData.session_type = sessionType;
+        window.currentLoadedSessionData.mode = mode;
+      }
+
+      // 1. Notify Backend Core if session exists
+      const activeId = window.currentChatSessionId;
+      if (activeId) {
+        try {
+          await fetch('/api/chat/sessions/' + encodeURIComponent(activeId) + '/mode', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ mode: mode, session_type: sessionType, persona: persona })
+          });
+          console.log(`[DualCanvas] Backend session mode persisted for ${activeId}`);
+        } catch (err) {
+          console.warn('[DualCanvas] Failed to persist session mode to backend:', err);
+        }
+      }
+
+      // 2. Set active persona in session
+      if (typeof window.setSessionAgentPersona === 'function') {
+        window.setSessionAgentPersona(persona, { preserveSession: true });
+      }
+
+      // 3. Synchronize 3D Office Environment Mode
+      if (window.office3DInstance && typeof window.office3DInstance.setSessionMode === 'function') {
+        window.office3DInstance.setSessionMode(isGroup ? 'group' : 'solo');
+      }
+
+      // 4. Update Header and Tab styling
+      this.syncSession(this.currentSessionData);
+
+      // 5. Toast Feedback
+      if (typeof window.showToast === 'function') {
+        window.showToast(isGroup ? '🔷 Swarm Tactical War Room Mode Active' : '🟢 Sovereign Solo Studio Focus Active', 'info');
+      }
+    },
+
     // Called on tab switch ('canvas-stage')
     onActivateTab() {
-      const isGroup = Boolean(this.currentSessionData && this.currentSessionData.session_type === 'group');
+      const isGroup = Boolean(this.currentSessionData && (this.currentSessionData.session_type === 'group' || this.currentSessionData.mode === 'team'));
       const rootEl = document.getElementById('canvas-dynamic-root');
       if (!rootEl) return;
 
@@ -824,7 +941,16 @@ ${escapeHtml(String(out).slice(0, 3000))}
       this.currentSessionData = sessionData || null;
       window.currentLoadedSessionData = sessionData || null;
 
-      const isGroup = Boolean(sessionData && sessionData.session_type === 'group');
+      const isGroup = Boolean(sessionData ? (sessionData.session_type === 'group' || sessionData.mode === 'team') : (localStorage.getItem('xflow_session_mode') === 'team'));
+      const activeMode = isGroup ? 'team' : 'solo';
+      const activeType = isGroup ? 'group' : 'personal';
+
+      window.currentSessionMode = activeMode;
+      window.currentSessionType = activeType;
+      localStorage.setItem('xflow_session_mode', activeMode);
+
+      this.bindModeButtons();
+      this.updateModeButtons(activeMode);
 
       // 1. Update Tab Capsule Title & Icon in Main Tab Strip
       this.updateTabCapsule(isGroup, sessionData);

@@ -14788,10 +14788,11 @@ async function loadChatSession(sessionId, options = {}) {
       currentActiveAgentId = targetAgentId;
       localStorage.setItem('xflow_active_agent_id', targetAgentId);
 
-      // Enforce Sovereign Solo Studio mode and sync active specialist persona for 3D Canvas
+      // Enforce Sovereign Solo Studio or Swarm War Room mode and sync active specialist persona for 3D Canvas
+      const isGroupSession = Boolean(data.data && (data.data.session_type === 'group' || data.data.mode === 'team'));
       if (window.office3DInstance) {
         if (typeof window.office3DInstance.setSessionMode === 'function') {
-          window.office3DInstance.setSessionMode('solo');
+          window.office3DInstance.setSessionMode(isGroupSession ? 'group' : 'solo');
         }
         if (typeof window.office3DInstance.setSoloSpecialist === 'function') {
           window.office3DInstance.setSoloSpecialist(effectivePersona);
@@ -21969,6 +21970,11 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       }
     }
 
+    const isTeamMode = window.currentSessionMode === 'team' || window.currentSessionType === 'group';
+    const effectiveSessionType = isTeamMode ? 'group' : 'personal';
+    const effectiveSessionMode = isTeamMode ? 'team' : 'solo';
+    const effectivePersona = (isTeamMode ? 'leader' : (currentSessionPersonaId && currentSessionPersonaId !== 'leader' ? currentSessionPersonaId : 'mr.flow')).trim();
+
     const res = await fetch('/api/chat/message', {
       method: 'POST',
       headers: {
@@ -21980,10 +21986,12 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       body: JSON.stringify({
         message: promptPayload,
         session_id: currentChatSessionId,
+        session_type: effectiveSessionType,
+        mode: effectiveSessionMode,
         model: selectedChatModelId,
         account_id: currentSessionAccountId || 'combo',
-        agent_id: (currentSessionPersonaId || 'leader').trim(),
-        agent_persona: (currentSessionPersonaId || 'leader').trim(),
+        agent_id: effectivePersona,
+        agent_persona: effectivePersona,
         image_paths: imagePaths.length > 0 ? imagePaths : undefined,
         images: imagePaths.length > 0 ? imagePaths : undefined,
         image_base64: imageBase64List.length > 0 ? imageBase64List[0] : undefined,
