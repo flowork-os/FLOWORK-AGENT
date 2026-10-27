@@ -15,7 +15,7 @@ import glob
 
 FLOWORK_DIR = os.environ.get("FLOWORK_DIR", "/home/mrflow/flowork")
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-STAGING_DIR = os.environ.get("STAGING_DIR", os.path.join(PROJECT_ROOT, ".FL_BIN", "scratch", "repo_staging"))
+STAGING_DIR = os.environ.get("STAGING_DIR", os.path.join(PROJECT_ROOT, "DEVLOPER", ".FL_BIN", "scratch", "repo_staging"))
 
 def log_pass(msg):
     print(f"  \033[32m✓\033[0m {msg}")
