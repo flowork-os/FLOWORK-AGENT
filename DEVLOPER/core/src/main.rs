@@ -58,7 +58,7 @@ use ipc_router::{
     get_active_viewport, get_auth_status, get_auth_ticket, get_available_personas, get_copilot_registry, get_default_save_path,
     get_plugin_status, get_sync_drive_login_url, get_sync_drive_status, get_workspaces,
     install_copilot_plugin, launch_desktop_recorder, launch_plugin, list_plugins, list_skills, list_scheduled_jobs, logout_auth, pick_folder_dialog, pick_save_dialog,
-    open_plugin, reload_plugin, close_plugin,
+    open_plugin, reload_plugin, restart_plugin, close_plugin,
     list_all_triggers, test_trigger_endpoint, toggle_trigger_daemon, get_trigger_store, install_trigger_endpoint, create_trigger_endpoint,
     list_system_prompts, get_system_prompt_content, save_system_prompt,
     get_subagent_persona, save_subagent_persona, get_subagent_rules, save_subagent_rules, get_subagent_task, save_subagent_task,
@@ -244,6 +244,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/apps/:id/launch", post(launch_plugin))
         .route("/api/apps/:id/open", post(open_plugin))
         .route("/api/apps/:id/reload", post(reload_plugin))
+        .route("/api/apps/:id/restart", post(restart_plugin))
         .route("/api/apps/:id/close", post(close_plugin))
         .route("/api/apps/:id/stop", post(stop_plugin))
         .route("/api/apps/:id/status", get(get_plugin_status))
@@ -257,6 +258,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .route("/api/plugins/:id/launch", post(launch_plugin))
         .route("/api/plugins/:id/open", post(open_plugin))
         .route("/api/plugins/:id/reload", post(reload_plugin))
+        .route("/api/plugins/:id/restart", post(restart_plugin))
         .route("/api/plugins/:id/close", post(close_plugin))
         .route("/api/plugins/:id/stop", post(stop_plugin))
         .route("/api/plugins/:id/status", get(get_plugin_status))

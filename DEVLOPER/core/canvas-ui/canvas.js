@@ -237,8 +237,12 @@ function initOffice3DSystem() {
           office3DInstance.pause();
           console.log('[Office 3D] 🛡️ Viewport guard: 3D Studio paused immediately (Background tab detected)');
         }
+        const savedMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+        if (typeof office3DInstance.setOfficeMode === 'function') {
+          office3DInstance.setOfficeMode(savedMode);
+        }
         if (typeof office3DInstance.setSessionMode === 'function') {
-          office3DInstance.setSessionMode('solo');
+          office3DInstance.setSessionMode(savedMode === 'team' ? 'group' : 'solo');
         } else if (Array.isArray(AVAILABLE_PERSONAS) && AVAILABLE_PERSONAS.length > 0) {
           office3DInstance.syncPersonas(AVAILABLE_PERSONAS);
         }
@@ -801,7 +805,7 @@ function resolveWorkerAgentFromTool(toolName, details) {
   const rawTool = String(toolName || '').toLowerCase().trim();
   const d = (details && typeof details === 'object') ? details : {};
 
-  // 1. Direct explicit Subagent / Swarm target
+  // 1. Direct explicit Subagent / Swarm target from invocation details
   let candidate = null;
   if (Array.isArray(d.Subagents) && d.Subagents.length > 0 && d.Subagents[0]) {
     candidate = d.Subagents[0].TypeName || d.Subagents[0].typeName || d.Subagents[0].role || d.Subagents[0].Role;
@@ -810,7 +814,7 @@ function resolveWorkerAgentFromTool(toolName, details) {
     candidate = d.target_agent_id || d.targetAgentId || d.to_agent_id || d.recipient || d.TypeName || d.typeName || d.agent_id || d.agentId || d.role || d.Role;
   }
 
-  // 2. Match against office 3D agent roster
+  // 2. Match against office 3D agent roster if explicit candidate
   if (candidate && window.office3DInstance && Array.isArray(window.office3DInstance.agentRoster)) {
     const candStr = String(candidate).toLowerCase().trim().replace(/^agent-/, '');
     const found = window.office3DInstance.agentRoster.find(a => {
@@ -819,35 +823,41 @@ function resolveWorkerAgentFromTool(toolName, details) {
       return aid === candStr || pid === candStr || (candStr && (aid.includes(candStr) || pid.includes(candStr)));
     });
     if (found) return found.id;
+    return 'agent-' + candStr;
   }
 
-  // 3. Domain-specific tool-to-specialist mapping
-  let domainKey = null;
-  if (rawTool.includes('run_command') || rawTool.includes('replace_file') || rawTool.includes('write_to_file') || rawTool.includes('forger') || rawTool.includes('patch')) {
-    domainKey = 'coder';
-  } else if (rawTool.includes('search_web') || rawTool.includes('read_url') || rawTool.includes('web_search') || rawTool.includes('browser') || rawTool.includes('research')) {
-    domainKey = 'research';
-  } else if (rawTool.includes('generate_image') || rawTool.includes('render_visual') || rawTool.includes('uiux') || rawTool.includes('design')) {
-    domainKey = 'uiux';
-  } else if (rawTool.includes('security') || rawTool.includes('audit') || rawTool.includes('gatekeeper')) {
-    domainKey = 'qa';
+  // 3. High-Precision Domain Specialist Attribution for Flowork Swarm
+  const targetFile = String(d.TargetFile || d.AbsolutePath || d.target_file || d.targetFile || d.file_path || d.path || d.file || '').toLowerCase();
+  const reasonText = String(d.reason || d.reasonText || d.Description || d.description || '').toLowerCase();
+  const isFrontendTarget = targetFile.endsWith('.html') || targetFile.endsWith('.css') || targetFile.endsWith('.vue') || targetFile.endsWith('.svelte') || targetFile.endsWith('.jsx') || targetFile.endsWith('.tsx') || targetFile.includes('canvas-ui') || targetFile.includes('member-area') || targetFile.includes('styles/') || targetFile.endsWith('.svg');
+
+  // A. Swarm Orchestrator & Group Coordinator (Leader)
+  if (rawTool.includes('invoke_subagent') || rawTool.includes('spawn') || rawTool.includes('dispatch') || rawTool.includes('team_progress')) {
+    return 'leader';
   }
 
-  if (domainKey && window.office3DInstance && Array.isArray(window.office3DInstance.agentRoster)) {
-    const foundSpecialist = window.office3DInstance.agentRoster.find(a => {
-      const pid = (a.persona || '').toLowerCase();
-      const aid = (a.id || '').toLowerCase();
-      if (domainKey === 'coder' && (pid.includes('coder') || aid.includes('coder') || pid.includes('developer') || aid.includes('developer'))) return true;
-      if (domainKey === 'research' && (pid.includes('research') || aid.includes('research') || pid.includes('lead') || aid.includes('lead'))) return true;
-      if (domainKey === 'uiux' && (pid.includes('uiux') || aid.includes('uiux') || pid.includes('designer') || aid.includes('designer'))) return true;
-      if (domainKey === 'qa' && (pid.includes('qa') || aid.includes('qa') || pid.includes('audit') || aid.includes('audit'))) return true;
-      return false;
-    });
-    if (foundSpecialist) return foundSpecialist.id;
+  // B. Quality Control & Release Gatekeeper (Tests, Verification, Exit Code Checks, Deterministic Helper)
+  if (rawTool.includes('deterministic_helper') || rawTool.includes('verify') || rawTool.includes('test') || rawTool.includes('check_exit') || rawTool.includes('qc') || rawTool.includes('invariant') || reasonText.includes('exit code 0') || reasonText.includes('verification')) {
+    return 'quality-control';
+  }
+
+  // C. Security Auditor & Reverse Engineering Specialist (Code View, URL Content, Web Search, AST Security)
+  if (rawTool.includes('view_file') || rawTool.includes('read_file') || rawTool.includes('search_web') || rawTool.includes('read_url') || rawTool.includes('ast_audit') || rawTool.includes('audit') || rawTool.includes('security') || rawTool.includes('inspect') || reasonText.includes('inspect') || reasonText.includes('audit')) {
+    return 'security-auditor';
+  }
+
+  // D. Frontend Engineer (UI/UX, CSS, HTML, Canvas, Visual components)
+  if (rawTool.includes('render_visual') || rawTool.includes('generate_image') || (rawTool.includes('replace_file') && isFrontendTarget) || (rawTool.includes('write_to_file') && isFrontendTarget)) {
+    return 'frontend-engineer';
+  }
+
+  // E. Backend & Systems Specialist (Terminal, Commands, Node/Rust/Python/Bash, System files)
+  if (rawTool.includes('run_command') || rawTool.includes('bash') || rawTool.includes('exec') || rawTool.includes('terminal') || rawTool.includes('forger') || rawTool.includes('patch') || rawTool.includes('write_to_file') || rawTool.includes('replace_file')) {
+    return 'backend-engineer';
   }
 
   // 4. Fallback to active chat session persona
-  return (typeof getActiveTargetAgentId === 'function') ? getActiveTargetAgentId() : 'agent-default';
+  return (typeof getActiveTargetAgentId === 'function') ? getActiveTargetAgentId() : 'mr.flow';
 }
 window.resolveWorkerAgentFromTool = resolveWorkerAgentFromTool;
 
@@ -4714,10 +4724,19 @@ function initSSE() {
           }
         }
         if (window.swarmTelemetry && typeof window.swarmTelemetry.emit === 'function') {
+          const wCount = Array.isArray(wave.active_workers) ? wave.active_workers.length : 0;
+          const statusLabel = (wave.status === 'wave_finished' || wave.status === 'barrier_sync') ? 'Exit Code: 0' : 'RUNNING...';
+          const statusType = (wave.status === 'wave_finished' || wave.status === 'barrier_sync') ? 'success' : 'info';
           window.swarmTelemetry.emit({
             event: 'swarm_wave',
+            agentId: 'leader',
+            category: 'dispatch',
+            tool: 'swarm_orchestrator',
+            reason: `Swarm wave #${wave.wave_index || 1} [${wave.status || 'wave_active'}]: Orchestrating ${wCount} specialist agent(s) across barrier sync.`,
+            command: `DAG Barrier Sync // Wave ${wave.wave_index || 1} (${wCount} workers operational)`,
+            status: statusLabel,
+            statusType: statusType,
             wave_index: wave.wave_index,
-            status: wave.status,
             active_workers: wave.active_workers
           });
         }
@@ -6010,7 +6029,7 @@ async function openPluginTab(plugin, options = {}) {
     iframe.setAttribute('allow', 'autoplay; microphone; camera; midi; encrypted-media');
 
     const queryParam = assignedPort ? `?port=${assignedPort}` : '';
-    const pluginUrl = `/apps/${plugin.id}/gui/${queryParam}`;
+    const pluginUrl = `/apps/${plugin.id}/gui/index.html${queryParam}`;
     iframe.dataset.src = pluginUrl;
     iframe.src = pluginUrl;
 
@@ -7835,7 +7854,7 @@ function renderConnectorUI(data) {
       listContainer.innerHTML = `
         <div class="connector-empty-state">
           <span style="font-size: 32px;">⚡</span>
-          <p>No Antigravity accounts found in local vault.</p>
+          <p>No accounts found in local vault.</p>
           <button class="btn-connector-subaction" id="btn-empty-sync-cloud">Download Accounts from Cloud</button>
         </div>
       `;
@@ -8135,6 +8154,9 @@ let activeTaskKeys = new Set();
 let activeTurnUserCard = null;
 let isSystemRestarting = false;
 let restartPollTimer = null;
+const initialSessionMode = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+window.currentSessionMode = initialSessionMode;
+window.currentSessionType = (initialSessionMode === 'team') ? 'group' : 'personal';
 
 function setChatStreamingState(isStreaming) {
   isChatStreaming = isStreaming;
@@ -10201,38 +10223,54 @@ window.safeCopyToClipboard = async function(text) {
     const ta = document.createElement("textarea");
     ta.value = text;
     ta.style.position = "fixed";
-    ta.style.left = "-9999px";
-    ta.style.top = "-9999px";
-    ta.style.opacity = "0";
-    ta.style.pointerEvents = "none";
-    ta.setAttribute("readonly", "");
+    ta.style.top = "0";
+    ta.style.left = "0";
+    ta.style.width = "2em";
+    ta.style.height = "2em";
+    ta.style.padding = "0";
+    ta.style.border = "none";
+    ta.style.outline = "none";
+    ta.style.boxShadow = "none";
+    ta.style.background = "transparent";
+    ta.style.opacity = "0.01";
+    ta.style.zIndex = "-1";
     document.body.appendChild(ta);
     ta.focus();
     ta.select();
-    ta.setSelectionRange(0, ta.value.length);
+    ta.setSelectionRange(0, text.length);
     const ok = document.execCommand("copy");
     document.body.removeChild(ta);
     if (ok) return true;
   } catch (err) {
     console.warn("[Flowork Canvas] execCommand fallback failed:", err);
   }
-  throw new Error("All clipboard copy methods failed");
+  return false;
 };
 
 window.copyCodeSnippet = function(btn) {
-  const card = btn.closest('.chat-code-card');
+  const card = btn ? btn.closest('.chat-code-card') : null;
   if (!card) return;
-  const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || card.querySelector('code')?.innerText || '';
+  const preCode = card.querySelector('pre code') || card.querySelector('code');
+  let code = preCode ? (preCode.innerText || preCode.textContent || '') : (card.getAttribute('data-code') || '');
   if (!code) {
     showToast('No code snippet content found');
     return;
   }
-  window.safeCopyToClipboard(code).then(() => {
-    const span = btn.querySelector('span') || btn;
-    const orig = span.textContent;
-    span.textContent = 'Copied!';
-    setTimeout(() => { span.textContent = orig; }, 1800);
-    showToast('Code copied to clipboard');
+  code = code.trimEnd();
+  window.safeCopyToClipboard(code).then((success) => {
+    if (success !== false) {
+      const span = btn.querySelector('span:last-child') || btn.querySelector('span') || btn;
+      const orig = span.textContent;
+      span.textContent = 'Copied!';
+      btn.classList.add('copied');
+      setTimeout(() => {
+        span.textContent = orig;
+        btn.classList.remove('copied');
+      }, 1800);
+      showToast('Code copied to clipboard');
+    } else {
+      showToast('Failed to copy code to clipboard');
+    }
   }).catch((err) => {
     console.error('[Flowork Canvas] Copy failed:', err);
     showToast('Failed to copy code: ' + (err?.message || 'Clipboard error'));
@@ -10240,34 +10278,59 @@ window.copyCodeSnippet = function(btn) {
 };
 
 window.executeSnippetInChat = function(btn) {
-  const card = btn.closest('.chat-code-card');
+  const card = btn ? btn.closest('.chat-code-card') : null;
   if (!card) return;
-  const code = card.getAttribute('data-code') || card.querySelector('pre code')?.innerText || card.querySelector('code')?.innerText || '';
+  const preCode = card.querySelector('pre code') || card.querySelector('code');
+  let code = preCode ? (preCode.innerText || preCode.textContent || '') : (card.getAttribute('data-code') || '');
   const lang = (card.getAttribute('data-lang') || '').toUpperCase();
   if (!code) return;
+  code = code.trim();
 
   const rightbarChat = document.getElementById('rightbar-chat');
   if (rightbarChat && rightbarChat.classList.contains('collapsed')) {
     rightbarChat.classList.remove('collapsed');
-    localStorage.setItem('xflow_rightbar_collapsed', 'false');
+    try { localStorage.setItem('xflow_rightbar_collapsed', 'false'); } catch (e) {}
   }
 
-  const chatInput = document.getElementById('rightbar-chat-input');
+  const chatDrawer = document.getElementById('chat-drawer');
+  if (chatDrawer && chatDrawer.classList.contains('collapsed')) {
+    chatDrawer.classList.remove('collapsed');
+  }
+
+  const chatInput = document.getElementById('rightbar-chat-input') ||
+                    document.getElementById('chat-input') ||
+                    document.querySelector('.chat-input-textarea') ||
+                    document.querySelector('textarea.chat-input');
   if (chatInput) {
     if (lang === 'BASH' || lang === 'SH' || lang === 'SHELL') {
       chatInput.value = code;
     } else if (lang === 'PYTHON' || lang === 'PY') {
-      chatInput.value = `python3 -c ${JSON.stringify(code)}`;
+      chatInput.value = code.includes('\n') ? code : (code.startsWith('python') ? code : `python3 -c ${JSON.stringify(code)}`);
     } else if (lang === 'JS' || lang === 'JAVASCRIPT' || lang === 'NODE') {
-      chatInput.value = `node -e ${JSON.stringify(code)}`;
+      chatInput.value = code.includes('\n') ? code : (code.startsWith('node') ? code : `node -e ${JSON.stringify(code)}`);
     } else {
       chatInput.value = code;
     }
     chatInput.focus();
     chatInput.style.height = 'auto';
-    chatInput.style.height = Math.min(chatInput.scrollHeight, 140) + 'px';
+    chatInput.style.height = Math.min(chatInput.scrollHeight, 180) + 'px';
     chatInput.dispatchEvent(new Event('input', { bubbles: true }));
+
+    const span = btn.querySelector('span:last-child') || btn.querySelector('span') || btn;
+    const origText = span.textContent;
+    span.textContent = 'Staged!';
+    btn.classList.add('staged');
+    setTimeout(() => {
+      span.textContent = origText;
+      btn.classList.remove('staged');
+    }, 1800);
+
+    try { chatInput.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (_) {}
     showToast('Snippet staged in prompt input. Ready to execute.');
+  } else {
+    window.safeCopyToClipboard(code).then(() => {
+      showToast('Prompt input not found. Snippet copied to clipboard instead.');
+    });
   }
 };
 
@@ -10341,6 +10404,77 @@ window.handleChatLinkClick = function(e, url) {
     return false;
   }
 };
+
+// Sovereign Global Delegated Click Listener for Snippet & Interactive Card Actions
+if (!window._flSnippetActionsDelegated) {
+  window._flSnippetActionsDelegated = true;
+  document.addEventListener('click', (e) => {
+    // 1. Stage Run button on code card
+    const runBtn = e.target.closest('.code-card-run');
+    if (runBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.executeSnippetInChat === 'function') {
+        window.executeSnippetInChat(runBtn);
+      }
+      return;
+    }
+
+    // 2. Copy Code button on code card
+    const copyCodeBtn = e.target.closest('.code-card-copy');
+    if (copyCodeBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.copyCodeSnippet === 'function') {
+        window.copyCodeSnippet(copyCodeBtn);
+      }
+      return;
+    }
+
+    // 3. Table JSON / CSV export buttons
+    const tableJsonBtn = e.target.closest('.chat-table-hud-btn[data-action="table-json"]');
+    if (tableJsonBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.copyTableAsJson === 'function') {
+        window.copyTableAsJson(tableJsonBtn);
+      }
+      return;
+    }
+    const tableCsvBtn = e.target.closest('.chat-table-hud-btn[data-action="table-csv"]');
+    if (tableCsvBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.copyTableAsCsv === 'function') {
+        window.copyTableAsCsv(tableCsvBtn);
+      }
+      return;
+    }
+
+    // 4. File download / copy path button
+    const fileCopyBtn = e.target.closest('.chat-file-btn[data-action="copy-path"]');
+    if (fileCopyBtn) {
+      e.preventDefault();
+      e.stopPropagation();
+      const filePath = fileCopyBtn.getAttribute('data-filepath');
+      if (filePath && typeof window.copyFilePath === 'function') {
+        window.copyFilePath(filePath, fileCopyBtn);
+      }
+      return;
+    }
+
+    // 5. Media thumbnail preview click
+    const mediaPreview = e.target.closest('.chat-media-preview');
+    if (mediaPreview && !e.target.closest('a') && !e.target.closest('button')) {
+      e.preventDefault();
+      e.stopPropagation();
+      if (typeof window.handleChatAttachmentClick === 'function') {
+        window.handleChatAttachmentClick(mediaPreview);
+      }
+      return;
+    }
+  }, true);
+}
 
 function formatStatusCell(cellText) {
   const t = (cellText || '').trim();
@@ -11632,12 +11766,12 @@ function renderMarkdown(md) {
           </div>
           <div class="code-card-actions">
             ${isRunnable ? `
-              <button class="code-card-run" onclick="executeSnippetInChat(this)" title="Stage this code into chat prompt">
+              <button class="code-card-run" data-action="stage-run" onclick="executeSnippetInChat(this)" title="Stage this code into chat prompt">
                 <span class="code-run-icon">▶</span>
                 <span>Stage Run</span>
               </button>
             ` : ''}
-            <button class="code-card-copy" onclick="copyCodeSnippet(this)" title="Copy code snippet">
+            <button class="code-card-copy" data-action="copy-code" onclick="copyCodeSnippet(this)" title="Copy code snippet">
               <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
               <span>Copy</span>
             </button>
@@ -11810,12 +11944,15 @@ function renderMarkdown(md) {
     return `<p class="chat-p">${trimmed.replace(/\n/g, '<br>')}</p>`;
   }).join('');
 
+  // Sanitize Markdown HTML before restoring trusted internal components
+  formatted = sanitizeMarkdownHtml(formatted);
+
   // Restore code cards (using function to avoid $ replacement pattern corruption)
   codeCards.forEach((card, idx) => {
     formatted = formatted.replace('___CODE_BLOCK_' + idx + '___', () => card);
   });
 
-  return sanitizeMarkdownHtml(formatted);
+  return formatted;
 }
 
 function sanitizeMarkdownHtml(html) {
@@ -12184,6 +12321,45 @@ function initRightbarChat() {
           chatInput.value = cmd;
           chatInput.focus();
           chatInput.style.height = 'auto';
+        }
+        return;
+      }
+      const runBtn = e.target.closest('.code-card-run');
+      if (runBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof window.executeSnippetInChat === 'function') {
+          window.executeSnippetInChat(runBtn);
+        }
+        return;
+      }
+      const copyCodeBtn = e.target.closest('.code-card-copy');
+      if (copyCodeBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        if (typeof window.copyCodeSnippet === 'function') {
+          window.copyCodeSnippet(copyCodeBtn);
+        }
+        return;
+      }
+      const copyBtn = e.target.closest('.btn-copy-response');
+      if (copyBtn) {
+        e.preventDefault();
+        e.stopPropagation();
+        const card = copyBtn.closest('.chat-msg-assistant') || copyBtn.closest('.chat-msg-card') || copyBtn.closest('.chat-msg');
+        const bodyArea = card?.querySelector('.chat-body-area') || card?.querySelector('.chat-msg-content') || card;
+        const textToCopy = bodyArea ? (bodyArea.innerText || bodyArea.textContent || '').trim() : '';
+        if (textToCopy && window.safeCopyToClipboard) {
+          window.safeCopyToClipboard(textToCopy).then(() => {
+            const span = copyBtn.querySelector('span');
+            const originalText = span ? span.innerText : '';
+            if (span) span.innerText = 'Copied!';
+            copyBtn.classList.add('copied');
+            setTimeout(() => {
+              if (span) span.innerText = originalText || 'Copy';
+              copyBtn.classList.remove('copied');
+            }, 2000);
+          });
         }
         return;
       }
@@ -13318,7 +13494,8 @@ function recordThinkingArsenal(toolName, details, status = 'running', outputData
   else if (cleanTool.includes('guardian') || cleanTool.includes('security') || cleanTool.includes('audit')) cat = 'guardian';
 
   // Stream empirical operational telemetry to Swarm Feed
-  if (status === 'running' && reasonText && typeof window.emitSwarmTelemetry === 'function') {
+  const effectiveReason = reasonText || (cmd ? `Executing: ${cmd.slice(0, 90)}` : (targetFile ? `Accessing: ${targetFile}` : `Executing ${cleanTool}`));
+  if (status === 'running' && typeof window.emitSwarmTelemetry === 'function') {
     swarmToolTimers.set(resolvedStepKey, Date.now());
     window.emitSwarmTelemetry({
       id: `swm-${resolvedStepKey}`,
@@ -13327,7 +13504,7 @@ function recordThinkingArsenal(toolName, details, status = 'running', outputData
       loopCount: (window.FloworkLoopSysMonitor && window.FloworkLoopSysMonitor.currentLoop) || 1,
       category: cat,
       agentId: workerAgent,
-      reason: reasonText,
+      reason: effectiveReason,
       tool: cleanTool,
       targetFile: targetFile,
       command: cmd || (targetFile ? `${cleanTool}: ${targetFile}` : ''),
@@ -13390,7 +13567,7 @@ function recordThinkingArsenal(toolName, details, status = 'running', outputData
     if (outputData) {
       const outStr = typeof outputData === 'string' ? outputData : JSON.stringify(outputData);
       const skillMatches = outStr.match(/\b([a-z0-9]+(?:[-_][a-z0-9]+)+)\b/gi) || [];
-      const knownSkillHints = ['agy-customizations', 'antigravity-guide', 'antigravity_guide', 'generative_ui', 'migrate-workflows'];
+      const knownSkillHints = ['ui_ux_pro_max', 'swarm_orchestrator', 'software_company_sop', 'growth_marketing_engine', 'code_concat', 'flowork_guide', 'flowork_customizations', 'generative_ui'];
       skillMatches.forEach(cand => {
         const lower = cand.toLowerCase();
         if (knownSkillHints.includes(lower) || lower.endsWith('_skill') || lower.includes('flowork')) {
@@ -14264,18 +14441,26 @@ async function startNewChatSession(resetToDefault = false) {
   currentSessionFailoverPolicy = 'fallback_pool';
   updateAccountPillDisplay();
 
-  if (window.office3DInstance && typeof window.office3DInstance.setSessionMode === 'function') {
-    window.office3DInstance.setSessionMode('solo');
+  const currentModePref = (localStorage.getItem('xflow_session_mode') === 'team') ? 'team' : 'solo';
+  if (window.office3DInstance) {
+    if (typeof window.office3DInstance.setSessionMode === 'function') {
+      window.office3DInstance.setSessionMode(currentModePref === 'team' ? 'group' : 'solo');
+    }
+    if (typeof window.office3DInstance.setOfficeMode === 'function') {
+      window.office3DInstance.setOfficeMode(currentModePref);
+    }
   }
 
   if (resetToDefault === true) {
-    pendingSessionPersonaId = 'mr.flow';
-    currentSessionPersonaId = 'mr.flow';
-    localStorage.setItem('xflow_chat_persona', 'mr.flow');
-    currentActiveAgentId = 'agent-mrflow-system-01';
-    localStorage.setItem('xflow_active_agent_id', 'agent-mrflow-system-01');
+    const defaultPersona = (currentModePref === 'team') ? 'leader' : 'mr.flow';
+    pendingSessionPersonaId = defaultPersona;
+    currentSessionPersonaId = defaultPersona;
+    localStorage.setItem('xflow_chat_persona', defaultPersona);
+    const targetAgId = (defaultPersona === 'leader') ? 'agent-leader' : 'agent-mrflow-system-01';
+    currentActiveAgentId = targetAgId;
+    localStorage.setItem('xflow_active_agent_id', targetAgId);
     if (typeof setSessionAgentPersona === 'function') {
-      setSessionAgentPersona('mr.flow');
+      setSessionAgentPersona(defaultPersona);
     }
   } else {
     let activePersona = (localStorage.getItem('xflow_chat_persona') || currentSessionPersonaId || 'mr.flow').trim();
@@ -14766,12 +14951,19 @@ async function loadChatSession(sessionId, options = {}) {
       const existingGroupBanner = document.getElementById('fl-group-chat-banner');
       if (existingGroupBanner) existingGroupBanner.remove();
 
+      const savedUserModePref = localStorage.getItem('xflow_session_mode');
+      const isGroupSession = savedUserModePref ? (savedUserModePref === 'team') : Boolean(data.data && (data.data.session_type === 'group' || data.data.mode === 'team'));
+      const effectiveModeStr = isGroupSession ? 'team' : 'solo';
+      const effectiveTypeStr = isGroupSession ? 'group' : 'personal';
+      window.currentSessionMode = effectiveModeStr;
+      window.currentSessionType = effectiveTypeStr;
+
       const roomIconEl = document.getElementById('fl-room-type-icon');
       const roomNameEl = document.getElementById('fl-current-room-name');
-      if (roomIconEl) roomIconEl.textContent = '👤';
+      if (roomIconEl) roomIconEl.textContent = isGroupSession ? '👥' : '👤';
       const activeAg = (data.data && (data.data.agent_persona || data.data.agent_id)) || 'default';
       const agLabel = (activeAg === 'default' || activeAg === 'mr.flow') ? 'Mr. Flow' : activeAg;
-      if (roomNameEl) roomNameEl.textContent = `Direct: ${agLabel}`;
+      if (roomNameEl) roomNameEl.textContent = isGroupSession ? 'War Room: Swarm Orchestration' : `Direct: ${agLabel}`;
 
       const count = data.data.steps.length;
       const lastStep = count > 0 ? data.data.steps[count - 1] : null;
@@ -14811,14 +15003,19 @@ async function loadChatSession(sessionId, options = {}) {
       localStorage.setItem('xflow_active_agent_id', targetAgentId);
 
       // Enforce Sovereign Solo Studio or Swarm War Room mode and sync active specialist persona for 3D Canvas
-      const isGroupSession = Boolean(data.data && (data.data.session_type === 'group' || data.data.mode === 'team'));
       if (window.office3DInstance) {
         if (typeof window.office3DInstance.setSessionMode === 'function') {
           window.office3DInstance.setSessionMode(isGroupSession ? 'group' : 'solo');
         }
+        if (typeof window.office3DInstance.setOfficeMode === 'function') {
+          window.office3DInstance.setOfficeMode(effectiveModeStr);
+        }
         if (typeof window.office3DInstance.setSoloSpecialist === 'function') {
           window.office3DInstance.setSoloSpecialist(effectivePersona);
         }
+      }
+      if (window.DualCanvasController && typeof window.DualCanvasController.updateModeButtons === 'function') {
+        window.DualCanvasController.updateModeButtons(effectiveModeStr);
       }
 
       // Also sync 3D office highlight & dock safely
@@ -15269,7 +15466,7 @@ function createThinkingController(container) {
       // Live-detect mentioned skills or tools inside thinking text
       const lower = clean.toLowerCase();
       let arsenalChanged = false;
-      ['agy-customizations', 'antigravity-guide', 'antigravity_guide', 'generative_ui', 'migrate-workflows'].forEach(sk => {
+      ['ui_ux_pro_max', 'swarm_orchestrator', 'software_company_sop', 'growth_marketing_engine', 'code_concat', 'flowork_guide', 'flowork_customizations', 'generative_ui'].forEach(sk => {
         if (lower.includes(sk)) {
           sessionPinnedSkills.add(sk);
           turnPinnedSkills.add(sk);
@@ -15806,11 +16003,11 @@ function formatAskQuestionCard(details, status = 'done') {
 }
 
 /* ==========================================================================
-   JARVIS TACTICAL CYBER-HUD & AUDIO ENGINE
+   MR. FLOW TACTICAL CYBER-HUD & AUDIO ENGINE
    ========================================================================== */
 
-const FloworkJarvisAudio = {
-  mode: localStorage.getItem('flw_jarvis_audio_mode') || 'all',
+const FloworkMrFlowAudio = {
+  mode: localStorage.getItem('flw_mrflow_audio_mode') || 'all',
   lastTrigger: 0,
   lastType: '',
   audioCtx: null,
@@ -15827,7 +16024,7 @@ const FloworkJarvisAudio = {
 
   setMode(newMode) {
     this.mode = newMode;
-    localStorage.setItem('flw_jarvis_audio_mode', newMode);
+    localStorage.setItem('flw_mrflow_audio_mode', newMode);
     this.updateToggleUi();
   },
 
@@ -15838,32 +16035,32 @@ const FloworkJarvisAudio = {
   },
 
   updateToggleUi() {
-    const btn = document.getElementById('btn-jarvis-audio-toggle');
+    const btn = document.getElementById('btn-mrflow-audio-toggle');
     if (!btn) return;
     if (this.mode === 'all') {
-      btn.className = 'chat-btn-action fl-jarvis-toggle-btn';
+      btn.className = 'chat-btn-action fl-mrflow-toggle-btn';
       btn.innerHTML = '🔊';
       btn.title = 'Audio: Voice and SFX Enabled (Click to toggle)';
     } else if (this.mode === 'sfx_only') {
-      btn.className = 'chat-btn-action fl-jarvis-toggle-btn';
+      btn.className = 'chat-btn-action fl-mrflow-toggle-btn';
       btn.innerHTML = '🔈';
       btn.title = 'Audio: SFX Only (Click to toggle)';
     } else {
-      btn.className = 'chat-btn-action fl-jarvis-toggle-btn is-muted';
+      btn.className = 'chat-btn-action fl-mrflow-toggle-btn is-muted';
       btn.innerHTML = '🔇';
       btn.title = 'Audio: Muted (Click to enable)';
     }
   },
 
   initUi() {
-    let btn = document.getElementById('btn-jarvis-audio-toggle');
+    let btn = document.getElementById('btn-mrflow-audio-toggle');
     if (!btn) {
       const headerActions = document.querySelector('.chat-header-actions') || document.querySelector('.rightbar-header');
       if (headerActions) {
         btn = document.createElement('button');
-        btn.id = 'btn-jarvis-audio-toggle';
-        btn.className = 'chat-btn-action fl-jarvis-toggle-btn';
-        btn.onclick = () => FloworkJarvisAudio.toggleMode();
+        btn.id = 'btn-mrflow-audio-toggle';
+        btn.className = 'chat-btn-action fl-mrflow-toggle-btn';
+        btn.onclick = () => FloworkMrFlowAudio.toggleMode();
         headerActions.insertBefore(btn, headerActions.firstChild);
       }
     }
@@ -16001,52 +16198,52 @@ const FloworkJarvisAudio = {
 
     const audioMeta = {
       target_lock: {
-        file: '/canvas/sounds/jarvis/target_locked.mp3',
+        file: '/canvas/sounds/mrflow/target_locked.mp3',
         speech: "Target acquired. Scanning perimeter, sir.",
         sfx: 'radar_lock'
       },
       terminal_exec: {
-        file: '/canvas/sounds/jarvis/terminal_exec.mp3',
+        file: '/canvas/sounds/mrflow/terminal_exec.mp3',
         speech: "Executing payload, sir. Terminal stream live.",
         sfx: 'terminal_click'
       },
       terminal_done: {
-        file: '/canvas/sounds/jarvis/terminal_done.mp3',
+        file: '/canvas/sounds/mrflow/terminal_done.mp3',
         speech: "Process completed cleanly with exit code zero.",
         sfx: 'chime'
       },
       skill_search: {
-        file: '/canvas/sounds/jarvis/skill_search.mp3',
+        file: '/canvas/sounds/mrflow/skill_search.mp3',
         speech: "Querying skill repository for requested capability.",
         sfx: 'blip'
       },
       skill_pinned: {
-        file: '/canvas/sounds/jarvis/skill_pinned.mp3',
+        file: '/canvas/sounds/mrflow/skill_pinned.mp3',
         speech: "Runbook pinned. Operational protocol engaged, sir.",
         sfx: 'lock'
       },
       agent_spawn: {
-        file: '/canvas/sounds/jarvis/agent_spawn.mp3',
+        file: '/canvas/sounds/mrflow/agent_spawn.mp3',
         speech: "Sub-agent deployed into orbit. Swarm telemetry synchronized.",
         sfx: 'warp'
       },
       agent_complete: {
-        file: '/canvas/sounds/jarvis/agent_complete.mp3',
+        file: '/canvas/sounds/mrflow/agent_complete.mp3',
         speech: "Sub-agent reporting back. Mission accomplished, sir.",
         sfx: 'chime'
       },
       code_patched: {
-        file: '/canvas/sounds/jarvis/code_patched.mp3',
+        file: '/canvas/sounds/mrflow/code_patched.mp3',
         speech: "Source code modified with surgical precision, sir.",
         sfx: 'laser'
       },
       alert_breach: {
-        file: '/canvas/sounds/jarvis/alert_breach.mp3',
+        file: '/canvas/sounds/mrflow/alert_breach.mp3',
         speech: "Command intercepted. Security protocol triggered, sir.",
         sfx: 'klaxon'
       },
       system_online: {
-        file: '/canvas/sounds/jarvis/system_online.mp3',
+        file: '/canvas/sounds/mrflow/system_online.mp3',
         speech: "Flowork OS Sovereign Engine online. All systems nominal.",
         sfx: 'chime'
       }
@@ -16064,7 +16261,7 @@ const FloworkJarvisAudio = {
         const p = audio.play();
         if (p !== undefined) {
           p.catch((err) => {
-            console.warn('[Jarvis Audio] MP3 play error:', err);
+            console.warn('[Mr. Flow Audio] MP3 play error:', err);
             this.playSpeechFallback(speechText);
           });
         }
@@ -16106,8 +16303,8 @@ const FloworkChatTacticalOverlay = {
       if (idx < text.length) {
         element.textContent += text[idx];
         idx++;
-        if (idx % 3 === 0 && window.FloworkJarvisAudio && FloworkJarvisAudio.mode === 'all') {
-          FloworkJarvisAudio.playSynthSfx('terminal_click');
+        if (idx % 3 === 0 && window.FloworkMrFlowAudio && FloworkMrFlowAudio.mode === 'all') {
+          FloworkMrFlowAudio.playSynthSfx('terminal_click');
         }
       } else {
         clearInterval(this.activeTypingTimer);
@@ -16331,12 +16528,12 @@ const FloworkTacticalHUD = {
 };
 
 window.FloworkChatTacticalOverlay = FloworkChatTacticalOverlay;
-window.FloworkMrFlowAudio = FloworkJarvisAudio;
-window.FloworkJarvisAudio = FloworkJarvisAudio;
+window.FloworkMrFlowAudio = FloworkMrFlowAudio;
+window.FloworkMrFlowAudio = FloworkMrFlowAudio;
 
 let hasPlayedSystemOnline = false;
 document.addEventListener('click', () => {
-  FloworkJarvisAudio.initAudioContext();
+  FloworkMrFlowAudio.initAudioContext();
   hasPlayedSystemOnline = true;
 }, { once: true });
 
@@ -17482,12 +17679,43 @@ function renderLiveBashRunner(activeSlot, toolName, details, stepIdx) {
     if (box.classList.contains('is-locked')) { if (box._bashTimer) { clearInterval(box._bashTimer); box._bashTimer = null; } return; }
     if (document.hidden) return;
     tick++;
-    const elapsed = ((Date.now() - box._spawnTime) / 1000).toFixed(2).padStart(5, '0');
+    const elapsedSecNum = (Date.now() - box._spawnTime) / 1000;
+    const elapsed = elapsedSecNum.toFixed(2).padStart(5, '0');
         // (cached sw)
     if (sw) sw.textContent = `${elapsed}s`;
 
         // (cached ioEl)
     if (ioEl) ioEl.textContent = `I/O: ${1200 + ((tick * 173) % 2800)} CHARS/S`;
+
+    // Sovereign 120s Auto-Ping & Watchdog Guard:
+    if (elapsedSecNum >= 120 && !box._hasAutoPinged) {
+      box._hasAutoPinged = true;
+      const badgeEl = box.querySelector('.fl-bash-badge');
+      if (badgeEl) {
+        badgeEl.textContent = '⏱️ AUTO-PING (120s)';
+        badgeEl.style.background = 'rgba(234, 179, 8, 0.2)';
+        badgeEl.style.color = '#fde047';
+        badgeEl.style.borderColor = 'rgba(234, 179, 8, 0.4)';
+      }
+      if (typeof currentChatSessionId !== 'undefined' && currentChatSessionId) {
+        fetch(`/api/chat/steps/${encodeURIComponent(currentChatSessionId)}`)
+          .then(r => r.json())
+          .then(d => {
+            if (d && d.data && Array.isArray(d.data.steps)) {
+              const matchingStep = d.data.steps[stepIdx];
+              if (matchingStep && String(matchingStep.status || '').endsWith('DONE')) {
+                dismissLiveToolBox(activeSlot, stepIdx, matchingStep.runCommand?.output || matchingStep.output || '');
+              }
+            }
+          }).catch(() => {});
+      }
+    }
+    // Hard UI safety ceiling at 125s: auto dismiss so it never hangs indefinitely
+    if (elapsedSecNum >= 125) {
+      if (box._bashTimer) { clearInterval(box._bashTimer); box._bashTimer = null; }
+      dismissLiveToolBox(activeSlot, stepIdx, '[AUTO-PING // HANDED OFF TO BACKGROUND]');
+      return;
+    }
 
     if (!box._hasRealStdout) {
           // (cached codeEl)
@@ -18991,7 +19219,7 @@ function renderLiveCameraShutter(activeSlot, toolName, details, stepIdx) {
 
   const d = (details && details.details && typeof details.details === 'object') ? { ...details, ...details.details } : (details || {});
   const targetLabel = shortenFilePath(d.target || d.TargetFile || d.path || d.output || d.display || 'DISPLAY=:0 // VIEWPORT');
-  FloworkJarvisAudio.playSynthSfx('shutter_click');
+  FloworkMrFlowAudio.playSynthSfx('shutter_click');
 
   let box = activeSlot.querySelector(`[data-live-step="${stepIdx}"]`);
   if (!box) {
@@ -20581,7 +20809,7 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
   recordThinkingArsenal(toolName, details, status, d.output ?? d.rawOutput ?? null, stepIdx);
 
   // Initialize Mr. Flow audio UI controls
-  FloworkJarvisAudio.initUi();
+  FloworkMrFlowAudio.initUi();
 
   const { activeSlot, capsule, capsuleBody } = getOrCreateToolsCapsule(toolsArea);
 
@@ -20647,13 +20875,13 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isSearchTools) {
       renderLiveSearchTools(activeSlot, toolName, details, stepIdx);
     } else if (isSearchWeb) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveSearchWeb(activeSlot, toolName, details, stepIdx);
     } else if (isReadUrl) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveReadUrl(activeSlot, toolName, details, stepIdx);
     } else if (isFlowLock) {
-      FloworkJarvisAudio.trigger('code_patched');
+      FloworkMrFlowAudio.trigger('code_patched');
       renderLiveFlowLock(activeSlot, toolName, details, stepIdx);
     } else if (isSysHealth) {
       renderLiveSysHealth(activeSlot, toolName, details, stepIdx);
@@ -20662,10 +20890,10 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isAuditPortability) {
       renderLiveAuditPortability(activeSlot, toolName, details, stepIdx);
     } else if (isWebSecAudit) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveWebSecurityAudit(activeSlot, toolName, details, stepIdx);
     } else if (isWebIntel) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveWebsiteIntelligence(activeSlot, toolName, details, stepIdx);
     } else if (isSchedule) {
       renderLiveSchedule(activeSlot, toolName, details, stepIdx);
@@ -20678,10 +20906,10 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isGatekeeper) {
       renderLivePublishGatekeeper(activeSlot, toolName, details, stepIdx);
     } else if (isYtVideo) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveYtSpyVideo(activeSlot, toolName, details, stepIdx);
     } else if (isYtChannel) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveYtSpyChannel(activeSlot, toolName, details, stepIdx);
     } else if (isYtTranscript) {
       renderLiveYtSpyTranscript(activeSlot, toolName, details, stepIdx);
@@ -20690,14 +20918,14 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isYtComments) {
       renderLiveYtSpyComments(activeSlot, toolName, details, stepIdx);
     } else if (isYtStrategy) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveYtSpyStrategy(activeSlot, toolName, details, stepIdx);
     } else if (isAskQuestion) {
       renderLiveAskQuestion(activeSlot, toolName, details, stepIdx);
     } else if (isSysRestart) {
       renderLiveSystemRestart(activeSlot, toolName, details, stepIdx);
     } else if (isTeamAudit) {
-      FloworkJarvisAudio.trigger('target_lock');
+      FloworkMrFlowAudio.trigger('target_lock');
       renderLiveTeamAudit(activeSlot, toolName, details, stepIdx);
     } else if (isGenImage) {
       renderLiveGenerateImage(activeSlot, toolName, details, stepIdx);
@@ -20710,13 +20938,13 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
     } else if (isScanner) {
       renderLiveFileScanner(activeSlot, toolName, details, stepIdx);
     } else if (isForger) {
-      FloworkJarvisAudio.trigger('code_patched');
+      FloworkMrFlowAudio.trigger('code_patched');
       renderLiveCodeForger(activeSlot, toolName, details, stepIdx);
     } else if (isBash) {
-      FloworkJarvisAudio.trigger('terminal_exec');
+      FloworkMrFlowAudio.trigger('terminal_exec');
       renderLiveBashRunner(activeSlot, toolName, details, stepIdx);
     } else if (isSkill) {
-      FloworkJarvisAudio.trigger('skill_pinned');
+      FloworkMrFlowAudio.trigger('skill_pinned');
       renderLiveSkillActivator(activeSlot, toolName, details, stepIdx);
     } else if (isAudit) {
       renderLiveSecurityAuditor(activeSlot, toolName, details, stepIdx);
@@ -20742,7 +20970,7 @@ function renderToolInArea(toolsArea, toolName, details, status, stepIdx, activeT
   if (rawTool.includes('subagent') || rawTool.includes('spawnagent') || rawTool.includes('invoke_agent') || rawTool.includes('delegate')) {
     const role = d.Role || d.role || d.TypeName || d.typeName || d.type || 'Sub-Agent Specialist';
     FloworkChatTacticalOverlay.spawn('agent_spawn', { role });
-    FloworkJarvisAudio.trigger('agent_spawn');
+    FloworkMrFlowAudio.trigger('agent_spawn');
   }
 
   if (status === 'done') {
@@ -21120,10 +21348,10 @@ function markToolDone(stepIdx, activeToolElements, outputData) {
       }
 
       if (exitCode === 0) {
-        FloworkJarvisAudio.trigger('terminal_done');
+        FloworkMrFlowAudio.trigger('terminal_done');
       } else {
         FloworkTacticalHUD.spawn('alert_breach', { error: `Command exited with code ${exitCode}` });
-        FloworkJarvisAudio.trigger('alert_breach');
+        FloworkMrFlowAudio.trigger('alert_breach');
       }
     }
 
@@ -21146,7 +21374,7 @@ function markToolDone(stepIdx, activeToolElements, outputData) {
       }
     }
     if (el.classList.contains('fl-subagent-card') || el.querySelector('.fl-subagent-header')) {
-      FloworkJarvisAudio.trigger('agent_complete');
+      FloworkMrFlowAudio.trigger('agent_complete');
     }
     el.classList.remove('is-running');
     el.classList.add('is-completed-flash');
@@ -21160,7 +21388,7 @@ function markToolDone(stepIdx, activeToolElements, outputData) {
         const errStr = outputData.error || (outputData.output && outputData.output.error) || '';
         if (errStr === 'MANDATORY_SKILL_REQUIRED') {
           FloworkTacticalHUD.spawn('alert_breach', { error: 'Mandatory Skill Pin required before running operational tools!' });
-          FloworkJarvisAudio.trigger('alert_breach');
+          FloworkMrFlowAudio.trigger('alert_breach');
         }
         rawOut = outputData.rawOutput ?? outputData.output ?? outputData.stdout ?? outputData.result ?? outputData;
       }
@@ -21514,6 +21742,9 @@ function renderTrajectorySteps(steps) {
       }
 
       fragment.appendChild(card);
+      currentAssistantCard = null;
+      currentBodyArea = null;
+      currentToolsArea = null;
     } else if (stepType.endsWith('PLANNER_RESPONSE')) {
       const pr = s.plannerResponse || {};
       const thinking = pr.thinking || '';
@@ -21577,10 +21808,13 @@ function renderTrajectorySteps(steps) {
         currentBodyArea.innerHTML = renderMarkdown(fullResp);
       }
 
-      const btnCopy = currentAssistantCard.querySelector('.btn-copy-response');
+      const targetCard = currentAssistantCard;
+      const targetBodyArea = currentBodyArea;
+      const targetResp = resp;
+      const btnCopy = targetCard?.querySelector('.btn-copy-response');
       if (btnCopy) {
         btnCopy.addEventListener('click', () => {
-          const textToCopy = currentBodyArea?.innerText || resp;
+          const textToCopy = targetBodyArea?.innerText || targetResp || '';
           window.safeCopyToClipboard(textToCopy).then(() => {
             const span = btnCopy.querySelector('span');
             if (span) span.innerText = 'Copied!';
@@ -21593,14 +21827,14 @@ function renderTrajectorySteps(steps) {
         });
       }
 
-      const btnRetry = currentAssistantCard.querySelector('.btn-retry-response');
+      const btnRetry = targetCard?.querySelector('.btn-retry-response');
       if (btnRetry) {
         btnRetry.addEventListener('click', () => {
           regenerateLastTurn();
         });
       }
 
-      const btnRevert = currentAssistantCard.querySelector('.btn-revert-turn');
+      const btnRevert = targetCard?.querySelector('.btn-revert-turn');
       if (btnRevert) {
         btnRevert.addEventListener('click', async () => {
           if (isChatStreaming) return;
@@ -21992,7 +22226,8 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       }
     }
 
-    const isTeamMode = window.currentSessionMode === 'team' || window.currentSessionType === 'group';
+    const persistentMode = localStorage.getItem('xflow_session_mode') || window.currentSessionMode || 'solo';
+    const isTeamMode = (persistentMode === 'team') || (window.currentSessionType === 'group');
     const effectiveSessionType = isTeamMode ? 'group' : 'personal';
     const effectiveSessionMode = isTeamMode ? 'team' : 'solo';
     const effectivePersona = (isTeamMode ? 'leader' : (currentSessionPersonaId && currentSessionPersonaId !== 'leader' ? currentSessionPersonaId : 'mr.flow')).trim();
@@ -22255,7 +22490,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
             } else if (currentEvent === 'error') {
               bodyArea.innerHTML = `<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#f87171;padding:8px 12px;border-radius:8px;font-family:var(--font-mono);font-size:11px;">⚠️ ${escapeHtml(data.error || 'Execution Error')}</div>`;
               FloworkChatTacticalOverlay.spawn('alert_breach', { error: data.error || 'Execution Error' });
-              FloworkJarvisAudio.trigger('alert_breach');
+              FloworkMrFlowAudio.trigger('alert_breach');
             } else if (currentEvent === 'done') {
               activeRunningTools.clear();
               activeStepWorkerAgents.clear();
@@ -22742,7 +22977,7 @@ async function regenerateLastTurn() {
             } else if (currentEvent === 'error') {
               bodyArea.innerHTML = `<div style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.3);color:#f87171;padding:8px 12px;border-radius:8px;font-family:var(--font-mono);font-size:11px;">⚠️ ${escapeHtml(data.error || 'Execution Error')}</div>`;
               FloworkChatTacticalOverlay.spawn('alert_breach', { error: data.error || 'Execution Error' });
-              FloworkJarvisAudio.trigger('alert_breach');
+              FloworkMrFlowAudio.trigger('alert_breach');
             } else if (currentEvent === 'done') {
               activeStepWorkerAgents.clear();
               const durationSec = thinkingController.stop();

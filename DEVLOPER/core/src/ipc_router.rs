@@ -110,6 +110,31 @@ pub async fn reload_plugin(Path(id): Path<String>, State(state): State<Arc<AppSt
     }))
 }
 
+pub async fn restart_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
+    state.discovery.broadcast_plugin_command("close", &id);
+    let _ = state.supervisor.stop_engine(&id).await;
+    tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+
+    let mut assigned_port = None;
+    if let Some(plugin) = state.discovery.get(&id).await {
+        if let Some(backend) = &plugin.entry.backend {
+            let bin_path = plugin.root_dir.join(backend);
+            let port = state.port_mgr.allocate_free_port();
+            if let Ok(p) = state.supervisor.spawn_engine(&id, &bin_path, &plugin.root_dir, port).await {
+                assigned_port = Some(p);
+            }
+        }
+    }
+    state.discovery.broadcast_plugin_command("open", &id);
+    Json(json!({
+        "status": "ok",
+        "action": "restart",
+        "app_id": id,
+        "port": assigned_port,
+        "message": format!("Application '{}' cleanly restarted and reloaded in Canvas UI", id)
+    }))
+}
+
 pub async fn close_plugin(Path(id): Path<String>, State(state): State<Arc<AppState>>) -> Json<Value> {
     state.discovery.broadcast_plugin_command("close", &id);
     let stopped = state.supervisor.stop_engine(&id).await;

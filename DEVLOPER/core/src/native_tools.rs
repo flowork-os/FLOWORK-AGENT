@@ -1000,7 +1000,7 @@ pub async fn execute_native_tool_with_discovery(
                 .or_else(|| args.get("wait_ms_before_async"))
                 .or_else(|| args.get("timeout"))
                 .and_then(|v| v.as_u64())
-                .unwrap_or(if is_daemon { 3000 } else { 60000 });
+                .unwrap_or(if is_daemon { 3000 } else { 120000 });
 
             let wait_duration = tokio::time::Duration::from_millis(wait_ms);
             let select_res = tokio::select! {
@@ -1013,8 +1013,15 @@ pub async fn execute_native_tool_with_discovery(
             };
 
             if let Some(status) = select_res {
-                let stdout_bytes = stdout_task.await.unwrap_or_default();
-                let stderr_bytes = stderr_task.await.unwrap_or_default();
+                // Bound stdout/stderr drain to max 1500ms so background processes/daemons inheriting pipes NEVER hang the synchronous return!
+                let stdout_bytes = tokio::time::timeout(tokio::time::Duration::from_millis(1500), stdout_task)
+                    .await
+                    .unwrap_or(Ok(Vec::new()))
+                    .unwrap_or_default();
+                let stderr_bytes = tokio::time::timeout(tokio::time::Duration::from_millis(1500), stderr_task)
+                    .await
+                    .unwrap_or(Ok(Vec::new()))
+                    .unwrap_or_default();
 
                 let stdout = crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&stdout_bytes));
                 let stderr = crate::credential_shield::CredentialShield::redact_secrets(&String::from_utf8_lossy(&stderr_bytes));
@@ -1066,8 +1073,8 @@ pub async fn execute_native_tool_with_discovery(
                 let task_id_clone = task_id.clone();
                 tokio::spawn(async move {
                     let res = child.wait().await;
-                    let out = stdout_task.await.unwrap_or_default();
-                    let err = stderr_task.await.unwrap_or_default();
+                    let out = tokio::time::timeout(tokio::time::Duration::from_secs(5), stdout_task).await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
+                    let err = tokio::time::timeout(tokio::time::Duration::from_secs(5), stderr_task).await.unwrap_or(Ok(Vec::new())).unwrap_or_default();
                     let code = match res {
                         Ok(s) => s.code().unwrap_or(0),
                         Err(_) => 1,
@@ -1081,8 +1088,8 @@ pub async fn execute_native_tool_with_discovery(
                 });
 
                 let formatted = format!(
-                    "[AUTO-PING NOTIFICATION // 60s ELAPSED]\nCommand: {}\nStatus: ACTIVE_BACKGROUND (PID: {})\nElapsed: {}s without termination.\nNotice: Process handed off asynchronously to background to prevent AI freeze.\nYou can continue with subsequent steps or manage it via manage_task(TaskId: '{}').",
-                    command, pid, wait_ms / 1000, task_id
+                    "[AUTO-PING NOTIFICATION // {}s ELAPSED]\nCommand: {}\nStatus: ACTIVE_BACKGROUND (PID: {})\nElapsed: {}s without termination.\nNotice: Process handed off asynchronously to background to prevent AI freeze.\nYou can continue with subsequent steps or manage it via manage_task(TaskId: '{}').",
+                    wait_ms / 1000, command, pid, wait_ms / 1000, task_id
                 );
 
                 Ok(json!({
@@ -2133,6 +2140,34 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                         "message": format!("Application '{}' tab refreshed in Canvas UI.", app_id)
                     }))
                 },
+                "restart" | "relaunch" => {
+                    if app_id.is_empty() {
+                        return Err("Parameter 'app_id' is required for action 'restart'".to_string());
+                    }
+                    if let Some(disc) = discovery {
+                        disc.broadcast_plugin_command("close", app_id);
+                    }
+                    let mut stop_cmd = tokio::process::Command::new("curl");
+                    stop_cmd.arg("-s").arg("-X").arg("POST").arg(format!("http://127.0.0.1:{}/api/apps/{}/stop", port, app_id));
+                    let _ = stop_cmd.output().await;
+
+                    tokio::time::sleep(tokio::time::Duration::from_millis(400)).await;
+
+                    if let Some(disc) = discovery {
+                        disc.broadcast_plugin_command("open", app_id);
+                    }
+                    let mut launch_cmd = tokio::process::Command::new("curl");
+                    launch_cmd.arg("-s").arg("-X").arg("POST").arg(format!("http://127.0.0.1:{}/api/apps/{}/launch", port, app_id));
+                    let _ = launch_cmd.output().await;
+
+                    Ok(json!({
+                        "status": "SUCCESS",
+                        "exit_code": 0,
+                        "action": "restart",
+                        "app_id": app_id,
+                        "message": format!("Application '{}' cleanly restarted and reloaded via supervisor.", app_id)
+                    }))
+                },
                 "close" | "stop" => {
                     if app_id.is_empty() {
                         return Err("Parameter 'app_id' is required for action 'close'".to_string());
@@ -2209,7 +2244,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                     }))
                 },
                 _ => {
-                    Err(format!("Unknown action '{}' for app_control. Supported actions: 'open', 'reload', 'close', 'status', 'list'.", action))
+                    Err(format!("Unknown action '{}' for app_control. Supported actions: 'open', 'reload', 'restart', 'close', 'status', 'list'.", action))
                 }
             }
         },
