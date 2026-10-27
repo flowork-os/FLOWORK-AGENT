@@ -123,7 +123,7 @@ if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
-        $ExpectedHash = "ef427bb0e8d1c0688ccdc3216cf2f41f07ed3167a36ecf9738c5b32d1862bc45"
+        $ExpectedHash = "06424e1e78f22a4436c6df3f00e87238ee57f8e90a8230067b7a7b31e4e4b796"
         $CalcHash = (Get-FileHash -Path $TmpModelZip -Algorithm SHA256).Hash.ToLower()
         if ($CalcHash -eq $ExpectedHash) {
             Write-Host "[Flowork] 📦 Unpacking official ONNX model bundle..." -ForegroundColor Cyan
