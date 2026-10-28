@@ -1115,6 +1115,19 @@ pub async fn execute_native_tool_with_discovery(
                         "raw_output": if offload_res.is_offloaded { &offload_res.formatted_output } else { &stdout }
                     }))
                 } else {
+                    let err_combined = format!("{}\n{}", stdout, stderr).to_lowercase();
+                    let remediation = if err_combined.contains("eaddrinuse") || err_combined.contains("address already in use") {
+                        Some("Port conflict detected. Check conflicting process with 'lsof -i :<port>' or terminate old process via manage_task(Action: 'kill') / run_command.")
+                    } else if err_combined.contains("permission denied") {
+                        Some("Permission denied. Check file permissions or execute 'chmod +x <file>' within workspace.")
+                    } else if err_combined.contains("command not found") {
+                        Some("Command not found. Verify binary path or install missing runtime tool.")
+                    } else if err_combined.contains("no such file or directory") {
+                        Some("Target file or directory not found. Verify path exists.")
+                    } else {
+                        None
+                    };
+
                     Ok(json!({
                         "status": "ERROR",
                         "exit_code": exit_code,
@@ -1126,7 +1139,8 @@ pub async fn execute_native_tool_with_discovery(
                         "offload_path": offload_res.offload_path.as_ref().map(|p| p.display().to_string()),
                         "tokens_saved": offload_res.tokens_saved_est,
                         "stdout": stdout,
-                        "stderr": stderr
+                        "stderr": stderr,
+                        "remediation": remediation
                     }))
                 }
             } else {
@@ -1154,7 +1168,7 @@ pub async fn execute_native_tool_with_discovery(
                 });
 
                 let formatted = format!(
-                    "[AUTO-PING NOTIFICATION // {}s ELAPSED]\nCommand: {}\nStatus: ACTIVE_BACKGROUND (PID: {})\nElapsed: {}s without termination.\nNotice: Process handed off asynchronously to background to prevent AI freeze.\nYou can continue with subsequent steps or manage it via manage_task(TaskId: '{}').",
+                    "[AUTO-PING NOTIFICATION // {}s ELAPSED]\nCommand: {}\nStatus: ACTIVE_BACKGROUND (PID: {})\nElapsed: {}s without termination.\nNotice: Process handed off asynchronously to background to prevent AI freeze.\nRecommendation: For server/service processes, verify process health with manage_task(Action: 'verify', TaskId: '{}').",
                     wait_ms / 1000, command, pid, wait_ms / 1000, task_id
                 );
 
@@ -1615,6 +1629,75 @@ pub async fn execute_native_tool_with_discovery(
                         "action": "status",
                         "task_id": task_id,
                         "output": format!("Task '{}' not found in background registry.", task_id)
+                    }))
+                }
+                "verify" => {
+                    let guard = BACKGROUND_TASKS.read().await;
+                    let target_pid = args.get("pid").or_else(|| args.get("Pid")).and_then(|v| v.as_u64());
+                    let target_port = args.get("port").or_else(|| args.get("Port")).and_then(|v| v.as_u64());
+
+                    let mut resolved_pid = target_pid;
+                    let mut task_cmd = String::new();
+                    let mut task_status = String::from("unknown");
+
+                    if let Some(ref map) = *guard {
+                        if let Some(task) = map.get(task_id) {
+                            resolved_pid = Some(task.pid as u64);
+                            task_cmd = task.command.clone();
+                            task_status = task.status.clone();
+                        }
+                    }
+
+                    let is_alive = if let Some(pid) = resolved_pid {
+                        if pid == 0 {
+                            false
+                        } else {
+                            #[cfg(unix)]
+                            {
+                                unsafe { libc::kill(pid as i32, 0) == 0 }
+                            }
+                            #[cfg(not(unix))]
+                            {
+                                true
+                            }
+                        }
+                    } else {
+                        false
+                    };
+
+                    let port_active = if let Some(p) = target_port {
+                        std::net::TcpStream::connect_timeout(
+                            &std::net::SocketAddr::from(([127, 0, 0, 1], p as u16)),
+                            std::time::Duration::from_millis(500),
+                        ).is_ok()
+                    } else {
+                        false
+                    };
+
+                    let verdict = if is_alive && (target_port.is_none() || port_active) {
+                        "HEALTHY"
+                    } else if !is_alive {
+                        "DEAD_PROCESS"
+                    } else {
+                        "PORT_UNRESPONSIVE"
+                    };
+
+                    let msg = format!(
+                        "Canary Service Verification:\nVerdict: {}\nPID: {:?} (Alive: {})\nPort: {:?} (Listening: {})\nTask Status: {}\nCommand: {}",
+                        verdict, resolved_pid, is_alive, target_port, port_active, task_status, task_cmd
+                    );
+
+                    Ok(json!({
+                        "status": if verdict == "HEALTHY" { "SUCCESS" } else { "ERROR" },
+                        "exit_code": if verdict == "HEALTHY" { 0 } else { 1 },
+                        "tool": "manage_task",
+                        "action": "verify",
+                        "verdict": verdict,
+                        "is_alive": is_alive,
+                        "port_listening": port_active,
+                        "pid": resolved_pid,
+                        "port": target_port,
+                        "output": msg
                     }))
                 }
                 _ => {
@@ -2666,6 +2749,8 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
             let do_secrets = scan_mode == "all" || scan_mode == "secrets";
             let do_sast = scan_mode == "all" || scan_mode == "sast";
             let do_sca = scan_mode == "all" || scan_mode == "sca";
+            let do_duplication = scan_mode == "all" || scan_mode == "duplication" || scan_mode == "cleanliness";
+            let mut function_registry: HashMap<String, Vec<String>> = HashMap::new();
 
             // Load dynamic external rules from system/security_rules and system/scurity_rules
             let mut dynamic_rules: Vec<Value> = Vec::new();
@@ -2877,8 +2962,53 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                                             }
                                         }
                                     }
+                                    // 3d. Code Duplication & Helper Routine Scanner
+                                    if do_duplication {
+                                        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+                                        if ["js", "ts", "jsx", "tsx", "vue", "py", "rs", "go", "sh"].contains(&ext) {
+                                            for line in text.lines() {
+                                                let trimmed = line.trim();
+                                                let mut candidate_fn: Option<&str> = None;
+                                                if trimmed.starts_with("function ") {
+                                                    candidate_fn = trimmed.trim_start_matches("function ").split(|c: char| c == '(' || c.is_whitespace()).next();
+                                                } else if trimmed.starts_with("def ") {
+                                                    candidate_fn = trimmed.trim_start_matches("def ").split(|c: char| c == '(' || c.is_whitespace() || c == ':').next();
+                                                } else if trimmed.starts_with("fn ") || trimmed.starts_with("pub fn ") {
+                                                    candidate_fn = trimmed.trim_start_matches("pub ").trim_start_matches("fn ").split(|c: char| c == '(' || c == '<' || c.is_whitespace()).next();
+                                                } else if trimmed.starts_with("const ") && (trimmed.contains(" = (") || trimmed.contains(" = async (")) {
+                                                    candidate_fn = trimmed.trim_start_matches("const ").split(|c: char| c == '=' || c.is_whitespace()).next();
+                                                }
+
+                                                if let Some(name) = candidate_fn {
+                                                    let clean = name.trim();
+                                                    let generic_names = ["mount", "render", "setup", "update", "handle", "execute", "default", "mounted", "created", "destroy", "main", "init", "start", "stop", "test", "new"];
+                                                    if clean.len() >= 6 && !generic_names.contains(&clean) && clean.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                                                        let entry = function_registry.entry(clean.to_string()).or_default();
+                                                        if !entry.contains(&rel_display) {
+                                                            entry.push(rel_display.clone());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                             }
+                        }
+                    }
+                }
+
+                if do_duplication {
+                    for (fn_name, occurrences) in &function_registry {
+                        if occurrences.len() >= 2 {
+                            findings.push(json!({
+                                "category": "duplication",
+                                "file": occurrences[0].clone(),
+                                "severity": "LOW",
+                                "vuln_type": "repetitive_helper_routine",
+                                "summary": format!("Duplicate function '{}' detected in {} files ({:?}). Consider extracting to shared common library.", fn_name, occurrences.len(), occurrences),
+                                "suggested_extraction": "shared/"
+                            }));
                         }
                     }
                 }
@@ -4421,12 +4551,38 @@ mod tests {
         assert_eq!(mt_res["status"], "SUCCESS");
         assert!(mt_res["telemetry"].as_str().unwrap().contains("t1"));
 
+        // 6b. Test native manage_task action: verify
+        let my_pid = std::process::id() as u64;
+        let mt_verify_args = json!({
+            "Action": "verify",
+            "Pid": my_pid
+        });
+        let mt_verify_res = execute_native_tool("manage_task", &mt_verify_args, &temp_dir, &temp_dir).await.expect("native manage_task verify");
+        assert_eq!(mt_verify_res["status"], "SUCCESS");
+        assert_eq!(mt_verify_res["verdict"], "HEALTHY");
+        assert_eq!(mt_verify_res["is_alive"], true);
+
         // 7. Test prompt trigger tools (detect_hardcode, audit_security, etc.)
         let dhc_res = execute_native_tool("detect_hardcode", &json!({"Path": temp_dir.to_str().unwrap()}), &temp_dir, &temp_dir).await.expect("native detect_hardcode");
         assert_eq!(dhc_res["status"], "SUCCESS");
 
         let sec_res = execute_native_tool("audit_security", &json!({"Path": temp_dir.to_str().unwrap()}), &temp_dir, &temp_dir).await.expect("native audit_security");
         assert_eq!(sec_res["status"], "SUCCESS");
+
+        // 7b. Test audit_security scan_mode: duplication
+        let dup_file1 = temp_dir.join("dup1.js");
+        let dup_file2 = temp_dir.join("dup2.js");
+        tokio::fs::write(&dup_file1, "function formatSessionDate(d) { return d.toISOString(); }\n").await.unwrap();
+        tokio::fs::write(&dup_file2, "function formatSessionDate(d) { return d.toISOString(); }\n").await.unwrap();
+        let dup_res = execute_native_tool("audit_security", &json!({"Path": temp_dir.to_str().unwrap(), "scan_mode": "duplication"}), &temp_dir, &temp_dir).await.expect("native audit_security duplication");
+        assert_eq!(dup_res["status"], "SUCCESS");
+        let findings = dup_res["findings"].as_array().unwrap();
+        assert!(findings.iter().any(|f| f["category"] == "duplication" && f["summary"].as_str().unwrap().contains("formatSessionDate")));
+
+        // 7c. Test run_command actionable remediation
+        let cmd_err_res = execute_native_tool("run_command", &json!({"CommandLine": "echo 'command not found' >&2; exit 127"}), &temp_dir, &temp_dir).await.expect("run_command error");
+        assert_eq!(cmd_err_res["status"], "ERROR");
+        assert!(cmd_err_res["remediation"].is_string());
 
         let yt_url = format!("{}?v=dQw4w9WgXcQ", crate::prompt_enclave::PromptEnclave::url_youtube_watch());
         let yt_res = execute_native_tool("youtube_spy_video", &json!({"url": yt_url}), &temp_dir, &temp_dir).await.expect("native youtube_spy_video");
