@@ -1097,6 +1097,135 @@ const server = http.createServer(async (req, res) => {
         return sendJson(res, 200, { status: 'success', action, captions: resJson, state });
       }
 
+      if (action === 'detect_silence') {
+        const { mediaPath, noiseThreshold = -30, minDuration = 0.4 } = params || {};
+        if (!mediaPath) return sendJson(res, 400, { status: 'error', message: 'Missing mediaPath parameter' });
+        
+        let resolved = mediaPath;
+        if (!path.isAbsolute(resolved)) {
+          if (resolved.startsWith('/uploads/') || resolved.startsWith('uploads/')) {
+            resolved = path.join(UPLOADS_ROOT, resolved.replace(/^\/?uploads\//, ''));
+          } else {
+            resolved = path.join(WORKSPACE_ROOT, resolved);
+          }
+        }
+
+        const scriptPath = path.join(__dirname, 'scripts', 'silence_detector.py');
+        const pyProc = spawn('python3', [scriptPath, resolved, String(noiseThreshold), String(minDuration)]);
+        let out = '';
+        let errOut = '';
+        for await (const chunk of pyProc.stdout) out += chunk;
+        for await (const chunk of pyProc.stderr) errOut += chunk;
+        const exitCode = await new Promise((resolve) => pyProc.on('close', resolve));
+        if (exitCode !== 0) {
+          return sendJson(res, 500, { status: 'error', message: 'Silence detection failed', details: errOut });
+        }
+
+        let resultJson;
+        try {
+          resultJson = JSON.parse(out);
+        } catch (e) {
+          return sendJson(res, 500, { status: 'error', message: 'Invalid JSON from silence detector', raw: out });
+        }
+
+        return sendJson(res, 200, { status: 'success', action, silence: resultJson });
+      }
+
+      if (action === 'apply_jump_cuts') {
+        const { trackId = 'track_video_main', noiseThreshold = -30, minDuration = 0.4 } = params || {};
+        const state = readProjectState();
+        const trk = state.tracks.find(t => t.id === trackId) || state.tracks[0];
+        if (!trk || !trk.items || trk.items.length === 0) {
+          return sendJson(res, 400, { status: 'error', message: 'Target track has no media clips to cut' });
+        }
+
+        const primaryClip = trk.items[0];
+        let mediaPath = primaryClip.mediaUrl;
+        let resolved = mediaPath;
+        if (!path.isAbsolute(resolved)) {
+          if (resolved.startsWith('/uploads/') || resolved.startsWith('uploads/')) {
+            resolved = path.join(UPLOADS_ROOT, resolved.replace(/^\/?uploads\//, ''));
+          } else {
+            resolved = path.join(WORKSPACE_ROOT, resolved);
+          }
+        }
+
+        const scriptPath = path.join(__dirname, 'scripts', 'silence_detector.py');
+        const pyProc = spawn('python3', [scriptPath, resolved, String(noiseThreshold), String(minDuration)]);
+        let out = '';
+        for await (const chunk of pyProc.stdout) out += chunk;
+        const exitCode = await new Promise((resolve) => pyProc.on('close', resolve));
+        if (exitCode !== 0) return sendJson(res, 500, { status: 'error', message: 'Jump-cut detection failed' });
+
+        const resultJson = JSON.parse(out);
+        const keeps = resultJson.keep_segments || [];
+        if (keeps.length > 0) {
+          // Replace single item with splitted keep segments
+          trk.items = keeps.map((seg, idx) => ({
+            id: `clip_${Date.now()}_${idx}`,
+            name: `${primaryClip.name} [part ${idx + 1}]`,
+            mediaUrl: primaryClip.mediaUrl,
+            start: keeps.slice(0, idx).reduce((acc, curr) => acc + curr.duration, 0),
+            duration: seg.duration,
+            inPoint: seg.start,
+            outPoint: seg.end,
+            posX: primaryClip.posX || 0,
+            posY: primaryClip.posY || 0,
+            scale: primaryClip.scale || 100,
+            opacity: primaryClip.opacity ?? 100
+          }));
+          persistProjectState(state);
+        }
+
+        return sendJson(res, 200, { status: 'success', action, keepsCount: keeps.length, state });
+      }
+
+      if (action === 'apply_ducking') {
+        const { voicePath, bgmPath, duckingDb = -18 } = params || {};
+        if (!voicePath || !bgmPath) {
+          return sendJson(res, 400, { status: 'error', message: 'Missing voicePath or bgmPath' });
+        }
+
+        const resolveLocal = (p) => {
+          if (path.isAbsolute(p)) return p;
+          if (p.startsWith('/uploads/') || p.startsWith('uploads/')) {
+            return path.join(UPLOADS_ROOT, p.replace(/^\/?uploads\//, ''));
+          }
+          return path.join(WORKSPACE_ROOT, p);
+        };
+
+        const resVoice = resolveLocal(voicePath);
+        const resBgm = resolveLocal(bgmPath);
+        const outName = `ducked_${Date.now()}.m4a`;
+        const outPath = path.join(OUTPUTS_DIR, outName);
+
+        const scriptPath = path.join(__dirname, 'scripts', 'audio_ducker.py');
+        const pyProc = spawn('python3', [scriptPath, resVoice, resBgm, outPath, String(duckingDb)]);
+        let out = '';
+        let errOut = '';
+        for await (const chunk of pyProc.stdout) out += chunk;
+        for await (const chunk of pyProc.stderr) errOut += chunk;
+        const exitCode = await new Promise((resolve) => pyProc.on('close', resolve));
+
+        if (exitCode !== 0) {
+          return sendJson(res, 500, { status: 'error', message: 'Audio ducking execution failed', details: errOut });
+        }
+
+        let duckResult;
+        try {
+          duckResult = JSON.parse(out);
+        } catch (e) {
+          duckResult = { raw: out };
+        }
+
+        return sendJson(res, 200, {
+          status: 'success',
+          action,
+          result: duckResult,
+          duckedAudioUrl: `/exports/${outName}`
+        });
+      }
+
       return sendJson(res, 400, { status: 'error', message: `Unknown agent action: ${action}` });
     } catch (err) {
       return sendJson(res, 500, { status: 'error', message: err.message });

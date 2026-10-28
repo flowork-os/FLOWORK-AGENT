@@ -100,6 +100,10 @@ elif curl -fsSL --retry 3 --max-time 300 "$ARCHIVE_URL" -o "$TMP_TAR"; then
   rm -f "$INSTALL_DIR/canvas-ui/launcher.html" 2>/dev/null || true
   rm -rf "$INSTALL_DIR/canvas-ui/launcher" 2>/dev/null || true
   rm -f "$TMP_TAR" 2>/dev/null || true
+  if [ -f "$INSTALL_DIR/VERSION" ]; then
+    INSTALLED_VER="$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+    echo "   ✓ Extracted Flowork OS v${INSTALLED_VER} components (Latest)."
+  fi
 else
   rm -f "$TMP_TAR" 2>/dev/null || true
   echo "❌ Failed to download Flowork release bundle from GitHub."
@@ -130,13 +134,15 @@ chmod +x "$INSTALL_DIR/flowork.sh" 2>/dev/null || true
 # 5.5 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
 MODELS_DIR="$INSTALL_DIR/portable-home/.flowork/models"
 MODEL_TARGET="$MODELS_DIR/models--Xenova--bge-small-en-v1.5"
-MODEL_TAR_URL="https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.tar.gz"
+MODEL_TAR_URL="https://github.com/${REPO}/releases/latest/download/Flowork-Model-bge-small.tar.gz"
+MODEL_FALLBACK_URL="https://github.com/${REPO}/releases/download/v1.0.0/Flowork-Model-bge-small.tar.gz"
 
 if [ ! -d "$MODEL_TARGET" ] || [ ! -f "$MODEL_TARGET/snapshots/ea104dacec62c0de699686887e3f920caeb4f3e3/onnx/model.onnx" ]; then
   echo "🧠 Fetching official neural embedding model from GitHub Release (77 MB)..."
   mkdir -p "$MODELS_DIR"
   TMP_MODEL_TAR="$MODELS_DIR/.tmp_model_bge_small_$$.tar.gz"
-  if curl -fSL --retry 3 --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR"; then
+  if curl -fSL --retry 3 --progress-bar "$MODEL_TAR_URL" -o "$TMP_MODEL_TAR" 2>/dev/null || \
+     curl -fSL --retry 3 --progress-bar "$MODEL_FALLBACK_URL" -o "$TMP_MODEL_TAR"; then
     DOWNLOAD_OK=true
     MODEL_EXPECTED_HASH="72e88f00b6d56957b09ac1329735fc8a829b050bb1dd158162fb632bfbe4f79d"
     if command -v sha256sum >/dev/null 2>&1; then
@@ -209,7 +215,12 @@ EOF_DESK
 fi
 
 echo "============================================================"
-echo "🎉 Flowork OS installation completed successfully!"
+if [ -f "$INSTALL_DIR/VERSION" ]; then
+  FINAL_VER=" v$(cat "$INSTALL_DIR/VERSION" 2>/dev/null | tr -d '[:space:]')"
+else
+  FINAL_VER=""
+fi
+echo "🎉 Flowork OS${FINAL_VER} (Latest) installation completed successfully!"
 echo "🚀 Starting Flowork runtime..."
 echo "============================================================"
 

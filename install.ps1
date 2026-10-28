@@ -114,7 +114,8 @@ if (Test-Path $RuntimeSetupScript) {
 # 4.5 Autonomous Neural ONNX Model Provisioning (FastEmbed / Semantic Search)
 $ModelsDir = Join-Path $InstallDir "portable-home\.flowork\models"
 $ModelTarget = Join-Path $ModelsDir "models--Xenova--bge-small-en-v1.5"
-$ModelZipUrl = "https://github.com/flowork-os/FLOWORK-AGENT/releases/download/v1.0.0/Flowork-Model-bge-small.zip"
+$ModelZipUrl = "https://github.com/$Repo/releases/latest/download/Flowork-Model-bge-small.zip"
+$ModelZipFallbackUrl = "https://github.com/$Repo/releases/download/v1.0.0/Flowork-Model-bge-small.zip"
 $TmpModelZip = Join-Path $ModelsDir "temp_model.zip"
 
 if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887e3f920caeb4f3e3\onnx\model.onnx"))) {
@@ -122,7 +123,11 @@ if (-not (Test-Path (Join-Path $ModelTarget "snapshots\ea104dacec62c0de699686887
     if (-not (Test-Path $ModelsDir)) { New-Item -ItemType Directory -Path $ModelsDir -Force | Out-Null }
     try {
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
+        try {
+            (New-Object System.Net.WebClient).DownloadFile($ModelZipUrl, $TmpModelZip)
+        } catch {
+            (New-Object System.Net.WebClient).DownloadFile($ModelZipFallbackUrl, $TmpModelZip)
+        }
         $ExpectedHash = "06424e1e78f22a4436c6df3f00e87238ee57f8e90a8230067b7a7b31e4e4b796"
         $CalcHash = (Get-FileHash -Path $TmpModelZip -Algorithm SHA256).Hash.ToLower()
         if ($CalcHash -eq $ExpectedHash) {
@@ -235,8 +240,10 @@ if (Test-Path $StartMenuPath) {
     Write-Host "✅ Created Start Menu Shortcut: $StartShortcutPath" -ForegroundColor Green
 }
 
+$VerFile = Join-Path $InstallDir "VERSION"
+$VerStr = if (Test-Path $VerFile) { " v" + (Get-Content $VerFile -Raw).Trim() } else { "" }
 Write-Host "============================================================" -ForegroundColor Cyan
-Write-Host "🎉 Flowork OS installed successfully!" -ForegroundColor Green
+Write-Host "🎉 Flowork OS$VerStr (Latest) installed successfully!" -ForegroundColor Green
 Write-Host "🚀 Launching Flowork Canvas Host..." -ForegroundColor Cyan
 Write-Host "============================================================" -ForegroundColor Cyan
 
