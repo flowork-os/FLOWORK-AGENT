@@ -1313,8 +1313,11 @@
             </div>
           </div>
 
-          <!-- LANE V2 (Overlays) -->
+          <!-- LANE V2 (Overlays / Stickers) -->
           <div class="fl-track-lane" data-lane="overlay">
+            <div class="fl-clip" style="left: 40px; width: 220px; background: #8b5cf6;" data-type="sticker" data-title="Realize Focus" data-src="/assets/stickers/realize_focus.webp" data-url="/assets/stickers/realize_focus.webp">
+              <span>🏷️ Realize Focus</span>
+            </div>
             <div class="fl-clip" style="left: 310px; width: 190px; background: var(--color-overlay);" data-type="effect" data-title="Hologram Glitch FX" data-effect="glitch">
               <span>⚡ Hologram Glitch FX</span>
             </div>
@@ -1647,10 +1650,19 @@
         return imageElementPool.get(resolvedSrc);
       }
       const img = new Image();
-      if (!resolvedSrc.startsWith('blob:')) {
+      if (!resolvedSrc.startsWith('blob:') && !resolvedSrc.startsWith('data:')) {
         img.crossOrigin = 'anonymous';
       }
-      img.onload = () => drawPreviewFrame();
+      img.onload = () => {
+        drawPreviewFrame();
+      };
+      img.onerror = () => {
+        if (img.crossOrigin) {
+          // Retry without crossOrigin attribute if CORS headers failed
+          img.removeAttribute('crossOrigin');
+          img.src = resolvedSrc;
+        }
+      };
       img.src = resolvedSrc;
       imageElementPool.set(resolvedSrc, img);
       imageElementPool.set(src, img);
@@ -1660,7 +1672,9 @@
     // Multi-track playhead query: extracts all active layers at current playhead
     function getActiveClipsAtPlayhead() {
       const playheadEl = document.getElementById('fl-playhead');
-      const currentX = (playheadEl && playheadEl.style.left) ? (parseFloat(playheadEl.style.left) || 0) : (typeof playheadX !== 'undefined' ? playheadX : 0);
+      const domX = (playheadEl && playheadEl.style.left) ? parseFloat(playheadEl.style.left) : NaN;
+      const memX = (typeof playheadX !== 'undefined') ? playheadX : NaN;
+      const currentX = !isNaN(domX) && domX > 0 ? domX : (!isNaN(memX) && memX > 0 ? memX : 0);
       const activeClips = [];
       const lanes = Array.from(document.querySelectorAll('.fl-track-lane'));
       for (const lane of lanes) {
@@ -1673,6 +1687,11 @@
             const rawType = (clip.getAttribute('data-type') || clip.dataset.type || '').toLowerCase();
             const type = rawType || (laneType === 'text' ? 'text' : laneType === 'overlay' ? 'sticker' : laneType === 'audio' ? 'audio' : 'video');
             const title = getClipNameFromEl(clip);
+            let clipSrc = clip.getAttribute('data-url') || clip.dataset.url || clip.getAttribute('data-src') || clip.dataset.src || clip.getAttribute('data-media-url') || clip.dataset.mediaUrl || '';
+            if (!clipSrc && (type === 'sticker' || laneType === 'overlay') && title) {
+              const safeSlug = title.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+              clipSrc = `/assets/stickers/${safeSlug}.webp`;
+            }
             activeClips.push({
               element: clip,
               type: type,
@@ -1683,7 +1702,7 @@
               width: width,
               clipStart: left,
               clipDuration: width,
-              src: clip.getAttribute('data-src') || clip.dataset.src || '',
+              src: clipSrc,
               textContent: clip.getAttribute('data-text-content') || clip.dataset.textContent || clip.innerText?.trim() || title,
               effect: clip.getAttribute('data-effect') || clip.dataset.effect || (type === 'effect' || type === 'filter' ? title : '')
             });
@@ -1845,15 +1864,22 @@
           }
         } else if (clip.type === 'sticker' || clip.type === 'image') {
           // STICKER / IMAGE LAYER
-          let sw = 160;
-          let sh = 160;
+          let sw = 180;
+          let sh = 180;
           let drawnSticker = false;
 
-          if (clip.src) {
-            const img = getOrCreateImageElement(clip.src);
+          let stickerSource = clip.src || clip.url || (clip.element ? (clip.element.getAttribute('data-url') || clip.element.dataset.url || clip.element.getAttribute('data-src') || clip.element.dataset.src || clip.element.getAttribute('data-media-url') || clip.element.dataset.mediaUrl) : '');
+          if (!stickerSource && clip.element) {
+            const innerImg = clip.element.querySelector('img');
+            if (innerImg && innerImg.src) {
+              stickerSource = innerImg.src;
+            }
+          }
+          if (stickerSource) {
+            const img = getOrCreateImageElement(stickerSource);
             if (img && img.complete && img.naturalWidth > 0) {
-              const aspect = img.naturalWidth / img.naturalHeight;
-              sw = 160;
+              const aspect = (img.naturalWidth / img.naturalHeight) || 1;
+              sw = 180;
               sh = sw / aspect;
               ctx.drawImage(img, -sw / 2, -sh / 2, sw, sh);
               drawnSticker = true;
@@ -1861,14 +1887,46 @@
           }
 
           if (!drawnSticker) {
-            ctx.font = '64px sans-serif';
+            // High-visibility fallback sticker badge
+            const badgeW = 200;
+            const badgeH = 120;
+            sw = badgeW;
+            sh = badgeH;
+            
+            ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
+            ctx.strokeStyle = '#38bdf8';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            if (typeof ctx.roundRect === 'function') {
+              ctx.roundRect(-badgeW / 2, -badgeH / 2, badgeW, badgeH, 12);
+            } else {
+              ctx.rect(-badgeW / 2, -badgeH / 2, badgeW, badgeH);
+            }
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.font = '54px sans-serif';
             ctx.textAlign = 'center';
             ctx.textBaseline = 'middle';
-            const stickerEmoji = clip.title.toLowerCase().includes('fire') ? '🔥' :
-              clip.title.toLowerCase().includes('heart') ? '❤️' :
-              clip.title.toLowerCase().includes('star') ? '⭐' :
-              clip.title.toLowerCase().includes('verified') ? '✅' : '✨';
-            ctx.fillText(stickerEmoji, 0, 0);
+            const t = (clip.title || clip.name || '').toLowerCase();
+            const stickerEmoji = t.includes('fire') ? '🔥' :
+              t.includes('heart') ? '❤️' :
+              t.includes('star') ? '⭐' :
+              t.includes('curtain') ? '🎭' :
+              t.includes('ghost') ? '👻' :
+              t.includes('ramen') ? '🍜' :
+              t.includes('dragon') ? '🐉' :
+              t.includes('cupcake') ? '🧁' :
+              t.includes('focus') ? '🎯' :
+              t.includes('seal') ? '🦭' :
+              t.includes('cricket') ? '🦗' :
+              t.includes('inbox') ? '📥' :
+              t.includes('verified') ? '✅' : '🏷️';
+            ctx.fillText(stickerEmoji, 0, -14);
+
+            ctx.font = 'bold 13px sans-serif';
+            ctx.fillStyle = '#f8fafc';
+            ctx.fillText(clip.title || clip.name || 'Sticker', 0, 36);
           }
         } else if (clip.type === 'text') {
           // TEXT / TITLE LAYER
@@ -1911,9 +1969,9 @@
         // Draw selection bounding box and handles if this clip is currently selected
         if (isSelected) {
           const boxW = (clip.type === 'text') ? Math.max(160, ctx.measureText(clip.textContent || clip.title).width + 40) :
-                       (clip.type === 'sticker') ? 170 : canvas.width * 0.9;
+                       (clip.type === 'sticker') ? (sw + 16) : canvas.width * 0.9;
           const boxH = (clip.type === 'text') ? 70 :
-                       (clip.type === 'sticker') ? 170 : canvas.height * 0.9;
+                       (clip.type === 'sticker') ? (sh + 16) : canvas.height * 0.9;
 
           ctx.strokeStyle = '#00f3ff';
           ctx.lineWidth = 2 / s;
@@ -2647,81 +2705,133 @@
     // ==========================================
 
     function setupTrackHeaders() {
-      const headers = document.querySelectorAll('.fl-track-headers .fl-track-header');
-      const lanes = document.querySelectorAll('.fl-tracks-container .fl-track-lane');
+      const headers = Array.from(document.querySelectorAll('.fl-track-headers .fl-track-header')).filter(h => !h.innerText.includes('TIMELINE TRACKS'));
+      const lanes = Array.from(document.querySelectorAll('.fl-tracks-container .fl-track-lane'));
 
       headers.forEach((h, index) => {
-        if (index === 0) return; // Skip label 'timeline tracks'
-        const laneIndex = index - 1;
-        const lane = lanes[laneIndex];
-        const trackId = 'track-' + index;
+        const trackNum = index + 1;
+        const trackId = 'track-' + trackNum;
 
         h.setAttribute('data-track-id', trackId);
-        if (lane) lane.setAttribute('data-track-id', trackId);
+        if (lanes[index]) lanes[index].setAttribute('data-track-id', trackId);
 
-        // Tambahkan tombol delete track jika belum ada
-        if (!h.querySelector('.fl-track-del-btn')) {
-          let actionBox = h.querySelector('.fl-track-header-actions');
-          if (!actionBox) {
-            actionBox = document.createElement('div');
-            actionBox.className = 'fl-track-header-actions';
-            
-            const existingIcons = h.querySelector('span:last-child');
-            if (existingIcons) actionBox.appendChild(existingIcons);
-            h.appendChild(actionBox);
-          }
+        // Ensure actions container exists
+        let actionBox = h.querySelector('.fl-track-header-actions');
+        if (!actionBox) {
+          actionBox = document.createElement('div');
+          actionBox.className = 'fl-track-header-actions';
+          const existingIcons = h.querySelector('span:last-child');
+          if (existingIcons) actionBox.appendChild(existingIcons);
+          h.appendChild(actionBox);
+        }
 
-          const delTrackBtn = document.createElement('span');
+        // Ensure delete button exists
+        let delTrackBtn = actionBox.querySelector('.fl-track-del-btn');
+        if (!delTrackBtn) {
+          delTrackBtn = document.createElement('span');
           delTrackBtn.className = 'fl-track-del-btn';
           delTrackBtn.innerText = '✕';
           delTrackBtn.title = 'Delete Track & all its clips';
-          delTrackBtn.addEventListener('click', (e) => {
-            e.stopPropagation();
-            deleteTrack(trackId);
-          });
+          delTrackBtn.style.cursor = 'pointer';
+          delTrackBtn.style.color = '#ef4444';
+          delTrackBtn.style.fontWeight = 'bold';
+          delTrackBtn.style.padding = '2px 6px';
+          delTrackBtn.style.borderRadius = '4px';
+          delTrackBtn.style.transition = 'background 0.15s ease';
           actionBox.appendChild(delTrackBtn);
         }
+        delTrackBtn.setAttribute('data-track-id', trackId);
       });
     }
 
-    function deleteTrack(trackId) {
-      const header = document.querySelector(`.fl-track-header[data-track-id="${trackId}"]`);
-      const lane = document.querySelector(`.fl-track-lane[data-track-id="${trackId}"]`);
+    function deleteTrack(target) {
+      let header = null;
+      let lane = null;
 
-      if (header) {
-        header.style.opacity = '0';
-        setTimeout(() => header.remove(), 120);
-      }
-      if (lane) {
-        lane.style.opacity = '0';
-        setTimeout(() => {
-          // Check if selected clip belonged to deleted lane
-          if (selectedClipEl && lane.contains(selectedClipEl)) {
-            selectedClipEl = null;
-            activeClipState.name = '';
+      if (typeof target === 'string') {
+        header = document.querySelector(`.fl-track-header[data-track-id="${target}"]`);
+        lane = document.querySelector(`.fl-track-lane[data-track-id="${target}"]`);
+      } else if (target && target.nodeType) {
+        header = target.closest('.fl-track-header');
+        if (header) {
+          const trackId = header.getAttribute('data-track-id');
+          if (trackId) {
+            lane = document.querySelector(`.fl-track-lane[data-track-id="${trackId}"]`);
           }
-          lane.remove();
-          drawPreviewFrame();
-          if (typeof triggerAutoSave === 'function') triggerAutoSave();
-        }, 130);
+          if (!lane) {
+            const allHeaders = Array.from(document.querySelectorAll('.fl-track-header')).filter(h => !h.innerText.includes('TIMELINE TRACKS'));
+            const idx = allHeaders.indexOf(header);
+            const allLanes = Array.from(document.querySelectorAll('.fl-track-lane'));
+            if (idx >= 0 && idx < allLanes.length) {
+              lane = allLanes[idx];
+            }
+          }
+        } else {
+          lane = target.closest('.fl-track-lane');
+          if (lane) {
+            const trackId = lane.getAttribute('data-track-id');
+            if (trackId) {
+              header = document.querySelector(`.fl-track-header[data-track-id="${trackId}"]`);
+            }
+          }
+        }
+      }
+
+      // Check if selected clip belonged to deleted lane
+      if (lane && selectedClipEl && lane.contains(selectedClipEl)) {
+        selectedClipEl = null;
+        if (typeof activeClipState === 'object' && activeClipState) {
+          activeClipState.name = '';
+        }
+        if (typeof updateInspectorUI === 'function') {
+          updateInspectorUI();
+        }
+      }
+
+      // Synchronously remove elements
+      if (header) header.remove();
+      if (lane) lane.remove();
+
+      // Immediately re-index all remaining headers and lanes
+      setupTrackHeaders();
+
+      // Redraw canvas preview
+      if (typeof drawPreviewFrame === 'function') drawPreviewFrame();
+
+      // Trigger Auto-Save immediately on track deletion
+      if (typeof triggerAutoSave === 'function') {
+        triggerAutoSave();
+      } else if (typeof saveProjectState === 'function') {
+        saveProjectState();
+      }
+
+      const statusEl = document.getElementById('fl-status-msg');
+      if (statusEl) {
+        statusEl.innerText = 'Track deleted & autosaved';
       }
     }
+
+    // Expose globally for delegated listeners
+    window.setupTrackHeaders = setupTrackHeaders;
+    window.deleteTrack = deleteTrack;
 
     // Jalankan setup header awal
     setupTrackHeaders();
 
     // ==========================================
-    // ➕ ADD TRACK FUNCTIONALITY
+    // ➕ ADD TRACK FUNCTIONALITY WITH AUTOSAVE
     // ==========================================
     const btnAddTrack = document.getElementById('fl-btn-add-clip');
     if (btnAddTrack) {
       btnAddTrack.addEventListener('click', () => {
         trackCounter++;
+        const currentLanes = document.querySelectorAll('.fl-track-lane');
+        const trackNum = currentLanes.length + 1;
         const isAudio = trackCounter % 2 === 0;
         const trackType = isAudio ? 'AUDIO' : 'VIDEO';
-        const trackLabel = isAudio ? `A${Math.floor(trackCounter / 2)}` : `V${Math.ceil(trackCounter / 2)}`;
+        const trackLabel = isAudio ? `A${Math.floor(trackCounter / 2) || 1}` : `V${Math.ceil(trackCounter / 2) || 1}`;
         const trackColor = isAudio ? '#16a34a' : '#2563eb';
-        const trackId = 'track-' + Date.now();
+        const trackId = `track-${trackNum}`;
 
         // 1. Append Header
         const headersContainer = document.querySelector('.fl-track-headers');
@@ -2733,13 +2843,9 @@
             <span>${isAudio ? '🔊' : '🎬'} ${trackLabel} (${trackType})</span>
             <div class="fl-track-header-actions">
               <span style="cursor: pointer; color: var(--color-dim);" title="Mute/Solo">👁️ 🔒</span>
-              <span class="fl-track-del-btn" title="Delete Track">✕</span>
+              <span class="fl-track-del-btn" data-track-id="${trackId}" title="Delete Track & all its clips" style="cursor: pointer; color: #ef4444; font-weight: bold; padding: 2px 6px;">✕</span>
             </div>
           `;
-          headerEl.querySelector('.fl-track-del-btn').addEventListener('click', (e) => {
-            e.stopPropagation();
-            deleteTrack(trackId);
-          });
           headersContainer.appendChild(headerEl);
         }
 
@@ -2751,14 +2857,19 @@
           laneEl.setAttribute('data-track-id', trackId);
 
           const clipEl = document.createElement('div');
-          clipEl.className = 'fl-clip';
-          clipEl.style.left = Math.floor(Math.random() * 200) + 'px';
-          clipEl.style.width = (180 + Math.floor(Math.random() * 140)) + 'px';
+          clipEl.className = 'fl-clip' + (isAudio ? ' audio-clip' : ' visual-clip');
+          clipEl.style.left = Math.floor(Math.random() * 150) + 'px';
+          clipEl.style.width = (180 + Math.floor(Math.random() * 120)) + 'px';
           clipEl.style.background = trackColor;
+          clipEl.setAttribute('data-clip-id', 'clip-' + Date.now());
+          clipEl.setAttribute('data-type', isAudio ? 'audio' : 'video');
+          clipEl.setAttribute('data-duration', '4.0');
           clipEl.innerHTML = `
+            <div class="fl-clip-handle fl-handle-left"></div>
             <div class="fl-clip-content">
               <span>${isAudio ? '🎵' : '🎞️'} ${trackLabel} Layer</span>
             </div>
+            <div class="fl-clip-handle fl-handle-right"></div>
           `;
 
           laneEl.appendChild(clipEl);
@@ -2768,12 +2879,32 @@
           if (playhead) lanesContainer.insertBefore(laneEl, playhead);
           else lanesContainer.appendChild(laneEl);
 
-          makeClipInteractive(clipEl);
+          if (typeof makeClipInteractive === 'function') {
+            makeClipInteractive(clipEl);
+          }
+        }
+
+        // Re-index all headers and lanes
+        setupTrackHeaders();
+
+        // Redraw canvas preview
+        if (typeof drawPreviewFrame === 'function') drawPreviewFrame();
+
+        // Trigger Auto-Save immediately on track add!
+        if (typeof triggerAutoSave === 'function') {
+          triggerAutoSave();
+        } else if (typeof saveProjectState === 'function') {
+          saveProjectState();
         }
 
         // Feedback
         btnAddTrack.innerText = `✓ Added ${trackLabel}`;
         setTimeout(() => { btnAddTrack.innerText = '+ Add Track'; }, 1500);
+
+        const statusEl = document.getElementById('fl-status-msg');
+        if (statusEl) {
+          statusEl.innerText = `${trackLabel} added & autosaved`;
+        }
       });
     }
 
@@ -3652,55 +3783,74 @@
         bin.style.gap = '8px';
         bin.style.padding = '8px';
         if (items.length > 0) {
-          items.forEach(item => {
-            const el = document.createElement('div');
-            el.className = 'fl-asset-preset';
-            el.dataset.type = category === 'audio' ? 'audio' : (category === 'text' ? 'text' : (category === 'stickers' ? 'sticker' : (category === 'effects' ? 'effect' : (category === 'transitions' ? 'transition' : (category === 'filters' ? 'filter' : 'adjustment')))));
-            el.dataset.id = item.id;
-            el.dataset.name = item.name;
-            if (item.filter) el.dataset.filter = item.filter;
-            if (item.color) el.dataset.color = item.color;
-            if (item.duration) el.dataset.duration = item.duration;
-            if (item.url) el.dataset.url = item.url;
-            if (item.text) el.dataset.text = item.text;
+          const INITIAL_BATCH_SIZE = 60;
+          let renderedIndex = 0;
 
-            let iconHtml = '';
-            if (category === 'stickers') {
-              const fullUrl = resolveMediaUrl(item.url);
-              iconHtml = `<div style="width: 100%; height: 50px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: rgba(0,0,0,0.25); border-radius: 4px; margin-bottom: 4px;"><img src="${fullUrl}" loading="lazy" style="max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none;" alt="${item.name}" onerror="this.onerror=null; this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='block';"><span style="display:none; font-size:22px;">🏷️</span></div>`;
-            } else if (category === 'audio') {
-              iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎵</span>`;
-            } else if (category === 'text') {
-              iconHtml = `<span style="font-size: 20px; font-weight: bold; margin-bottom: 2px; color: ${item.color || '#3b82f6'};">T</span>`;
-            } else if (category === 'effects') {
-              iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">✨</span>`;
-            } else if (category === 'transitions') {
-              iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🔀</span>`;
-            } else if (category === 'filters') {
-              iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎨</span>`;
-            } else if (category === 'adjustments') {
-              iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎚️</span>`;
-            }
+          function renderItemBatch(batchSize) {
+            const fragment = document.createDocumentFragment();
+            const limit = Math.min(renderedIndex + batchSize, items.length);
+            for (let idx = renderedIndex; idx < limit; idx++) {
+              const item = items[idx];
+              const el = document.createElement('div');
+              el.className = 'fl-asset-preset';
+              el.dataset.type = category === 'audio' ? 'audio' : (category === 'text' ? 'text' : (category === 'stickers' ? 'sticker' : (category === 'effects' ? 'effect' : (category === 'transitions' ? 'transition' : (category === 'filters' ? 'filter' : 'adjustment')))));
+              el.dataset.id = item.id;
+              el.dataset.name = item.name;
+              if (item.filter) el.dataset.filter = item.filter;
+              if (item.color) el.dataset.color = item.color;
+              if (item.duration) el.dataset.duration = item.duration;
+              if (item.url) el.dataset.url = item.url;
+              if (item.text) el.dataset.text = item.text;
 
-            el.innerHTML = `
-              ${iconHtml}
-              <span style="font-size: 11px; font-weight: 500; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${item.name}</span>
-              ${item.description ? `<span style="font-size: 9px; color: var(--color-muted); text-align: center;">${item.description}</span>` : ''}
-              <button class="fl-asset-add-btn" title="Add to timeline">+</button>
-            `;
-
-            el.addEventListener('click', (e) => {
-              if (category === 'audio') {
-                addMediaItemToTimeline(item.name, 'audio', item.url, item.duration || 10);
-              } else if (category === 'media') {
-                addMediaItemToTimeline(item.name, 'video', item.url, item.duration || 15);
-              } else {
-                addAssetToTimeline(category, item.name, item.duration || 5, item);
+              let iconHtml = '';
+              if (category === 'stickers') {
+                const fullUrl = resolveMediaUrl(item.url);
+                iconHtml = `<div style="width: 100%; height: 50px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: rgba(0,0,0,0.25); border-radius: 4px; margin-bottom: 4px;"><img src="${fullUrl}" loading="lazy" style="max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none;" alt="${item.name}" onerror="this.onerror=null; this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='block';"><span style="display:none; font-size:22px;">🏷️</span></div>`;
+              } else if (category === 'audio') {
+                iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎵</span>`;
+              } else if (category === 'text') {
+                iconHtml = `<span style="font-size: 20px; font-weight: bold; margin-bottom: 2px; color: ${item.color || '#3b82f6'};">T</span>`;
+              } else if (category === 'effects') {
+                iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">✨</span>`;
+              } else if (category === 'transitions') {
+                iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🔀</span>`;
+              } else if (category === 'filters') {
+                iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎨</span>`;
+              } else if (category === 'adjustments') {
+                iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎚️</span>`;
               }
-            });
 
-            bin.appendChild(el);
-          });
+              el.innerHTML = `
+                ${iconHtml}
+                <span style="font-size: 11px; font-weight: 500; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%;">${item.name}</span>
+                ${item.description ? `<span style="font-size: 9px; color: var(--color-muted); text-align: center;">${item.description}</span>` : ''}
+                <button class="fl-asset-add-btn" title="Add to timeline">+</button>
+              `;
+
+              el.addEventListener('click', (e) => {
+                if (category === 'audio') {
+                  addMediaItemToTimeline(item.name, 'audio', item.url, item.duration || 10);
+                } else if (category === 'media') {
+                  addMediaItemToTimeline(item.name, 'video', item.url, item.duration || 15);
+                } else {
+                  addAssetToTimeline(category, item.name, item.duration || 5, item);
+                }
+              });
+
+              fragment.appendChild(el);
+            }
+            renderedIndex = limit;
+            bin.appendChild(fragment);
+
+            // Progressive background loading for remaining items
+            if (renderedIndex < items.length) {
+              requestAnimationFrame(() => {
+                setTimeout(() => renderItemBatch(batchSize), 20);
+              });
+            }
+          }
+
+          renderItemBatch(INITIAL_BATCH_SIZE);
         }
       } catch (err) {
         console.warn(`[FlowStudio] Failed scanning category ${category}:`, err.message);
@@ -4073,11 +4223,16 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(statePayload)
           }).catch(() => {});
-        }, 1000);
+        }, 150);
       } catch (err) {
         console.error('saveProjectState error:', err);
       }
     }
+
+    // Expose autosave utilities globally to window
+    window.triggerAutoSave = triggerAutoSave;
+    window.saveProjectState = saveProjectState;
+    window.restoreProjectState = restoreProjectState;
 
     function restoreProjectState() {
       try {
@@ -4110,7 +4265,7 @@
         }
 
         // 3. Reconstruct Tracks & Clips exactly as saved (including 0 tracks if all deleted)
-        if (Array.isArray(state.tracks) && state.tracks.length > 0) {
+        if (Array.isArray(state.tracks)) {
           const headersContainer = document.querySelector('.fl-track-headers');
           const lanesContainer = document.querySelector('.fl-tracks-container');
 
@@ -4251,6 +4406,11 @@
             playhead.style.visibility = 'visible';
             playhead.style.opacity = '1';
           }
+        }
+
+        // Re-index and arm all restored track headers and lanes
+        if (typeof setupTrackHeaders === 'function') {
+          setupTrackHeaders();
         }
 
         // 4. Restore active inspector clip state if available
@@ -4473,6 +4633,12 @@
       targetLane.appendChild(clipEl);
       makeClipInteractive(clipEl);
       selectClip(clipEl);
+      if (playhead) {
+        const targetX = startX + 10;
+        playhead.style.left = targetX + 'px';
+        currentTime = targetX / 50;
+        updateTimeDisplays();
+      }
       drawPreviewFrame();
       updateTimelineRulerAndWidth();
       triggerAutoSave();
@@ -4908,42 +5074,16 @@
     });
   </script>
 <script>
-    // Global Event Delegation for Delete Track Buttons
+    // Global Event Delegation for Delete Track Buttons (Unified Delegation)
     document.addEventListener('click', function(e) {
       const delBtn = e.target.closest('.btn-del-track, .fl-track-del-btn');
       if (delBtn) {
         e.stopPropagation();
         e.preventDefault();
-        const header = delBtn.closest('.fl-track-header');
-        if (!header) return;
-        const trackId = header.getAttribute('data-track-id');
-        
-        // Find matching lane
-        let lane = null;
-        if (trackId) {
-          lane = document.querySelector(`.fl-track-lane[data-track-id="${trackId}"]`);
-        }
-        if (!lane) {
-          // Fallback by index among headers
-          const allHeaders = Array.from(document.querySelectorAll('.fl-track-headers .fl-track-header'));
-          const headerIdx = allHeaders.indexOf(header);
-          const allLanes = Array.from(document.querySelectorAll('.fl-tracks-container .fl-track-lane'));
-          if (headerIdx !== -1 && allLanes[headerIdx]) {
-            lane = allLanes[headerIdx];
-          }
-        }
-        
-        // Remove both header and lane
-        header.remove();
-        if (lane) {
-          lane.remove();
-        }
-        
-        if (typeof drawPreviewFrame === 'function') drawPreviewFrame();
-        if (typeof triggerAutoSave === 'function') {
-          triggerAutoSave();
-        } else if (typeof saveProjectState === 'function') {
-          saveProjectState();
+        if (typeof window.deleteTrack === 'function') {
+          window.deleteTrack(delBtn);
+        } else if (typeof deleteTrack === 'function') {
+          deleteTrack(delBtn);
         }
       }
     });
@@ -4967,7 +5107,7 @@
           const res = await fetch(getApiUrl('/api/project/state'));
           if (res.ok) {
             const data = await res.json();
-            if (data.status === 'success' && data.state && data.state.tracks) {
+            if (data.status === 'success' && data.state && Array.isArray(data.state.tracks)) {
               localStorage.setItem(STORAGE_KEY, JSON.stringify(data.state));
               restoreProjectState();
               return true;
