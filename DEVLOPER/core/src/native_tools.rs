@@ -4577,6 +4577,81 @@ pub fn resolve_canvas_tool_declaration(canvas_tools_dir: &Path, tool_name: &str)
         }));
     }
 
+    if tool_name == "brain_control" {
+        return Some(json!({
+            "name": "brain_control",
+            "description": "Manage, search, recall, and atomically store memories in the Sovereign Memory Vault (.fl_brain/) under the HKUDS/DeepTutor Evidence Linking standard. Enforces verified forensic traceability (source session, terminal evidence steps, Exit Code 0).",
+            "parameters": {
+                "type": "OBJECT",
+                "properties": {
+                    "action": {
+                        "type": "STRING",
+                        "description": "Memory action: 'write' (atomically store verified solution with at least 10 keywords and evidence linking), 'search' (keyword/semantic query across memories), 'read' (fetch full memory file by id or slug), 'list' (catalog stored memories), 'purge' (delete memory)"
+                    },
+                    "title": {
+                        "type": "STRING",
+                        "description": "Technical descriptive title of the solution in English (for action: 'write')"
+                    },
+                    "keywords": {
+                        "type": "ARRAY",
+                        "items": { "type": "STRING" },
+                        "description": "Array of at least 10 technical keywords in English covering symptoms, tools, root causes, commands, and verified fixes (for action: 'write')"
+                    },
+                    "source_session_id": {
+                        "type": "STRING",
+                        "description": "Session ID from caller context linking this memory to its origin trajectory (Evidence Linking standard)"
+                    },
+                    "evidence_steps": {
+                        "type": "ARRAY",
+                        "items": { "type": "INTEGER" },
+                        "description": "Array of step index integers where terminal commands verified Exit Code 0 for this fix (Evidence Linking standard)"
+                    },
+                    "verified_exit_code": {
+                        "type": "INTEGER",
+                        "description": "Numeric exit code verifying successful execution (must be 0 for validated solutions)"
+                    },
+                    "release_tag": {
+                        "type": "STRING",
+                        "description": "Optional release version tag (e.g. 'v1.0.1') associated with this crystallized capability"
+                    },
+                    "category": {
+                        "type": "STRING",
+                        "description": "Classification category: 'bugfix', 'optimization', 'architecture', 'security', 'workflow', 'deployment'"
+                    },
+                    "id": {
+                        "type": "STRING",
+                        "description": "Unique memory ID or filename slug (for action: 'read', 'write', or 'purge')"
+                    },
+                    "problem": {
+                        "type": "STRING",
+                        "description": "Detailed description of the issue, error logs, and context (for action: 'write')"
+                    },
+                    "root_cause": {
+                        "type": "STRING",
+                        "description": "Root cause analysis explaining why the issue occurred (for action: 'write')"
+                    },
+                    "solution": {
+                        "type": "STRING",
+                        "description": "The exact verified fix, configuration changes, or commands that produced Exit Code 0 (for action: 'write')"
+                    },
+                    "query": {
+                        "type": "STRING",
+                        "description": "Search query keywords or problem terms (for action: 'search')"
+                    },
+                    "limit": {
+                        "type": "INTEGER",
+                        "description": "Maximum number of results to return (for action: 'search' or 'list', default: 10)"
+                    },
+                    "overwrite": {
+                        "type": "BOOLEAN",
+                        "description": "Set to true to overwrite existing memory with the same ID (for action: 'write')"
+                    }
+                },
+                "required": ["action"]
+            }
+        }));
+    }
+
     let mut candidate_paths = vec![
         canvas_tools_dir.join(tool_name).join("manifest.json"),
     ];

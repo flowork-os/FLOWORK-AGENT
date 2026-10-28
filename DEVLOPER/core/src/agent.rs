@@ -2791,6 +2791,7 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                 .replace("{agent_id}", agent_id)
                 .replace("{sessions_dir}", &sess_dir_str)
                 .replace("{session_id}", sess_id)
+                .replace("{date_time_str}", &datetime_str)
             );
         } else {
             let group_id = if sess_id.starts_with("group-") {
@@ -2803,6 +2804,8 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                 .replace("{effective_ws}", &ws_str)
                 .replace("{group_id}", group_id)
                 .replace("{agent_id}", agent_id)
+                .replace("{session_id}", sess_id)
+                .replace("{date_time_str}", &datetime_str)
             );
 
             // ---------------------------------------------------------------------------------
@@ -5641,6 +5644,9 @@ title: "Circuit Breaker Post-Mortem: {tool_name} Failure"
 keywords: ["circuit_breaker", "incident", "failure_recovery", "{tool_name}", "auto_crystallization", "system_resilience", "mitigation", "deterministic_recovery", "error_signature", "post_mortem"]
 category: "incident_remediation"
 status: "crystallized"
+source_session_id: "autonomous_circuit_breaker"
+evidence_steps: [{failure_count}]
+verified_exit_code: 1
 created_at: "{iso_now}"
 source: "circuit_breaker_crystallization"
 ---
@@ -6601,10 +6607,17 @@ source: "circuit_breaker_crystallization"
                             }
                         }
 
-                        let mut llm_tool_output = if !llm_guidance.is_empty() {
-                            format!("{}\n[TOOL RESULT FOR `{}`]:\n{}", llm_guidance.trim(), name, guaranteed_tool_output)
+                        let effective_exit_code = if exit_code == -1 {
+                            if tool_result_val.get("status").and_then(|v| v.as_str()) == Some("ERROR") { 1 } else { 0 }
                         } else {
-                            guaranteed_tool_output.clone()
+                            exit_code
+                        };
+                        let step_badge = format!("[STEP {} | EXIT CODE {}] ", tool_step_idx, effective_exit_code);
+
+                        let mut llm_tool_output = if !llm_guidance.is_empty() {
+                            format!("{}\n{}[TOOL RESULT FOR `{}`]:\n{}", llm_guidance.trim(), step_badge, name, guaranteed_tool_output)
+                        } else {
+                            format!("{}[TOOL RESULT FOR `{}`]:\n{}", step_badge, name, guaranteed_tool_output)
                         };
 
                         if let Some(ref b) = brain_alert_opt {
