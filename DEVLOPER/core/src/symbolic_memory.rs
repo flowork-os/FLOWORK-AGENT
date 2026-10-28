@@ -98,7 +98,7 @@ impl SymbolicMemory {
 
         let offloaded_lines = total_lines.saturating_sub(head_count + (total_lines - tail_start));
         let size_kb = (total_chars as f64) / 1024.0;
-        let short_cmd = if command.len() > 60 { &command[..60] } else { command };
+        let short_cmd = crate::tools::safe_truncate_str(command, 60);
         let clean_short_cmd = short_cmd.replace('"', "'");
         let status_str = if exit_code == 0 { "SUCCESS" } else { "FAILED" };
 

@@ -1459,11 +1459,7 @@ pub async fn execute_native_tool_with_discovery(
             let output = cmd.output().await.map_err(|e| format!("Failed to fetch URL '{url}': {e}"))?;
             let raw_text = String::from_utf8_lossy(&output.stdout);
             let sanitized_text = crate::credential_shield::CredentialShield::redact_secrets(&raw_text);
-            let truncated = if sanitized_text.len() > 50000 {
-                &sanitized_text[..50000]
-            } else {
-                &sanitized_text
-            };
+            let truncated = crate::tools::safe_truncate_str(&sanitized_text, 50000);
 
             Ok(json!({
                 "status": "SUCCESS",
@@ -2872,7 +2868,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                                 "line": line_num,
                                 "severity": "HIGH",
                                 "rule": "no_unchecked_unwrap",
-                                "code_snippet": if trimmed.len() > 100 { format!("{}...", &trimmed[..97]) } else { trimmed.to_string() },
+                                "code_snippet": if trimmed.len() > 100 { format!("{}...", crate::tools::safe_truncate_str(trimmed, 97)) } else { trimmed.to_string() },
                                 "suggestion": "Replace .unwrap() with .unwrap_or_default(), match/if-let, or ? propagation."
                             }));
                         }
@@ -2897,7 +2893,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                                 "line": line_num,
                                 "severity": "HIGH",
                                 "rule": "dangerous_execution_sink",
-                                "code_snippet": if trimmed.len() > 100 { format!("{}...", &trimmed[..97]) } else { trimmed.to_string() },
+                                "code_snippet": if trimmed.len() > 100 { format!("{}...", crate::tools::safe_truncate_str(trimmed, 97)) } else { trimmed.to_string() },
                                 "suggestion": "Avoid raw eval or direct shell invocation sinks. Use parameterized APIs and sanitized arguments."
                             }));
                         }
@@ -3030,7 +3026,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
                                                 portability_issues.push(json!({
                                                     "file": rel_display.clone(),
                                                     "line": line_idx + 1,
-                                                    "match": if line.len() > 100 { &line[..100] } else { line }
+                                                    "match": crate::tools::safe_truncate_str(line, 100)
                                                 }));
                                                 if portability_issues.len() >= 50 { break; }
                                             }
@@ -3595,7 +3591,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
 
             let out_str = format!(
                 "YouTube transcript extraction for: {}\n• Title: {}\n• Channel: {}\n• Status: {}\n• Content Description Snippet:\n{}",
-                target, title, channel, captions_desc, if desc.len() > 300 { &desc[..300] } else { desc }
+                target, title, channel, captions_desc, crate::tools::safe_truncate_str(desc, 300)
             );
 
             Ok(json!({
@@ -3628,7 +3624,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
 
             let out_str = format!(
                 "YouTube summary generated for: {}\n• Title: {}\n• Channel: {}\n• Category: {}\n• Total Views: {}\n• Description Summary: {}",
-                target, title, channel, category, views, if desc.len() > 200 { &desc[..200] } else { desc }
+                target, title, channel, category, views, crate::tools::safe_truncate_str(desc, 200)
             );
 
             Ok(json!({
@@ -3659,7 +3655,7 @@ r##"<svg xmlns="http://www.w3.org/2000/svg" width="800" height="600" viewBox="0 
 
             let out_str = format!(
                 "YouTube channel intelligence for: {}\n• Channel Title: {}\n• Subscribers: {}\n• Description: {}",
-                target, ch_title, ch_subs, if ch_desc.len() > 200 { &ch_desc[..200] } else { ch_desc }
+                target, ch_title, ch_subs, crate::tools::safe_truncate_str(ch_desc, 200)
             );
 
             Ok(json!({

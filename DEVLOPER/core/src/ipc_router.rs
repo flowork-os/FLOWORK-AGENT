@@ -235,7 +235,7 @@ pub async fn prompt_dispatch(
         *lock = (prompt.clone(), now);
     }
 
-    println!("[X-Flow Prompt Dispatcher] ⚡ Dispatching prompt: {}", &prompt[..50.min(prompt.len())]);
+    println!("[X-Flow Prompt Dispatcher] ⚡ Dispatching prompt: {}", crate::tools::safe_truncate_str(&prompt, 50));
 
     // 1. Broadcast SSE event to any connected Canvas UI tabs
     state.discovery.broadcast_prompt(&prompt);

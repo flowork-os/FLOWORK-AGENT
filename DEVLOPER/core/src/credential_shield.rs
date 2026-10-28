@@ -71,62 +71,75 @@ impl CredentialShield {
         false
     }
 
-    /// Sanitizes outbound logs, stdout, or response strings to prevent accidental credential exfiltration
+    /// Sanitizes outbound logs, stdout, or response strings to prevent accidental credential exfiltration.
+    /// Equipped with a panic circuit-breaker to guarantee zero-crash execution.
     pub fn redact_secrets(text: &str) -> String {
+        let res = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::redact_secrets_safe(text)
+        }));
+
+        match res {
+            Ok(sanitized) => sanitized,
+            Err(_) => {
+                eprintln!("[Flowork Shield] Circuit Breaker: Caught panic during redact_secrets. Returning safe original text.");
+                text.to_string()
+            }
+        }
+    }
+
+    fn redact_pattern<F>(
+        input: &str,
+        prefix: &str,
+        replacement: &str,
+        is_token_char: F,
+    ) -> String
+    where
+        F: Fn(char) -> bool,
+    {
+        if !input.contains(prefix) {
+            return input.to_string();
+        }
+
+        let mut out = String::with_capacity(input.len());
+        let mut rest = input;
+
+        while let Some(idx) = rest.find(prefix) {
+            out.push_str(&rest[..idx]);
+            out.push_str(replacement);
+
+            let after_prefix = &rest[idx + prefix.len()..];
+            let token_byte_len = after_prefix
+                .chars()
+                .take_while(|&c| is_token_char(c))
+                .map(|c| c.len_utf8())
+                .sum::<usize>();
+
+            rest = &after_prefix[token_byte_len..];
+        }
+
+        out.push_str(rest);
+        out
+    }
+
+    fn redact_secrets_safe(text: &str) -> String {
         let mut result = text.to_string();
 
         // 1. Redact GitHub personal access tokens
-        for prefix in &["ghp_", "github_pat_"] {
-            if result.contains(prefix) {
-                result = result.replace(prefix, "[REDACTED_GH_TOKEN_PREFIX]");
-            }
+        for prefix in &["ghp_", "github_pat_", "gho_", "ghu_", "ghs_", "ghr_"] {
+            result = Self::redact_pattern(&result, prefix, "[REDACTED_GH_TOKEN_PREFIX]", |c| {
+                c.is_alphanumeric() || c == '_'
+            });
         }
 
-        // 2. Redact Google API keys
-        if result.contains("AIzaSy") {
-            // Replace pattern matching AIzaSy followed by alphanumeric characters
-            let mut sanitized = String::with_capacity(result.len());
-            let mut chars = result.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == 'A' && result[sanitized.len()..].starts_with("AIzaSy") {
-                    sanitized.push_str("[REDACTED_GOOGLE_API_KEY]");
-                    // Advance until non-alphanumeric or delimiter
-                    for _ in 0..6 { chars.next(); }
-                    while let Some(&next_c) = chars.peek() {
-                        if next_c.is_alphanumeric() || next_c == '-' || next_c == '_' {
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    sanitized.push(c);
-                }
-            }
-            result = sanitized;
-        }
+        // 2. Redact Google API keys (AIzaSy...)
+        result = Self::redact_pattern(&result, "AIzaSy", "[REDACTED_GOOGLE_API_KEY]", |c| {
+            c.is_alphanumeric() || c == '-' || c == '_'
+        });
 
-        // 3. Redact OpenAI / Anthropic key patterns
-        if result.contains("sk-") {
-            let mut sanitized = String::with_capacity(result.len());
-            let mut chars = result.chars().peekable();
-            while let Some(c) = chars.next() {
-                if c == 's' && result[sanitized.len()..].starts_with("sk-") {
-                    sanitized.push_str("[REDACTED_API_KEY]");
-                    for _ in 0..3 { chars.next(); }
-                    while let Some(&next_c) = chars.peek() {
-                        if next_c.is_alphanumeric() || next_c == '-' || next_c == '_' {
-                            chars.next();
-                        } else {
-                            break;
-                        }
-                    }
-                } else {
-                    sanitized.push(c);
-                }
-            }
-            result = sanitized;
-        }
+        // 3. Redact OpenAI / Anthropic / standard AI keys (sk-...)
+        result = Self::redact_pattern(&result, "sk-", "[REDACTED_API_KEY]", |c| {
+            c.is_alphanumeric() || c == '-' || c == '_'
+        });
 
         result
     }
@@ -158,6 +171,28 @@ mod tests {
         let redacted = CredentialShield::redact_secrets(input);
         assert!(!redacted.contains("ghp_"));
         assert!(redacted.contains("[REDACTED_GH_TOKEN_PREFIX]"));
+    }
+
+    #[test]
+    fn test_secret_redaction_panic_reproduction() {
+        let input = "sk-1 sk-2 sk-3 sk-4 sk-5 sk-6 sk-7 sk-8 sk-9 sk-10 s";
+        let redacted = CredentialShield::redact_secrets(input);
+        assert!(!redacted.contains("sk-"));
+    }
+
+    #[test]
+    fn test_secret_redaction_unicode_and_mixed() {
+        let input = "Server log: 🚀 ghp_1111222233334444555566667777888899990000 ♟️ with sk-proj-1234567890 📈 and AIzaSyAbcDef-123456. Done.";
+        let redacted = CredentialShield::redact_secrets(input);
+        assert!(redacted.contains("🚀"));
+        assert!(redacted.contains("♟️"));
+        assert!(redacted.contains("📈"));
+        assert!(!redacted.contains("ghp_"));
+        assert!(!redacted.contains("sk-proj-"));
+        assert!(!redacted.contains("AIzaSyAbcDef"));
+        assert!(redacted.contains("[REDACTED_GH_TOKEN_PREFIX]"));
+        assert!(redacted.contains("[REDACTED_API_KEY]"));
+        assert!(redacted.contains("[REDACTED_GOOGLE_API_KEY]"));
     }
 
     #[test]

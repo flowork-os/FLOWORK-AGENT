@@ -276,7 +276,7 @@ impl CopilotManager {
         let base_codeload = crate::prompt_enclave::PromptEnclave::url_github_codeload_base();
         let codeload_trimmed = base_codeload.trim_end_matches('/');
         let tarball_url = format!("{codeload_trimmed}/{repo}/tar.gz/refs/heads/main");
-        let prefix = if clean_id.len() >= 2 { &clean_id[..2] } else { clean_id };
+        let prefix = crate::tools::safe_truncate_str(clean_id, 2);
         let sharded_pattern = format!("{repo}-main/plugins/{prefix}/{clean_id}");
         let legacy_pattern = format!("{repo}-main/{clean_id}");
 
