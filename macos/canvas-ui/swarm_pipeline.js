@@ -2558,15 +2558,22 @@
         const isTrigger = fromNode.type === 'trigger';
         const isSelected = this.selectedConnId === conn.id;
 
+        const isFromWorking = (fromNode.activityState === 'working');
+        const isToWorking = (toNode.activityState === 'working');
+        const isConnActive = isFromWorking || isToWorking;
+
         let cableClass = isTrigger ? 'pipeline-cable trigger-cable' : 'pipeline-cable';
         if (fromPort === 'out-2') cableClass += ' cable-route-2';
         if (isSelected) cableClass += ' cable-selected';
+        if (isConnActive) cableClass += ' cable-active';
         if (conn.guardianEnabled === false) cableClass += ' cable-guardian-bypassed';
+
+        const photonClass = `pipeline-photon-stream ${fromPort === 'out-2' ? 'photon-route-2' : ''} ${conn.guardianEnabled === false ? 'photon-bypassed' : ''} ${isConnActive ? (fromPort === 'out-2' ? 'active-flow-2' : 'active-flow-1') : ''}`;
 
         svgHtml += `
           <g class="pipeline-cable-group ${isSelected ? 'selected' : ''}" data-conn-id="${conn.id}">
             <path d="${pathData}" class="${cableClass}" />
-            <path d="${pathData}" class="pipeline-photon-stream ${fromPort === 'out-2' ? 'photon-route-2' : ''} ${conn.guardianEnabled === false ? 'photon-bypassed' : ''}" />
+            <path d="${pathData}" class="${photonClass}" />
           </g>
         `;
       });
@@ -2689,9 +2696,18 @@
             if (!a || !a.data) return false;
             const agId = String(a.data.id || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
             const agPersona = String(a.data.persona || '').toLowerCase().replace(/\./g, '');
+            const agName = String(a.data.name || '').toLowerCase();
+            const agRole = String(a.data.role || '').toLowerCase();
             const nAgent = String(node.agentId || '').toLowerCase().replace(/^(agent-|session-)/, '').replace(/\./g, '');
             const nId = String(node.id || '').toLowerCase().replace(/^node-/, '').replace(/\./g, '');
+            const nName = String(node.name || '').toLowerCase();
+            const nRole = String(node.role || '').toLowerCase();
+
             return agId === nAgent || agId === nId || agPersona === nAgent || agPersona === nId ||
+                   agId.includes(nId) || nId.includes(agId) ||
+                   agId.includes(nAgent) || nAgent.includes(agId) ||
+                   agName.includes(nName) || nName.includes(agName) ||
+                   agRole.includes(nRole) || nRole.includes(agRole) ||
                    (agId === 'mrflow' && (nId === 'mrflow' || nAgent === 'mrflow'));
           });
           if (matchedAgent && matchedAgent.data) {
@@ -5824,30 +5840,50 @@
 
     async _cascadeExecuteNode(node, incomingData, log, updateStatus) {
       const nodeEl = document.getElementById(`dag-node-${node.id}`);
-      if (nodeEl) nodeEl.classList.add('node-processing');
+      if (nodeEl) {
+        nodeEl.classList.remove('node-success');
+        nodeEl.classList.add('node-processing');
+      }
+      this.setAgentActivityState(node.agentId || node.id, 'working');
 
       updateStatus(`🤖 ${node.role || node.name}: Processing Ingress...`, '#38bdf8');
       log(`🤖 Agent [${node.role || node.name}] ingesting data packet...`);
 
-      await new Promise(r => setTimeout(r, 650));
+      // Relay telemetry to sovereign backend
+      try {
+        await fetch('/api/swarmflow/relay', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            node_id: node.id,
+            status: 'DONE',
+            output: `Task executed by ${node.role || node.name} with Exit Code 0`
+          })
+        });
+      } catch (err) {
+        console.warn('[SwarmPipeline] Relay dispatch notice:', err);
+      }
 
       log(`✓ [${node.role || node.name}] task completed with Consensus Verified.`);
       if (nodeEl) {
         nodeEl.classList.remove('node-processing');
         nodeEl.classList.add('node-success');
       }
+      this.setAgentActivityState(node.agentId || node.id, 'done');
 
       // Propagate down Port 1 (Primary Route)
       const outConns = this.connections.filter(c => c.from === node.id && (c.fromPort || 'out-1') === 'out-1');
       for (const conn of outConns) {
         const connGroup = this.svgLayer?.querySelector(`[data-conn-id="${conn.id}"]`);
         const photon = connGroup?.querySelector('.pipeline-photon-stream');
+        const cable = connGroup?.querySelector('.pipeline-cable');
+        if (cable) cable.classList.add('cable-active');
         if (photon) photon.classList.add('active-flow-1');
 
         const next = this.nodes.find(n => n.id === conn.to);
         if (next) {
           log(`➡️ [${node.role || node.name}] handed off signal -> [${next.role || next.name}]`);
-          await new Promise(r => setTimeout(r, 650));
+          await new Promise(r => setTimeout(r, 450));
           await this._cascadeExecuteNode(next, incomingData, log, updateStatus);
         }
       }

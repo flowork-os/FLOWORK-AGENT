@@ -1126,6 +1126,9 @@ const server = http.createServer(async (req, res) => {
     return serveStaticFile(target, req, res);
   }
 
+  if (reqPath.startsWith('/gui/')) {
+    reqPath = reqPath.replace(/^\/gui\//, '');
+  }
   const safeRel = path.normalize(reqPath).replace(/^(\.\.[\/\\])+/, '');
   const filePath = path.join(GUI_ROOT, safeRel);
   return serveStaticFile(filePath, req, res);

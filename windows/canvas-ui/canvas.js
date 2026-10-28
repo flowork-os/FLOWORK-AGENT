@@ -781,20 +781,31 @@ function cancelAgentExitTimer(agentId) {
 }
 window.cancelAgentExitTimer = cancelAgentExitTimer;
 
+function setUnifiedAgentActivity(agentId, state) {
+  if (!agentId) return;
+  if (window.office3DInstance && typeof window.office3DInstance.setAgentState === 'function') {
+    window.office3DInstance.setAgentState(agentId, state);
+  }
+  if (window.swarmPipelineInstance && typeof window.swarmPipelineInstance.setAgentActivityState === 'function') {
+    window.swarmPipelineInstance.setAgentActivityState(agentId, state);
+  }
+  if (typeof window.updateOfficeDockAgentState === 'function') {
+    window.updateOfficeDockAgentState(agentId, state);
+  }
+}
+window.setUnifiedAgentActivity = setUnifiedAgentActivity;
+
 function scheduleAgentExit(agentId, delayMs = 2500) {
   if (!agentId || agentId === 'agent-boss') return;
   cancelAgentExitTimer(agentId);
   const timer = setTimeout(() => {
     agentExitTimers.delete(agentId);
-    // While chat turn is actively streaming or executing tools/tasks, keep summoned workers at their desks!
-    // Prevents comical ping-pong walk-outs between consecutive tool calls (e.g. view_file -> replace -> run_command)
     if (isChatStreaming) {
       return;
     }
-    // Verify no tools are currently running for this worker agent
     const isStillBusy = Array.from(activeStepWorkerAgents.values()).includes(agentId);
-    if (!isStillBusy && window.office3DInstance) {
-      window.office3DInstance.setAgentState(agentId, 'idle');
+    if (!isStillBusy) {
+      setUnifiedAgentActivity(agentId, 'idle');
     }
   }, delayMs);
   agentExitTimers.set(agentId, timer);
@@ -4706,12 +4717,12 @@ function initSSE() {
         console.log('[X-Flow SSE] 🌊 Swarm wave state received:', wave);
         if (typeof window.dispatchSwarmWaveTo3D === 'function') {
           window.dispatchSwarmWaveTo3D(wave);
-        } else if (window.office3DInstance && Array.isArray(wave.active_workers)) {
+        } else if (Array.isArray(wave.active_workers)) {
           wave.active_workers.forEach(w => {
             const agId = w.agent_id || w.role || w.task_id;
             const isRunning = (wave.status === 'wave_started' || w.status === 'running');
             const targetState = isRunning ? 'working' : 'idle';
-            window.office3DInstance.setAgentState(agId, targetState);
+            setUnifiedAgentActivity(agId, targetState);
             if (typeof window.setOfficeAgentThinking === 'function') {
               const reason = isRunning ? `⚡ [Wave ${wave.wave_index}] ${w.role || w.task_id}` : 'Wave barrier verified (Exit Code 0)';
               window.setOfficeAgentThinking(agId, reason, isRunning);
@@ -22341,9 +22352,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
               activeStepWorkerAgents.set(String(stepIdx), workerAgentId);
               cancelAgentExitTimer(workerAgentId);
 
-              if (window.office3DInstance) {
-                window.office3DInstance.setAgentState(workerAgentId, 'working');
-              }
+              setUnifiedAgentActivity(workerAgentId, 'working');
 
               // Pipe real-time tool reason into the 3D agent thought badge
               const toolReason = extractToolReason(data.tool || 'tool', data.details || {});
@@ -22369,9 +22378,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                     const subCandidate = sub.TypeName || sub.typeName || sub.role || sub.Role || sub.agent_id || sub.id;
                     const subWorkerId = resolveWorkerAgentFromTool('invoke_subagent', { target_agent_id: subCandidate, role: sub.Role || sub.role });
                     cancelAgentExitTimer(subWorkerId);
-                    if (window.office3DInstance) {
-                      window.office3DInstance.setAgentState(subWorkerId, 'working');
-                    }
+                    setUnifiedAgentActivity(subWorkerId, 'working');
                     if (typeof window.setOfficeAgentThinking === 'function') {
                       const subRole = sub.Role || sub.role || sub.TypeName || 'Swarm Worker';
                       window.setOfficeAgentThinking(subWorkerId, `⚡ [Swarm Wave] ${subRole}`, true);
@@ -22423,9 +22430,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
                   subList.forEach((sub) => {
                     const subCandidate = sub.TypeName || sub.typeName || sub.role || sub.Role || sub.agent_id || sub.id;
                     const subWorkerId = resolveWorkerAgentFromTool('invoke_subagent', { target_agent_id: subCandidate, role: sub.Role || sub.role });
-                    if (window.office3DInstance) {
-                      window.office3DInstance.setAgentState(subWorkerId, 'idle');
-                    }
+                    setUnifiedAgentActivity(subWorkerId, 'idle');
                     if (typeof window.setOfficeAgentThinking === 'function') {
                       window.setOfficeAgentThinking(subWorkerId, 'Wave completed (Exit Code 0)', false);
                     }
@@ -22577,7 +22582,7 @@ async function executeChatMessage(text, attachmentsToSend = []) {
       setTimeout(() => {
         window.office3DInstance.agentRoster.forEach(ag => {
           if (!ag.isBoss && ag.state === 'working') {
-            window.office3DInstance.setAgentState(ag.id, 'idle');
+            setUnifiedAgentActivity(ag.id, 'idle');
           }
         });
       }, 2500);
@@ -22920,9 +22925,7 @@ async function regenerateLastTurn() {
               activeStepWorkerAgents.set(String(stepIdx), workerAgentId);
               cancelAgentExitTimer(workerAgentId);
 
-              if (window.office3DInstance) {
-                window.office3DInstance.setAgentState(workerAgentId, 'working');
-              }
+              setUnifiedAgentActivity(workerAgentId, 'working');
 
               const toolReason = extractToolReason(data.tool || 'tool', data.details || {});
               if (typeof window.setOfficeAgentThinking === 'function') {
@@ -23054,7 +23057,7 @@ async function regenerateLastTurn() {
       setTimeout(() => {
         window.office3DInstance.agentRoster.forEach(ag => {
           if (!ag.isBoss && ag.state === 'working') {
-            window.office3DInstance.setAgentState(ag.id, 'idle');
+            setUnifiedAgentActivity(ag.id, 'idle');
           }
         });
       }, 2500);

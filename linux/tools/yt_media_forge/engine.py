@@ -74,6 +74,62 @@ def render_slideshow_video(scenes, audio_path, output_mp4, resolution="1080x1920
         "error": proc.stderr if proc.returncode != 0 else None
     }
 
+def sample_audio_stream(url, start_offset=0, duration=10, output_path=None):
+    if not output_path:
+        scratch_dir = os.path.join(os.getcwd(), ".FL_BIN", "scratch")
+        output_path = os.path.join(scratch_dir, f"sample_stream_{int(start_offset)}s.mp3")
+    os.makedirs(os.path.dirname(os.path.abspath(output_path)), exist_ok=True)
+    
+    # Cap duration to max 30s to prevent unbounded execution
+    duration = min(max(int(duration), 1), 30)
+    
+    # Step 1: Extract direct audio stream URL via yt-dlp in <10s
+    try:
+        ytdlp_proc = subprocess.run(
+            ["yt-dlp", "-g", "-f", "bestaudio", "--socket-timeout", "10", url],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=15
+        )
+        if ytdlp_proc.returncode != 0:
+            return {"success": False, "error": f"yt-dlp stream resolution failed: {ytdlp_proc.stderr.strip()}"}
+        stream_url = ytdlp_proc.stdout.strip().splitlines()[0]
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "yt-dlp stream resolution timed out after 15s"}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to resolve stream URL: {str(e)}"}
+        
+    # Step 2: Grab exact slice via ffmpeg directly from stream URL in <25s
+    try:
+        ffmpeg_cmd = [
+            "ffmpeg", "-y",
+            "-ss", str(start_offset),
+            "-i", stream_url,
+            "-t", str(duration),
+            "-vn",
+            "-c:a", "libmp3lame",
+            "-q:a", "4",
+            "-nostats",
+            "-loglevel", "error",
+            output_path
+        ]
+        ff_proc = subprocess.run(ffmpeg_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=25)
+        if ff_proc.returncode == 0 and os.path.exists(output_path) and os.path.getsize(output_path) > 0:
+            return {
+                "success": True,
+                "output_path": output_path,
+                "file_size_bytes": os.path.getsize(output_path),
+                "duration_seconds": duration,
+                "start_offset": start_offset
+            }
+        else:
+            return {"success": False, "error": f"FFmpeg sampling failed: {ff_proc.stderr.strip()}"}
+    except subprocess.TimeoutExpired:
+        return {"success": False, "error": "FFmpeg audio sampling timed out after 25s"}
+    except Exception as e:
+        return {"success": False, "error": f"Failed to sample audio stream: {str(e)}"}
+
 def main():
     if len(sys.argv) > 1 and sys.argv[1].startswith("{"):
         payload = json.loads(sys.argv[1])
@@ -103,6 +159,17 @@ def main():
             "audio_path": out_audio,
             "subtitle_path": out_srt if os.path.exists(out_srt) else None
         }))
+
+    elif action == "sample_audio_stream":
+        url = payload.get("url")
+        if not url:
+            print(json.dumps({"success": False, "error": "Missing 'url' parameter for sample_audio_stream"}))
+            return
+        start_offset = payload.get("start_offset", 0)
+        dur = payload.get("duration", 10)
+        out_path = payload.get("output_path")
+        result = sample_audio_stream(url, start_offset=start_offset, duration=dur, output_path=out_path)
+        print(json.dumps(result))
 
     elif action in ("render_video", "render_short"):
         res = "1080x1920" if action == "render_short" else "1920x1080"

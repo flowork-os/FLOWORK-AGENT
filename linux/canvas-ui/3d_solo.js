@@ -186,6 +186,14 @@ class SovereignOffice3D {
     this.isPaused = false;
     this.animate = this.animate.bind(this);
     this.resume();
+
+    // 🛡️ Sovereign Pre-Render & Dimensions Watcher
+    setTimeout(() => {
+      if (typeof this.boundOnResize === 'function') this.boundOnResize();
+      if (this.renderer && this.scene && this.camera) {
+        try { this.renderer.render(this.scene, this.camera); } catch (_) {}
+      }
+    }, 60);
   }
   initSharedResources() {
     this.sharedMaterials = {
@@ -3487,7 +3495,20 @@ class SovereignOffice3D {
       this.camera.aspect = w / h;
       this.camera.updateProjectionMatrix();
       this.renderer.setSize(w, h);
+      if (this.isPaused && this.isRunning) {
+        this.resume();
+      }
     };
+    this.onWindowResize = this.boundOnResize;
+
+    if (typeof ResizeObserver === 'function' && this.container) {
+      try {
+        this.resizeObserver = new ResizeObserver(() => {
+          this.boundOnResize();
+        });
+        this.resizeObserver.observe(this.container);
+      } catch (_) {}
+    }
 
     this.boundOnVisibilityChange = () => {
       if (document.hidden) {
@@ -3907,7 +3928,8 @@ class SovereignOffice3D {
       return;
     }
     if (this.container && (this.container.clientWidth === 0 || this.container.clientHeight === 0)) {
-      this.pause();
+      // 🛡️ Stand by for next frame instead of permanently stopping loop
+      this.rafId = requestAnimationFrame(this.animate);
       return;
     }
 
@@ -4166,6 +4188,10 @@ class SovereignOffice3D {
       this._rosterWatcherInterval = null;
     }
     this.detachInteractionListeners();
+    if (this.resizeObserver) {
+      try { this.resizeObserver.disconnect(); } catch (_) {}
+      this.resizeObserver = null;
+    }
     window.removeEventListener('resize', this.boundOnResize);
     document.removeEventListener('visibilitychange', this.boundOnVisibilityChange);
   }
