@@ -1144,7 +1144,8 @@ server.on('error', (err) => {
   }
 });
 
-server.listen(PORT, '0.0.0.0', () => {
-  console.log(`[Flow Studio] Server running on http://0.0.0.0:${PORT}`);
+const HOST = process.env.HOST || '127.0.0.1';
+server.listen(PORT, HOST, () => {
+  console.log(`[Flow Studio] Server running on http://${HOST}:${PORT}`);
   console.log(`[Flow Studio] FFmpeg engine ready: ${hasFFmpeg} | FFprobe engine ready: ${hasFFprobe}`);
 });
