@@ -2533,12 +2533,17 @@ impl AgentService {
             false
         };
 
+        let has_team_intent = _user_msg.map(|msg| {
+            let lower = msg.to_lowercase();
+            lower.contains("team") || lower.contains("tim ") || lower.contains("squad") || lower.contains("bagi tugas") || lower.contains("kerjasama")
+        }).unwrap_or(false);
+
         let resolved_persona = match is_explicit_override {
             Some(p) => p,
             None => {
                 if is_session_explicit_solo {
                     "mr.flow"
-                } else if is_session_group || sess_id.starts_with("group-") {
+                } else if is_session_group || sess_id.starts_with("group-") || has_team_intent {
                     "leader"
                 } else {
                     "mr.flow"
@@ -2773,7 +2778,7 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
 
         let is_team_mode = if is_session_explicit_solo {
             false
-        } else if is_session_group || sess_id.starts_with("group-") {
+        } else if is_session_group || sess_id.starts_with("group-") || has_team_intent {
             true
         } else {
             target_persona == "leader"
@@ -2798,6 +2803,106 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                 .replace("{effective_ws}", &ws_str)
                 .replace("{group_id}", group_id)
                 .replace("{agent_id}", agent_id)
+            );
+
+            // ---------------------------------------------------------------------------------
+            // 🛡️ DYNAMIC TOPOLOGICAL SWARM FLOW PIPELINE INJECTION & CABLE ROUTING ACL
+            // Reads active preset (e.g. swarmflow/active.json -> remotability_squad.json)
+            // Resolves exact outgoing cables for this agent_id/persona and enforces cable bounds
+            // ---------------------------------------------------------------------------------
+            let swarm_dir = crate::ipc_router::resolve_swarmflow_dir(&engine_root, &effective_ws);
+            let active_json_path = swarm_dir.join("active.json");
+            let mut active_preset_id = "default".to_string();
+            if active_json_path.exists() {
+                if let Ok(c) = std::fs::read_to_string(&active_json_path) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                        if let Some(id_str) = v.get("activePresetId").and_then(|x| x.as_str()) {
+                            active_preset_id = id_str.to_string();
+                        }
+                    }
+                }
+            }
+
+            let preset_file = swarm_dir.join(format!("{active_preset_id}.json"));
+            let mut preset_name = active_preset_id.clone();
+            let mut preset_domain = "Autonomous Multi-Agent Swarm".to_string();
+            let mut current_node_id = agent_id.to_string();
+            let mut current_node_role = role.to_string();
+            let mut permitted_targets: Vec<String> = Vec::new();
+            let mut topology_lines: Vec<String> = Vec::new();
+
+            if preset_file.exists() {
+                if let Ok(c) = std::fs::read_to_string(&preset_file) {
+                    if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                        if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
+                            preset_name = n.to_string();
+                        }
+                        if let Some(d) = v.get("domain").and_then(|x| x.as_str()) {
+                            preset_domain = d.to_string();
+                        }
+
+                        let mut node_to_agent: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        let mut _node_to_role: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+
+                        if let Some(nodes_arr) = v.get("nodes").and_then(|x| x.as_array()) {
+                            for nd in nodes_arr {
+                                let nid = nd.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                                let aid = nd.get("agentId").and_then(|x| x.as_str()).unwrap_or("");
+                                let rtitle = nd.get("title").or_else(|| nd.get("role")).and_then(|x| x.as_str()).unwrap_or(aid);
+                                if !nid.is_empty() {
+                                    node_to_agent.insert(nid.to_string(), aid.to_string());
+                                    _node_to_role.insert(nid.to_string(), rtitle.to_string());
+                                }
+                                if aid == agent_id || aid == target_persona || nid == agent_id {
+                                    current_node_id = nid.to_string();
+                                    current_node_role = rtitle.to_string();
+                                }
+                            }
+                        }
+
+                        if let Some(conn_arr) = v.get("connections").and_then(|x| x.as_array()) {
+                            for conn in conn_arr {
+                                let from_nid = conn.get("from").and_then(|x| x.as_str()).unwrap_or("");
+                                let to_nid = conn.get("to").and_then(|x| x.as_str()).unwrap_or("");
+                                let from_aid = node_to_agent.get(from_nid).map(|s| s.as_str()).unwrap_or(from_nid);
+                                let to_aid = node_to_agent.get(to_nid).map(|s| s.as_str()).unwrap_or(to_nid);
+                                let port = conn.get("fromPort").and_then(|x| x.as_str()).unwrap_or("out-1");
+
+                                topology_lines.push(format!("  - Cable: [{from_aid} ({from_nid})] --({port})--> [{to_aid} ({to_nid})]"));
+
+                                if from_nid == current_node_id || from_aid == agent_id || from_aid == target_persona {
+                                    if !permitted_targets.contains(&to_aid.to_string()) {
+                                        permitted_targets.push(to_aid.to_string());
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            let topology_map_str = if topology_lines.is_empty() {
+                "  - Linear sequential fallback: Architect -> Specialists -> QC Gatekeeper".to_string()
+            } else {
+                topology_lines.join("\n")
+            };
+
+            let permitted_targets_str = if permitted_targets.is_empty() {
+                "None (You are the terminal sink node; complete and report final verified deliverables)".to_string()
+            } else {
+                permitted_targets.join(", ")
+            };
+
+            prompt.push_str("\n\n");
+            prompt.push_str(&crate::prompt_seal::PromptSeal::active_swarm_pipeline_template()
+                .replace("{active_preset_id}", &active_preset_id)
+                .replace("{active_preset_name}", &preset_name)
+                .replace("{active_preset_domain}", &preset_domain)
+                .replace("{current_node_id}", &current_node_id)
+                .replace("{current_node_role}", &current_node_role)
+                .replace("{current_agent_id}", agent_id)
+                .replace("{pipeline_topology_map}", &topology_map_str)
+                .replace("{permitted_outgoing_targets}", &permitted_targets_str)
             );
         }
 

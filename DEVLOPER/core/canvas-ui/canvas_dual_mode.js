@@ -489,10 +489,15 @@ ${escapeHtml(String(out).slice(0, 3000))}
       // Mount 3D Modern Executive Office
       const canvas3D = wrapper.querySelector('#group-office-3d-canvas');
       const wrap3D = wrapper.querySelector('#warroom-3d-mount');
-      if (canvas3D && wrap3D && typeof window.GroupOffice3D === 'function') {
+      const GroupOfficeConstructor = window.GroupOffice3D || window.SovereignOffice3D || window.Office3D;
+      if (canvas3D && wrap3D && typeof GroupOfficeConstructor === 'function') {
         try {
-          this.office3D = new window.GroupOffice3D(canvas3D, wrap3D);
-          this.office3D.syncMembers(members);
+          this.office3D = new GroupOfficeConstructor(canvas3D, wrap3D);
+          if (typeof this.office3D.syncMembers === 'function') {
+            this.office3D.syncMembers(members);
+          } else if (typeof this.office3D.syncPersonas === 'function') {
+            this.office3D.syncPersonas(members);
+          }
         } catch (err) {
           console.warn('[GroupWarRoom] Error mounting GroupOffice3D:', err);
         }
@@ -502,6 +507,16 @@ ${escapeHtml(String(out).slice(0, 3000))}
       const svgMount = wrapper.querySelector('#warroom-dag-mount');
       if (svgMount) {
         this.renderSvgDag(svgMount, members, adminName);
+      }
+
+      // If 3D office could not mount, fallback immediately to SVG DAG so it is NEVER blank
+      if (!this.office3D && wrap3D && svgMount) {
+        wrap3D.style.display = 'none';
+        svgMount.style.display = 'block';
+        const btn3DInit = wrapper.querySelector('#btn-subtab-3d-office');
+        const btnDagInit = wrapper.querySelector('#btn-subtab-dag-mesh');
+        if (btn3DInit) btn3DInit.classList.remove('active');
+        if (btnDagInit) btnDagInit.classList.add('active');
       }
 
       // Subtab switcher: 3D Office vs SVG DAG

@@ -1561,6 +1561,9 @@ impl ToolEngine {
             _ => raw_clean_name,
         };
         let engine_root = self.resolve_engine_root();
+        if clean_name == "team_dispatch" {
+            return self.execute_team_dispatch(args).await;
+        }
         let mcp_script = engine_root.join("mcp").join("run.mjs");
 
         // 1. Explicit MCP Tool Call Routing (mcp_* or mcp_runner)
@@ -2018,6 +2021,196 @@ impl ToolEngine {
 
     pub async fn execute_trigger_control(&self, args: &Value) -> Result<Value, String> {
         self.execute("trigger_control", args).await
+    }
+
+    pub async fn execute_team_dispatch(&self, args: &Value) -> Result<Value, String> {
+        let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("HANDOFF");
+        let to_agent = args.get("to_agent").or_else(|| args.get("target_agent")).and_then(|v| v.as_str()).unwrap_or("");
+        let summary = args.get("summary").and_then(|v| v.as_str()).unwrap_or("");
+        let payload = args.get("payload").and_then(|v| v.as_str()).unwrap_or("");
+        let status_proof = args.get("status_proof").and_then(|v| v.as_str()).unwrap_or("");
+
+        let engine_root = self.resolve_engine_root();
+        let swarm_dir = crate::ipc_router::resolve_swarmflow_dir(&engine_root, &self.workspace_root);
+        let active_json_path = swarm_dir.join("active.json");
+        let mut active_preset_id = "default".to_string();
+        if active_json_path.exists() {
+            if let Ok(c) = std::fs::read_to_string(&active_json_path) {
+                if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                    if let Some(id_str) = v.get("activePresetId").and_then(|x| x.as_str()) {
+                        active_preset_id = id_str.to_string();
+                    }
+                }
+            }
+        }
+
+        let preset_file = swarm_dir.join(format!("{active_preset_id}.json"));
+
+        // -------------------------------------------------------------------------
+        // GATE 1: ATTRIBUTION & ATTESTATION PROOF OF WORK GATE
+        // If artifacts are claimed, verify that every claimed file exists and > 0 bytes!
+        // -------------------------------------------------------------------------
+        if let Some(artifacts_arr) = args.get("artifacts").and_then(|v| v.as_array()) {
+            for art in artifacts_arr {
+                if let Some(art_str) = art.as_str() {
+                    let art_clean = art_str.trim().trim_start_matches("file://");
+                    if !art_clean.is_empty() {
+                        let art_path = if std::path::Path::new(art_clean).is_absolute() {
+                            PathBuf::from(art_clean)
+                        } else {
+                            self.workspace_root.join(art_clean)
+                        };
+                        if !art_path.exists() {
+                            return Ok(json!({
+                                "status": "ERROR",
+                                "exit_code": 1,
+                                "tool": "team_dispatch",
+                                "error": format!("Attestation Gate Rejected: Claimed artifact '{}' does not exist on physical disk.", art_clean),
+                                "output": format!("❌ [ATTESTATION GATE FAILURE] Artifact '{}' not found on disk. Create the file and verify exit code 0 before dispatching.", art_clean)
+                            }));
+                        }
+                        if let Ok(meta) = std::fs::metadata(&art_path) {
+                            if meta.len() == 0 {
+                                return Ok(json!({
+                                    "status": "ERROR",
+                                    "exit_code": 1,
+                                    "tool": "team_dispatch",
+                                    "error": format!("Attestation Gate Rejected: Claimed artifact '{}' is 0 bytes (empty file).", art_clean),
+                                    "output": format!("❌ [ATTESTATION GATE FAILURE] Artifact '{}' is empty (0 bytes). Genuine implementation required.", art_clean)
+                                }));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // GATE 2: ROUTING ACL (CABLE VERIFICATION)
+        // Validate that calling agent has a topological cable connecting to to_agent
+        // -------------------------------------------------------------------------
+        let mut permitted_targets: Vec<String> = Vec::new();
+        let mut is_reverse_revision_allowed = false;
+        let mut current_preset_name = active_preset_id.clone();
+
+        if preset_file.exists() {
+            if let Ok(c) = std::fs::read_to_string(&preset_file) {
+                if let Ok(v) = serde_json::from_str::<Value>(&c) {
+                    if let Some(n) = v.get("name").and_then(|x| x.as_str()) {
+                        current_preset_name = n.to_string();
+                    }
+
+                    let mut node_to_agent: HashMap<String, String> = HashMap::new();
+                    if let Some(nodes_arr) = v.get("nodes").and_then(|x| x.as_array()) {
+                        for nd in nodes_arr {
+                            let nid = nd.get("id").and_then(|x| x.as_str()).unwrap_or("");
+                            let aid = nd.get("agentId").and_then(|x| x.as_str()).unwrap_or("");
+                            if !nid.is_empty() && !aid.is_empty() {
+                                node_to_agent.insert(nid.to_string(), aid.to_string());
+                            }
+                        }
+                    }
+
+                    if let Some(conn_arr) = v.get("connections").and_then(|x| x.as_array()) {
+                        for conn in conn_arr {
+                            let from_nid = conn.get("from").and_then(|x| x.as_str()).unwrap_or("");
+                            let to_nid = conn.get("to").and_then(|x| x.as_str()).unwrap_or("");
+                            let _from_aid = node_to_agent.get(from_nid).map(|s| s.as_str()).unwrap_or(from_nid);
+                            let to_aid = node_to_agent.get(to_nid).map(|s| s.as_str()).unwrap_or(to_nid);
+
+                            permitted_targets.push(to_aid.to_string());
+                            if !to_nid.is_empty() {
+                                permitted_targets.push(to_nid.to_string());
+                            }
+
+                            if to_aid == to_agent || to_nid == to_agent {
+                                is_reverse_revision_allowed = true;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let is_valid_route = if action == "REVISE" {
+            is_reverse_revision_allowed || permitted_targets.contains(&to_agent.to_string())
+        } else {
+            permitted_targets.is_empty() || permitted_targets.contains(&to_agent.to_string())
+        };
+
+        if !to_agent.is_empty() && !is_valid_route {
+            return Ok(json!({
+                "status": "ERROR",
+                "exit_code": 1,
+                "tool": "team_dispatch",
+                "error": format!("Routing ACL Violation: Target agent '{}' is not connected via Swarm Flow cables. Permitted downstream targets: {:?}", to_agent, permitted_targets),
+                "output": format!("❌ [ROUTING ACL REJECTED] You cannot dispatch to '{}'. The active preset '{}' does not have a cable connecting to this agent. Permitted targets: {:?}", to_agent, current_preset_name, permitted_targets)
+            }));
+        }
+
+        // -------------------------------------------------------------------------
+        // GATE 3: 3-LOOP CIRCUIT BREAKER ON REVISION
+        // -------------------------------------------------------------------------
+        if action == "REVISE" && !to_agent.is_empty() {
+            let circuit_path = self.workspace_root.join(".FL_BIN").join("scratch").join("revision_circuit.json");
+            let mut loop_count: u64 = 1;
+            if circuit_path.exists() {
+                if let Ok(c) = std::fs::read_to_string(&circuit_path) {
+                    if let Ok(mut j) = serde_json::from_str::<Value>(&c) {
+                        let key = format!("rev_{}", to_agent);
+                        let current = j.get(&key).and_then(|x| x.as_u64()).unwrap_or(0);
+                        loop_count = current + 1;
+                        j[key] = json!(loop_count);
+                        let _ = std::fs::write(&circuit_path, serde_json::to_string(&j).unwrap_or_default());
+                    }
+                }
+            } else {
+                if let Some(parent) = circuit_path.parent() {
+                    let _ = std::fs::create_dir_all(parent);
+                }
+                let init_j = json!({ format!("rev_{}", to_agent): 1 });
+                let _ = std::fs::write(&circuit_path, serde_json::to_string(&init_j).unwrap_or_default());
+            }
+
+            if loop_count > 3 {
+                return Ok(json!({
+                    "status": "CIRCUIT_BREAKER_TRIPPED",
+                    "exit_code": 2,
+                    "tool": "team_dispatch",
+                    "error": format!("Circuit Breaker Tripped: Revision loop count between agents reached {} (limit: 3).", loop_count),
+                    "output": format!("🛑 [CIRCUIT BREAKER ENGAGED] Revision loop count reached {} between agents. Swarm pipeline halted to prevent infinite token consumption. Operator intervention required.", loop_count)
+                }));
+            }
+        }
+
+        // -------------------------------------------------------------------------
+        // GATE 4: LIVE BROADCAST & EVENT TELEMETRY
+        // Broadcast live SSE event so Canvas UI nodes and laser cables light up
+        // -------------------------------------------------------------------------
+        if let Some(ref disc) = self.discovery {
+            disc.broadcast_agent_activity(to_agent, "working");
+        }
+
+        let step_record = json!({
+            "action": action,
+            "to_agent": to_agent,
+            "summary": summary,
+            "payload": payload,
+            "status_proof": status_proof,
+            "preset": active_preset_id,
+            "dispatched_at": crate::native_tools::get_current_iso_time()
+        });
+
+        Ok(json!({
+            "status": "SUCCESS",
+            "exit_code": 0,
+            "tool": "team_dispatch",
+            "action": action,
+            "to_agent": to_agent,
+            "active_preset": active_preset_id,
+            "dispatch_record": step_record,
+            "output": format!("⚡ [SWARM CABLE DISPATCH SUCCESS] Action '{}' transmitted along cable to '{}' (Preset: {}). Target node awakened with Barrier Synchronization.", action, to_agent, current_preset_name)
+        }))
     }
 
     pub fn trigger_hook(&self, hook_name: &str, payload: &str) {

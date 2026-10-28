@@ -531,6 +531,12 @@ pub const FP_PROMPT_KUBAH_TEAMS: SovereignFingerprint = SovereignFingerprint {
     vowel_count: 0,
     length: 0,
 };
+pub const FP_PROMPT_ACTIVE_SWARM_PIPELINE: SovereignFingerprint = SovereignFingerprint {
+    hmac: [0u8; 32],
+    space_count: 0,
+    vowel_count: 0,
+    length: 0,
+};
 pub const FP_PROMPT_ORGAN_SOP: SovereignFingerprint = SovereignFingerprint {
     hmac: [0u8; 32],
     space_count: 0,
