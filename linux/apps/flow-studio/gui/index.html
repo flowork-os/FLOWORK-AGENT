@@ -1469,16 +1469,118 @@
     // SOVEREIGN MULTI-TRACK COMPOSITOR & DYNAMIC URL ENGINE
     // =========================================================================
 
-    function getAppServerBase() {
+    window.__FLOW_STUDIO_BACKEND_PORT__ = (() => {
+      try {
+        const p = new URLSearchParams(window.location.search).get("port") || new URLSearchParams(window.location.search).get("backend_port");
+        if (p) return p;
+        const cached = localStorage.getItem('flow_studio_backend_port');
+        if (cached) return cached;
+      } catch (_) {}
+      return "44089";
+    })();
+    let _portDiscoveryPromise = null;
+
+    async function ensureFlowStudioBackendPort() {
+      if (window.__FLOW_STUDIO_BACKEND_PORT__) {
+        return window.__FLOW_STUDIO_BACKEND_PORT__;
+      }
       const params = new URLSearchParams(window.location.search);
-      const qPort = params.get('port') || params.get('backend_port');
+      let qPort = params.get("port") || params.get("backend_port");
       if (qPort) {
-        return `http://${window.location.hostname || 'localhost'}:${qPort}`;
+        window.__FLOW_STUDIO_BACKEND_PORT__ = qPort;
+        try { localStorage.setItem('flow_studio_backend_port', qPort); } catch (_) {}
+        return qPort;
       }
-      if (window.location.port && window.location.port !== '18000' && window.location.port !== '80' && window.location.port !== '443') {
-        return `${window.location.protocol}//${window.location.host}`;
+      if (window.location.port && window.location.port !== '80' && window.location.port !== '443' && window.location.port !== '19890') {
+        window.__FLOW_STUDIO_BACKEND_PORT__ = window.location.port;
+        try { localStorage.setItem('flow_studio_backend_port', window.location.port); } catch (_) {}
+        return window.location.port;
       }
-      return `http://${window.location.hostname || 'localhost'}:35549`;
+      try {
+        const cachedPort = localStorage.getItem('flow_studio_backend_port');
+        if (cachedPort) {
+          window.__FLOW_STUDIO_BACKEND_PORT__ = cachedPort;
+          return cachedPort;
+        }
+      } catch (_) {}
+
+      if (_portDiscoveryPromise) return _portDiscoveryPromise;
+
+      _portDiscoveryPromise = (async () => {
+        try {
+          const hostCandidates = [
+            window.location.origin,
+            `${window.location.protocol}//${window.location.hostname || 'localhost'}:19890`,
+            `${window.location.protocol}//${window.location.hostname || 'localhost'}:18000`
+          ];
+          for (const hostBase of hostCandidates) {
+            try {
+              let res = await fetch(`${hostBase}/api/apps/flow-studio/launch`, { method: 'POST' });
+              if (!res.ok) res = await fetch(`${hostBase}/api/plugins/flow-studio/launch`, { method: 'POST' });
+              if (res.ok) {
+                const data = await res.json();
+                if (data && data.port) {
+                  window.__FLOW_STUDIO_BACKEND_PORT__ = data.port;
+                  try { localStorage.setItem('flow_studio_backend_port', String(data.port)); } catch (_) {}
+                  console.log('[Flow Studio] Discovered backend port:', data.port);
+                  return data.port;
+                }
+              }
+            } catch (_) {}
+          }
+        } catch (err) {
+          console.warn('[Flow Studio] Port discovery warning:', err);
+        }
+        return window.__FLOW_STUDIO_BACKEND_PORT__ || "44089";
+      })();
+      return _portDiscoveryPromise;
+    }
+
+    // Auto-invoke port discovery on startup and scan active assets
+    ensureFlowStudioBackendPort().then((p) => {
+      const targetPort = p || window.__FLOW_STUDIO_BACKEND_PORT__ || "44089";
+      window.__FLOW_STUDIO_BACKEND_PORT__ = targetPort;
+      if (typeof scanAndRenderAssetCategory === 'function') {
+        const activeTabBtn = document.querySelector('.fl-tab-item.active');
+        const cat = activeTabBtn ? (activeTabBtn.dataset.tab || activeTabBtn.dataset.category) : 'stickers';
+        scanAndRenderAssetCategory(cat || 'stickers');
+        scanAndRenderAssetCategory('stickers');
+      }
+    });
+
+    window.addEventListener('message', (event) => {
+      if (event.data && event.data.type === 'FLOWORK_PORT_RESPONSE' && event.data.port) {
+        window.__FLOW_STUDIO_BACKEND_PORT__ = event.data.port;
+        try { localStorage.setItem('flow_studio_backend_port', String(event.data.port)); } catch (_) {}
+        if (typeof scanAndRenderAssetCategory === 'function') {
+          const activeTabBtn = document.querySelector('.fl-tab-item.active');
+          const cat = activeTabBtn ? (activeTabBtn.dataset.tab || activeTabBtn.dataset.category) : 'stickers';
+          scanAndRenderAssetCategory(cat || 'stickers');
+        }
+      }
+    });
+
+    function getAppServerBase() {
+      if (window.__FLOW_STUDIO_BACKEND_PORT__) {
+        return "http://" + (window.location.hostname || "localhost") + ":" + window.__FLOW_STUDIO_BACKEND_PORT__;
+      }
+      const params = new URLSearchParams(window.location.search);
+      const qPort = params.get("port") || params.get("backend_port");
+      if (qPort) {
+        window.__FLOW_STUDIO_BACKEND_PORT__ = qPort;
+        return "http://" + (window.location.hostname || "localhost") + ":" + qPort;
+      }
+      try {
+        const cachedPort = localStorage.getItem('flow_studio_backend_port');
+        if (cachedPort) {
+          window.__FLOW_STUDIO_BACKEND_PORT__ = cachedPort;
+          return "http://" + (window.location.hostname || "localhost") + ":" + cachedPort;
+        }
+      } catch (_) {}
+      if (window.location.port && window.location.port !== "80" && window.location.port !== "443" && window.location.port !== "19890") {
+        return window.location.protocol + "//" + window.location.host;
+      }
+      return "http://" + (window.location.hostname || "localhost") + ":44089";
     }
 
     function getApiUrl(path) {
@@ -3428,10 +3530,68 @@
       if (!bin) return;
 
       try {
-        const res = await fetch(getApiUrl('/api/assets?category=' + encodeURIComponent(category)));
-        if (!res.ok) return;
-        const resp = await res.json();
-        const items = (resp.data && resp.data[category]) || [];
+        await ensureFlowStudioBackendPort();
+        let res = null;
+        let resp = null;
+
+        const candidateUrls = [];
+        const appBase = getAppServerBase();
+        candidateUrls.push(`${appBase}/api/assets?category=${encodeURIComponent(category)}`);
+
+        if (window.__FLOW_STUDIO_BACKEND_PORT__) {
+          const directUrl = `http://${window.location.hostname || 'localhost'}:${window.__FLOW_STUDIO_BACKEND_PORT__}/api/assets?category=${encodeURIComponent(category)}`;
+          if (!candidateUrls.includes(directUrl)) candidateUrls.push(directUrl);
+        }
+
+        try {
+          const cachedPort = localStorage.getItem('flow_studio_backend_port');
+          if (cachedPort) {
+            const cachedUrl = `http://${window.location.hostname || 'localhost'}:${cachedPort}/api/assets?category=${encodeURIComponent(category)}`;
+            if (!candidateUrls.includes(cachedUrl)) candidateUrls.push(cachedUrl);
+          }
+        } catch (_) {}
+
+        candidateUrls.push(`/api/assets?category=${encodeURIComponent(category)}`);
+
+        for (const url of candidateUrls) {
+          try {
+            const probe = await fetch(url, { headers: { 'Accept': 'application/json' } });
+            if (probe && probe.ok) {
+              const body = await probe.json();
+              if (body) {
+                res = probe;
+                resp = body;
+                try {
+                  const parsed = new URL(url, window.location.href);
+                  if (parsed.port && parsed.port !== window.location.port) {
+                    window.__FLOW_STUDIO_BACKEND_PORT__ = parsed.port;
+                    localStorage.setItem('flow_studio_backend_port', parsed.port);
+                  }
+                } catch (_) {}
+                break;
+              }
+            }
+          } catch (_) {}
+        }
+
+        if (!resp) {
+          console.warn('[FlowStudio] Could not fetch assets for category:', category);
+          return;
+        }
+
+        let items = [];
+        if (resp.data && Array.isArray(resp.data[category])) {
+          items = resp.data[category];
+        } else if (Array.isArray(resp[category])) {
+          items = resp[category];
+        } else if (Array.isArray(resp.data)) {
+          items = resp.data;
+        } else if (Array.isArray(resp.assets)) {
+          items = resp.assets;
+        } else if (Array.isArray(resp)) {
+          items = resp;
+        }
+        console.log(`[FlowStudio] Loaded ${items.length} assets for ${category}`);
 
         if (category === 'media') {
           if (items.length === 0) return;
@@ -3486,8 +3646,12 @@
         }
 
         // Generic Categories (Audio, Text, Stickers, Effects, Transitions, Filters, Adjustments)
+        bin.innerHTML = '';
+        bin.style.display = 'grid';
+        bin.style.gridTemplateColumns = (category === 'stickers' || category === 'effects' || category === 'filters' || category === 'adjustments') ? 'repeat(3, 1fr)' : 'repeat(2, 1fr)';
+        bin.style.gap = '8px';
+        bin.style.padding = '8px';
         if (items.length > 0) {
-          bin.innerHTML = '';
           items.forEach(item => {
             const el = document.createElement('div');
             el.className = 'fl-asset-preset';
@@ -3502,7 +3666,8 @@
 
             let iconHtml = '';
             if (category === 'stickers') {
-              iconHtml = `<img src="${resolveMediaUrl(item.url)}" style="width: 28px; height: 28px; object-fit: contain; margin-bottom: 4px;" alt="${item.name}">`;
+              const fullUrl = resolveMediaUrl(item.url);
+              iconHtml = `<div style="width: 100%; height: 50px; display: flex; align-items: center; justify-content: center; overflow: hidden; background: rgba(0,0,0,0.25); border-radius: 4px; margin-bottom: 4px;"><img src="${fullUrl}" loading="lazy" style="max-width: 100%; max-height: 100%; object-fit: contain; pointer-events: none;" alt="${item.name}" onerror="this.onerror=null; this.style.display='none'; if(this.nextElementSibling) this.nextElementSibling.style.display='block';"><span style="display:none; font-size:22px;">🏷️</span></div>`;
             } else if (category === 'audio') {
               iconHtml = `<span style="font-size: 20px; margin-bottom: 2px;">🎵</span>`;
             } else if (category === 'text') {
@@ -3548,6 +3713,19 @@
         await scanAndRenderAssetCategory(cat);
       }
     }
+
+    // Immediate initial asset load for active category & stickers
+    (function triggerInitialAssetScan() {
+      setTimeout(async () => {
+        try {
+          await scanAndRenderAssetCategory('stickers');
+          const savedTab = localStorage.getItem('flow_studio_active_tab') || 'stickers';
+          if (savedTab !== 'stickers') await scanAndRenderAssetCategory(savedTab);
+        } catch (e) {
+          console.warn('[FlowStudio] Initial asset scan error:', e);
+        }
+      }, 50);
+    })();
 
     async function openCategoryFolder(category) {
       try {
@@ -4169,22 +4347,28 @@
           }
         });
 
+        // Trigger JIT dynamic asset scan on tab switch
+        if (targetTab && typeof scanAndRenderAssetCategory === 'function') {
+          scanAndRenderAssetCategory(targetTab);
+        }
+
         try {
           localStorage.setItem('flow_studio_active_tab', targetTab);
         } catch (e) {}
       });
     });
 
-    // Auto restore last active tab if exists
+    // Force activate Stickers tab on initialization
     try {
-      const savedTab = localStorage.getItem('flow_studio_active_tab') || 'media';
-      if (savedTab && tabPanels[savedTab]) {
-        const targetBtn = document.querySelector(`.fl-tab-item[data-tab="${savedTab}"]`);
-        if (targetBtn) {
-          targetBtn.click();
-        }
+      localStorage.setItem('flow_studio_active_tab', 'stickers');
+      const stickerBtn = document.querySelector(`.fl-tab-item[data-tab="stickers"]`);
+      if (stickerBtn) {
+        stickerBtn.click();
       }
-    } catch (e) {}
+    } catch (e) {
+      const stickerBtn = document.querySelector(`.fl-tab-item[data-tab="stickers"]`);
+      if (stickerBtn) stickerBtn.click();
+    }
 
     // Helper: Add Asset or Effect to Timeline
     function addAssetToTimeline(type, title, durationSec, itemData) {
@@ -4844,11 +5028,20 @@
         selectClip(initSelected);
       }
       drawPreviewFrame();
+      // Ensure stickers tab is clicked and selected
+      const stickerTabBtn = document.querySelector('.fl-tab-item[data-tab="stickers"]');
+      if (stickerTabBtn) stickerTabBtn.click();
+      if (typeof scanAndRenderAssetCategory === 'function') {
+        scanAndRenderAssetCategory('stickers');
+      }
       setTimeout(() => {
         if (window.flowStudioBridge && typeof window.flowStudioBridge.syncWithServer === 'function') {
           window.flowStudioBridge.syncWithServer();
         }
-      }, 600);
+        if (typeof scanAndRenderAssetCategory === 'function') {
+          scanAndRenderAssetCategory('stickers');
+        }
+      }, 500);
     });
 </script>
 </body>

@@ -51,6 +51,8 @@ const MIME_TYPES = {
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.svg': 'image/svg+xml',
+  '.webp': 'image/webp',
+  '.gif': 'image/gif',
   '.mp4': 'video/mp4',
   '.webm': 'video/webm',
   '.mp3': 'audio/mpeg',
@@ -324,18 +326,18 @@ const server = http.createServer(async (req, res) => {
       try {
         const files = fs.readdirSync(catDir);
         for (const file of files) {
-          if (file.startsWith('.')) continue;
+          if (file.startsWith(".")) continue;
           const fullPath = path.join(catDir, file);
           const stat = fs.statSync(fullPath);
           if (!stat.isFile()) continue;
 
           const ext = path.extname(file).toLowerCase();
           const baseName = path.basename(file, ext);
-          const fileUrl = `/assets/${cat}/${encodeURIComponent(file)}`;
+          const fileUrl = "/assets/" + cat + "/" + encodeURIComponent(file);
 
           let item = {
-            id: `asset-${cat}-${baseName}`,
-            name: baseName.replace(/[-_]/g, ' '),
+            id: "asset-" + cat + "-" + baseName.replace(/[^a-zA-Z0-9_-]/g, "_"),
+            name: baseName.replace(/[-_]/g, " "),
             filename: file,
             category: cat,
             url: fileUrl,
@@ -344,43 +346,35 @@ const server = http.createServer(async (req, res) => {
           };
 
           // If JSON (e.g. presets for effects, filters, transitions, text, adjustments)
-          if (ext === '.json') {
+          if (ext === ".json") {
             try {
-              const content = JSON.parse(fs.readFileSync(fullPath, 'utf-8'));
-              item = { ...item, ...content, id: content.id || item.id, name: content.name || item.name };
-            } catch (jsonErr) {}
-          } else if (['.mp4', '.mov', '.webm', '.avi', '.mkv'].includes(ext)) {
-            item.type = 'video';
-            if (hasFFprobe) {
-              try {
-                const probeCmd = `ffprobe -v error -select_streams v:0 -show_entries stream=width,height,duration,r_frame_rate -of default=noprint_wrappers=1:nokey=1 "${fullPath}"`;
-                const probeOut = execSync(probeCmd, { timeout: 3000 }).toString().trim().split('\n');
-                if (probeOut[0]) item.width = parseInt(probeOut[0], 10);
-                if (probeOut[1]) item.height = parseInt(probeOut[1], 10);
-                if (probeOut[2]) item.duration = parseFloat(probeOut[2]);
-                if (probeOut[3]) {
-                  const [n, d] = probeOut[3].split('/').map(Number);
-                  if (d) item.fps = Math.round(n / d);
+              const presetData = JSON.parse(fs.readFileSync(fullPath, "utf8"));
+              item = Object.assign({}, item, presetData);
+            } catch (pErr) {
+              // ignore json parse error, keep basic info
+            }
+          } else if ([".mp4", ".mov", ".webm", ".mkv"].includes(ext)) {
+            try {
+              const probeOut = execSync("ffprobe -v error -show_entries format=duration:stream=width,height -of json \"" + fullPath + "\"", { timeout: 3000 });
+              if (probeOut) {
+                const probeData = JSON.parse(probeOut.toString());
+                if (probeData.format && probeData.format.duration) {
+                  item.duration = parseFloat(probeData.format.duration);
                 }
-              } catch (probeErr) {}
+                if (probeData.streams && probeData.streams[0]) {
+                  item.width = probeData.streams[0].width;
+                  item.height = probeData.streams[0].height;
+                }
+              }
+            } catch (probeErr) {
+              // ffprobe fallback
             }
-          } else if (['.mp3', '.wav', '.ogg', '.aac', '.m4a', '.flac'].includes(ext)) {
-            item.type = 'audio';
-            if (hasFFprobe) {
-              try {
-                const probeCmd = `ffprobe -v error -select_streams a:0 -show_entries stream=duration -of default=noprint_wrappers=1:nokey=1 "${fullPath}"`;
-                const probeOut = execSync(probeCmd, { timeout: 3000 }).toString().trim();
-                if (probeOut) item.duration = parseFloat(probeOut);
-              } catch (probeErr) {}
-            }
-          } else if (['.svg', '.png', '.jpg', '.jpeg', '.webp', '.gif'].includes(ext)) {
-            item.type = cat === 'stickers' ? 'sticker' : 'image';
           }
 
           result[cat].push(item);
         }
       } catch (err) {
-        console.error(`[FlowStudio] Error reading asset category ${cat}:`, err.message);
+        console.error("[FlowStudio] Error reading asset category " + cat + ":", err.message);
       }
     }
 

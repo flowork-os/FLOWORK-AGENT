@@ -4762,9 +4762,29 @@ function initSSE() {
         } else if (cmd.action === 'close') {
           closePluginTab(cmd.plugin_id);
         } else if (cmd.action === 'refresh' || cmd.action === 'reload') {
+          const tabObj = openTabs.get(cmd.plugin_id);
           const p = pluginsState.find(x => x.id === cmd.plugin_id) || { id: cmd.plugin_id, name: cmd.plugin_id };
-          closePluginTab(cmd.plugin_id);
-          setTimeout(() => openPluginTab(p), 400);
+          (async () => {
+            try {
+              let launchRes = await fetch(`/api/apps/${cmd.plugin_id}/launch`, { method: 'POST' });
+              if (!launchRes.ok) launchRes = await fetch(`/api/plugins/${cmd.plugin_id}/launch`, { method: 'POST' });
+              const launchData = await launchRes.json();
+              const assignedPort = launchData && launchData.port ? launchData.port : (p.ipc && p.ipc.default_port);
+              if (tabObj && tabObj.iframe) {
+                tabObj.assignedPort = assignedPort;
+                const queryParam = assignedPort ? `?port=${assignedPort}&backend_port=${assignedPort}&_t=${Date.now()}` : `?_t=${Date.now()}`;
+                const newUrl = `/apps/${cmd.plugin_id}/gui/index.html${queryParam}`;
+                tabObj.iframe.dataset.src = newUrl;
+                tabObj.iframe.src = newUrl;
+                switchTab(cmd.plugin_id);
+              } else {
+                await openPluginTab(p);
+              }
+            } catch (err) {
+              console.error(`[X-Flow] Error refreshing tab for ${cmd.plugin_id}:`, err);
+              if (tabObj && tabObj.iframe) tabObj.iframe.src = tabObj.iframe.src;
+            }
+          })();
         }
         return;
       }
@@ -5958,6 +5978,26 @@ async function restoreTabsState() {
 async function openPluginTab(plugin, options = {}) {
   const skipSwitch = options && options.skipSwitch === true;
   if (openTabs.has(plugin.id)) {
+    // If tab is already open, ensure assigned port is synchronized into iframe src
+    const tabData = openTabs.get(plugin.id);
+    const existingIframe = document.getElementById(`iframe-${plugin.id}`) || (tabData && tabData.iframe);
+    try {
+      let pPort = plugin.activePort || (tabData && tabData.assignedPort);
+      if (!pPort) {
+        let launchRes = await fetch(`/api/apps/${plugin.id}/launch`, { method: 'POST' });
+        if (!launchRes.ok) launchRes = await fetch(`/api/plugins/${plugin.id}/launch`, { method: 'POST' });
+        const launchData = await launchRes.json();
+        if (launchData && launchData.port) {
+          pPort = launchData.port;
+          plugin.activePort = pPort;
+          if (tabData) tabData.assignedPort = pPort;
+        }
+      }
+      if (existingIframe && pPort && (!existingIframe.src || !existingIframe.src.includes('port='))) {
+        const glue = existingIframe.src && existingIframe.src.includes('?') ? '&' : '?';
+        existingIframe.src = `${existingIframe.src || `/apps/${plugin.id}/gui/index.html`}${glue}port=${pPort}&backend_port=${pPort}`;
+      }
+    } catch (_) {}
     if (!skipSwitch) switchTab(plugin.id);
     return;
   }
@@ -6046,6 +6086,11 @@ async function openPluginTab(plugin, options = {}) {
 
     iframePanel.appendChild(iframe);
     if (stage) stage.appendChild(iframePanel);
+  } else if (iframe) {
+    const queryParam = assignedPort ? `?port=${assignedPort}` : '';
+    const pluginUrl = `/apps/${plugin.id}/gui/index.html${queryParam}`;
+    iframe.dataset.src = pluginUrl;
+    iframe.src = pluginUrl;
   }
 
   openTabs.set(plugin.id, { 
@@ -6329,6 +6374,9 @@ async function switchTab(tabId, options = {}) {
             // Lazy Activation Guard: Only load target src when tab is actually activated
             if (isThisTab && iframe.dataset.src && (!iframe.src || iframe.src === 'about:blank' || iframe.src.endsWith('about:blank'))) {
               iframe.src = iframe.dataset.src;
+            } else if (isThisTab && tabObj && tabObj.assignedPort && iframe.src && !iframe.src.includes('port=')) {
+              const glue = iframe.src.includes('?') ? '&' : '?';
+              iframe.src = `${iframe.src}${glue}port=${tabObj.assignedPort}&backend_port=${tabObj.assignedPort}`;
             }
 
             if (iframe.contentWindow) {
@@ -23125,6 +23173,25 @@ window.addEventListener('message', async (event) => {
     const promptText = event.data.prompt || event.data.text;
     if (promptText) {
       injectPromptIntoChat(promptText, event.data.autoSend !== false);
+    }
+  }
+
+  if (event.data && event.data.type === 'FLOWORK_PORT_QUERY') {
+    const reqAppId = event.data.appId;
+    let foundPort = null;
+    const tabEntry = openTabs.get(reqAppId);
+    if (tabEntry && tabEntry.assignedPort) {
+      foundPort = tabEntry.assignedPort;
+    } else {
+      const pl = (pluginsCatalog || []).find(p => p.id === reqAppId);
+      if (pl && pl.activePort) foundPort = pl.activePort;
+    }
+    if (event.source && typeof event.source.postMessage === 'function') {
+      event.source.postMessage({
+        type: 'FLOWORK_PORT_RESPONSE',
+        appId: reqAppId,
+        port: foundPort
+      }, '*');
     }
   }
 });
