@@ -1210,16 +1210,22 @@ impl SovereignTriggerEngine {
         let lower = search_text.to_lowercase();
         
         let (doctrine, matched_kw) = if lower.contains("/diagnose")
+            || lower.contains("/bug")
             || lower.contains("reproduce error")
             || lower.contains("investigate bug")
             || lower.contains("kenapa crash")
             || lower.contains("benerin error")
+            || lower.contains("kenapa error")
+            || lower.contains("debug error")
         {
             (EngineeringDoctrine::DiagnosingBugs, "diagnose")
         } else if lower.contains("/tdd")
+            || lower.contains("/test")
             || lower.contains("failing test")
             || lower.contains("write test first")
             || lower.contains("public seam")
+            || lower.contains("bikin test")
+            || lower.contains("buat test")
         {
             (EngineeringDoctrine::TestDrivenDevelopment, "tdd")
         } else if lower.contains("/grill")
@@ -1234,25 +1240,67 @@ impl SovereignTriggerEngine {
         } else if lower.contains("/counsel")
             || lower.contains("engineering counsel")
             || lower.contains("alur rekayasa")
+            || lower.contains("konsultasi arsitektur")
         {
             (EngineeringDoctrine::EngineeringCounsel, "counsel")
-        } else if lower.contains("/deep-modules") || lower.contains("deep modules") {
+        } else if lower.contains("/refactor")
+            || lower.contains("/deep-modules")
+            || lower.contains("deep modules")
+            || lower.contains("rapikan kode")
+            || lower.contains("sederhanakan kode")
+        {
             (EngineeringDoctrine::DeepModules, "deep-modules")
-        } else if lower.contains("/domain-modeling") || lower.contains("domain modeling") || lower.contains("adr") {
+        } else if lower.contains("/adr")
+            || lower.contains("/domain-modeling")
+            || lower.contains("domain modeling")
+            || lower.contains("arsitektur database")
+            || lower.contains("desain skema")
+        {
             (EngineeringDoctrine::DomainModelingAdr, "domain-modeling")
-        } else if lower.contains("/spec") || lower.contains("spec and triage") || lower.contains("triage") {
+        } else if lower.contains("/spec")
+            || lower.contains("/triage")
+            || lower.contains("spec and triage")
+            || lower.contains("spesifikasi fitur")
+            || lower.contains("breakdown tugas")
+        {
             (EngineeringDoctrine::SpecAndTriage, "spec")
-        } else if lower.contains("/handoff") || lower.contains("handoff and prototype") {
+        } else if lower.contains("/handoff")
+            || lower.contains("handoff and prototype")
+            || lower.contains("serah terima kode")
+        {
             (EngineeringDoctrine::HandoffAndPrototype, "handoff")
-        } else if lower.contains("/git-guardrails") || lower.contains("git guardrails") {
+        } else if lower.contains("/git-guardrails")
+            || lower.contains("git guardrails")
+            || lower.contains("guardrail git")
+        {
             (EngineeringDoctrine::GitGuardrails, "git-guardrails")
-        } else if lower.contains("/two-axis") || lower.contains("two axis review") {
-            (EngineeringDoctrine::TwoAxisReview, "two-axis")
-        } else if lower.contains("/reverse-engineering") || lower.contains("reverse engineering") {
+        } else if lower.contains("/review")
+            || lower.contains("/code-review")
+            || lower.contains("/two-axis")
+            || lower.contains("two axis review")
+            || lower.contains("review kode")
+            || lower.contains("code review")
+            || lower.contains("cek kodingan")
+        {
+            (EngineeringDoctrine::TwoAxisReview, "review")
+        } else if lower.contains("/reverse-engineering")
+            || lower.contains("/decompile")
+            || lower.contains("reverse engineering")
+            || lower.contains("decompile biner")
+        {
             (EngineeringDoctrine::ReverseEngineering, "reverse-engineering")
-        } else if lower.contains("/wayfinding") || lower.contains("wayfinding") {
+        } else if lower.contains("/explore")
+            || lower.contains("/wayfinding")
+            || lower.contains("wayfinding")
+            || lower.contains("petakan codebase")
+            || lower.contains("struktur codebase")
+            || lower.contains("navigasi kode")
+        {
             (EngineeringDoctrine::Wayfinding, "wayfinding")
-        } else if lower.contains("/primary-source") || lower.contains("primary source") {
+        } else if lower.contains("/primary-source")
+            || lower.contains("primary source")
+            || lower.contains("riset dokumentasi resmi")
+        {
             (EngineeringDoctrine::PrimarySourceResearch, "primary-source")
         } else {
             return None;
@@ -2249,6 +2297,20 @@ Solution for postgres pool leak 4 (newest)
         let res_git = SovereignTriggerEngine::eval_engineering_doctrines("/git-guardrails", None);
         assert!(res_git.is_some());
         assert_eq!(res_git.unwrap().doctrine, EngineeringDoctrine::GitGuardrails);
+
+        // 11. Code Review (Slash command + Natural ID & EN)
+        let res_rev_cmd = SovereignTriggerEngine::eval_engineering_doctrines("/review", None);
+        assert!(res_rev_cmd.is_some());
+        assert_eq!(res_rev_cmd.unwrap().doctrine, EngineeringDoctrine::TwoAxisReview);
+
+        let res_rev_nat = SovereignTriggerEngine::eval_engineering_doctrines("tolong review kode ini bro", None);
+        assert!(res_rev_nat.is_some());
+        assert_eq!(res_rev_nat.unwrap().doctrine, EngineeringDoctrine::TwoAxisReview);
+
+        // 12. Wayfinding & Codebase Navigation
+        let res_exp = SovereignTriggerEngine::eval_engineering_doctrines("/explore", None);
+        assert!(res_exp.is_some());
+        assert_eq!(res_exp.unwrap().doctrine, EngineeringDoctrine::Wayfinding);
     }
 
     #[test]
