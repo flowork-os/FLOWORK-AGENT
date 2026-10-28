@@ -2843,6 +2843,8 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
 
                         let mut node_to_agent: std::collections::HashMap<String, String> = std::collections::HashMap::new();
                         let mut _node_to_role: std::collections::HashMap<String, String> = std::collections::HashMap::new();
+                        let mut in_degree: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+                        let mut all_node_tuples: Vec<(String, String)> = Vec::new();
 
                         if let Some(nodes_arr) = v.get("nodes").and_then(|x| x.as_array()) {
                             for nd in nodes_arr {
@@ -2852,6 +2854,8 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                                 if !nid.is_empty() {
                                     node_to_agent.insert(nid.to_string(), aid.to_string());
                                     _node_to_role.insert(nid.to_string(), rtitle.to_string());
+                                    in_degree.insert(nid.to_string(), 0);
+                                    all_node_tuples.push((nid.to_string(), aid.to_string()));
                                 }
                                 if aid == agent_id || aid == target_persona || nid == agent_id {
                                     current_node_id = nid.to_string();
@@ -2868,6 +2872,10 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                                 let to_aid = node_to_agent.get(to_nid).map(|s| s.as_str()).unwrap_or(to_nid);
                                 let port = conn.get("fromPort").and_then(|x| x.as_str()).unwrap_or("out-1");
 
+                                if let Some(deg) = in_degree.get_mut(to_nid) {
+                                    *deg += 1;
+                                }
+
                                 topology_lines.push(format!("  - Cable: [{from_aid} ({from_nid})] --({port})--> [{to_aid} ({to_nid})]"));
 
                                 if from_nid == current_node_id || from_aid == agent_id || from_aid == target_persona {
@@ -2875,6 +2883,29 @@ r#"<AUTONOMOUS_DIRECT_EXECUTION_MANDATE>
                                         permitted_targets.push(to_aid.to_string());
                                     }
                                 }
+                            }
+                        }
+
+                        // Ingress Orchestrator detection: If caller agent_id is not mapped to any specific node in the preset,
+                        // this agent is the user-facing Ingress Orchestrator. Its outgoing targets are the Root Ingress Nodes (in_degree == 0)!
+                        let is_mapped_to_node = all_node_tuples.iter().any(|(nid, aid)| nid == &current_node_id || aid == agent_id || aid == target_persona);
+                        if !is_mapped_to_node {
+                            current_node_id = "ingress-orchestrator".to_string();
+                            current_node_role = "Swarm Ingress Orchestrator".to_string();
+                            for (nid, aid) in &all_node_tuples {
+                                if in_degree.get(nid).copied().unwrap_or(0) == 0 {
+                                    if !aid.is_empty() && !permitted_targets.contains(aid) {
+                                        permitted_targets.push(aid.clone());
+                                    }
+                                    if !permitted_targets.contains(nid) {
+                                        permitted_targets.push(nid.clone());
+                                    }
+                                }
+                            }
+                            if permitted_targets.is_empty() && !all_node_tuples.is_empty() {
+                                let (nid, aid) = &all_node_tuples[0];
+                                if !aid.is_empty() { permitted_targets.push(aid.clone()); }
+                                permitted_targets.push(nid.clone());
                             }
                         }
                     }
@@ -9539,6 +9570,8 @@ Solution: Always enable PRAGMA journal_mode = WAL and busy_timeout = 5000.
         assert!(prompt_team.contains("Swarm Leader") || prompt_team.contains("leader"), "Prompt must resolve to Swarm Leader when team intent is detected");
         assert!(prompt_team.contains("<KUBAH_INGATAN_ABADI_MODE_TEAMS>"), "Prompt must receive Teams Kubah Ingatan");
         assert!(!prompt_team.contains("<KUBAH_INGATAN_ABADI_MODE_SOLO>"), "Prompt must NOT receive Solo Kubah Ingatan");
+        assert!(prompt_team.contains("<ACTIVE_SWARM_PIPELINE>"), "Prompt must receive active Swarm Flow pipeline");
+        assert!(prompt_team.contains("INGRESS ORCHESTRATION"), "Prompt must contain Ingress Orchestration mandate");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
     }
