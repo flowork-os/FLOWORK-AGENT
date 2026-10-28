@@ -72,7 +72,11 @@ if curl -fSL --retry 3 --max-time 300 "$RELEASE_BUNDLE_URL" -o "$TMP_TAR" 2>/dev
   tar -xzf "$TMP_TAR" \
     --strip-components=1 \
     -C "$INSTALL_DIR" \
-    --exclude="flowork/portable-home/.flowork/*" \
+    --exclude="flowork/portable-home/.flowork/chat_sessions*" \
+    --exclude="flowork/portable-home/.flowork/browser-profile*" \
+    --exclude="flowork/portable-home/.flowork/history*" \
+    --exclude="flowork/portable-home/.flowork/auth_vault.json*" \
+    --exclude="flowork/portable-home/.flowork/account_pool.json*" \
     --exclude="flowork/.env*" \
     --exclude="*launcher.html*" \
     --exclude="*canvas-ui/launcher*" 2>/dev/null || true
@@ -84,7 +88,11 @@ elif curl -fsSL --retry 3 --max-time 300 "$ARCHIVE_URL" -o "$TMP_TAR"; then
   tar -xzf "$TMP_TAR" \
     --strip-components=2 \
     -C "$INSTALL_DIR" \
-    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/*" \
+    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/chat_sessions*" \
+    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/browser-profile*" \
+    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/history*" \
+    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/auth_vault.json*" \
+    --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/portable-home/.flowork/account_pool.json*" \
     --exclude="FLOWORK-AGENT-${BRANCH}/${OS_SUBDIR}/.env*" \
     --exclude="*launcher.html*" \
     --exclude="*canvas-ui/launcher*" \
