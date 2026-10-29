@@ -311,5 +311,82 @@ class TestStickmanStudio(unittest.TestCase):
         self.assertTrue(os.path.isdir(bio_dir), f"Bioinspired 3D dir missing: {bio_dir}")
         self.assertTrue(os.path.isdir(three_dir), f"ThreeJS dir missing: {three_dir}")
 
+    def test_09_ai_background_and_audio_stream_muxing(self):
+        """Verify AI background generation, Layer 1 compositing, and audio stream muxing with high bitrate."""
+        sys.path.append(os.path.join(APP_DIR, 'engine'))
+        from ai_background_generator import generate_ai_background, generate_procedural_fallback
+        from pro_stickman_engine import ProStickmanEngine
+
+        # 1. Test Procedural Vector Background Generation
+        tmp_bg = tempfile.NamedTemporaryFile(suffix='.jpg', delete=False).name
+        try:
+            generate_procedural_fallback("cartoon classroom with chalkboard", "classroom", tmp_bg)
+            self.assertTrue(os.path.exists(tmp_bg))
+            self.assertGreater(os.path.getsize(tmp_bg), 5000)
+
+            # 2. Test Layer 1 Engine Compositing with Background
+            engine = ProStickmanEngine(width=720, height=640)
+            beat_data = {
+                "speaking_actor": "HOST",
+                "pose": "point",
+                "emotion": "happy",
+                "text": "Testing AI Scene Background",
+                "background_image": tmp_bg
+            }
+            frame = engine.render_full_frame(beat_data, t=0.5)
+            self.assertEqual(frame.shape, (640, 720, 3))
+
+            # 3. Test Full Render Video with Real Audio Muxing
+            out_video = tempfile.NamedTemporaryFile(suffix='.mp4', delete=False).name
+            render_cfg = {
+                "video_path": SAMPLE_VIDEO,
+                "audio_path": SAMPLE_VIDEO,
+                "render_mode": "split_pip",
+                "destination_dir": "",
+                "resolution": "720x1280",
+                "fps": 15,
+                "title": "Audio Stream Muxing Test",
+                "beats": [
+                    {
+                        "id": "beat_001",
+                        "start": 0.0,
+                        "end": 2.0,
+                        "duration": 2.0,
+                        "text": "Audio Sync Beat",
+                        "pose": "talk",
+                        "emotion": "happy",
+                        "prop": "bulb",
+                        "background_image": tmp_bg
+                    }
+                ]
+            }
+            render_script = os.path.join(APP_DIR, 'engine', 'video_render_worker.py')
+            cmd = ['python3', render_script, json.dumps(render_cfg), out_video]
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(res.returncode, 0, f"Render worker failed: {res.stderr}")
+            self.assertTrue(os.path.exists(out_video))
+
+            # 4. Probe Output MP4 with ffprobe to verify genuine AAC Audio Stream
+            probe_cmd = [
+                'ffprobe', '-v', 'error',
+                '-select_streams', 'a:0',
+                '-show_entries', 'stream=codec_name,bit_rate',
+                '-of', 'json', out_video
+            ]
+            probe_res = subprocess.run(probe_cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.assertEqual(probe_res.returncode, 0, f"ffprobe audio probe failed: {probe_res.stderr}")
+            probe_data = json.loads(probe_res.stdout)
+            streams = probe_data.get('streams', [])
+            self.assertGreater(len(streams), 0, "Rendered video has no audio stream! Silent output detected.")
+            self.assertEqual(streams[0].get('codec_name'), 'aac')
+            # Bitrate should be active genuine audio (> 64000 bps)
+            bit_rate = int(streams[0].get('bit_rate', 0) or 0)
+            self.assertGreater(bit_rate, 64000, f"Audio bitrate too low ({bit_rate}), indicates silent null audio")
+        finally:
+            if os.path.exists(tmp_bg):
+                os.unlink(tmp_bg)
+            if 'out_video' in locals() and os.path.exists(out_video):
+                os.unlink(out_video)
+
 if __name__ == '__main__':
     unittest.main()

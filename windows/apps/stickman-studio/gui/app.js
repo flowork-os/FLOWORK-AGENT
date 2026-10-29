@@ -84,6 +84,12 @@
       if (data && data.success && data.manifest && Array.isArray(data.manifest.beats) && data.manifest.beats.length > 0) {
         state.storyboardParts = data.manifest.beats;
         state.activePartIndex = 0;
+        if (data.manifest.input_path) {
+          state.videoPath = data.manifest.input_path;
+          state.currentAudioServerPath = data.manifest.input_path;
+          if (loadedFileName) loadedFileName.textContent = data.manifest.input_path.split('/').pop();
+          if (loadedFileInfo) loadedFileInfo.style.display = 'block';
+        }
         if (data.manifest.total_duration) {
           state.audioDuration = data.manifest.total_duration;
           updateTimelineDisplay();
@@ -457,6 +463,10 @@
       if (data.success && data.manifest && Array.isArray(data.manifest.beats)) {
         state.storyboardParts = data.manifest.beats;
         state.activePartIndex = 0;
+        if (data.manifest.input_path) {
+          state.videoPath = data.manifest.input_path;
+          state.currentAudioServerPath = data.manifest.input_path;
+        }
 
         if (data.manifest.full_transcript && transcriptInput) {
           transcriptInput.value = data.manifest.full_transcript;
@@ -530,9 +540,38 @@
 
     const timeSec = state.currentTime;
     const bgType = (currentBeat && currentBeat.background) || 'podcast_studio';
+    const customBg = currentBeat && (currentBeat.background_image || currentBeat.background_url || currentBeat.background_path);
 
-    // 1. Procedural Background Rendering
-    if (bgType === 'medical_lab') {
+    // 1. Custom AI Generated Background or Procedural Background Rendering
+    let hasCustomBg = false;
+    if (customBg) {
+      if (!state._bgImgCache) state._bgImgCache = {};
+      let imgObj = state._bgImgCache[customBg];
+      if (!imgObj) {
+        imgObj = new Image();
+        imgObj.crossOrigin = 'anonymous';
+        const bgFilename = customBg.split('/').pop();
+        imgObj.src = customBg.startsWith('/api/') ? api(customBg) : (customBg.startsWith('http') ? customBg : api('/api/backgrounds/' + bgFilename));
+        state._bgImgCache[customBg] = imgObj;
+        imgObj.onload = () => { renderStickman(); };
+      }
+      if (imgObj.complete && imgObj.naturalWidth > 0) {
+        ctx.drawImage(imgObj, 0, 0, canvas.width, 480);
+        // Foreground Podcast Desk
+        ctx.fillStyle = '#1e2433';
+        ctx.fillRect(0, 480, canvas.width, 160);
+        ctx.strokeStyle = '#00e5ff';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(0, 480);
+        ctx.lineTo(canvas.width, 480);
+        ctx.stroke();
+        hasCustomBg = true;
+      }
+    }
+
+    if (!hasCustomBg) {
+      if (bgType === 'medical_lab') {
       ctx.fillStyle = '#232830';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
       // High-Tech ECG / DNA Monitor on Wall
@@ -647,6 +686,7 @@
       ctx.lineTo(canvas.width, 480);
       ctx.stroke();
     }
+  }
 
     // 2. Character Rendering (Dual-Actor Staging or Solo)
     const actors = currentBeat && currentBeat.actors ? currentBeat.actors : null;
@@ -974,8 +1014,41 @@
       c.classList.toggle('active', c.dataset.char === (part.model || 'classic'));
     });
 
+    // Update Background Inspector UI
+    updateBackgroundUI(part);
+
     // Refresh Instant Part Preview Frame
     fetchPartPreview(part);
+  }
+
+  // Update Background Inspector UI Elements
+  function updateBackgroundUI(part) {
+    if (!part) return;
+    const activeBgThumb = document.getElementById('activeBgThumb');
+    const activeBgPlaceholder = document.getElementById('activeBgPlaceholder');
+    const activeBgTitle = document.getElementById('activeBgTitle');
+    const activeBgSubtitle = document.getElementById('activeBgSubtitle');
+    const bgStatusBadge = document.getElementById('bgStatusBadge');
+
+    const customBg = part.background_image || part.background_url || part.background_path;
+    if (customBg) {
+      const bgFilename = customBg.split('/').pop();
+      const thumbUrl = customBg.startsWith('/api/') ? api(customBg) : (customBg.startsWith('http') ? customBg : api('/api/backgrounds/' + bgFilename));
+      if (activeBgThumb) {
+        activeBgThumb.src = thumbUrl;
+        activeBgThumb.style.display = 'block';
+      }
+      if (activeBgPlaceholder) activeBgPlaceholder.style.display = 'none';
+      if (activeBgTitle) activeBgTitle.textContent = part.background_prompt || bgFilename;
+      if (activeBgSubtitle) activeBgSubtitle.textContent = part.background_method || 'AI Generated Scene';
+      if (bgStatusBadge) bgStatusBadge.textContent = 'AI SCENE';
+    } else {
+      if (activeBgThumb) activeBgThumb.style.display = 'none';
+      if (activeBgPlaceholder) activeBgPlaceholder.style.display = 'block';
+      if (activeBgTitle) activeBgTitle.textContent = 'Default Podcast Studio';
+      if (activeBgSubtitle) activeBgSubtitle.textContent = 'Procedural Acoustic Neon';
+      if (bgStatusBadge) bgStatusBadge.textContent = 'STICK HUB 2D';
+    }
   }
 
   // Instant Canvas Part Preview Frame
@@ -1003,6 +1076,14 @@
 
       oCtx.fillStyle = state.colors.bg || '#11141c';
       oCtx.fillRect(0, 0, 180, 320);
+
+      // Draw Custom Background if present
+      const customBg = part.background_image || part.background_url || part.background_path;
+      if (customBg && state._bgImgCache && state._bgImgCache[customBg] && state._bgImgCache[customBg].complete) {
+        oCtx.drawImage(state._bgImgCache[customBg], 0, 0, 180, 260);
+        oCtx.fillStyle = 'rgba(10, 15, 25, 0.4)';
+        oCtx.fillRect(0, 0, 180, 260);
+      }
 
       oCtx.strokeStyle = '#222836';
       oCtx.lineWidth = 1;
@@ -1289,12 +1370,12 @@
         return;
       }
       const idx = state.activePartIndex + 1;
-      const poseDesc = part.pose_data?.has_pose ? 'Tracked Pose (Anatomi 33 titik sendi terdeteksi)' : (part.pose_data?.screen_type || 'Slide Grafis/Layar');
-      const prompt = `[STICKMAN STUDIO DIRECTOR] 🎬🎨 Selesaikan gambar ulang Stickman untuk Beat #${idx} (${part.start}s - ${part.end}s)!
-Narasi: "${part.text || '[Music / Ambience]'}"
-Tipe Visual: ${poseDesc}
-Inspirasi 3D Vault: Manfaatkan referensi 3D (system/library) bila relevan.
-Tolong Dr. Flow gambar ulang dan sesuaikan komposisi adegan karakter ini agar hidup dan presisi!`;
+      const poseDesc = part.pose_data?.has_pose ? 'Tracked Pose (33 skeletal landmarks detected)' : (part.pose_data?.screen_type || 'Graphic Slide / Screen');
+      const prompt = `[STICKMAN STUDIO DIRECTOR] 🎬🎨 Complete Stickman choreography for Beat #${idx} (${part.start}s - ${part.end}s)!
+Dialogue: "${part.text || '[Music / Ambience]'}"
+Visual Modality: ${poseDesc}
+3D Vault Reference: Utilize 3D models (system/library) where relevant.
+Dr. Flow, please redraw and choreograph this character scene with life-like precision and expressive kinematics!`;
       injectAgentPrompt(prompt);
       showFeedbackNotice(`Dispatched Beat #${idx} to Agent Chat!`, 'success');
       if (systemStatusText) systemStatusText.textContent = `Prompt for Beat #${idx} injected to Chat`;
@@ -1310,11 +1391,121 @@ Tolong Dr. Flow gambar ulang dan sesuaikan komposisi adegan karakter ini agar hi
       }
       const count = state.storyboardParts.length;
       const prompt = `[STICKMAN STUDIO DIRECTOR] 🎬🚀 BATCH GENERATE ALL STICKY BEATS (${count} Beats)!
-Total Durasi: ${state.audioDuration ? state.audioDuration.toFixed(1) + 's' : 'Video'}.
-Instruksi: Agent wajib gambar ulang seluruh ${count} beat storyboard secara dinamis tanpa template statis. Sesuaikan tiap 3 detik dengan gestur pose, narasi dialog, dan padukan aset 3D (system/library) untuk adegan layar demo. Render 100% full stickman hidup!`;
+Total Duration: ${state.audioDuration ? state.audioDuration.toFixed(1) + 's' : 'Video'}.
+Instructions: Redraw all ${count} storyboard beats dynamically without static templates. Adapt every 3-second segment to dialogue nuances, tracked poses, and 3D vault assets. Render 100% dynamic stickman choreography!`;
       injectAgentPrompt(prompt);
       showFeedbackNotice(`Dispatched all ${count} beats to Agent Chat!`, 'success');
       if (systemStatusText) systemStatusText.textContent = `Batch prompt (${count} beats) injected to Chat`;
+    });
+  }
+
+  // -------------------------------------------------------------
+  // AI Cartoon Scene Background Generator Integration
+  // -------------------------------------------------------------
+  const btnGenerateAiBg = document.getElementById('btnGenerateAiBg');
+  const btnAiBgText = document.getElementById('btnAiBgText');
+  const btnAiBgIcon = document.getElementById('btnAiBgIcon');
+  const aiBgPromptInput = document.getElementById('aiBgPromptInput');
+  const checkApplyBgToAll = document.getElementById('checkApplyBgToAll');
+  const btnResetBackground = document.getElementById('btnResetBackground');
+
+  if (btnGenerateAiBg) {
+    btnGenerateAiBg.addEventListener('click', async () => {
+      const part = state.storyboardParts[state.activePartIndex];
+      if (!part) {
+        showFeedbackNotice('Select a beat first before generating background.', 'warning');
+        return;
+      }
+
+      const promptText = (aiBgPromptInput && aiBgPromptInput.value.trim()) || 'modern cartoon recording studio interior';
+      const theme = aiBgPromptInput ? (aiBgPromptInput.dataset.theme || '') : '';
+
+      if (btnAiBgText) btnAiBgText.textContent = 'Generating Scene...';
+      if (btnAiBgIcon) btnAiBgIcon.textContent = '⏳';
+      btnGenerateAiBg.disabled = true;
+
+      try {
+        const res = await fetch(api('/api/backgrounds/generate'), {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ prompt: promptText, theme })
+        });
+        const data = await res.json();
+        if (data.success && data.background_path) {
+          part.background_image = data.background_path;
+          part.background_url = data.background_url;
+          part.background_prompt = promptText;
+          part.background_method = data.method === 'pollinations_neural' ? 'Neural AI (Flux)' : 'Procedural Vector';
+
+          if (checkApplyBgToAll && checkApplyBgToAll.checked) {
+            state.storyboardParts.forEach(p => {
+              p.background_image = data.background_path;
+              p.background_url = data.background_url;
+              p.background_prompt = promptText;
+              p.background_method = part.background_method;
+            });
+            showFeedbackNotice(`AI Background applied to all ${state.storyboardParts.length} beats!`, 'success');
+          } else {
+            showFeedbackNotice(`Generated AI Background for Beat #${state.activePartIndex + 1}!`, 'success');
+          }
+
+          updateBackgroundUI(part);
+          renderStoryboardCards();
+          fetchPartPreview(part);
+          renderStickman();
+        } else {
+          showFeedbackNotice(`Failed to generate background: ${data.error || 'Unknown error'}`, 'warning');
+        }
+      } catch (err) {
+        console.error('[Generate AI Background Error]', err);
+        showFeedbackNotice('Background generation failed. Check server connection.', 'warning');
+      } finally {
+        if (btnAiBgText) btnAiBgText.textContent = 'Generate AI Background';
+        if (btnAiBgIcon) btnAiBgIcon.textContent = '🎨';
+        btnGenerateAiBg.disabled = false;
+      }
+    });
+  }
+
+  // Quick Scene Presets Buttons
+  document.querySelectorAll('.fl-preset-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const p = btn.getAttribute('data-prompt') || '';
+      const th = btn.getAttribute('data-theme') || '';
+      if (aiBgPromptInput) {
+        aiBgPromptInput.value = p;
+        aiBgPromptInput.dataset.theme = th;
+      }
+      if (btnGenerateAiBg) {
+        btnGenerateAiBg.click();
+      }
+    });
+  });
+
+  if (btnResetBackground) {
+    btnResetBackground.addEventListener('click', () => {
+      const part = state.storyboardParts[state.activePartIndex];
+      if (part) {
+        delete part.background_image;
+        delete part.background_url;
+        delete part.background_prompt;
+        delete part.background_method;
+        if (checkApplyBgToAll && checkApplyBgToAll.checked) {
+          state.storyboardParts.forEach(p => {
+            delete p.background_image;
+            delete p.background_url;
+            delete p.background_prompt;
+            delete p.background_method;
+          });
+          showFeedbackNotice('Reset all beats to default studio.', 'info');
+        } else {
+          showFeedbackNotice(`Reset Beat #${state.activePartIndex + 1} to default studio.`, 'info');
+        }
+        updateBackgroundUI(part);
+        renderStoryboardCards();
+        fetchPartPreview(part);
+        renderStickman();
+      }
     });
   }
 
@@ -1532,9 +1723,9 @@ Instruksi: Agent wajib gambar ulang seluruh ${count} beat storyboard secara dina
 
       try {
         const payload = {
-          video_path: state.videoPath || state.currentAudioServerPath,
-          audio_path: state.currentAudioServerPath || loadedFileName.textContent || 'voice_kids.mp3',
-          render_mode: state.renderMode || 'split_pip',
+          video_path: state.videoPath || state.currentAudioServerPath || null,
+          audio_path: state.currentAudioServerPath || state.videoPath || null,
+          render_mode: state.renderMode || 'full_stickman',
           beats: state.storyboardParts,
           title: 'AutoShorts Stickman Parody',
           destination_dir: state.destinationDir || '',

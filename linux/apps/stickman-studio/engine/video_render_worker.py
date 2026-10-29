@@ -76,6 +76,75 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     bg_choice = cfg.get('background', 'podcast_studio')
     title = cfg.get('title', 'Stickman Parody Short')
 
+    # -------------------------------------------------------------
+    # 0. Early Audio & Video Source Discovery (Zero-Silent Guarantee)
+    # -------------------------------------------------------------
+    resolved_audio = None
+    resolved_video = None
+    app_data_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), 'data')
+
+    audio_candidates = []
+    if audio_path:
+        audio_candidates.append(audio_path)
+    if video_path:
+        audio_candidates.append(video_path)
+    if media_path:
+        audio_candidates.append(media_path)
+
+    # Search inside beats
+    if beats:
+        for b in beats:
+            if b.get('audio_path'):
+                audio_candidates.append(b.get('audio_path'))
+            kf = b.get('keyframe_path') or b.get('parody_thumb_path')
+            if kf:
+                d1 = os.path.dirname(kf)
+                d2 = os.path.dirname(d1)
+                for d in [d1, d2]:
+                    if os.path.exists(d):
+                        for a_name in ['audio.mp3', 'audio.wav', 'audio.aac', 'audio.m4a']:
+                            audio_candidates.append(os.path.join(d, a_name))
+            batch_id = b.get('batch_id')
+            if batch_id:
+                audio_candidates.append(os.path.join(app_data_dir, batch_id, 'audio.mp3'))
+                audio_candidates.append(os.path.join(app_data_dir, batch_id, 'audio.wav'))
+
+    # Auto-discover latest audio/video in data directory
+    try:
+        if os.path.exists(app_data_dir):
+            for sub in sorted(os.listdir(app_data_dir), reverse=True):
+                if sub.startswith('beats_'):
+                    audio_candidates.append(os.path.join(app_data_dir, sub, 'audio.mp3'))
+                elif sub == 'uploads':
+                    up_dir = os.path.join(app_data_dir, 'uploads')
+                    for uf in sorted(os.listdir(up_dir), reverse=True):
+                        if uf.endswith(('.mp4', '.mov', '.mp3', '.wav', '.m4a')):
+                            audio_candidates.append(os.path.join(up_dir, uf))
+    except Exception:
+        pass
+
+    seen = set()
+    for cand in audio_candidates:
+        if cand and os.path.exists(cand) and cand not in seen:
+            seen.add(cand)
+            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', cand]
+            try:
+                p_res = subprocess.run(probe_cmd, capture_output=True, text=True)
+                if 'video' in p_res.stdout and resolved_video is None:
+                    resolved_video = cand
+                if 'audio' in p_res.stdout and resolved_audio is None:
+                    resolved_audio = cand
+                    print(f"[Render Worker] 🔊 Found verified genuine audio source: {cand}", flush=True)
+            except Exception:
+                pass
+
+    if resolved_audio:
+        audio_path = resolved_audio
+    if resolved_video and not video_path:
+        video_path = resolved_video
+    if not media_path:
+        media_path = resolved_video or resolved_audio
+
     def report_progress(stage, pct, current_frame=0, total_frames=0, eta=""):
         msg = {
             "stage": stage,
@@ -264,43 +333,30 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     # 3. Audio Muxing & Encoding: Strict H.264 Video + AAC Audio Output
     report_progress("muxing_audio", 88)
 
-    # Check audio source: prefer audio_path, fallback to video_path, then beats manifest audio
-    resolved_audio = None
-    candidates = [
-        audio_path,
-        video_path
-    ]
-    # Check if any beat has an associated audio file in its directory
-    if beats:
-        for b in beats:
-            kf = b.get('keyframe_path') or b.get('parody_thumb_path')
-            if kf and os.path.exists(kf):
-                b_dir = os.path.dirname(kf)
-                cand_mp3 = os.path.join(b_dir, 'audio.mp3')
-                if os.path.exists(cand_mp3):
-                    candidates.append(cand_mp3)
-                cand_wav = os.path.join(b_dir, 'audio.wav')
-                if os.path.exists(cand_wav):
-                    candidates.append(cand_wav)
+    # Check audio source: use early resolved audio if available
+    if not resolved_audio:
+        candidates = [audio_path, video_path]
+        for cand in candidates:
+            if cand and os.path.exists(cand):
+                probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', cand]
+                try:
+                    p_res = subprocess.run(probe_cmd, capture_output=True, text=True)
+                    if 'audio' in p_res.stdout:
+                        resolved_audio = cand
+                        break
+                except Exception:
+                    pass
 
-    for cand in candidates:
-        if cand and os.path.exists(cand):
-            probe_cmd = ['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type', '-of', 'json', cand]
-            p_res = subprocess.run(probe_cmd, capture_output=True, text=True)
-            if 'audio' in p_res.stdout:
-                resolved_audio = cand
-                break
-
-    has_audio_stream = resolved_audio is not None
-    audio_path = resolved_audio
+    has_audio_stream = resolved_audio is not None and os.path.exists(resolved_audio)
 
     if has_audio_stream:
+        print(f"[Render Worker] 🎬 Multiplexing audio into MP4 from: {resolved_audio}", flush=True)
         cmd = [
             'ffmpeg', '-y',
             '-i', temp_raw_video,
-            '-i', audio_path,
+            '-i', resolved_audio,
             '-map', '0:v:0',
-            '-map', '1:a:0',
+            '-map', '1:a',
             '-c:v', 'libx264',
             '-preset', 'veryfast',
             '-crf', '22',
@@ -311,7 +367,15 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             '-shortest',
             output_mp4
         ]
+        try:
+            subprocess.run(cmd, check=True)
+        except subprocess.CalledProcessError:
+            # Fallback to map 1:a:0 if channel indexing differs
+            cmd[4] = '-map'
+            cmd[5] = '1:a:0'
+            subprocess.run(cmd, check=True)
     else:
+        print("[Render Worker] ⚠️ No active audio found; generating placeholder audio track.", flush=True)
         # Universal fallback: provide genuine AAC silent stereo track
         cmd = [
             'ffmpeg', '-y',
@@ -329,8 +393,7 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             '-shortest',
             output_mp4
         ]
-
-    subprocess.run(cmd, check=True)
+        subprocess.run(cmd, check=True)
 
     if os.path.exists(temp_raw_video):
         try:

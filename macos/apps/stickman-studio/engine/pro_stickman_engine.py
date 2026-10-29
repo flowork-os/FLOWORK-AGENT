@@ -58,30 +58,109 @@ class ProStickmanEngine:
             draw.ellipse([pt[0] - r, pt[1] - r, pt[0] + r, pt[1] + r], fill=color)
 
     # -------------------------------------------------------------
-    # LAYER 1: Background Wall & Neon Atmosphere
+    # LAYER 1: Background Wall & Neon Atmosphere (AI Scene / Custom / Thematic)
     # -------------------------------------------------------------
-    def draw_background_wall(self, draw, t):
-        # Vertical gradient studio wall
+    def draw_background_wall(self, draw, t, bg_image_path=None, stage_theme='podcast_studio', pil_img=None):
         wall_h = self.desk_y + 10
-        for y in range(0, wall_h):
-            ratio = y / float(wall_h)
-            r = int(14 + 10 * ratio)
-            g = int(20 + 14 * ratio)
-            b = int(32 + 20 * ratio)
-            draw.line([(0, y), (self.width, y)], fill=(r, g, b))
 
-        # Modern Hexagonal Acoustic Panels
-        hex_color = (32, 44, 66)
-        accent_cyan = (56, 189, 248)
-        accent_yellow = (234, 179, 8)
-        for col in range(6):
-            hx = 60 + col * 120
-            hy = int(self.desk_y * 0.24) + (col % 2) * 45
-            draw.rounded_rectangle([hx - 42, hy - 45, hx + 42, hy + 45], radius=12, outline=hex_color, width=2)
-            if col == 1:
-                draw.line([(hx - 24, hy), (hx + 24, hy)], fill=accent_yellow, width=3)
-            elif col == 4:
-                draw.line([(hx - 24, hy), (hx + 24, hy)], fill=accent_cyan, width=3)
+        # Option A: Custom or AI Generated Background Image
+        if bg_image_path and os.path.exists(bg_image_path) and pil_img is not None:
+            try:
+                bg_raw = Image.open(bg_image_path).convert("RGBA")
+                bg_w, bg_h = bg_raw.size
+                target_ratio = self.width / float(wall_h)
+                curr_ratio = bg_w / float(bg_h)
+                if curr_ratio > target_ratio:
+                    new_w = int(bg_h * target_ratio)
+                    start_x = (bg_w - new_w) // 2
+                    cropped = bg_raw.crop((start_x, 0, start_x + new_w, bg_h))
+                else:
+                    new_h = int(bg_w / target_ratio)
+                    start_y = (bg_h - new_h) // 2
+                    cropped = bg_raw.crop((0, start_y, bg_w, start_y + new_h))
+                resized = cropped.resize((self.width, wall_h), Image.Resampling.LANCZOS)
+                pil_img.paste(resized, (0, 0))
+
+                # Ambient Neon Strip above Desk
+                pulse = 0.85 + 0.15 * math.sin(t * 3.5)
+                neon_c = (int(0 * pulse), int(229 * pulse), int(255 * pulse), 220)
+                draw.line([(0, self.desk_y - 2), (self.width, self.desk_y - 2)], fill=neon_c, width=4)
+                return
+            except Exception as e:
+                print(f"[ProEngine] Warning loading background image {bg_image_path}: {e}", file=sys.stderr)
+
+        # Option B: Thematic Procedural Backgrounds
+        th = (stage_theme or 'podcast_studio').lower()
+        if 'classroom' in th:
+            for y in range(wall_h):
+                ratio = y / float(wall_h)
+                draw.line([(0, y), (self.width, y)], fill=(int(45 + 15 * ratio), int(75 + 20 * ratio), int(65 + 15 * ratio)))
+            cb_mx = 50
+            cb_top = int(wall_h * 0.12)
+            cb_bot = int(wall_h * 0.88)
+            draw.rounded_rectangle([cb_mx - 10, cb_top - 10, self.width - cb_mx + 10, cb_bot + 10], radius=12, fill=(120, 75, 40), outline=(80, 45, 20), width=3)
+            draw.rounded_rectangle([cb_mx, cb_top, self.width - cb_mx, cb_bot], radius=8, fill=(28, 52, 40), outline=(20, 38, 30), width=2)
+            draw.line([(cb_mx + 40, cb_top + 45), (cb_mx + 180, cb_top + 45)], fill=(210, 225, 210), width=2)
+            draw.line([(cb_mx + 40, cb_top + 70), (cb_mx + 220, cb_top + 70)], fill=(210, 225, 210), width=2)
+            draw.arc([cb_mx + 260, cb_top + 30, cb_mx + 330, cb_top + 100], 0, 360, fill=(240, 210, 80), width=3)
+            draw.line([(cb_mx, cb_bot), (self.width - cb_mx, cb_bot)], fill=(170, 110, 55), width=6)
+        elif 'courtroom' in th:
+            for y in range(wall_h):
+                ratio = y / float(wall_h)
+                draw.line([(0, y), (self.width, y)], fill=(int(50 + 20 * ratio), int(25 + 15 * ratio), int(18 + 10 * ratio)))
+            for cx in [65, self.width - 65]:
+                draw.rectangle([cx - 26, 0, cx + 26, wall_h], fill=(70, 38, 25), outline=(40, 20, 12), width=3)
+            em_cx, em_cy = self.width // 2, int(wall_h * 0.35)
+            draw.ellipse([em_cx - 45, em_cy - 45, em_cx + 45, em_cy + 45], fill=(80, 45, 30), outline=(218, 165, 32), width=3)
+            draw.line([(em_cx, em_cy - 24), (em_cx, em_cy + 24)], fill=(218, 165, 32), width=3)
+            draw.line([(em_cx - 22, em_cy - 10), (em_cx + 22, em_cy - 10)], fill=(218, 165, 32), width=3)
+        elif 'news' in th:
+            for y in range(wall_h):
+                ratio = y / float(wall_h)
+                draw.line([(0, y), (self.width, y)], fill=(int(10 + 10 * ratio), int(18 + 22 * ratio), int(45 + 35 * ratio)))
+            for gx in range(40, self.width, 50):
+                draw.line([(gx, 20), (gx, wall_h - 10)], fill=(30, 55, 105), width=1)
+            for gy in range(20, wall_h - 10, 35):
+                draw.line([(20, gy), (self.width - 20, gy)], fill=(30, 55, 105), width=1)
+            draw.arc([self.width // 2 - 180, 20, self.width // 2 + 180, wall_h - 30], 0, 360, fill=(0, 229, 255), width=3)
+            draw.line([(0, wall_h - 12), (self.width, wall_h - 12)], fill=(225, 29, 72), width=8)
+        elif 'cyber' in th:
+            for y in range(wall_h):
+                ratio = y / float(wall_h)
+                draw.line([(0, y), (self.width, y)], fill=(int(12 + 18 * ratio), int(8 + 10 * ratio), int(26 + 28 * ratio)))
+            hz_y = int(wall_h * 0.65)
+            draw.ellipse([self.width // 2 - 60, hz_y - 60, self.width // 2 + 60, hz_y + 60], fill=(255, 110, 180), outline=(255, 220, 100), width=3)
+            draw.line([(0, hz_y), (self.width, hz_y)], fill=(0, 240, 255), width=3)
+            for gx in range(-60, self.width + 60, 50):
+                draw.line([(self.width // 2, hz_y), (gx, wall_h)], fill=(168, 85, 247), width=2)
+        elif 'living' in th:
+            stripe_c1 = (45, 34, 48)
+            stripe_c2 = (38, 28, 42)
+            for x in range(0, self.width, 28):
+                col = stripe_c1 if (x // 28) % 2 == 0 else stripe_c2
+                draw.rectangle([x, 0, x + 28, wall_h], fill=col)
+            draw.rounded_rectangle([self.width // 2 - 60, 40, self.width // 2 + 60, 130], radius=8, fill=(30, 24, 35), outline=(218, 165, 32), width=3)
+            draw.ellipse([self.width // 2 - 18, 70, self.width // 2 + 18, 106], fill=(234, 179, 8))
+        else:
+            # Default Modern Podcast Studio
+            for y in range(0, wall_h):
+                ratio = y / float(wall_h)
+                r = int(14 + 10 * ratio)
+                g = int(20 + 14 * ratio)
+                b = int(32 + 20 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+
+            hex_color = (32, 44, 66)
+            accent_cyan = (56, 189, 248)
+            accent_yellow = (234, 179, 8)
+            for col in range(6):
+                hx = 60 + col * 120
+                hy = int(self.desk_y * 0.24) + (col % 2) * 45
+                draw.rounded_rectangle([hx - 42, hy - 45, hx + 42, hy + 45], radius=12, outline=hex_color, width=2)
+                if col == 1:
+                    draw.line([(hx - 24, hy), (hx + 24, hy)], fill=accent_yellow, width=3)
+                elif col == 4:
+                    draw.line([(hx - 24, hy), (hx + 24, hy)], fill=accent_cyan, width=3)
 
         # Ambient Neon Strip above Desk
         pulse = 0.85 + 0.15 * math.sin(t * 3.5)
@@ -383,8 +462,10 @@ class ProStickmanEngine:
         pil_img = Image.new("RGBA", (self.width, self.height), (15, 23, 42, 255))
         draw = ImageDraw.Draw(pil_img)
 
-        # Layer 1: Background Wall & Neon Strip
-        self.draw_background_wall(draw, t)
+        # Layer 1: Background Wall & Neon Strip (Custom AI Image / Thematic / Studio)
+        custom_bg = beat_data.get("background_image") or beat_data.get("background_path")
+        stage_theme = beat_data.get("stage_theme") or beat_data.get("background", "podcast_studio")
+        self.draw_background_wall(draw, t, bg_image_path=custom_bg, stage_theme=stage_theme, pil_img=pil_img)
 
         # Layer 2: Ergonomic Studio Chairs
         self.draw_studio_chair(draw, cx=self.host_x, cy=self.desk_y)

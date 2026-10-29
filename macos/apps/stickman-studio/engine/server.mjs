@@ -19,8 +19,9 @@ const GUI_DIR = path.join(APP_ROOT, 'gui');
 const DATA_DIR = path.join(APP_ROOT, 'data');
 const UPLOADS_DIR = path.join(DATA_DIR, 'uploads');
 const EXPORTS_DIR = path.join(DATA_DIR, 'exports');
+const BACKGROUNDS_DIR = path.join(DATA_DIR, 'backgrounds');
 
-[DATA_DIR, UPLOADS_DIR, EXPORTS_DIR].forEach(dir => {
+[DATA_DIR, UPLOADS_DIR, EXPORTS_DIR, BACKGROUNDS_DIR].forEach(dir => {
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
 });
 
@@ -520,6 +521,83 @@ const server = http.createServer(async (req, res) => {
     }
 
     // -------------------------------------------------------------
+    // 5h2. AI Cartoon Background Generator (POST /api/backgrounds/generate)
+    // -------------------------------------------------------------
+    if (pathname === '/api/backgrounds/generate' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const prompt = body.prompt || 'modern podcast recording studio';
+      const theme = body.theme || '';
+
+      const scriptPath = path.join(__dirname, 'ai_background_generator.py');
+      const args = [scriptPath, prompt, theme];
+
+      execFile('python3', args, { maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+        if (err) {
+          console.error('[AI Background Error]', stderr || err.message);
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: stderr || err.message }));
+        }
+        try {
+          const result = JSON.parse(stdout);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({
+            success: true,
+            method: result.method,
+            prompt: result.prompt,
+            enhanced_prompt: result.enhanced_prompt,
+            background_url: `/api/backgrounds/${result.filename}`,
+            background_path: result.image_path,
+            filename: result.filename,
+            size_bytes: result.size_bytes,
+            elapsed_seconds: result.elapsed_seconds
+          }));
+        } catch (e) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          return res.end(JSON.stringify({ error: 'Failed to parse AI background response', raw: stdout }));
+        }
+      });
+      return;
+    }
+
+    // -------------------------------------------------------------
+    // 5h3. Background Presets (GET /api/backgrounds/presets)
+    // -------------------------------------------------------------
+    if (pathname === '/api/backgrounds/presets' && req.method === 'GET') {
+      const presets = [
+        { id: 'podcast_studio', name: '🎙️ Podcast Studio', theme: 'podcast_studio', prompt: 'modern neon podcast recording studio' },
+        { id: 'classroom', name: '🏫 Classroom', theme: 'classroom', prompt: 'cartoon school classroom with blackboard and wooden desks' },
+        { id: 'courtroom', name: '⚖️ Courtroom', theme: 'courtroom', prompt: 'cartoon judge courtroom with scales of justice and dark wood panels' },
+        { id: 'breaking_news', name: '📺 Breaking News', theme: 'breaking_news', prompt: 'high tech breaking news broadcast studio with glowing digital world map' },
+        { id: 'living_room', name: '🛋️ Living Room', theme: 'living_room', prompt: 'cozy cartoon retro living room interior with wallpaper and framed pictures' },
+        { id: 'cyber_grid', name: '🚀 Cyber Grid', theme: 'cyber_grid', prompt: 'neon synthwave cyber grid with futuristic skyline and glowing horizon' },
+        { id: 'cafe', name: '☕ Coffee Shop', theme: 'cafe', prompt: 'warm aesthetic cartoon coffee shop cafe interior with counter and chalkboard menu' },
+        { id: 'street', name: '🏙️ City Street', theme: 'street', prompt: 'colorful 2D cartoon city street sidewalk with storefronts' }
+      ];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      return res.end(JSON.stringify({ success: true, presets }));
+    }
+
+    // -------------------------------------------------------------
+    // 5h4. Static Background Serving (GET /api/backgrounds/:filename)
+    // -------------------------------------------------------------
+    if (pathname.startsWith('/api/backgrounds/')) {
+      const bgFilename = path.basename(pathname);
+      const bgPath = path.join(BACKGROUNDS_DIR, bgFilename);
+      if (fs.existsSync(bgPath)) {
+        res.writeHead(200, {
+          'Content-Type': 'image/jpeg',
+          'Cache-Control': 'public, max-age=86400',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Private-Network': 'true'
+        });
+        return fs.createReadStream(bgPath).pipe(res);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: 'Background image not found' }));
+      }
+    }
+
+    // -------------------------------------------------------------
     // 5i. 3D Model Vault Registry & Inspection (GET /api/vault/3d)
     // -------------------------------------------------------------
     if (pathname === '/api/vault/3d' && req.method === 'GET') {
@@ -611,7 +689,7 @@ const server = http.createServer(async (req, res) => {
         stage: 'initializing',
         created_at: new Date().toISOString(),
         params: {
-          audio_path: audio_path || video_path || 'voice_kids.mp3',
+          audio_path: audio_path || video_path || null,
           video_path: video_path || null,
           render_mode: render_mode || 'full_stickman',
           beats: beats || [],
@@ -782,8 +860,23 @@ function executeRenderJob(jobId) {
   const tempConfigPath = path.join(DATA_DIR, `cfg_${jobId}.json`);
   const progressPath = path.join(DATA_DIR, `prog_${jobId}.json`);
 
+  let resolvedAudio = job.params.audio_path;
+  if (!resolvedAudio && Array.isArray(job.params.beats) && job.params.beats.length > 0) {
+    const b0 = job.params.beats[0];
+    if (b0.batch_id) {
+      const bAudio = path.join(DATA_DIR, b0.batch_id, 'audio.mp3');
+      if (fs.existsSync(bAudio)) resolvedAudio = bAudio;
+    }
+    if (!resolvedAudio && b0.keyframe_path) {
+      const p1 = path.join(path.dirname(b0.keyframe_path), 'audio.mp3');
+      const p2 = path.join(path.dirname(path.dirname(b0.keyframe_path)), 'audio.mp3');
+      if (fs.existsSync(p1)) resolvedAudio = p1;
+      else if (fs.existsSync(p2)) resolvedAudio = p2;
+    }
+  }
+
   const cfg = {
-    audio_path: job.params.audio_path ? (job.params.audio_path.startsWith('/') ? job.params.audio_path : path.join(APP_ROOT, job.params.audio_path)) : undefined,
+    audio_path: resolvedAudio ? (resolvedAudio.startsWith('/') ? resolvedAudio : path.join(APP_ROOT, resolvedAudio)) : undefined,
     video_path: job.params.video_path ? (job.params.video_path.startsWith('/') ? job.params.video_path : path.join(APP_ROOT, job.params.video_path)) : undefined,
     render_mode: job.params.render_mode || 'full_stickman',
     beats: job.params.beats || [],
