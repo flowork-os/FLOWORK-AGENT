@@ -45,26 +45,20 @@ class DynamicCartoonist:
         # Priority 2: Dedicated Tracked Pose 33-point Stickman Scene
         elif has_pose and "joints" in pose_info:
             self._draw_tracked_pose_scene(canvas, pose_info, beat_data, t, energy, shake_x, shake_y)
-        # Beat 1: Armchair skeleton waving ("Ini 3 cara Gemini...")
+        # Priority 3: Semantic Specific Scenes (Only triggered when explicit keywords match)
         elif "tiga cara" in text_lower or "3 cara" in text_lower:
             self._render_beat1_waving_skeleton(canvas, beat_data, t, energy, shake_x, shake_y)
-        # Beat 2: Big "1" countdown ("Pertama, model interaktif...")
-        elif beat_idx == 2 or ("pertama" in text_lower and "model" in text_lower):
+        elif ("pertama" in text_lower and "model" in text_lower) or ("replikasi dna" in text_lower and "pertama" in text_lower):
             self._render_numbered_intro_scene(canvas, "1", "MODEL DNA INTERAKTIF", t, energy, shake_x, shake_y)
-        # Beat 3: 3D DNA Model ("Replikasi DNA...")
-        elif beat_idx == 3 or "replikasi dna" in text_lower or "dna" in text_lower:
+        elif "replikasi dna" in text_lower or ("dna" in text_lower and "heliks" in text_lower):
             self._render_dna_replication_scene(canvas, beat_data, t, energy, shake_x, shake_y)
-        # Beat 6: Desk Laptop & Mouse ("Saya dan Si Tulang suka banget...")
-        elif beat_idx == 6 or "situlang" in text_lower or "suka banget" in text_lower or "laptop" in text_lower:
+        elif ("situlang" in text_lower or "si tulang" in text_lower) and "laptop" in text_lower:
             self._render_beat6_laptop_skeleton(canvas, pose_info, beat_data, t, energy, shake_x, shake_y)
-        # Beat 5: Interactive Quiz ("Ketiga, kuis latihan...")
-        elif beat_idx == 5 or "kuis" in text_lower or "kuislatahan" in text_lower or "pemahaman" in text_lower:
+        elif ("kuis" in text_lower and "latihan" in text_lower) or "kuislatihan" in text_lower:
             self._render_interactive_quiz_scene(canvas, beat_data, t, energy, shake_x, shake_y)
-        # Beat 4: Anatomy Flashcard ("flashcard untuk menghafal 266 tulang...")
-        elif beat_idx == 4 or "266 tulang" in text_lower or "flashcard" in text_lower:
+        elif "266 tulang" in text_lower or ("flashcard" in text_lower and "tulang" in text_lower):
             self._render_flashcard_bone_scene(canvas, beat_data, t, energy, shake_x, shake_y)
-        # Beat 7: Call To Action ("Daftar sekarang...")
-        elif beat_idx == 7 or "daftar sekarang" in text_lower or "daftar" in text_lower:
+        elif "daftar sekarang" in text_lower and ("gemini" in text_lower or "kelas" in text_lower):
             self._render_cta_gemini_scene(canvas, beat_data, t, energy, shake_x, shake_y)
         elif has_pose and "joints" in pose_info:
             self._draw_tracked_pose_scene(canvas, pose_info, beat_data, t, energy, shake_x, shake_y)

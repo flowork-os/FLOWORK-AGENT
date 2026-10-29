@@ -20,6 +20,7 @@ from scene_composer import StickmanSceneComposer
 from dynamic_cartoonist import DynamicCartoonist
 from pose_tracker import PoseTracker
 from pro_stickman_engine import ProStickmanEngine
+from stick_hub_storyteller_engine import StickHubStorytellerEngine
 
 
 def extract_audio_envelope(audio_src, total_frames, fps=24):
@@ -72,6 +73,7 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     audio_path = cfg.get('audio_path') or media_path
     video_path = cfg.get('video_path')
     render_mode = cfg.get('render_mode', 'full_stickman') # 'full_stickman' or 'split_pip'
+    staging_style = cfg.get('staging_style', 'stick_hub_storyteller') # 'stick_hub_storyteller' or 'podcast_desk'
     beats = cfg.get('beats') or cfg.get('parts') or []
     bg_choice = cfg.get('background', 'podcast_studio')
     title = cfg.get('title', 'Stickman Parody Short')
@@ -195,11 +197,13 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(temp_raw_video, fourcc, fps, (width, height))
 
-    # Initialize Cartoonist, Scene Composer, and Pro Stickman Puppet Engine
+    # Initialize Cartoonist, Scene Composer, Pro Stickman Engine, and Stick Hub Storyteller Engine
     stickman_h = 640 if (render_mode == 'split_pip' and cap is not None) else height
     cartoonist = DynamicCartoonist(width=width, height=height)
     composer = StickmanSceneComposer(width=width, height=stickman_h)
     pro_engine = ProStickmanEngine(width=width, height=stickman_h)
+    storyteller_engine = StickHubStorytellerEngine(width=width, height=height)
+    storyteller_pip = StickHubStorytellerEngine(width=width, height=640)
 
     # Audio amplitude envelope for real-time procedural lip-sync
     audio_src = audio_path or video_path or media_path
@@ -291,17 +295,21 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             # --- 3. BOTTOM HALF: Rich Stickman Animation & Choreography (720x640) ---
             energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
 
-            actors = current_beat.get("actors")
-            if actors and len(actors) >= 2:
-                if actors[0].get("speaking"):
-                    current_beat["speaking_actor"] = "HOST"
-                elif actors[1].get("speaking"):
-                    current_beat["speaking_actor"] = "CO-HOST"
-            elif "speaking_actor" not in current_beat:
-                beat_num = current_beat.get("index", 1)
-                current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
+            if staging_style == 'podcast_desk':
+                actors = current_beat.get("actors")
+                if actors and len(actors) >= 2:
+                    if actors[0].get("speaking"):
+                        current_beat["speaking_actor"] = "HOST"
+                    elif actors[1].get("speaking"):
+                        current_beat["speaking_actor"] = "CO-HOST"
+                elif "speaking_actor" not in current_beat:
+                    beat_num = current_beat.get("index", 1)
+                    current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
+                stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
+            else:
+                # Default Stick Hub Storyteller Puppet
+                stickman_layer = storyteller_pip.render_frame(current_beat, t=t, energy=energy)
 
-            stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
             if stickman_layer.shape[0] != 640 or stickman_layer.shape[1] != 720:
                 stickman_layer = cv2.resize(stickman_layer, (720, 640), interpolation=cv2.INTER_AREA)
             full_frame[640:1280, 0:720] = stickman_layer
@@ -309,17 +317,22 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
         else:
             # --- 100% Full Vertical Stickman Mode (720x1280) ---
             energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
-            actors = current_beat.get("actors")
-            if actors and len(actors) >= 2:
-                if actors[0].get("speaking"):
-                    current_beat["speaking_actor"] = "HOST"
-                elif actors[1].get("speaking"):
-                    current_beat["speaking_actor"] = "CO-HOST"
-            elif "speaking_actor" not in current_beat:
-                beat_num = current_beat.get("index", 1)
-                current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
 
-            stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
+            if staging_style == 'podcast_desk':
+                actors = current_beat.get("actors")
+                if actors and len(actors) >= 2:
+                    if actors[0].get("speaking"):
+                        current_beat["speaking_actor"] = "HOST"
+                    elif actors[1].get("speaking"):
+                        current_beat["speaking_actor"] = "CO-HOST"
+                elif "speaking_actor" not in current_beat:
+                    beat_num = current_beat.get("index", 1)
+                    current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
+                stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
+            else:
+                # Default: Stick Hub Storyteller (Solo Dynamic Full Body Standing / Walking / Gesturing)
+                stickman_layer = storyteller_engine.render_frame(current_beat, t=t, energy=energy)
+
             if stickman_layer.shape[0] != height or stickman_layer.shape[1] != width:
                 stickman_layer = cv2.resize(stickman_layer, (width, height), interpolation=cv2.INTER_AREA)
             full_frame = stickman_layer

@@ -388,5 +388,37 @@ class TestStickmanStudio(unittest.TestCase):
             if 'out_video' in locals() and os.path.exists(out_video):
                 os.unlink(out_video)
 
+    def test_10_stick_hub_storyteller_engine(self):
+        """Verify StickHubStorytellerEngine renders full-body dynamic standing and walk cycle frames."""
+        sys.path.append(os.path.join(APP_DIR, 'engine'))
+        from stick_hub_storyteller_engine import StickHubStorytellerEngine
+        import numpy as np
+
+        engine = StickHubStorytellerEngine(width=720, height=1280)
+
+        # 1. Standing pose with prop and kinetic subtitle
+        beat_stand = {
+            "text": "Don't look back anymore. Keep moving forward!",
+            "pose": "point",
+            "emotion": "happy",
+            "prop": "bulb"
+        }
+        frame_stand = engine.render_frame(beat_stand, t=1.2, energy=0.75)
+        self.assertIsInstance(frame_stand, np.ndarray)
+        self.assertEqual(frame_stand.shape, (1280, 720, 3))
+        self.assertGreater(float(np.std(frame_stand)), 10.0, "Frame is monochromatic or blank")
+
+        # 2. Walk cycle action
+        beat_walk = {
+            "text": "Walking into sovereign territory",
+            "action": "walk",
+            "emotion": "neutral"
+        }
+        frame_walk = engine.render_frame(beat_walk, t=0.6, energy=0.5)
+        self.assertIsInstance(frame_walk, np.ndarray)
+        self.assertEqual(frame_walk.shape, (1280, 720, 3))
+        self.assertGreater(float(np.std(frame_walk)), 10.0, "Walk frame is monochromatic or blank")
+
+
 if __name__ == '__main__':
     unittest.main()

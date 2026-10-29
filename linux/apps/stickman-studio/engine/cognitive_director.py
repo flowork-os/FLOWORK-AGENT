@@ -331,13 +331,12 @@ def direct_storyboard_beats(manifest):
         staging = stagings_cycle[idx % len(stagings_cycle)]
 
         # Determine speaker turn:
-        # If text explicitly mentions "si tulang" or "suka banget", Si Tulang takes center stage!
-        if 'situlang' in t_clean or 'si tulang' in t_clean or 'suka banget' in t_clean:
+        if domain.get('actor2_is_skeleton') and ('situlang' in t_clean or 'si tulang' in t_clean):
             is_actor2_speaking = True
             actor2_action = 'celebrate'
             actor2_prop = 'bone'
-            actor2_shout = 'SI TULANG SUKA!'
-        elif 'tulang' in t_clean or 'flashcard' in t_clean:
+            actor2_shout = extract_punchy_shout(text, default="SI TULANG!")
+        elif domain.get('actor2_is_skeleton') and ('tulang' in t_clean or 'flashcard' in t_clean):
             is_actor2_speaking = True
             actor2_action = 'think'
             actor2_prop = 'bone'

@@ -131,6 +131,7 @@
     selectedProfile: 'kids',
     characterArchetype: 'classic',
     renderMode: 'full_stickman', // 100% Full Animated Stickman by default
+    stagingStyle: 'stick_hub_storyteller', // Stick Hub Solo Storyteller standard
     destinationDir: '',
     videoPath: null,
     currentAudioServerPath: null,
@@ -186,6 +187,7 @@
 
   // Header & Bridge DOM Elements
   const selectRenderMode = document.getElementById('selectRenderMode');
+  const selectStagingStyle = document.getElementById('selectStagingStyle');
   const activeModeBadge = document.getElementById('activeModeBadge');
   const destinationDirInput = document.getElementById('destinationDirInput');
   const btnBrowseFolder = document.getElementById('btnBrowseFolder');
@@ -1290,6 +1292,13 @@
     });
   }
 
+  if (selectStagingStyle) {
+    selectStagingStyle.addEventListener('change', (e) => {
+      state.stagingStyle = e.target.value;
+      systemStatusText.textContent = `Staging: ${state.stagingStyle === 'podcast_desk' ? 'Dual-Host Podcast Desk' : 'Stick Hub Storyteller'}`;
+    });
+  }
+
   // -------------------------------------------------------------
   // Storyboard Scene Management & Inspector Logic
   // -------------------------------------------------------------
@@ -1726,6 +1735,7 @@ Instructions: Redraw all ${count} storyboard beats dynamically without static te
           video_path: state.videoPath || state.currentAudioServerPath || null,
           audio_path: state.currentAudioServerPath || state.videoPath || null,
           render_mode: state.renderMode || 'full_stickman',
+          staging_style: state.stagingStyle || 'stick_hub_storyteller',
           beats: state.storyboardParts,
           title: 'AutoShorts Stickman Parody',
           destination_dir: state.destinationDir || '',
