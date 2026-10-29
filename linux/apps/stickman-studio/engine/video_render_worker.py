@@ -10,6 +10,8 @@ import os
 import json
 import math
 import subprocess
+import tempfile
+import time
 import cv2
 import numpy as np
 
@@ -17,6 +19,42 @@ sys.path.append(os.path.dirname(__file__))
 from scene_composer import StickmanSceneComposer
 from dynamic_cartoonist import DynamicCartoonist
 from pose_tracker import PoseTracker
+from pro_stickman_engine import ProStickmanEngine
+
+
+def extract_audio_envelope(audio_src, total_frames, fps=24):
+    default_env = [0.5 + 0.3 * math.sin(i * 0.4) for i in range(max(1, total_frames))]
+    if not audio_src or not os.path.exists(audio_src):
+        return default_env
+    temp_wav = os.path.join(tempfile.gettempdir(), f"_env_{os.getpid()}_{int(time.time() * 1000)}.wav")
+    try:
+        cmd = ['ffmpeg', '-y', '-i', audio_src, '-vn', '-ac', '1', '-ar', '16000', '-f', 'wav', temp_wav]
+        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        if os.path.exists(temp_wav):
+            import soundfile as sf
+            data, sr = sf.read(temp_wav)
+            os.remove(temp_wav)
+            if len(data) == 0:
+                return default_env
+            spf = int(sr / fps)
+            max_amp = float(np.percentile(np.abs(data), 95)) or 0.1
+            env = []
+            for f in range(total_frames):
+                chunk = data[f * spf:(f + 1) * spf]
+                if len(chunk) > 0:
+                    rms = float(np.sqrt(np.mean(chunk**2)))
+                    norm = min(1.0, (rms / max_amp) * 1.6)
+                    env.append(max(0.08, norm))
+                else:
+                    env.append(0.08)
+            return env
+    except Exception:
+        if os.path.exists(temp_wav):
+            try:
+                os.remove(temp_wav)
+            except Exception:
+                pass
+    return default_env
 
 
 def render_stickman_video(config_input, output_mp4, progress_file=None):
@@ -88,10 +126,15 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(temp_raw_video, fourcc, fps, (width, height))
 
-    # Initialize Cartoonist and Scene Composer
-    cartoonist = DynamicCartoonist(width=width, height=height)
+    # Initialize Cartoonist, Scene Composer, and Pro Stickman Puppet Engine
     stickman_h = 640 if (render_mode == 'split_pip' and cap is not None) else height
+    cartoonist = DynamicCartoonist(width=width, height=height)
     composer = StickmanSceneComposer(width=width, height=stickman_h)
+    pro_engine = ProStickmanEngine(width=width, height=stickman_h)
+
+    # Audio amplitude envelope for real-time procedural lip-sync
+    audio_src = audio_path or video_path or media_path
+    audio_envelope = extract_audio_envelope(audio_src, total_frames, fps=fps)
 
     # Ensure all beats have indices and pose_data from PoseTracker
     tracker = None
@@ -177,16 +220,40 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             cv2.putText(full_frame, 'VS STICKMAN', (width//2 - 68, 646), cv2.FONT_HERSHEY_DUPLEX, 0.48, (255, 255, 255), 1)
 
             # --- 3. BOTTOM HALF: Rich Stickman Animation & Choreography (720x640) ---
-            energy = 0.5 + 0.5 * math.sin(t * 8.0)
-            stickman_layer = cartoonist.render_beat_frame(current_beat, t=t, energy=energy)
+            energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
+
+            actors = current_beat.get("actors")
+            if actors and len(actors) >= 2:
+                if actors[0].get("speaking"):
+                    current_beat["speaking_actor"] = "HOST"
+                elif actors[1].get("speaking"):
+                    current_beat["speaking_actor"] = "CO-HOST"
+            elif "speaking_actor" not in current_beat:
+                beat_num = current_beat.get("index", 1)
+                current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
+
+            stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
             if stickman_layer.shape[0] != 640 or stickman_layer.shape[1] != 720:
                 stickman_layer = cv2.resize(stickman_layer, (720, 640), interpolation=cv2.INTER_AREA)
             full_frame[640:1280, 0:720] = stickman_layer
 
         else:
-            # --- 100% Full Vertical Stickman Dynamic Cartoonist (720x1280) ---
-            energy = 0.5 + 0.5 * math.sin(t * 8.0)
-            full_frame = cartoonist.render_beat_frame(current_beat, t=t, energy=energy)
+            # --- 100% Full Vertical Stickman Mode (720x1280) ---
+            energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
+            actors = current_beat.get("actors")
+            if actors and len(actors) >= 2:
+                if actors[0].get("speaking"):
+                    current_beat["speaking_actor"] = "HOST"
+                elif actors[1].get("speaking"):
+                    current_beat["speaking_actor"] = "CO-HOST"
+            elif "speaking_actor" not in current_beat:
+                beat_num = current_beat.get("index", 1)
+                current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
+
+            stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
+            if stickman_layer.shape[0] != height or stickman_layer.shape[1] != width:
+                stickman_layer = cv2.resize(stickman_layer, (width, height), interpolation=cv2.INTER_AREA)
+            full_frame = stickman_layer
 
         out.write(full_frame)
 
