@@ -369,11 +369,22 @@
     try {
       await resolveApiBase();
       // b) Upload via query parameter to prevent non-safelisted header CORS preflight issues
-      const uploadUrl = api(`/api/fs/upload-media?filename=${encodeURIComponent(file.name)}`);
-      const res = await fetch(uploadUrl, {
-        method: 'POST',
-        body: file
-      });
+      let uploadUrl = api(`/api/fs/upload-media?filename=${encodeURIComponent(file.name)}`);
+      let res;
+      try {
+        res = await fetch(uploadUrl, {
+          method: 'POST',
+          body: file
+        });
+      } catch (netErr) {
+        console.warn('[Upload Retry] Initial fetch failed, resolving fresh API base...', netErr.message);
+        await resolveApiBase(true);
+        uploadUrl = api(`/api/fs/upload-media?filename=${encodeURIComponent(file.name)}`);
+        res = await fetch(uploadUrl, {
+          method: 'POST',
+          body: file
+        });
+      }
       if (!res.ok) {
         throw new Error(`Upload failed with HTTP ${res.status}`);
       }

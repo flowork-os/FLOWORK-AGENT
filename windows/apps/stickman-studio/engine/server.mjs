@@ -985,3 +985,22 @@ function executeRenderJob(jobId) {
 server.listen(PORT, '127.0.0.1', () => {
   console.log(`[Stickman Studio Engine] Sovereign Canvas Host listening on http://127.0.0.1:${PORT}`);
 });
+
+// Auxiliary Multi-Port Bridge: ensure browser tabs open on legacy/alternate ports (e.g. 34469, 18040) never fail
+const AUX_PORTS = [34469, 18040].filter(p => p !== PORT);
+for (const auxPort of AUX_PORTS) {
+  try {
+    const auxServer = http.createServer((req, res) => {
+      server.emit('request', req, res);
+    });
+    auxServer.on('error', (err) => {
+      console.warn(`[Stickman Studio Engine] Aux port ${auxPort} unavailable (${err.code}), continuing on primary port ${PORT}`);
+    });
+    auxServer.listen(auxPort, '127.0.0.1', () => {
+      console.log(`[Stickman Studio Engine] Auxiliary port bridge active on http://127.0.0.1:${auxPort} -> primary port ${PORT}`);
+    });
+  } catch (e) {
+    console.warn(`[Stickman Studio Engine] Could not bind aux port ${auxPort}:`, e.message);
+  }
+}
+
