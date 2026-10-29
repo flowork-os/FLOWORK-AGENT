@@ -186,6 +186,29 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             {"start": 0.0, "end": duration, "text": title, "pose": "talk", "emotion": "neutral", "prop": "bulb", "background": bg_choice}
         ]
 
+    # MoCap Puppeteer Pipeline Branch
+    if render_mode == 'mocap':
+        report_progress("mocap_tracking", 10, 0, 100, "Extracting actor landmarks...")
+        from mocap_stickman_engine import run_mocap_pipeline
+        target_video = resolved_video or video_path or media_path
+        if not target_video or not os.path.exists(target_video):
+            raise FileNotFoundError(f"Input video file required for MoCap tracking: {target_video}")
+
+        char_style = cfg.get('character_style', 'classic')
+        framing_mode = cfg.get('framing_mode', 'auto')
+        bg_path = cfg.get('background_path') or cfg.get('background_image')
+        if not bg_path or not os.path.exists(bg_path):
+            preset_bg = os.path.join(app_data_dir, 'backgrounds', 'clean_living_room.jpg')
+            bg_path = preset_bg if os.path.exists(preset_bg) else None
+
+        report_progress("mocap_rendering", 25, 0, 100, "Rendering MoCap Stickman frames...")
+        out_res = run_mocap_pipeline(
+            target_video, bg_path, output_mp4,
+            character_style=char_style, framing_mode=framing_mode, target_fps=fps
+        )
+        report_progress("complete", 100, total_frames, total_frames, "Render complete!")
+        return out_res
+
     # Video reader if split_pip is enabled and video_path exists
     cap = None
     if render_mode == 'split_pip' and video_path and os.path.exists(video_path):

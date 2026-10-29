@@ -316,6 +316,39 @@ const server = http.createServer(async (req, res) => {
     }
 
     // -------------------------------------------------------------
+    // 5e2. Custom Background Upload (POST /api/backgrounds/upload)
+    // -------------------------------------------------------------
+    if (pathname === '/api/backgrounds/upload' && req.method === 'POST') {
+      let rawHeader = parsedUrl.searchParams.get('filename') || req.headers['x-filename'] || `bg_${Date.now()}.jpg`;
+      let origName = rawHeader;
+      try { origName = decodeURIComponent(rawHeader); } catch (_) {}
+      const cleanName = origName.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+      const filename = `user_bg_${Date.now()}_${cleanName}`;
+      const targetFile = path.join(BACKGROUNDS_DIR, filename);
+
+      const writeStream = fs.createWriteStream(targetFile);
+      req.pipe(writeStream);
+
+      writeStream.on('finish', () => {
+        const stats = fs.statSync(targetFile);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({
+          success: true,
+          filename: filename,
+          background_url: `/api/backgrounds/${filename}`,
+          background_path: targetFile,
+          size_bytes: stats.size
+        }));
+      });
+
+      writeStream.on('error', (err) => {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        return res.end(JSON.stringify({ error: err.message }));
+      });
+      return;
+    }
+
+    // -------------------------------------------------------------
     // 5f. 3-Second Micro-Beats & Multimodal Storyboard (POST /api/beats/slice)
     // -------------------------------------------------------------
     if (pathname === '/api/beats/slice' && req.method === 'POST') {
@@ -671,7 +704,9 @@ const server = http.createServer(async (req, res) => {
         beats,
         title,
         background,
+        background_path,
         character_style,
+        framing_mode,
         resolution,
         fps,
         voice_profile,
@@ -697,7 +732,9 @@ const server = http.createServer(async (req, res) => {
           beats: beats || [],
           title: title || 'Stickman Parody Short',
           background: background || 'podcast_studio',
+          background_path: background_path || null,
           character_style: character_style || 'classic',
+          framing_mode: framing_mode || 'auto',
           resolution: resolution || '720x1280',
           fps: fps || 24,
           voice_profile: voice_profile || 'kids',
@@ -885,7 +922,10 @@ function executeRenderJob(jobId) {
     destination_dir: job.params.destination_dir || undefined,
     beats: job.params.beats || [],
     title: job.params.title || 'Stickman Story',
-    background: job.params.background || 'podcast_studio'
+    background: job.params.background || 'podcast_studio',
+    character_style: job.params.character_style || 'classic',
+    framing_mode: job.params.framing_mode || 'auto',
+    background_path: job.params.background_path || undefined
   };
 
   fs.writeFileSync(tempConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');

@@ -130,7 +130,9 @@
     startTime: 0,
     selectedProfile: 'kids',
     characterArchetype: 'classic',
-    renderMode: 'full_stickman', // 100% Full Animated Stickman by default
+    renderMode: 'mocap', // Video MoCap AI tracking standard
+    framingMode: 'auto',
+    customBackgroundPath: null,
     stagingStyle: 'stick_hub_storyteller', // Stick Hub Solo Storyteller standard
     destinationDir: '',
     videoPath: null,
@@ -1518,6 +1520,49 @@ Instructions: Redraw all ${count} storyboard beats dynamically without static te
     });
   }
 
+  // Custom Background Direct Upload
+  const btnUploadCustomBg = document.getElementById('btnUploadCustomBg');
+  const bgFileInput = document.getElementById('bgFileInput');
+  if (btnUploadCustomBg && bgFileInput) {
+    btnUploadCustomBg.addEventListener('click', () => bgFileInput.click());
+    bgFileInput.addEventListener('change', async (e) => {
+      if (e.target.files && e.target.files[0]) {
+        const file = e.target.files[0];
+        showFeedbackNotice('Uploading custom background...', 'info');
+        try {
+          const res = await fetch(api(`/api/backgrounds/upload?filename=${encodeURIComponent(file.name)}`), {
+            method: 'POST',
+            headers: { 'Content-Type': file.type || 'image/jpeg' },
+            body: file
+          });
+          const data = await res.json();
+          if (data.success) {
+            state.customBackgroundPath = data.background_path;
+            state.customBackgroundUrl = data.background_url;
+            const activePart = state.storyboardParts[state.activePartIndex] || {};
+            activePart.background_image = data.background_path;
+            activePart.background_url = data.background_url;
+            activePart.background_prompt = `Uploaded: ${file.name}`;
+            updateBackgroundUI(activePart);
+            showFeedbackNotice('Custom background uploaded & applied!', 'success');
+            renderStickman();
+          }
+        } catch (err) {
+          showFeedbackNotice('Failed to upload background: ' + err.message, 'error');
+        }
+      }
+    });
+  }
+
+  // MoCap Framing Mode
+  const selectFramingMode = document.getElementById('selectFramingMode');
+  if (selectFramingMode) {
+    selectFramingMode.addEventListener('change', (e) => {
+      state.framingMode = e.target.value;
+      if (systemStatusText) systemStatusText.textContent = `Framing: ${state.framingMode}`;
+    });
+  }
+
   if (partPropSelect) {
     partPropSelect.addEventListener('change', () => {
       const p = state.storyboardParts[state.activePartIndex];
@@ -1734,14 +1779,16 @@ Instructions: Redraw all ${count} storyboard beats dynamically without static te
         const payload = {
           video_path: state.videoPath || state.currentAudioServerPath || null,
           audio_path: state.currentAudioServerPath || state.videoPath || null,
-          render_mode: state.renderMode || 'full_stickman',
+          render_mode: state.renderMode || 'mocap',
           staging_style: state.stagingStyle || 'stick_hub_storyteller',
           beats: state.storyboardParts,
           title: 'AutoShorts Stickman Parody',
           destination_dir: state.destinationDir || '',
           transcript: transcriptInput ? transcriptInput.value : '',
           voice_profile: state.selectedProfile,
-          character_style: state.characterArchetype,
+          character_style: state.characterArchetype || 'classic',
+          framing_mode: state.framingMode || (document.getElementById('selectFramingMode')?.value || 'auto'),
+          background_path: state.customBackgroundPath || (state.storyboardParts[0] && state.storyboardParts[0].background_image) || null,
           resolution: '720x1280',
           fps: 30
         };

@@ -419,6 +419,56 @@ class TestStickmanStudio(unittest.TestCase):
         self.assertEqual(frame_walk.shape, (1280, 720, 3))
         self.assertGreater(float(np.std(frame_walk)), 10.0, "Walk frame is monochromatic or blank")
 
+    def test_11_mocap_stickman_engine(self):
+        """Verify MocapStickmanEngine tracking, FK kinematics, styles, and full pipeline rendering."""
+        sys.path.append(os.path.join(APP_DIR, 'engine'))
+        from mocap_stickman_engine import MocapStickmanEngine, run_mocap_pipeline
+        from PIL import Image
+        import numpy as np
+
+        engine = MocapStickmanEngine(width=720, height=1280)
+        bg = engine.load_background(None)
+        self.assertIsInstance(bg, Image.Image)
+        self.assertEqual(bg.size, (720, 1280))
+
+        # 1. Test render_mocap_frame with mock landmarks for classic and presenter
+        sample_joints = {
+            "nose": {"x": 0.50, "y": 0.35, "z": 0.0, "visibility": 0.95},
+            "l_eye": {"x": 0.53, "y": 0.33, "z": 0.0, "visibility": 0.95},
+            "r_eye": {"x": 0.47, "y": 0.33, "z": 0.0, "visibility": 0.95},
+            "l_shoulder": {"x": 0.60, "y": 0.48, "z": 0.0, "visibility": 0.95},
+            "r_shoulder": {"x": 0.40, "y": 0.48, "z": 0.0, "visibility": 0.95},
+            "l_elbow": {"x": 0.65, "y": 0.60, "z": 0.0, "visibility": 0.85},
+            "r_elbow": {"x": 0.35, "y": 0.60, "z": 0.0, "visibility": 0.85},
+            "l_wrist": {"x": 0.68, "y": 0.72, "z": 0.0, "visibility": 0.80},
+            "r_wrist": {"x": 0.32, "y": 0.72, "z": 0.0, "visibility": 0.80}
+        }
+
+        # Test all archetypes
+        for style in ['classic', 'glasses', 'girl', 'cool', 'business']:
+            f = engine.render_mocap_frame(bg, sample_joints, t=0.5, energy=0.6, character_style=style, framing_mode='auto')
+            self.assertIsInstance(f, np.ndarray)
+            self.assertEqual(f.shape, (1280, 720, 3))
+            self.assertGreater(float(np.std(f)), 15.0)
+
+        # Test Presenter mode
+        f_pres = engine.render_mocap_frame(bg, sample_joints, t=0.5, energy=0.6, character_style='glasses', framing_mode='presenter')
+        self.assertIsInstance(f_pres, np.ndarray)
+        self.assertEqual(f_pres.shape, (1280, 720, 3))
+
+        # 2. Integration Pipeline Run on real test video
+        test_clip = os.path.join(APP_DIR, 'data', 'test_real_speaker_5s.mp4')
+        if os.path.exists(test_clip):
+            out_test = tempfile.mktemp(suffix='_mocap_test.mp4')
+            try:
+                res_out = run_mocap_pipeline(test_clip, None, out_test, character_style='glasses', framing_mode='auto')
+                self.assertTrue(os.path.exists(res_out))
+                self.assertGreater(os.path.getsize(res_out), 50000)
+            finally:
+                if os.path.exists(out_test):
+                    os.unlink(out_test)
+
 
 if __name__ == '__main__':
     unittest.main()
+

@@ -80,6 +80,12 @@ class PoseTracker:
 
             joints = {
                 "nose": get_lm(0),
+                "l_eye": get_lm(2),
+                "r_eye": get_lm(5),
+                "l_ear": get_lm(7),
+                "r_ear": get_lm(8),
+                "mouth_l": get_lm(9),
+                "mouth_r": get_lm(10),
                 "l_shoulder": get_lm(11),
                 "r_shoulder": get_lm(12),
                 "l_elbow": get_lm(13),
