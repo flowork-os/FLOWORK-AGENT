@@ -1,0 +1,590 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plush Wizard</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #16171c; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------- Renderer */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+/* -------------------------------------------------------------------- Scene */
+const scene = new THREE.Scene();
+
+// Neutral dark studio backdrop (subtle radial gradient)
+(function () {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(256, 220, 40, 256, 256, 380);
+  grad.addColorStop(0, '#2a2c34');
+  grad.addColorStop(1, '#111116');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  scene.background = t;
+})();
+
+/* ------------------------------------------------------------------- Camera */
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.55, 0.42, 0.72);
+
+/* -------------------------------------------------------------------- Lights */
+const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.3);
+key.position.set(0.7, 1.05, 0.65);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.1;
+key.shadow.camera.far = 5;
+key.shadow.camera.left = -0.6;
+key.shadow.camera.right = 0.6;
+key.shadow.camera.top = 0.8;
+key.shadow.camera.bottom = -0.2;
+key.shadow.bias = -0.0006;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fbcff, 0.6);
+fill.position.set(-0.8, 0.5, 0.4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9a0, 1.15);
+rim.position.set(-0.4, 0.6, -0.85);
+scene.add(rim);
+
+/* ------------------------------------------------------------- Ground plane */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* --------------------------------------------------------- Procedural texture */
+function drawStar(ctx, cx, cy, r, color) {
+  ctx.fillStyle = color;
+  ctx.beginPath();
+  for (let i = 0; i < 10; i++) {
+    const rr = i % 2 ? r * 0.45 : r;
+    const a = (Math.PI / 5) * i - Math.PI / 2;
+    const x = cx + Math.cos(a) * rr, y = cy + Math.sin(a) * rr;
+    i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+  }
+  ctx.closePath();
+  ctx.fill();
+}
+
+function fabricSpeckle(ctx, size, amount) {
+  for (let i = 0; i < amount; i++) {
+    ctx.globalAlpha = Math.random() * 0.11;
+    const l = Math.random() > 0.5 ? 255 : 0;
+    ctx.fillStyle = `rgb(${l},${l},${l})`;
+    ctx.beginPath();
+    ctx.arc(Math.random() * size, Math.random() * size, Math.random() * 1.5, 0, 7);
+    ctx.fill();
+  }
+  ctx.globalAlpha = 1;
+}
+
+function fabricTexture(hex, rep = 3) {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  const col = new THREE.Color(hex);
+  x.fillStyle = `rgb(${col.r * 255 | 0},${col.g * 255 | 0},${col.b * 255 | 0})`;
+  x.fillRect(0, 0, size, size);
+  // woven weave lines
+  for (let i = 0; i < size; i += 3) {
+    x.globalAlpha = 0.045;
+    x.strokeStyle = i % 6 ? '#ffffff' : '#000000';
+    x.beginPath(); x.moveTo(0, i); x.lineTo(size, i); x.stroke();
+    x.beginPath(); x.moveTo(i, 0); x.lineTo(i, size); x.stroke();
+  }
+  x.globalAlpha = 1;
+  fabricSpeckle(x, size, 2600);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rep, rep);
+  t.anisotropy = 8;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function starFieldTexture() {
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  x.fillStyle = '#242a63';
+  x.fillRect(0, 0, size, size);
+  // subtle cloth mottling
+  for (let i = 0; i < 90; i++) {
+    x.globalAlpha = 0.05;
+    x.fillStyle = Math.random() > 0.5 ? '#3a439a' : '#171b47';
+    x.beginPath();
+    x.arc(Math.random() * size, Math.random() * size, 8 + Math.random() * 26, 0, 7);
+    x.fill();
+  }
+  x.globalAlpha = 1;
+  // stars
+  for (let i = 0; i < 46; i++) {
+    const r = 9 + Math.random() * 15;
+    drawStar(x, Math.random() * size, Math.random() * size, r, i % 4 ? '#f4cf5e' : '#eaeaf2');
+  }
+  // tiny sparkle dots
+  x.fillStyle = '#f4cf5e';
+  for (let i = 0; i < 120; i++) {
+    x.globalAlpha = 0.5;
+    x.beginPath();
+    x.arc(Math.random() * size, Math.random() * size, 1.4, 0, 7);
+    x.fill();
+  }
+  x.globalAlpha = 1;
+  fabricSpeckle(x, size, 3000);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(2.2, 2.2);
+  t.anisotropy = 8;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+function bumpTexture() {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const x = c.getContext('2d');
+  x.fillStyle = '#808080';
+  x.fillRect(0, 0, size, size);
+  for (let i = 0; i < 9000; i++) {
+    const l = 90 + Math.random() * 130 | 0;
+    x.fillStyle = `rgb(${l},${l},${l})`;
+    x.fillRect(Math.random() * size, Math.random() * size, 1.4, 1.4);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(5, 5);
+  return t;
+}
+
+const BUMP = bumpTexture();
+
+/* ------------------------------------------------------------------ Materials */
+const robeMat = new THREE.MeshStandardMaterial({
+  map: starFieldTexture(), bumpMap: BUMP, bumpScale: 0.006,
+  roughness: 0.94, metalness: 0.0
+});
+const hatMat = new THREE.MeshStandardMaterial({
+  map: fabricTexture('#3a2f70', 2), bumpMap: BUMP, bumpScale: 0.006,
+  roughness: 0.95, metalness: 0.0
+});
+const skinMat = new THREE.MeshStandardMaterial({
+  map: fabricTexture('#f0cba6', 2), bumpMap: BUMP, bumpScale: 0.005,
+  roughness: 0.96, metalness: 0.0
+});
+const beardMat = new THREE.MeshStandardMaterial({ color: 0xe9e3d5, roughness: 1.0, metalness: 0.0 });
+const beardMat2 = new THREE.MeshStandardMaterial({ color: 0xd8d1c1, roughness: 1.0, metalness: 0.0 });
+const mittenMat = new THREE.MeshStandardMaterial({
+  map: fabricTexture('#3f3576', 3), bumpMap: BUMP, bumpScale: 0.006, roughness: 0.95
+});
+const trimMat = new THREE.MeshStandardMaterial({
+  map: fabricTexture('#efe6d0', 3), bumpMap: BUMP, bumpScale: 0.006, roughness: 0.96
+});
+const buttonMat = new THREE.MeshStandardMaterial({ color: 0x14141c, roughness: 0.33, metalness: 0.12 });
+const starMat = new THREE.MeshStandardMaterial({ color: 0xf4cf5e, roughness: 0.78, metalness: 0.0 });
+const wandMat = new THREE.MeshStandardMaterial({
+  map: fabricTexture('#6b4a2c', 4), bumpMap: BUMP, bumpScale: 0.006, roughness: 0.92
+});
+const threadCream = new THREE.MeshStandardMaterial({ color: 0xf3ead2, roughness: 0.9 });
+const threadGold = new THREE.MeshStandardMaterial({ color: 0xe9be52, roughness: 0.85 });
+const ropeMat = new THREE.MeshStandardMaterial({ color: 0xcf9f45, roughness: 0.85 });
+const noseMat = new THREE.MeshStandardMaterial({ color: 0xe0a184, roughness: 0.95 });
+const blushMat = new THREE.MeshStandardMaterial({ color: 0xe38f86, roughness: 0.98, transparent: true, opacity: 0.55 });
+
+/* -------------------------------------------------------------------- Helpers */
+const Y = new THREE.Vector3(0, 1, 0);
+const wizard = new THREE.Group();
+
+function add(mesh, cast = true, receive = true) {
+  mesh.castShadow = cast;
+  mesh.receiveShadow = receive;
+  wizard.add(mesh);
+  return mesh;
+}
+
+function starShape(outer, inner, pts = 5) {
+  const s = new THREE.Shape();
+  for (let i = 0; i < pts * 2; i++) {
+    const r = i % 2 === 0 ? outer : inner;
+    const a = (Math.PI / pts) * i - Math.PI / 2;
+    const x = Math.cos(a) * r, y = Math.sin(a) * r;
+    i ? s.lineTo(x, y) : s.moveTo(x, y);
+  }
+  s.closePath();
+  return s;
+}
+
+function feltStar(outer, mat) {
+  const geo = new THREE.ExtrudeGeometry(
+    starShape(outer, outer * 0.45, 5),
+    { depth: outer * 0.35, bevelEnabled: true, bevelThickness: outer * 0.12, bevelSize: outer * 0.12, bevelSegments: 2 }
+  );
+  geo.center();
+  return new THREE.Mesh(geo, mat);
+}
+
+// tapered swept tube around a curve (for the floppy hat)
+function taperedTube(curve, seg, rad, radiusFn) {
+  const frames = curve.computeFrenetFrames(seg, false);
+  const pos = [], nor = [], uv = [], idx = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg;
+    const p = curve.getPointAt(t);
+    const N = frames.normals[i], B = frames.binormals[i];
+    const r = radiusFn(t);
+    for (let j = 0; j <= rad; j++) {
+      const v = (j / rad) * Math.PI * 2;
+      const s = Math.sin(v), cw = -Math.cos(v);
+      const nx = cw * N.x + s * B.x, ny = cw * N.y + s * B.y, nz = cw * N.z + s * B.z;
+      pos.push(p.x + r * nx, p.y + r * ny, p.z + r * nz);
+      nor.push(nx, ny, nz);
+      uv.push(t * 3, (j / rad) * 3);
+    }
+  }
+  for (let i = 0; i < seg; i++) {
+    for (let j = 0; j < rad; j++) {
+      const a = (rad + 1) * i + j, b = (rad + 1) * (i + 1) + j;
+      const c = (rad + 1) * (i + 1) + j + 1, d = (rad + 1) * i + j + 1;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
+}
+
+// dashed stitching along a 3D path
+function stitchesAlong(points, count, mat, size = 0.006) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(...p)));
+  const grp = new THREE.Group();
+  const geo = new THREE.BoxGeometry(size * 0.5, size * 0.5, size * 1.9);
+  for (let i = 0; i < count; i++) {
+    const t = (i + 0.5) / count;
+    const p = curve.getPointAt(t);
+    const tan = curve.getTangentAt(t);
+    const m = new THREE.Mesh(geo, mat);
+    m.position.copy(p);
+    m.lookAt(p.clone().add(tan));
+    m.castShadow = true;
+    grp.add(m);
+  }
+  wizard.add(grp);
+  return grp;
+}
+
+// a soft yarn strand (constant-radius tube along a curve)
+function yarn(points, radius, mat) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p => p instanceof THREE.Vector3 ? p : new THREE.Vector3(...p)));
+  const geo = new THREE.TubeGeometry(curve, 14, radius, 6, false);
+  return add(new THREE.Mesh(geo, mat), true, false);
+}
+
+// capsule limb between two points
+function limb(a, b, r, mat) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CapsuleGeometry(r, len, 10, 18);
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(a).add(b).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(Y, dir.normalize());
+  return add(m);
+}
+
+/* --------------------------------------------------------------------- ROBE */
+const robeProfile = [
+  [0.001, 0.00], [0.14, 0.006], [0.168, 0.03], [0.176, 0.065],
+  [0.172, 0.10], [0.158, 0.14], [0.135, 0.175], [0.105, 0.205],
+  [0.083, 0.232], [0.073, 0.25]
+].map(p => new THREE.Vector2(p[0], p[1]));
+const robe = add(new THREE.Mesh(new THREE.LatheGeometry(robeProfile, 72), robeMat));
+
+// bottom cap so no see-through
+const cap = add(new THREE.Mesh(new THREE.CircleGeometry(0.14, 48), robeMat), false, true);
+cap.rotation.x = Math.PI / 2;
+cap.position.y = 0.006;
+
+// hem trim + rope belt + collar
+const hem = add(new THREE.Mesh(new THREE.TorusGeometry(0.152, 0.017, 16, 60), trimMat));
+hem.rotation.x = Math.PI / 2; hem.position.y = 0.02;
+
+const belt = add(new THREE.Mesh(new THREE.TorusGeometry(0.178, 0.013, 14, 64), ropeMat));
+belt.rotation.x = Math.PI / 2; belt.position.y = 0.122;
+const knot = add(new THREE.Mesh(new THREE.SphereGeometry(0.022, 16, 16), ropeMat));
+knot.position.set(0, 0.118, 0.176);
+add(new THREE.Mesh(new THREE.CapsuleGeometry(0.007, 0.05, 6, 10), ropeMat)).position.set(-0.02, 0.09, 0.176);
+add(new THREE.Mesh(new THREE.CapsuleGeometry(0.007, 0.05, 6, 10), ropeMat)).position.set(0.02, 0.09, 0.176);
+
+const collar = add(new THREE.Mesh(new THREE.TorusGeometry(0.079, 0.014, 16, 60), trimMat));
+collar.rotation.x = Math.PI / 2; collar.position.y = 0.247;
+
+// robe seams (front + two sides)
+stitchesAlong([
+  [0, 0.03, 0.165], [0, 0.07, 0.176], [0, 0.11, 0.173], [0, 0.15, 0.157],
+  [0, 0.185, 0.132], [0, 0.215, 0.101], [0, 0.24, 0.08]
+], 9, threadGold);
+for (const s of [1, -1]) {
+  stitchesAlong([
+    [s * 0.163, 0.03, 0], [s * 0.174, 0.07, 0], [s * 0.17, 0.11, 0],
+    [s * 0.153, 0.15, 0], [s * 0.128, 0.185, 0], [s * 0.098, 0.215, 0]
+  ], 7, threadGold, 0.0055);
+}
+
+// appliqué felt stars on robe
+[[-0.85, 0.10], [0.55, 0.075], [-0.35, 0.185], [0.9, 0.15]].forEach(([a, yh]) => {
+  const r = 0.176 - Math.abs(yh - 0.065) * 0.35;
+  const pos = new THREE.Vector3(Math.sin(a) * r, yh, Math.cos(a) * r);
+  const st = feltStar(0.021, starMat);
+  st.position.copy(pos);
+  st.lookAt(pos.clone().add(new THREE.Vector3(Math.sin(a), 0.15, Math.cos(a))));
+  add(st);
+});
+
+/* --------------------------------------------------------------------- HEAD */
+const HC = new THREE.Vector3(0, 0.315, 0);
+const HR = 0.088;
+const head = add(new THREE.Mesh(new THREE.SphereGeometry(HR, 48, 48), skinMat));
+head.position.copy(HC);
+head.scale.set(1.02, 1.0, 0.98);
+
+function onHead(dx, dy, dz, lift = 1.0) {
+  const d = new THREE.Vector3(dx, dy, dz).normalize();
+  return HC.clone().add(d.multiplyScalar(HR * lift));
+}
+
+// nose
+const nose = add(new THREE.Mesh(new THREE.SphereGeometry(0.014, 20, 20), noseMat));
+nose.position.copy(onHead(0, -0.02, 1, 1.0));
+
+// blush cheeks
+for (const s of [1, -1]) {
+  const b = add(new THREE.Mesh(new THREE.SphereGeometry(0.02, 18, 18), blushMat), false, false);
+  b.position.copy(onHead(s * 0.55, -0.22, 0.78, 0.99));
+  b.scale.set(1, 0.7, 0.4);
+}
+
+// button eyes
+function makeButton(pos, dir) {
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.007, 24), buttonMat);
+  disc.castShadow = true;
+  g.add(disc);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.017, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2), buttonMat);
+  dome.position.y = 0.0035; dome.scale.set(1, 0.4, 1);
+  g.add(dome);
+  // thread cross
+  const th = new THREE.MeshStandardMaterial({ color: 0xf0e6cf, roughness: 0.9 });
+  const t1 = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.0016, 0.0028), th);
+  const t2 = new THREE.Mesh(new THREE.BoxGeometry(0.0028, 0.0016, 0.02), th);
+  t1.position.y = t2.position.y = 0.0075;
+  g.add(t1, t2);
+  // catch-light
+  const hl = new THREE.Mesh(new THREE.SphereGeometry(0.0035, 10, 10),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.2 }));
+  hl.position.set(-0.005, 0.0085, 0.005);
+  g.add(hl);
+  g.position.copy(pos);
+  g.quaternion.setFromUnitVectors(Y, dir.clone().normalize());
+  wizard.add(g);
+}
+makeButton(onHead(-0.42, 0.16, 0.9, 1.01), new THREE.Vector3(-0.42, 0.16, 0.9));
+makeButton(onHead(0.42, 0.16, 0.9, 1.01), new THREE.Vector3(0.42, 0.16, 0.9));
+
+// yarn eyebrows
+for (const s of [1, -1]) {
+  const p0 = onHead(s * 0.28, 0.34, 0.85, 1.02);
+  const p1 = onHead(s * 0.5, 0.4, 0.78, 1.03);
+  yarn([p0, p0.clone().lerp(p1, 0.5).add(new THREE.Vector3(0, 0.006, 0.004)), p1], 0.004, beardMat2);
+}
+
+/* -------------------------------------------------------------------- BEARD */
+const elevations = [-0.08, -0.42, -0.78, -1.15];
+elevations.forEach((el, row) => {
+  const count = 17;
+  for (let i = 0; i < count; i++) {
+    const a = -1.18 + (2.36 * i) / (count - 1) + (Math.random() - 0.5) * 0.06;
+    const e = el + (Math.random() - 0.5) * 0.12;
+    const dir = new THREE.Vector3(Math.cos(e) * Math.sin(a), Math.sin(e), Math.cos(e) * Math.cos(a));
+    const start = HC.clone().add(dir.clone().multiplyScalar(HR * 0.99));
+    const centreBias = 1 - Math.abs(a) / 1.18;
+    const len = 0.06 + centreBias * 0.085 + Math.random() * 0.02 + row * 0.006;
+    const end = start.clone();
+    end.y -= len;
+    end.x *= 1.18;
+    end.z = end.z * 1.05 + 0.006;
+    const mid = start.clone().lerp(end, 0.5);
+    mid.z += 0.02 + centreBias * 0.015;
+    mid.x *= 1.08;
+    yarn([start, mid, end], 0.0042 + Math.random() * 0.001, Math.random() > 0.5 ? beardMat : beardMat2);
+  }
+});
+// mustache (thicker)
+for (const s of [1, -1]) {
+  const p0 = onHead(0, -0.16, 1, 1.0);
+  const p2 = onHead(s * 0.55, -0.26, 0.75, 1.02).add(new THREE.Vector3(0, -0.01, 0.005));
+  const p1 = p0.clone().lerp(p2, 0.5).add(new THREE.Vector3(0, 0.008, 0.02));
+  yarn([p0, p1, p2], 0.007, beardMat);
+}
+
+/* ---------------------------------------------------------------------- HAT */
+const hatCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, 0, 0),
+  new THREE.Vector3(0.006, 0.08, 0),
+  new THREE.Vector3(0.02, 0.16, 0),
+  new THREE.Vector3(0.05, 0.22, 0.004),
+  new THREE.Vector3(0.105, 0.255, 0.008),
+  new THREE.Vector3(0.175, 0.248, 0.01),
+  new THREE.Vector3(0.23, 0.212, 0.008),
+  new THREE.Vector3(0.262, 0.168, 0.004)
+]);
+const hatGeo = taperedTube(hatCurve, 90, 34, t => 0.115 * Math.pow(1 - t, 0.82) + 0.0006);
+const hat = new THREE.Group();
+const hatMesh = new THREE.Mesh(hatGeo, hatMat);
+hatMesh.castShadow = true; hatMesh.receiveShadow = true;
+hat.add(hatMesh);
+// rolled fuzzy brim
+const brim = new THREE.Mesh(new THREE.TorusGeometry(0.118, 0.021, 16, 60), hatMat);
+brim.rotation.x = Math.PI / 2;
+brim.castShadow = true;
+hat.add(brim);
+// felt band
+const band = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.113, 0.028, 40, 1, true), trimMat);
+band.position.y = 0.028;
+hat.add(band);
+// star at tip
+const tip = hatCurve.getPointAt(1);
+const hatStar = feltStar(0.03, starMat);
+hatStar.position.copy(tip).add(new THREE.Vector3(0.01, -0.005, 0.01));
+hatStar.rotation.set(0.3, 0.6, 0.4);
+hatStar.castShadow = true;
+hat.add(hatStar);
+// appliqué stars on hat body
+[[0.03, 0.10, 0.095], [-0.02, 0.17, 0.075]].forEach(([px, py, pz]) => {
+  const st = feltStar(0.019, starMat);
+  st.position.set(px, py, pz);
+  st.lookAt(px * 3, py, pz * 3 + 0.3);
+  st.castShadow = true;
+  hat.add(st);
+});
+hat.position.set(0, HC.y + HR - 0.01, 0.004);
+hat.rotation.set(0, 0.5, -0.12);
+wizard.add(hat);
+
+/* --------------------------------------------------------------------- WAND */
+const wandStart = new THREE.Vector3(-0.10, 0.10, 0.16);
+const wandEnd = new THREE.Vector3(0.115, 0.315, 0.135);
+limb(wandStart, wandEnd, 0.0085, wandMat);
+// wand cap star
+const wStar = feltStar(0.028, starMat);
+wStar.position.copy(wandEnd);
+wStar.lookAt(wandEnd.clone().add(new THREE.Vector3(0.2, 0.4, 0.9)));
+add(wStar);
+
+/* --------------------------------------------------------- ARMS & MITTENS */
+const handA = wandStart.clone().lerp(wandEnd, 0.30);
+const handB = wandStart.clone().lerp(wandEnd, 0.60);
+const shoulderL = new THREE.Vector3(-0.13, 0.222, 0.03);
+const shoulderR = new THREE.Vector3(0.13, 0.222, 0.03);
+limb(shoulderL, handA, 0.036, robeMat);
+limb(shoulderR, handB, 0.036, robeMat);
+
+function mitten(pos, wristDir) {
+  const g = new THREE.Group();
+  const palm = new THREE.Mesh(new THREE.SphereGeometry(0.042, 24, 24), mittenMat);
+  palm.scale.set(1.0, 0.92, 1.12);
+  palm.castShadow = true;
+  g.add(palm);
+  const thumb = new THREE.Mesh(new THREE.SphereGeometry(0.019, 16, 16), mittenMat);
+  thumb.position.set(0.032, 0.006, 0.03);
+  thumb.castShadow = true;
+  g.add(thumb);
+  // cuff trim toward wrist
+  const cuff = new THREE.Mesh(new THREE.TorusGeometry(0.036, 0.011, 12, 30), trimMat);
+  cuff.castShadow = true;
+  const q = new THREE.Quaternion().setFromUnitVectors(Y, wristDir.clone().normalize());
+  cuff.quaternion.copy(q);
+  cuff.position.copy(wristDir.clone().normalize().multiplyScalar(0.04));
+  g.add(cuff);
+  g.position.copy(pos);
+  wizard.add(g);
+}
+mitten(handA, new THREE.Vector3().subVectors(shoulderL, handA));
+mitten(handB, new THREE.Vector3().subVectors(shoulderR, handB));
+
+/* ------------------------------------------------------------ Add to scene */
+scene.add(wizard);
+
+/* ------------------------------------------------------------- Controls */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 0.22, 0);
+controls.minDistance = 0.35;
+controls.maxDistance = 2.2;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+/* --------------------------------------------------------------- Resize */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+/* ----------------------------------------------------------------- Loop */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

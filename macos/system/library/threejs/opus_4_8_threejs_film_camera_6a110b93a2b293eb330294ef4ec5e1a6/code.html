@@ -1,0 +1,613 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>1990s Point-and-Shoot Film Camera</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d8d8dc; }
+  #app { width: 100vw; height: 100vh; display: block; }
+</style>
+
+<!-- Import map: three.js + OrbitControls via jsDelivr CDN only -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   1990s POINT-AND-SHOOT FILM CAMERA
+   All geometry is built procedurally from three.js primitives.
+   Real-world scale: units are METERS.  Body ~ 120 x 66 x 40 mm.
+   ========================================================================== */
+
+// ---- Core body dimensions (meters) ----------------------------------------
+const W = 0.120;   // width  (X)
+const H = 0.066;   // height (Y)
+const D = 0.040;   // depth  (Z)
+const CORNER_R = 0.011; // rounded-corner radius of the body silhouette
+
+// =============================================================================
+// RENDERER
+// =============================================================================
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// =============================================================================
+// SCENE + CAMERA
+// =============================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdadade); // neutral studio backdrop
+
+const camera = new THREE.PerspectiveCamera(
+  40, window.innerWidth / window.innerHeight, 0.01, 100
+);
+
+// =============================================================================
+// LIGHTING
+// =============================================================================
+// Sky/ground hemisphere fill
+const hemi = new THREE.HemisphereLight(0xffffff, 0x9a9a9e, 0.75);
+scene.add(hemi);
+
+// Directional key light (casts shadows)
+const key = new THREE.DirectionalLight(0xfff4e6, 2.4);
+key.position.set(0.28, 0.42, 0.30);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 2.0;
+key.shadow.camera.left = -0.16;
+key.shadow.camera.right = 0.16;
+key.shadow.camera.top = 0.16;
+key.shadow.camera.bottom = -0.16;
+key.shadow.bias = -0.0003;
+key.shadow.normalBias = 0.004;
+scene.add(key);
+
+// Subtle cool fill from the opposite side
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.5);
+fill.position.set(-0.35, 0.18, -0.10);
+scene.add(fill);
+
+// =============================================================================
+// PROCEDURAL TEXTURES  (scuffed / worn plastic)
+// =============================================================================
+function makeScuffTexture({ base = '#3c3f45', repeat = 1 } = {}) {
+  const s = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+
+  // base plastic tone
+  g.fillStyle = base;
+  g.fillRect(0, 0, s, s);
+
+  // fine speckle / grain
+  const img = g.getImageData(0, 0, s, s);
+  const px = img.data;
+  for (let i = 0; i < px.length; i += 4) {
+    const n = (Math.random() - 0.5) * 22;
+    px[i]     = Math.min(255, Math.max(0, px[i]     + n));
+    px[i + 1] = Math.min(255, Math.max(0, px[i + 1] + n));
+    px[i + 2] = Math.min(255, Math.max(0, px[i + 2] + n));
+  }
+  g.putImageData(img, 0, 0);
+
+  // scuffs: lighter worn scratches
+  for (let i = 0; i < 90; i++) {
+    g.strokeStyle = `rgba(190,190,195,${Math.random() * 0.10})`;
+    g.lineWidth = Math.random() * 1.6 + 0.3;
+    g.beginPath();
+    const x = Math.random() * s, y = Math.random() * s;
+    const len = Math.random() * 40 + 6, a = Math.random() * Math.PI;
+    g.moveTo(x, y);
+    g.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+    g.stroke();
+  }
+  // darker grime blotches
+  for (let i = 0; i < 40; i++) {
+    g.fillStyle = `rgba(15,15,18,${Math.random() * 0.12})`;
+    g.beginPath();
+    g.arc(Math.random() * s, Math.random() * s, Math.random() * 26 + 4, 0, Math.PI * 2);
+    g.fill();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeat, repeat);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+// Roughness variation map (grayscale) so wear reads through the specular too
+function makeRoughTexture() {
+  const s = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b0b0b0';
+  g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 160; i++) {
+    // smoother (darker) worn patches
+    g.fillStyle = `rgba(70,70,70,${Math.random() * 0.10})`;
+    g.beginPath();
+    g.arc(Math.random() * s, Math.random() * s, Math.random() * 30 + 6, 0, Math.PI * 2);
+    g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+const bodyColorTex = makeScuffTexture({ base: '#42454b', repeat: 1 });
+const bodyRoughTex = makeRoughTexture();
+
+// =============================================================================
+// MATERIALS
+// =============================================================================
+const matBody = new THREE.MeshStandardMaterial({
+  color: 0xdfe0e3,          // multiplies the map; keeps it a grey/black plastic
+  map: bodyColorTex,
+  roughnessMap: bodyRoughTex,
+  roughness: 0.78,
+  metalness: 0.06,
+});
+
+const matBodyDark = new THREE.MeshStandardMaterial({
+  color: 0x26282c,
+  roughness: 0.62,
+  metalness: 0.10,
+});
+
+const matBarrel = new THREE.MeshStandardMaterial({
+  color: 0x18181b,
+  roughness: 0.45,
+  metalness: 0.35,
+});
+
+const matBezel = new THREE.MeshStandardMaterial({
+  color: 0x2a2a2d,
+  roughness: 0.30,
+  metalness: 0.55,
+});
+
+// Dark reflective lens glass
+const matGlass = new THREE.MeshPhysicalMaterial({
+  color: 0x0a1018,
+  roughness: 0.08,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.06,
+  reflectivity: 0.9,
+});
+
+// Frosted flash window (slightly emissive so it "reads" as a flash)
+const matFlash = new THREE.MeshStandardMaterial({
+  color: 0xfff6df,
+  roughness: 0.35,
+  metalness: 0.0,
+  emissive: 0xfff2d0,
+  emissiveIntensity: 0.25,
+});
+
+// Tinted viewfinder / sensor glass
+const matViewGlass = new THREE.MeshPhysicalMaterial({
+  color: 0x1a2630,
+  roughness: 0.12,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.1,
+  transmission: 0.15,
+});
+
+const matButton = new THREE.MeshStandardMaterial({
+  color: 0x8a8d92,
+  roughness: 0.35,
+  metalness: 0.6,
+});
+
+const matSeam = new THREE.MeshStandardMaterial({
+  color: 0x0a0a0c,
+  roughness: 0.9,
+  metalness: 0.0,
+});
+
+const matLED = new THREE.MeshStandardMaterial({
+  color: 0x7a1010,
+  roughness: 0.3,
+  metalness: 0.1,
+  emissive: 0xaa1010,
+  emissiveIntensity: 0.4,
+});
+
+// =============================================================================
+// GEOMETRY HELPERS
+// =============================================================================
+// Rounded-rectangle THREE.Shape centered at origin (in its own local plane)
+function roundedRectShape(w, h, r) {
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  r = Math.min(r, w / 2, h / 2);
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r);
+  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r);
+  s.quadraticCurveTo(x, y, x + r, y);
+  return s;
+}
+
+// A rounded, bevel-edged slab extruded along Z, centered at the origin.
+function roundedSlab(w, h, depth, cornerR, bevel, material, curveSegments = 12) {
+  const shape = roundedRectShape(w - 2 * bevel, h - 2 * bevel, Math.max(0.001, cornerR - bevel));
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth - 2 * bevel,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 4,
+    curveSegments,
+  });
+  geo.center();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+// Thin rounded panel used for flush front features (flash / viewfinder).
+function roundedPanel(w, h, thickness, r, material) {
+  const shape = roundedRectShape(w, h, r);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness,
+    bevelEnabled: true,
+    bevelThickness: thickness * 0.4,
+    bevelSize: thickness * 0.4,
+    bevelSegments: 2,
+    curveSegments: 10,
+  });
+  geo.center();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+// =============================================================================
+// BUILD THE CAMERA
+// =============================================================================
+const cameraModel = new THREE.Group();
+cameraModel.name = 'FilmCamera';
+
+const frontZ = D / 2;   // +Z face
+const backZ  = -D / 2;  // -Z face
+const topY   = H / 2;   // +Y face
+
+// ---- 1. Main body ---------------------------------------------------------
+const body = roundedSlab(W, H, D, CORNER_R, 0.007, matBody, 16);
+body.name = 'body';
+cameraModel.add(body);
+
+// ---- 1b. Faceplate accent: a subtly recessed darker front panel band ------
+const facePlate = roundedPanel(W * 0.94, H * 0.82, 0.003, CORNER_R * 0.7, matBodyDark);
+facePlate.name = 'frontFaceplate';
+facePlate.position.set(0, 0, frontZ - 0.0005);
+cameraModel.add(facePlate);
+
+// ---- 2. Lens barrel (protruding, on the front) ----------------------------
+const lensGroup = new THREE.Group();
+lensGroup.name = 'lensBarrel';
+// placed slightly left-of-center and a touch low, as on many 90s compacts
+lensGroup.position.set(-0.020, -0.006, frontZ);
+
+// outer barrel ring
+const barrelOuter = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.020, 0.021, 0.013, 48),
+  matBarrel
+);
+barrelOuter.rotation.x = Math.PI / 2;   // axis -> +Z
+barrelOuter.position.z = 0.0065;
+barrelOuter.castShadow = true;
+barrelOuter.receiveShadow = true;
+barrelOuter.name = 'barrelOuter';
+lensGroup.add(barrelOuter);
+
+// stepped inner ring
+const barrelInner = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.016, 0.018, 0.010, 48),
+  matBarrel
+);
+barrelInner.rotation.x = Math.PI / 2;
+barrelInner.position.z = 0.014;
+barrelInner.castShadow = true;
+barrelInner.name = 'barrelInner';
+lensGroup.add(barrelInner);
+
+// front metallic bezel ring
+const bezel = new THREE.Mesh(
+  new THREE.TorusGeometry(0.0145, 0.0022, 16, 48),
+  matBezel
+);
+bezel.position.z = 0.019;
+bezel.name = 'lensBezel';
+lensGroup.add(bezel);
+
+// lens glass (slightly domed, recessed inside the barrel)
+const glass = new THREE.Mesh(
+  new THREE.SphereGeometry(0.014, 48, 32, 0, Math.PI * 2, 0, Math.PI * 0.42),
+  matGlass
+);
+glass.rotation.x = -Math.PI / 2;  // dome faces +Z
+glass.position.z = 0.0125;
+glass.scale.z = 0.55;
+glass.name = 'lensGlass';
+lensGroup.add(glass);
+
+// dark inner well behind the glass
+const lensWell = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.014, 0.012, 0.010, 40),
+  new THREE.MeshStandardMaterial({ color: 0x030304, roughness: 0.6 })
+);
+lensWell.rotation.x = Math.PI / 2;
+lensWell.position.z = 0.010;
+lensWell.name = 'lensWell';
+lensGroup.add(lensWell);
+
+cameraModel.add(lensGroup);
+
+// ---- 3. Flash window (small, front upper-left) ----------------------------
+const flashFrame = roundedPanel(0.022, 0.014, 0.004, 0.003, matBodyDark);
+flashFrame.name = 'flashFrame';
+flashFrame.position.set(-0.044, 0.018, frontZ + 0.0005);
+cameraModel.add(flashFrame);
+
+const flash = roundedPanel(0.017, 0.010, 0.003, 0.002, matFlash);
+flash.name = 'flashWindow';
+flash.position.set(-0.044, 0.018, frontZ + 0.0022);
+cameraModel.add(flash);
+
+// ---- 4. Viewfinder window (front, upper-right) ----------------------------
+const vfFrontFrame = roundedPanel(0.016, 0.012, 0.004, 0.002, matBodyDark);
+vfFrontFrame.name = 'viewfinderFrontFrame';
+vfFrontFrame.position.set(0.040, 0.019, frontZ + 0.0005);
+cameraModel.add(vfFrontFrame);
+
+const vfFront = roundedPanel(0.011, 0.008, 0.003, 0.0015, matViewGlass);
+vfFront.name = 'viewfinderFrontGlass';
+vfFront.position.set(0.040, 0.019, frontZ + 0.0020);
+cameraModel.add(vfFront);
+
+// ---- 4b. Rear viewfinder eyepiece (mirrors the front) ---------------------
+const vfRearFrame = roundedPanel(0.014, 0.011, 0.004, 0.002, matBodyDark);
+vfRearFrame.name = 'viewfinderRearFrame';
+vfRearFrame.position.set(0.040, 0.019, backZ - 0.0005);
+vfRearFrame.rotation.y = Math.PI;
+cameraModel.add(vfRearFrame);
+
+const vfRear = roundedPanel(0.010, 0.008, 0.003, 0.0015, matViewGlass);
+vfRear.name = 'viewfinderRearGlass';
+vfRear.position.set(0.040, 0.019, backZ - 0.0020);
+vfRear.rotation.y = Math.PI;
+cameraModel.add(vfRear);
+
+// ---- 5. Small AF / metering sensor windows (front, near viewfinder) -------
+for (let i = 0; i < 2; i++) {
+  const sensor = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0026, 0.0026, 0.003, 20),
+    matViewGlass
+  );
+  sensor.rotation.x = Math.PI / 2;
+  sensor.position.set(0.020 + i * 0.008, 0.020, frontZ + 0.0012);
+  sensor.name = 'afSensor_' + i;
+  sensor.castShadow = true;
+  cameraModel.add(sensor);
+}
+
+// ---- 5b. Self-timer LED (front, beside the lens) --------------------------
+const led = new THREE.Mesh(new THREE.CylinderGeometry(0.0022, 0.0022, 0.003, 18), matLED);
+led.rotation.x = Math.PI / 2;
+led.position.set(0.006, 0.014, frontZ + 0.001);
+led.name = 'selfTimerLED';
+cameraModel.add(led);
+
+// ---- 6. Shutter button (top surface, right side) --------------------------
+const shutterBase = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0075, 0.0082, 0.004, 32), matBodyDark
+);
+shutterBase.position.set(0.040, topY + 0.001, 0.006);
+shutterBase.name = 'shutterBase';
+shutterBase.castShadow = true;
+cameraModel.add(shutterBase);
+
+const shutterButton = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0052, 0.0058, 0.004, 32), matButton
+);
+shutterButton.position.set(0.040, topY + 0.0035, 0.006);
+shutterButton.name = 'shutterButton';
+shutterButton.castShadow = true;
+cameraModel.add(shutterButton);
+
+// ---- 6b. Small top frame-counter window -----------------------------------
+const counter = roundedPanel(0.012, 0.007, 0.0025, 0.0015, matViewGlass);
+counter.name = 'frameCounter';
+counter.rotation.x = -Math.PI / 2;      // lie flat on the top face
+counter.position.set(0.012, topY + 0.0006, -0.006);
+cameraModel.add(counter);
+
+// =============================================================================
+// 7. Battery-door seam + panel (right end of the body, +X face)
+// =============================================================================
+// A slightly proud door panel...
+const batteryDoor = new THREE.Mesh(
+  new THREE.BoxGeometry(0.004, H * 0.72, D * 0.66),
+  matBody
+);
+batteryDoor.position.set(W / 2 - 0.0005, -0.004, 0.001);
+batteryDoor.name = 'batteryDoor';
+batteryDoor.castShadow = true;
+batteryDoor.receiveShadow = true;
+cameraModel.add(batteryDoor);
+
+// ...framed by a thin recessed dark seam (4 thin bars on the +X face plane).
+function seamBar(lenY, lenZ, y, z) {
+  const bar = new THREE.Mesh(new THREE.BoxGeometry(0.0035, lenY, lenZ), matSeam);
+  bar.position.set(W / 2 + 0.0004, y, z);
+  bar.name = 'batterySeam';
+  return bar;
+}
+const doorHalfH = H * 0.72 / 2;
+const doorHalfD = D * 0.66 / 2;
+const doorCY = -0.004, doorCZ = 0.001;
+const seamW = 0.0008;
+cameraModel.add(seamBar(H * 0.72, seamW, doorCY, doorCZ + doorHalfD)); // front edge
+cameraModel.add(seamBar(H * 0.72, seamW, doorCY, doorCZ - doorHalfD)); // back edge
+cameraModel.add(seamBar(seamW, D * 0.66, doorCY + doorHalfH, doorCZ)); // top edge
+cameraModel.add(seamBar(seamW, D * 0.66, doorCY - doorHalfH, doorCZ)); // bottom edge
+
+// =============================================================================
+// 8. Finger grip: a few subtle raised ridges on the front-right
+// =============================================================================
+const gripGroup = new THREE.Group();
+gripGroup.name = 'fingerGrip';
+for (let i = 0; i < 4; i++) {
+  const ridge = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.0016, H * 0.42, 6, 12), matBodyDark
+  );
+  ridge.position.set(0.049 - i * 0.005, -0.004, frontZ - 0.0005);
+  ridge.name = 'gripRidge_' + i;
+  ridge.castShadow = true;
+  gripGroup.add(ridge);
+}
+cameraModel.add(gripGroup);
+
+// =============================================================================
+// 9. Rear thumb-wheel / mode detail + back panel line
+// =============================================================================
+const backPlate = roundedPanel(W * 0.9, H * 0.78, 0.003, CORNER_R * 0.6, matBodyDark);
+backPlate.name = 'backPanel';
+backPlate.rotation.y = Math.PI;
+backPlate.position.set(-0.006, -0.002, backZ - 0.0005);
+cameraModel.add(backPlate);
+
+// =============================================================================
+// PLACE THE MODEL: centered at origin (X,Z) and resting on the ground (Y)
+// =============================================================================
+scene.add(cameraModel);
+
+const bbox = new THREE.Box3().setFromObject(cameraModel);
+const size = bbox.getSize(new THREE.Vector3());
+const center = bbox.getCenter(new THREE.Vector3());
+cameraModel.position.x -= center.x;
+cameraModel.position.z -= center.z;
+cameraModel.position.y -= bbox.min.y;   // sit exactly on y = 0
+
+// =============================================================================
+// GROUND + SOFT CONTACT SHADOW
+// =============================================================================
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(4, 4),
+  new THREE.MeshStandardMaterial({ color: 0xcfcfd4, roughness: 0.95, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+ground.name = 'ground';
+scene.add(ground);
+
+// A faint radial "contact" darkening under the camera to ground it visually
+const shadowTex = (() => {
+  const s = 256, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  grd.addColorStop(0, 'rgba(0,0,0,0.45)');
+  grd.addColorStop(0.6, 'rgba(0,0,0,0.15)');
+  grd.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, s, s);
+  return new THREE.CanvasTexture(c);
+})();
+const contact = new THREE.Mesh(
+  new THREE.PlaneGeometry(size.x * 2.0, size.z * 2.4),
+  new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false })
+);
+contact.rotation.x = -Math.PI / 2;
+contact.position.y = 0.0006;
+contact.name = 'contactShadow';
+scene.add(contact);
+
+// =============================================================================
+// AUTO-FRAME CAMERA TO BOUNDING BOX
+// =============================================================================
+const fitBox = new THREE.Box3().setFromObject(cameraModel);
+const fitSize = fitBox.getSize(new THREE.Vector3());
+const fitCenter = fitBox.getCenter(new THREE.Vector3());
+const maxDim = Math.max(fitSize.x, fitSize.y, fitSize.z);
+const fitDist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2);
+const dist = fitDist * 2.15;
+
+camera.position.set(
+  fitCenter.x + dist * 0.72,
+  fitCenter.y + dist * 0.48,
+  fitCenter.z + dist * 0.86
+);
+camera.lookAt(fitCenter);
+
+// =============================================================================
+// CONTROLS
+// =============================================================================
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.copy(fitCenter);
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = maxDim * 0.9;
+controls.maxDistance = maxDim * 6;
+controls.maxPolarAngle = Math.PI * 0.5;   // don't dip below the ground
+controls.update();
+
+// =============================================================================
+// RESIZE
+// =============================================================================
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// =============================================================================
+// RENDER LOOP
+// =============================================================================
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

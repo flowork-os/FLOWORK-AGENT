@@ -1,0 +1,947 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Holographic Handheld Scanner</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0c12; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c12);
+scene.fog = new THREE.FogExp2(0x0a0c12, 0.055);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.42, 0.30, 0.52);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 0.25;
+controls.maxDistance = 2.2;
+controls.target.set(0, 0.10, 0);
+
+// ---------------------------------------------------------------------------
+// Environment map (procedural, for iridescent reflections)
+// ---------------------------------------------------------------------------
+function makeEnvTexture() {
+  const size = 256;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  const ctx = c.getContext('2d');
+
+  const g = ctx.createLinearGradient(0, 0, 0, size);
+  g.addColorStop(0.00, '#101828');
+  g.addColorStop(0.45, '#1a2438');
+  g.addColorStop(0.55, '#0c1018');
+  g.addColorStop(1.00, '#05070b');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+
+  // colored "studio" light blobs -> feed the iridescent sheen
+  const blobs = [
+    [0.18, 0.30, 70, 'rgba(255, 60, 190, 0.85)'],
+    [0.52, 0.22, 60, 'rgba(80, 240, 255, 0.90)'],
+    [0.82, 0.34, 55, 'rgba(255, 200, 90, 0.80)'],
+    [0.35, 0.62, 50, 'rgba(120, 130, 255, 0.55)'],
+    [0.70, 0.70, 45, 'rgba(255, 255, 255, 0.45)']
+  ];
+  for (const [x, y, r, col] of blobs) {
+    const rg = ctx.createRadialGradient(x * size, y * size, 0, x * size, y * size, r);
+    rg.addColorStop(0, col);
+    rg.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.arc(x * size, y * size, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envRT = pmrem.fromEquirectangular(makeEnvTexture());
+scene.environment = envRT.texture;
+
+// ---------------------------------------------------------------------------
+// Lighting
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x7fd4ff, 0x120a1c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(0.55, 0.95, 0.60);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.1;
+key.shadow.camera.far = 4;
+key.shadow.camera.left = -0.6;
+key.shadow.camera.right = 0.6;
+key.shadow.camera.top = 0.6;
+key.shadow.camera.bottom = -0.6;
+key.shadow.bias = -0.0009;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x50a8ff, 0.75);
+fill.position.set(-0.85, 0.35, 0.45);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xff58c8, 1.05);
+rim.position.set(-0.35, 0.55, -0.85);
+scene.add(rim);
+
+const emitterLight = new THREE.PointLight(0x66f2ff, 2.2, 1.4, 2);
+emitterLight.position.set(0.0, 0.175, 0.075);
+scene.add(emitterLight);
+
+// ---------------------------------------------------------------------------
+// Shadow-only ground
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// faint grid glow under the gadget (pure light, no shadow interaction)
+const halo = new THREE.Mesh(
+  new THREE.CircleGeometry(0.30, 64),
+  new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uColor: { value: new THREE.Color(0x2f7fff) } },
+    vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec2 vUv; uniform vec3 uColor;
+      void main(){
+        float d = distance(vUv, vec2(0.5)) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        a = pow(a, 2.4) * 0.5;
+        gl_FragColor = vec4(uColor, a);
+      }`
+  })
+);
+halo.rotation.x = -Math.PI / 2;
+halo.position.y = 0.0015;
+scene.add(halo);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+// Iridescent chassis shell: rainbow sheen shifting magenta -> cyan -> gold with
+// view angle, layered over a physically based translucent white-glass base.
+const chassisUniforms = { uTime: { value: 0 }, uIriStrength: { value: 1.0 } };
+
+function makeIridescentMaterial(baseColor, opts = {}) {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: baseColor,
+    metalness: opts.metalness !== undefined ? opts.metalness : 0.35,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.16,
+    transmission: opts.transmission !== undefined ? opts.transmission : 0.35,
+    thickness: opts.thickness !== undefined ? opts.thickness : 0.05,
+    ior: 1.45,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.06,
+    iridescence: 1.0,
+    iridescenceIOR: 1.9,
+    iridescenceThicknessRange: [120, 780],
+    envMapIntensity: 1.5,
+    transparent: true,
+    opacity: opts.opacity !== undefined ? opts.opacity : 0.92,
+    side: THREE.DoubleSide
+  });
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = chassisUniforms.uTime;
+    shader.uniforms.uIriStrength = chassisUniforms.uIriStrength;
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `#include <common>\n varying vec3 vWPos; varying vec3 vWNrm;`)
+      .replace('#include <worldpos_vertex>', `#include <worldpos_vertex>\n vWPos = (modelMatrix * vec4(transformed,1.0)).xyz;\n vWNrm = normalize(mat3(modelMatrix) * objectNormal);`);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `
+        #include <common>
+        uniform float uTime; uniform float uIriStrength;
+        varying vec3 vWPos; varying vec3 vWNrm;
+        vec3 spectrum(float t){
+          // magenta -> cyan -> gold -> magenta
+          return 0.55 + 0.45 * cos(6.28318 * (t + vec3(0.00, 0.33, 0.67)) + vec3(1.2, 2.4, 4.6));
+        }`)
+      .replace('#include <dithering_fragment>', `
+        #include <dithering_fragment>
+        vec3 V = normalize(cameraPosition - vWPos);
+        vec3 N = normalize(vWNrm);
+        float fres = pow(1.0 - clamp(dot(N, V), 0.0, 1.0), 1.55);
+        float band = dot(N, vec3(0.42, 0.73, 0.54)) * 1.35
+                   + vWPos.y * 5.5
+                   + uTime * 0.11;
+        vec3 sheen = spectrum(band);
+        // fine light-weave shimmer
+        float weave = 0.5 + 0.5 * sin(vWPos.y * 320.0 + uTime * 2.2)
+                          * sin(vWPos.x * 260.0 - uTime * 1.4);
+        float flick = 0.86 + 0.14 * sin(uTime * 6.1 + vWPos.z * 40.0);
+        gl_FragColor.rgb += sheen * (fres * 0.85 + 0.10) * uIriStrength * flick;
+        gl_FragColor.rgb += sheen * weave * 0.055 * uIriStrength;
+        gl_FragColor.a = clamp(gl_FragColor.a + fres * 0.28, 0.0, 1.0);
+      `);
+  };
+  mat.customProgramCacheKey = () => 'iridescent-chassis-v1';
+  return mat;
+}
+
+const chassisMat  = makeIridescentMaterial(0xdfe8ff, { opacity: 0.90, transmission: 0.38, thickness: 0.045 });
+const chassisMat2 = makeIridescentMaterial(0xb9c8f0, { opacity: 0.94, transmission: 0.22, roughness: 0.24, metalness: 0.55, thickness: 0.03 });
+
+const darkMat = new THREE.MeshPhysicalMaterial({
+  color: 0x151a26, metalness: 0.75, roughness: 0.35,
+  clearcoat: 0.7, clearcoatRoughness: 0.25, envMapIntensity: 0.9
+});
+
+const gripMat = new THREE.MeshPhysicalMaterial({
+  color: 0x1b2334, metalness: 0.35, roughness: 0.62,
+  clearcoat: 0.35, envMapIntensity: 0.7
+});
+
+const trimMat = new THREE.MeshStandardMaterial({
+  color: 0x0ff0ff, emissive: 0x22e6ff, emissiveIntensity: 2.4,
+  metalness: 0.2, roughness: 0.3, toneMapped: true
+});
+
+function glowMat(hex, intensity = 3.0) {
+  return new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a, emissive: new THREE.Color(hex), emissiveIntensity: intensity,
+    roughness: 0.35, metalness: 0.0
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The single centered object
+// ---------------------------------------------------------------------------
+const scanner = new THREE.Group();
+scene.add(scanner);
+
+const body = new THREE.Group();     // rigid device parts (casts shadows)
+scanner.add(body);
+
+function shadowize(mesh) {
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+// ---- Main housing (rounded slab, built by lathe-free extrude for crispness) --
+function roundedBoxGeom(w, h, d, r, seg = 4) {
+  // rounded rectangle profile extruded along depth, capped with bevel
+  const shape = new THREE.Shape();
+  const x = w / 2 - r, y = h / 2 - r;
+  shape.moveTo(-x - r, -y);
+  shape.lineTo(-x - r, y);
+  shape.quadraticCurveTo(-x - r, y + r, -x, y + r);
+  shape.lineTo(x, y + r);
+  shape.quadraticCurveTo(x + r, y + r, x + r, y);
+  shape.lineTo(x + r, -y);
+  shape.quadraticCurveTo(x + r, -y - r, x, -y - r);
+  shape.lineTo(-x, -y - r);
+  shape.quadraticCurveTo(-x - r, -y - r, -x - r, -y);
+  const bev = Math.min(r * 0.8, d * 0.24);
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: d - bev * 2, bevelEnabled: true, bevelThickness: bev,
+    bevelSize: bev, bevelSegments: seg, curveSegments: 16
+  });
+  g.translate(0, 0, -(d - bev * 2) / 2 - bev);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Body sits with the barrel pointing +Z; grip descends to the floor.
+const HOUSE_Y = 0.148;
+
+const housing = shadowize(new THREE.Mesh(roundedBoxGeom(0.062, 0.056, 0.155, 0.020), chassisMat));
+housing.position.set(0, HOUSE_Y, 0.008);
+body.add(housing);
+
+// inner core visible through the translucent shell
+const core = shadowize(new THREE.Mesh(roundedBoxGeom(0.046, 0.040, 0.120, 0.014), darkMat));
+core.position.copy(housing.position);
+body.add(core);
+
+// spine ridge along the top
+const spine = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0085, 0.0085, 0.118, 20, 1, false),
+  chassisMat2
+));
+spine.rotation.x = Math.PI / 2;
+spine.position.set(0, HOUSE_Y + 0.029, 0.008);
+body.add(spine);
+
+// cooling fins on both flanks
+for (let s = -1; s <= 1; s += 2) {
+  for (let i = 0; i < 5; i++) {
+    const fin = shadowize(new THREE.Mesh(
+      new THREE.BoxGeometry(0.006, 0.030, 0.0055),
+      chassisMat2
+    ));
+    fin.position.set(s * 0.0325, HOUSE_Y + 0.004, -0.040 + i * 0.0145);
+    body.add(fin);
+  }
+  // glowing seam strip along the flank
+  const seam = new THREE.Mesh(new THREE.BoxGeometry(0.0016, 0.0042, 0.108), trimMat);
+  seam.position.set(s * 0.0318, HOUSE_Y - 0.016, 0.012);
+  body.add(seam);
+}
+
+// ---- Barrel / emitter head --------------------------------------------------
+const headGroup = new THREE.Group();
+headGroup.position.set(0, HOUSE_Y - 0.004, 0.078);
+body.add(headGroup);
+
+const collar = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.026, 0.030, 0.020, 28, 1, false),
+  chassisMat2
+));
+collar.rotation.x = Math.PI / 2;
+collar.position.z = 0.006;
+headGroup.add(collar);
+
+const snout = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0195, 0.0245, 0.026, 28, 1, true),
+  chassisMat
+));
+snout.rotation.x = Math.PI / 2;
+snout.position.z = 0.027;
+headGroup.add(snout);
+
+const lensRing = new THREE.Mesh(new THREE.TorusGeometry(0.0175, 0.0028, 14, 40), trimMat);
+lensRing.position.z = 0.040;
+headGroup.add(lensRing);
+
+const lens = new THREE.Mesh(
+  new THREE.CircleGeometry(0.0165, 40),
+  new THREE.MeshStandardMaterial({
+    color: 0x061a20, emissive: 0x35e8ff, emissiveIntensity: 2.6,
+    roughness: 0.1, metalness: 0.2, transparent: true, opacity: 0.95
+  })
+);
+lens.position.z = 0.0398;
+headGroup.add(lens);
+
+// small aperture blades around the lens
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2;
+  const blade = shadowize(new THREE.Mesh(new THREE.BoxGeometry(0.0032, 0.010, 0.004), chassisMat2));
+  blade.position.set(Math.cos(a) * 0.0215, Math.sin(a) * 0.0215, 0.034);
+  blade.rotation.z = a;
+  headGroup.add(blade);
+}
+
+// ---- Top emitter aperture (fan source) -------------------------------------
+const emitterBase = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.014, 0.017, 0.010, 28),
+  chassisMat2
+));
+emitterBase.position.set(0, HOUSE_Y + 0.030, 0.040);
+body.add(emitterBase);
+
+const emitterDisc = new THREE.Mesh(
+  new THREE.CircleGeometry(0.0115, 32),
+  new THREE.MeshStandardMaterial({ color: 0x001318, emissive: 0x6ff6ff, emissiveIntensity: 3.2, roughness: 0.2 })
+);
+emitterDisc.rotation.x = -Math.PI / 2;
+emitterDisc.position.set(0, HOUSE_Y + 0.0353, 0.040);
+body.add(emitterDisc);
+
+// ---- Pistol grip ------------------------------------------------------------
+const gripCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, HOUSE_Y - 0.020, -0.012),
+  new THREE.Vector3(0, HOUSE_Y - 0.052, -0.026),
+  new THREE.Vector3(0, HOUSE_Y - 0.088, -0.040),
+  new THREE.Vector3(0, HOUSE_Y - 0.122, -0.049)
+]);
+const gripGeo = new THREE.TubeGeometry(gripCurve, 40, 0.0175, 22, false);
+// flatten the grip a little on X for a hand-fitting cross-section
+const gp = gripGeo.attributes.position;
+for (let i = 0; i < gp.count; i++) gp.setX(i, gp.getX(i) * 0.72);
+gp.needsUpdate = true;
+gripGeo.computeVertexNormals();
+const grip = shadowize(new THREE.Mesh(gripGeo, gripMat));
+body.add(grip);
+
+// iridescent grip shell (slightly larger, translucent over the dark core)
+const gripShellGeo = new THREE.TubeGeometry(gripCurve, 40, 0.0198, 22, false);
+const gsp = gripShellGeo.attributes.position;
+for (let i = 0; i < gsp.count; i++) gsp.setX(i, gsp.getX(i) * 0.74);
+gsp.needsUpdate = true;
+gripShellGeo.computeVertexNormals();
+const gripShell = shadowize(new THREE.Mesh(gripShellGeo, chassisMat));
+body.add(gripShell);
+
+// grip cap / battery pack
+const gripCap = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.016, 0.0135, 0.014, 24),
+  chassisMat2
+));
+gripCap.position.set(0, HOUSE_Y - 0.130, -0.0515);
+gripCap.rotation.x = 0.35;
+body.add(gripCap);
+
+// finger grooves
+for (let i = 0; i < 4; i++) {
+  const t = 0.20 + i * 0.20;
+  const p = gripCurve.getPoint(t);
+  const groove = new THREE.Mesh(new THREE.TorusGeometry(0.0148, 0.0018, 10, 26), trimMat);
+  groove.position.copy(p);
+  groove.position.z -= 0.011;
+  groove.rotation.set(Math.PI / 2 - 0.36, 0, 0);
+  groove.scale.set(0.78, 1.0, 1.0);
+  body.add(groove);
+}
+
+// ---- Trigger + guard --------------------------------------------------------
+const guardCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, HOUSE_Y - 0.024, 0.008),
+  new THREE.Vector3(0, HOUSE_Y - 0.055, 0.014),
+  new THREE.Vector3(0, HOUSE_Y - 0.070, -0.006),
+  new THREE.Vector3(0, HOUSE_Y - 0.062, -0.026)
+]);
+const guardGeo = new THREE.TubeGeometry(guardCurve, 32, 0.0042, 14, false);
+const gg = guardGeo.attributes.position;
+for (let i = 0; i < gg.count; i++) gg.setX(i, gg.getX(i) * 1.5);
+gg.needsUpdate = true;
+guardGeo.computeVertexNormals();
+body.add(shadowize(new THREE.Mesh(guardGeo, chassisMat2)));
+
+const trigger = shadowize(new THREE.Mesh(
+  new THREE.CapsuleGeometry(0.0045, 0.018, 6, 14),
+  glowMat(0x40f0ff, 1.6)
+));
+trigger.position.set(0, HOUSE_Y - 0.040, -0.001);
+trigger.rotation.x = 0.42;
+trigger.scale.set(1.4, 1, 1);
+body.add(trigger);
+
+// ---- Rear panel + antenna ---------------------------------------------------
+const rear = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.021, 0.024, 0.014, 24),
+  chassisMat2
+));
+rear.rotation.x = Math.PI / 2;
+rear.position.set(0, HOUSE_Y, -0.074);
+body.add(rear);
+
+const antenna = shadowize(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0016, 0.0028, 0.062, 12),
+  chassisMat2
+));
+antenna.position.set(0, HOUSE_Y + 0.052, -0.062);
+antenna.rotation.x = -0.30;
+body.add(antenna);
+
+const antTip = new THREE.Mesh(new THREE.SphereGeometry(0.0042, 16, 12), glowMat(0xff4fd0, 3.4));
+antTip.position.set(0, HOUSE_Y + 0.081, -0.071);
+body.add(antTip);
+
+// ---------------------------------------------------------------------------
+// Glowing indicator dots
+// ---------------------------------------------------------------------------
+const indicators = [];
+const dotGeo = new THREE.SphereGeometry(0.0028, 14, 10);
+const dotColors = [0x35f5ff, 0xff4bd8, 0xffd24a, 0x7dff9e, 0x7f8cff];
+const dotSpots = [
+  [-0.020, HOUSE_Y + 0.0292, -0.020], [-0.007, HOUSE_Y + 0.0292, -0.020],
+  [ 0.006, HOUSE_Y + 0.0292, -0.020], [ 0.019, HOUSE_Y + 0.0292, -0.020],
+  [-0.031, HOUSE_Y + 0.012,  0.052], [ 0.031, HOUSE_Y + 0.012,  0.052],
+  [ 0.000, HOUSE_Y - 0.020, -0.078], [-0.014, HOUSE_Y + 0.006, -0.074],
+  [ 0.014, HOUSE_Y + 0.006, -0.074]
+];
+dotSpots.forEach((p, i) => {
+  const col = dotColors[i % dotColors.length];
+  const m = new THREE.Mesh(dotGeo, glowMat(col, 3.6));
+  m.position.set(p[0], p[1], p[2]);
+  body.add(m);
+
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: dotSpriteTex(col),
+    color: 0xffffff,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    opacity: 0.9
+  }));
+  glow.scale.setScalar(0.020);
+  glow.position.copy(m.position);
+  body.add(glow);
+
+  indicators.push({ mesh: m, glow, phase: i * 0.9, speed: 1.4 + (i % 4) * 0.55 });
+});
+
+function dotSpriteTex(hex) {
+  const s = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const col = new THREE.Color(hex);
+  const r = Math.round(col.r * 255), g = Math.round(col.g * 255), b = Math.round(col.b * 255);
+  const rg = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  rg.addColorStop(0.0, `rgba(255,255,255,1)`);
+  rg.addColorStop(0.25, `rgba(${r},${g},${b},0.85)`);
+  rg.addColorStop(1.0, `rgba(${r},${g},${b},0)`);
+  ctx.fillStyle = rg;
+  ctx.fillRect(0, 0, s, s);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Shimmering translucent DATA FAN above the emitter
+// ---------------------------------------------------------------------------
+const fanGroup = new THREE.Group();
+fanGroup.position.set(0, HOUSE_Y + 0.036, 0.040);
+scanner.add(fanGroup);
+
+const fanUniforms = {
+  uTime: { value: 0 },
+  uColorA: { value: new THREE.Color(0x39f2ff) },
+  uColorB: { value: new THREE.Color(0xff54d6) },
+  uColorC: { value: new THREE.Color(0xffd870) }
+};
+
+// A cone-sector sheet: parametric plane bent into a fan that widens with height.
+const FAN_H = 0.155, FAN_SPREAD = 0.66, FAN_SEG_U = 120, FAN_SEG_V = 90;
+const fanGeo = new THREE.PlaneGeometry(1, 1, FAN_SEG_U, FAN_SEG_V);
+{
+  const pos = fanGeo.attributes.position;
+  const v3 = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const u = pos.getX(i) + 0.5;         // 0..1 across the fan
+    const v = pos.getY(i) + 0.5;         // 0..1 up the fan
+    const ang = (u - 0.5) * FAN_SPREAD * 2.0;
+    const radius = 0.012 + v * 0.115;    // widening reach
+    const h = v * FAN_H;
+    v3.set(Math.sin(ang) * radius, h, Math.cos(ang) * radius * 0.55 + v * 0.02);
+    pos.setXYZ(i, v3.x, v3.y, v3.z);
+  }
+  fanGeo.computeVertexNormals();
+}
+
+const fanMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending,
+  uniforms: fanUniforms,
+  vertexShader: `
+    varying vec2 vUv; varying vec3 vPos;
+    uniform float uTime;
+    void main(){
+      vUv = uv;
+      vec3 p = position;
+      // gentle breathing ripple through the sheet
+      p += normal * sin(uv.y * 22.0 - uTime * 3.0 + uv.x * 9.0) * 0.0016 * uv.y;
+      vPos = p;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(p, 1.0);
+    }`,
+  fragmentShader: `
+    varying vec2 vUv; varying vec3 vPos;
+    uniform float uTime;
+    uniform vec3 uColorA, uColorB, uColorC;
+
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+
+    void main(){
+      float u = vUv.x, v = vUv.y;
+
+      // base fan falloff: bright at emitter, feathered at edges and tip
+      float edge = smoothstep(0.0, 0.14, u) * smoothstep(1.0, 0.86, u);
+      float rise = smoothstep(0.0, 0.06, v) * smoothstep(1.0, 0.45, v);
+      float base = edge * rise;
+
+      // scan lines sweeping upward
+      float lines = 0.5 + 0.5 * sin((v * 90.0) - uTime * 5.0);
+      lines = pow(lines, 3.0);
+
+      // radial spokes
+      float spokes = 0.5 + 0.5 * sin(u * 78.0 + uTime * 0.8);
+      spokes = pow(spokes, 6.0);
+
+      // travelling bright scan pulse
+      float pulse = exp(-pow((v - fract(uTime * 0.30)) * 7.0, 2.0));
+
+      // data cells flickering in the volume
+      vec2 cell = floor(vec2(u * 34.0, v * 22.0));
+      float rnd = hash(cell);
+      float blink = step(0.86, fract(rnd + uTime * 0.22 * (0.4 + rnd)));
+      vec2 f = fract(vec2(u * 34.0, v * 22.0));
+      float cellShape = step(0.16, f.x) * step(f.x, 0.84) * step(0.3, f.y) * step(f.y, 0.7);
+
+      vec3 col = mix(uColorA, uColorB, smoothstep(0.0, 1.0, v));
+      col = mix(col, uColorC, spokes * 0.55);
+      col += uColorC * pulse * 0.8;
+
+      float a = base * (0.16 + lines * 0.28 + spokes * 0.20 + pulse * 0.55);
+      a += blink * cellShape * base * 0.55;
+      a *= 0.90;
+
+      if (a < 0.002) discard;
+      gl_FragColor = vec4(col * (0.9 + lines * 0.7), a);
+    }`
+});
+const fan = new THREE.Mesh(fanGeo, fanMat);
+fanGroup.add(fan);
+
+// second, offset fan layer for volumetric depth
+const fan2 = new THREE.Mesh(fanGeo, fanMat.clone());
+fan2.material.uniforms = fanUniforms;
+fan2.scale.set(0.72, 0.86, 0.72);
+fan2.rotation.y = 0.10;
+fan2.position.y = 0.004;
+fanGroup.add(fan2);
+
+// concentric scan rings riding up the fan
+const rings = [];
+for (let i = 0; i < 4; i++) {
+  const ringMat = new THREE.MeshBasicMaterial({
+    color: i % 2 ? 0xff6ae0 : 0x5cf3ff,
+    transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide
+  });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.030, 0.033, 64, 1, -FAN_SPREAD + Math.PI / 2, FAN_SPREAD * 2), ringMat);
+  ring.rotation.x = -Math.PI / 2;
+  fanGroup.add(ring);
+  rings.push({ mesh: ring, mat: ringMat, off: i / 4 });
+}
+
+// drifting data motes inside the fan volume
+const MOTES = 260;
+const motePos = new Float32Array(MOTES * 3);
+const moteSeed = new Float32Array(MOTES);
+for (let i = 0; i < MOTES; i++) {
+  const a = (Math.random() - 0.5) * FAN_SPREAD * 2;
+  const v = Math.random();
+  const rad = 0.012 + v * 0.11;
+  motePos[i * 3 + 0] = Math.sin(a) * rad;
+  motePos[i * 3 + 1] = v * FAN_H;
+  motePos[i * 3 + 2] = Math.cos(a) * rad * 0.55 + v * 0.02;
+  moteSeed[i] = Math.random();
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+moteGeo.setAttribute('aSeed', new THREE.BufferAttribute(moteSeed, 1));
+const moteMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  uniforms: { uTime: { value: 0 }, uPix: { value: renderer.getPixelRatio() } },
+  vertexShader: `
+    attribute float aSeed; varying float vA;
+    uniform float uTime, uPix;
+    void main(){
+      vec3 p = position;
+      float t = fract(aSeed + uTime * (0.06 + aSeed * 0.10));
+      p.y = t * ${FAN_H.toFixed(4)};
+      float scale = 0.012 + t * 0.11;
+      float ang = atan(p.x, max(p.z, 0.0001));
+      p.x = sin(ang) * scale;
+      p.z = cos(ang) * scale * 0.55 + t * 0.02;
+      p.x += sin(uTime * 2.0 + aSeed * 31.0) * 0.0016;
+      vA = (1.0 - smoothstep(0.55, 1.0, t)) * (0.35 + 0.65 * abs(sin(uTime * 3.0 + aSeed * 20.0)));
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_PointSize = (1.6 + aSeed * 2.6) * uPix * (0.09 / max(-mv.z, 0.02));
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    varying float vA;
+    void main(){
+      vec2 d = gl_PointCoord - 0.5;
+      float m = smoothstep(0.5, 0.0, length(d));
+      vec3 c = mix(vec3(0.35,0.95,1.0), vec3(1.0,0.55,0.95), vA);
+      gl_FragColor = vec4(c, m * vA * 0.85);
+    }`
+});
+const motes = new THREE.Points(moteGeo, moteMat);
+fanGroup.add(motes);
+
+// ---------------------------------------------------------------------------
+// Floating semi-transparent readout panel
+// ---------------------------------------------------------------------------
+function makeReadoutTexture() {
+  const W = 512, H = 320;
+  const c = document.createElement('canvas');
+  c.width = W; c.height = H;
+  const ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, W, H);
+
+  // panel body
+  ctx.fillStyle = 'rgba(20, 90, 130, 0.20)';
+  ctx.strokeStyle = 'rgba(120, 240, 255, 0.85)';
+  ctx.lineWidth = 3;
+  const r = 18;
+  ctx.beginPath();
+  ctx.moveTo(r, 6);
+  ctx.lineTo(W - 46, 6);
+  ctx.lineTo(W - 6, 46);
+  ctx.lineTo(W - 6, H - r);
+  ctx.quadraticCurveTo(W - 6, H - 6, W - 6 - r, H - 6);
+  ctx.lineTo(r, H - 6);
+  ctx.quadraticCurveTo(6, H - 6, 6, H - 6 - r);
+  ctx.lineTo(6, r);
+  ctx.quadraticCurveTo(6, 6, r, 6);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // header bar
+  ctx.fillStyle = 'rgba(120, 240, 255, 0.22)';
+  ctx.fillRect(18, 20, W - 70, 40);
+  ctx.fillStyle = 'rgba(190, 250, 255, 0.95)';
+  ctx.font = 'bold 26px "Courier New", monospace';
+  ctx.fillText('SCAN // ACTIVE', 30, 49);
+  ctx.fillStyle = 'rgba(255, 120, 220, 0.95)';
+  ctx.fillText('◈', W - 84, 49);
+
+  // data rows
+  const rows = [
+    ['TARGET', 'ORG-COMPOSITE'],
+    ['DENSITY', '1.482 g/cm³'],
+    ['SIGNAL', '98.6 %'],
+    ['DEPTH', '0.412 m']
+  ];
+  ctx.font = '20px "Courier New", monospace';
+  rows.forEach((row, i) => {
+    const y = 96 + i * 30;
+    ctx.fillStyle = 'rgba(140, 235, 255, 0.75)';
+    ctx.fillText(row[0], 30, y);
+    ctx.fillStyle = 'rgba(255, 225, 150, 0.95)';
+    ctx.fillText(row[1], 190, y);
+  });
+
+  // spectrum bars
+  ctx.fillStyle = 'rgba(120, 240, 255, 0.12)';
+  ctx.fillRect(24, 226, W - 92, 74);
+  for (let i = 0; i < 28; i++) {
+    const h = 8 + ((Math.sin(i * 1.7) * 0.5 + 0.5) * 60);
+    const hue = i / 28;
+    const col = new THREE.Color().setHSL(0.5 + hue * 0.45, 0.9, 0.62);
+    ctx.fillStyle = `rgba(${col.r * 255 | 0},${col.g * 255 | 0},${col.b * 255 | 0},0.9)`;
+    ctx.fillRect(30 + i * 15, 296 - h, 9, h);
+  }
+
+  // corner ticks
+  ctx.strokeStyle = 'rgba(255, 110, 220, 0.9)';
+  ctx.lineWidth = 3;
+  [[18, 18, 1, 1], [W - 18, H - 18, -1, -1], [18, H - 18, 1, -1]].forEach(([x, y, sx, sy]) => {
+    ctx.beginPath();
+    ctx.moveTo(x + 22 * sx, y);
+    ctx.lineTo(x, y);
+    ctx.lineTo(x, y + 22 * sy);
+    ctx.stroke();
+  });
+
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return t;
+}
+
+const readoutGroup = new THREE.Group();
+readoutGroup.position.set(0.10, HOUSE_Y + 0.100, -0.030);
+readoutGroup.rotation.y = -0.42;
+scanner.add(readoutGroup);
+
+const readoutMat = new THREE.MeshBasicMaterial({
+  map: makeReadoutTexture(),
+  transparent: true,
+  opacity: 0.80,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending
+});
+const readout = new THREE.Mesh(new THREE.PlaneGeometry(0.112, 0.070), readoutMat);
+readoutGroup.add(readout);
+
+// faint frame glow behind the panel
+const readoutGlow = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.124, 0.082),
+  new THREE.MeshBasicMaterial({
+    color: 0x2fd8ff, transparent: true, opacity: 0.09,
+    depthWrite: false, side: THREE.DoubleSide, blending: THREE.AdditiveBlending
+  })
+);
+readoutGlow.position.z = -0.001;
+readoutGroup.add(readoutGlow);
+
+// tether beam from the housing to the panel
+const tetherPts = [
+  new THREE.Vector3(0.028, HOUSE_Y + 0.026, -0.028),
+  new THREE.Vector3(0.062, HOUSE_Y + 0.062, -0.030),
+  new THREE.Vector3(0.086, HOUSE_Y + 0.092, -0.030)
+];
+const tether = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints(new THREE.CatmullRomCurve3(tetherPts).getPoints(40)),
+  new THREE.LineBasicMaterial({ color: 0x66e6ff, transparent: true, opacity: 0.42, blending: THREE.AdditiveBlending, depthWrite: false })
+);
+scanner.add(tether);
+
+// small secondary readout chip on the other side
+const miniGroup = new THREE.Group();
+miniGroup.position.set(-0.088, HOUSE_Y + 0.058, 0.010);
+miniGroup.rotation.y = 0.52;
+scanner.add(miniGroup);
+const miniMat = new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false, side: THREE.DoubleSide,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uTime: { value: 0 } },
+  vertexShader: `varying vec2 vUv; void main(){ vUv=uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0);}`,
+  fragmentShader: `
+    varying vec2 vUv; uniform float uTime;
+    void main(){
+      vec2 uv = vUv;
+      float frame = step(0.03, uv.x) * step(uv.x, 0.97) * step(0.05, uv.y) * step(uv.y, 0.95);
+      float border = 1.0 - frame;
+      float wave = 0.5 + 0.5 * sin(uv.x * 26.0 - uTime * 3.4);
+      float trace = smoothstep(0.035, 0.0, abs(uv.y - (0.5 + 0.30 * sin(uv.x * 12.0 - uTime * 2.2))));
+      float grid = step(0.94, fract(uv.x * 12.0)) + step(0.90, fract(uv.y * 6.0));
+      vec3 col = mix(vec3(0.25,0.9,1.0), vec3(1.0,0.75,0.35), trace);
+      float a = border * 0.55 + frame * (0.07 + grid * 0.06 + trace * 0.75 + wave * 0.03);
+      gl_FragColor = vec4(col, a * 0.85);
+    }`
+});
+const mini = new THREE.Mesh(new THREE.PlaneGeometry(0.062, 0.038), miniMat);
+miniGroup.add(mini);
+
+const tether2 = new THREE.Line(
+  new THREE.BufferGeometry().setFromPoints(new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-0.030, HOUSE_Y + 0.014, 0.010),
+    new THREE.Vector3(-0.058, HOUSE_Y + 0.036, 0.010),
+    new THREE.Vector3(-0.075, HOUSE_Y + 0.050, 0.010)
+  ]).getPoints(30)),
+  new THREE.LineBasicMaterial({ color: 0xff7ae0, transparent: true, opacity: 0.35, blending: THREE.AdditiveBlending, depthWrite: false })
+);
+scanner.add(tether2);
+
+// ---------------------------------------------------------------------------
+// Center + rest the gadget on the ground
+// ---------------------------------------------------------------------------
+{
+  const box = new THREE.Box3().setFromObject(body);
+  const c = box.getCenter(new THREE.Vector3());
+  body.position.x -= c.x;
+  body.position.z -= c.z;
+  body.position.y -= box.min.y;   // sit on the shadow plane
+  // keep the projected elements locked to the body
+  const dx = body.position.x, dy = body.position.y, dz = body.position.z;
+  fanGroup.position.add(new THREE.Vector3(dx, dy, dz));
+  readoutGroup.position.add(new THREE.Vector3(dx, dy, dz));
+  miniGroup.position.add(new THREE.Vector3(dx, dy, dz));
+  tether.position.set(dx, dy, dz);
+  tether2.position.set(dx, dy, dz);
+  emitterLight.position.set(dx, HOUSE_Y + dy + 0.06, 0.04 + dz);
+  controls.target.set(0, box.getSize(new THREE.Vector3()).y * 0.55, 0);
+}
+
+// slight display tilt so the fan reads well
+scanner.rotation.y = -0.25;
+
+// ---------------------------------------------------------------------------
+// Animate
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+
+function animate() {
+  const t = clock.getElapsedTime();
+
+  chassisUniforms.uTime.value = t;
+  chassisUniforms.uIriStrength.value = 0.9 + 0.12 * Math.sin(t * 0.7);
+  fanUniforms.uTime.value = t;
+  fan2.material.uniforms.uTime.value = t;
+  moteMat.uniforms.uTime.value = t;
+  miniMat.uniforms.uTime.value = t;
+
+  // indicator dots blink at independent rates
+  for (const ind of indicators) {
+    const s = 0.5 + 0.5 * Math.sin(t * ind.speed + ind.phase);
+    const pulse = 0.35 + Math.pow(s, 2.0) * 3.6;
+    ind.mesh.material.emissiveIntensity = pulse;
+    ind.glow.material.opacity = 0.25 + Math.pow(s, 2.0) * 0.75;
+    ind.glow.scale.setScalar(0.016 + Math.pow(s, 2.0) * 0.012);
+  }
+
+  // emitter breathing
+  const eb = 0.75 + 0.25 * Math.sin(t * 2.4);
+  emitterDisc.material.emissiveIntensity = 2.2 + eb * 1.8;
+  lens.material.emissiveIntensity = 1.8 + eb * 1.6;
+  emitterLight.intensity = 1.6 + eb * 1.4;
+  trimMat.emissiveIntensity = 1.8 + 0.7 * Math.sin(t * 1.3);
+
+  // scan rings rise through the fan
+  for (const r of rings) {
+    const p = (t * 0.28 + r.off) % 1.0;
+    r.mesh.position.y = p * FAN_H;
+    const sc = (0.012 + p * 0.115) / 0.0315;
+    r.mesh.scale.set(sc, sc * 0.55, 1);
+    r.mat.opacity = 0.55 * (1.0 - Math.pow(p, 1.6)) * (p > 0.02 ? 1 : 0);
+  }
+
+  // readout floats gently and always stays legible
+  readoutGroup.position.y += Math.sin(t * 1.1) * 0.00006;
+  readoutGroup.rotation.z = Math.sin(t * 0.8) * 0.012;
+  readoutMat.opacity = 0.70 + 0.14 * (0.5 + 0.5 * Math.sin(t * 3.3));
+  miniGroup.rotation.z = Math.sin(t * 0.9 + 1.2) * 0.02;
+
+  // whole gadget hovers ever so slightly
+  scanner.position.y = Math.sin(t * 0.9) * 0.0016;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  moteMat.uniforms.uPix.value = renderer.getPixelRatio();
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clay Walrus</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16171a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(255,255,255,0.35); letter-spacing: 0.02em; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191a1d);
+scene.fog = new THREE.Fog(0x191a1d, 9, 26);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(2.9, 1.95, 4.35);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 0.78, 0);
+controls.minDistance = 2.4;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ============================================================
+   Lighting: hemisphere + key + fill + rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xbfd4e6, 0x3a2f28, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.35);
+key.position.set(3.6, 5.4, 3.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 22;
+key.shadow.camera.left = -4.5;
+key.shadow.camera.right = 4.5;
+key.shadow.camera.top = 4.5;
+key.shadow.camera.bottom = -4.5;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.022;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8d6, 0.62);
+fill.position.set(-4.2, 2.1, 2.6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.05);
+rim.position.set(-2.2, 3.0, -4.6);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffe3c8, 0.35, 9, 2.0);
+bounce.position.set(0, 0.18, 2.2);
+scene.add(bounce);
+
+/* ============================================================
+   Shadow-only ground
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// A soft clay "table" disc so the walrus doesn't float on pure void.
+const disc = new THREE.Mesh(
+  new THREE.CylinderGeometry(3.05, 3.15, 0.14, 96, 1),
+  new THREE.MeshStandardMaterial({ color: 0x2b2c30, roughness: 0.98, metalness: 0.0 })
+);
+disc.position.y = -0.07;
+disc.receiveShadow = true;
+scene.add(disc);
+
+/* ============================================================
+   Clay helpers — deterministic value noise + surface treatment
+   ============================================================ */
+function hash3(x, y, z) {
+  let h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+function vnoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const w = zf * zf * (3 - 2 * zf);
+  function lerp(a, b, t) { return a + (b - a) * t; }
+  const c000 = hash3(xi, yi, zi),       c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi),   c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1),   c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  const x00 = lerp(c000, c100, u), x10 = lerp(c010, c110, u);
+  const x01 = lerp(c001, c101, u), x11 = lerp(c011, c111, u);
+  return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w) * 2 - 1;
+}
+function fbm(x, y, z, oct) {
+  let sum = 0, amp = 1, frq = 1, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += vnoise(x * frq, y * frq, z * frq) * amp;
+    norm += amp;
+    amp *= 0.5;
+    frq *= 2.03;
+  }
+  return sum / norm;
+}
+
+// Thumbprint centers scattered on a unit sphere (deterministic).
+const THUMBS = [];
+(function seedThumbs() {
+  const N = 46;
+  const ga = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < N; i++) {
+    const t = (i + 0.5) / N;
+    const y = 1 - 2 * t;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const a = ga * i;
+    const jitter = hash3(i * 3.1, i * 7.7, 1.3);
+    THUMBS.push({
+      p: new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r).normalize(),
+      s: 0.20 + 0.16 * jitter,          // angular radius
+      d: 0.006 + 0.011 * hash3(i, 2.2, 5.5) // depth
+    });
+  }
+})();
+
+function thumbprintField(nx, ny, nz) {
+  let acc = 0;
+  for (let i = 0; i < THUMBS.length; i++) {
+    const t = THUMBS[i];
+    const dot = nx * t.p.x + ny * t.p.y + nz * t.p.z;
+    const ang = Math.acos(Math.max(-1, Math.min(1, dot)));
+    if (ang < t.s) {
+      const k = 1 - ang / t.s;
+      // Smooth dish with a slightly raised lip — like a pressed thumb.
+      acc -= t.d * (k * k * (3 - 2 * k)) - t.d * 0.28 * Math.pow(1 - k, 3.0);
+    }
+  }
+  return acc;
+}
+
+/**
+ * Apply clay surface treatment to a geometry in local space.
+ * opts: { amp, freq, thumbs, thumbScale, seed, squash }
+ */
+function clayify(geo, opts) {
+  opts = opts || {};
+  const amp = opts.amp !== undefined ? opts.amp : 0.02;
+  const freq = opts.freq !== undefined ? opts.freq : 3.0;
+  const useThumbs = opts.thumbs !== undefined ? opts.thumbs : true;
+  const tScale = opts.thumbScale !== undefined ? opts.thumbScale : 1.0;
+  const seed = opts.seed !== undefined ? opts.seed : 0.0;
+
+  geo.computeVertexNormals();
+  const pos = geo.attributes.position;
+  const nor = geo.attributes.normal;
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    n.fromBufferAttribute(nor, i);
+    if (!isFinite(n.x) || n.lengthSq() < 1e-8) continue;
+    n.normalize();
+
+    // Lumpy low-frequency wobble (hand-rolled clay).
+    let d = fbm(v.x * freq + seed, v.y * freq + seed * 1.7, v.z * freq + seed * 2.3, 3) * amp;
+
+    // Fine grain (clay tooth).
+    d += fbm(v.x * freq * 6.2 + 11.0, v.y * freq * 6.2 + 3.0, v.z * freq * 6.2 + 7.0, 2) * amp * 0.16;
+
+    if (useThumbs) {
+      const L = Math.max(1e-6, v.length());
+      d += thumbprintField(v.x / L, v.y / L, v.z / L) * tScale;
+    }
+
+    v.addScaledVector(n, d);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ============================================================
+   Materials — matte plasticine
+   ============================================================ */
+function clayMat(color, rough, extra) {
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color),
+    roughness: rough !== undefined ? rough : 0.94,
+    metalness: 0.0,
+    flatShading: false
+  });
+  if (extra) Object.assign(m, extra);
+  return m;
+}
+
+const MAT = {
+  body:    clayMat(0x8d6f57, 0.95),
+  belly:   clayMat(0xa8886c, 0.95),
+  muzzle:  clayMat(0xb08b6e, 0.93),
+  blush:   clayMat(0xc4736a, 0.9),
+  tusk:    clayMat(0xe8e0cd, 0.72),
+  dark:    clayMat(0x2a211c, 0.75),
+  eyeW:    clayMat(0xf2ece0, 0.6),
+  bristle: clayMat(0x4d3b30, 0.88),
+  nail:    clayMat(0x5c463a, 0.8)
+};
+
+// Slight color variance for vertex-level mottling on the body.
+function mottle(geo, baseHex, strength, seed) {
+  const base = new THREE.Color(baseHex);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  const hsl = { h: 0, s: 0, l: 0 };
+  base.getHSL(hsl);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n1 = fbm(x * 2.6 + seed, y * 2.6 + seed, z * 2.6 + seed, 3);
+    const n2 = fbm(x * 7.4 - seed, y * 7.4 + seed, z * 7.4 - seed, 2);
+    const l = THREE.MathUtils.clamp(hsl.l + n1 * strength + n2 * strength * 0.45, 0.05, 0.95);
+    const s = THREE.MathUtils.clamp(hsl.s + n1 * 0.09, 0.0, 1.0);
+    const h = hsl.h + n2 * 0.012;
+    c.setHSL(h, s, l);
+    colors[i * 3] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  return geo;
+}
+
+function addMesh(parent, geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* ============================================================
+   THE WALRUS
+   ============================================================ */
+const walrus = new THREE.Group();
+scene.add(walrus);
+
+/* ---------- Body: plump pear, leaning back on a rounded belly ---------- */
+const bodyGeo = new THREE.SphereGeometry(1, 128, 96);
+{
+  const pos = bodyGeo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const y = v.y;
+    // Pear profile: heavy at the bottom, tapering toward shoulders.
+    const widen = 1.0 + 0.30 * Math.pow(THREE.MathUtils.clamp(-y, 0, 1), 1.25)
+                      - 0.20 * Math.pow(THREE.MathUtils.clamp(y, 0, 1), 1.6);
+    v.x *= 0.88 * widen;
+    v.z *= 0.86 * widen;
+    v.y *= 1.02;
+    // Belly pushes forward (+z) and slumps down.
+    const bellyMask = THREE.MathUtils.smoothstep(v.z, -0.1, 0.9) *
+                      THREE.MathUtils.smoothstep(-v.y, -0.25, 0.95);
+    v.z += bellyMask * 0.20;
+    v.y -= bellyMask * 0.06;
+    // Flatten the bottom where it presses into the ground.
+    if (v.y < -0.72) {
+      const t = THREE.MathUtils.clamp((-v.y - 0.72) / 0.42, 0, 1);
+      v.y += t * t * 0.30;
+    }
+    // Lean back: shear the upper body slightly backward (-z).
+    v.z -= THREE.MathUtils.clamp(v.y + 0.2, 0, 1.4) * 0.16;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+}
+bodyGeo.scale(1.02, 1.06, 1.0);
+clayify(bodyGeo, { amp: 0.030, freq: 2.1, thumbs: true, thumbScale: 1.0, seed: 0.0 });
+mottle(bodyGeo, 0x8d6f57, 0.075, 1.7);
+const bodyMat = clayMat(0xffffff, 0.95, { vertexColors: true });
+const body = addMesh(walrus, bodyGeo, bodyMat);
+body.position.set(0, 1.02, 0);
+body.rotation.x = -0.07;
+
+/* ---------- Fingernail seams: shallow crescent grooves pressed into the clay ---------- */
+function makeSeam(len, radius, thickness) {
+  // A thin torus arc read as a pressed nail crescent.
+  const g = new THREE.TorusGeometry(radius, thickness, 8, 34, len);
+  return g;
+}
+const seamMat = clayMat(0x6d5341, 0.98);
+const seamDefs = [
+  { p: [0.62, 1.42, 0.66],  r: [0.1, -0.6, 0.5],  rad: 0.20, th: 0.019, len: 1.5, s: 1.0 },
+  { p: [-0.58, 1.30, 0.72], r: [0.0, 0.7, -0.4],  rad: 0.24, th: 0.018, len: 1.7, s: 1.0 },
+  { p: [0.30, 0.52, 0.92],  r: [0.3, -0.2, 1.4],  rad: 0.26, th: 0.020, len: 1.4, s: 1.0 },
+  { p: [-0.36, 0.70, 0.88], r: [0.2, 0.3, -1.2],  rad: 0.22, th: 0.018, len: 1.6, s: 1.0 },
+  { p: [0.86, 0.95, -0.30], r: [0.0, 1.7, 0.6],   rad: 0.28, th: 0.020, len: 1.5, s: 1.0 },
+  { p: [-0.88, 1.05, -0.22],r: [0.1, -1.8, -0.5], rad: 0.25, th: 0.019, len: 1.6, s: 1.0 },
+  { p: [0.10, 1.86, -0.42], r: [1.2, 0.2, 0.1],   rad: 0.22, th: 0.017, len: 1.5, s: 1.0 },
+  { p: [0.44, 0.40, -0.78], r: [0.4, 2.6, 0.3],   rad: 0.21, th: 0.018, len: 1.4, s: 1.0 }
+];
+seamDefs.forEach((d, i) => {
+  const g = makeSeam(d.len, d.rad, d.th);
+  const m = new THREE.Mesh(g, seamMat);
+  m.position.set(d.p[0], d.p[1], d.p[2]);
+  m.rotation.set(d.r[0], d.r[1], d.r[2]);
+  m.scale.setScalar(d.s);
+  m.castShadow = false;
+  m.receiveShadow = true;
+  walrus.add(m);
+});
+
+/* ---------- Head ---------- */
+const head = new THREE.Group();
+head.position.set(0, 1.92, 0.10);
+head.rotation.x = 0.10;
+walrus.add(head);
+
+const skullGeo = new THREE.SphereGeometry(0.60, 96, 72);
+{
+  const pos = skullGeo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.x *= 1.02;
+    v.y *= 0.92;
+    v.z *= 1.00;
+    // Brow bulge
+    const brow = THREE.MathUtils.smoothstep(v.y, 0.05, 0.42) * THREE.MathUtils.smoothstep(v.z, 0.05, 0.5);
+    v.z += brow * 0.05;
+    // Jowl fullness low & forward
+    const jowl = THREE.MathUtils.smoothstep(-v.y, -0.05, 0.45) * THREE.MathUtils.smoothstep(v.z, -0.1, 0.5);
+    v.z += jowl * 0.06;
+    v.x *= 1 + jowl * 0.10;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+}
+clayify(skullGeo, { amp: 0.020, freq: 3.4, thumbs: true, thumbScale: 0.55, seed: 4.1 });
+mottle(skullGeo, 0x957758, 0.065, 5.3);
+const skull = addMesh(head, skullGeo, clayMat(0xffffff, 0.94, { vertexColors: true }));
+skull.position.set(0, 0.02, 0);
+
+/* ---------- Muzzle: big bristly pad, two lobes ---------- */
+const muzzle = new THREE.Group();
+muzzle.position.set(0, -0.20, 0.40);
+head.add(muzzle);
+
+function makeLobe(sx, sy, sz, seed) {
+  const g = new THREE.SphereGeometry(0.30, 72, 56);
+  g.scale(sx, sy, sz);
+  clayify(g, { amp: 0.017, freq: 5.2, thumbs: true, thumbScale: 0.35, seed: seed });
+  return g;
+}
+const lobeMat = clayMat(0xb58f70, 0.97);
+const lobeL = addMesh(muzzle, makeLobe(1.02, 0.94, 1.06, 9.2), lobeMat);
+lobeL.position.set(-0.155, 0.0, 0.02);
+const lobeR = addMesh(muzzle, makeLobe(1.02, 0.94, 1.06, 13.7), lobeMat);
+lobeR.position.set(0.155, 0.0, 0.02);
+lobeR.scale.x = -1; // mirrored lump
+
+// Upper lip / nose bridge blending muzzle into skull
+const bridgeGeo = new THREE.SphereGeometry(0.24, 56, 44);
+bridgeGeo.scale(1.05, 0.9, 1.0);
+clayify(bridgeGeo, { amp: 0.014, freq: 6.0, thumbs: false, seed: 21.0 });
+const bridge = addMesh(muzzle, bridgeGeo, clayMat(0xa9835f, 0.95));
+bridge.position.set(0, 0.20, -0.06);
+
+/* ---------- Nose: two soft nostril slits ---------- */
+const noseGeo = new THREE.SphereGeometry(0.115, 40, 32);
+noseGeo.scale(1.25, 0.85, 0.85);
+clayify(noseGeo, { amp: 0.010, freq: 9.0, thumbs: false, seed: 33.0 });
+const nose = addMesh(muzzle, noseGeo, clayMat(0x6b4a3c, 0.82));
+nose.position.set(0, 0.14, 0.245);
+
+const nostrilGeo = new THREE.CapsuleGeometry(0.017, 0.035, 6, 12);
+[-1, 1].forEach((s) => {
+  const n = new THREE.Mesh(nostrilGeo, MAT.dark);
+  n.position.set(0.048 * s, 0.145, 0.335);
+  n.rotation.set(Math.PI / 2 - 0.25, 0, 0.22 * s);
+  n.castShadow = false;
+  muzzle.add(n);
+});
+
+/* ---------- Bristles: little tool-poked holes + whisker stubs ---------- */
+const holeGeo = new THREE.CylinderGeometry(0.0125, 0.008, 0.05, 8);
+const bristleGeo = new THREE.CapsuleGeometry(0.006, 0.075, 4, 8);
+const holeMat = clayMat(0x5b4234, 0.99);
+const bristleMat = clayMat(0x51402f, 0.9);
+
+function pokeMuzzle(side) {
+  const rows = 4, cols = 5;
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const u = (c + 0.5) / cols;                       // 0..1 across
+      const w = (r + 0.5) / rows;                       // 0..1 down
+      const jitterA = (hash3(r * 5.1, c * 3.3, side * 2.7) - 0.5) * 0.10;
+      const jitterB = (hash3(c * 1.9, r * 8.8, side * 4.1) - 0.5) * 0.09;
+
+      const yaw = side * (0.16 + u * 0.72) + jitterA;    // horizontal angle from center
+      const pitch = 0.30 - w * 0.72 + jitterB;          // vertical angle
+
+      const R = 0.305;
+      const cx = -0.155 * -side; // lobe center x (side=+1 -> right lobe at +0.155)
+      const px = cx + Math.sin(yaw) * R * 1.0;
+      const py = Math.sin(pitch) * R * 0.92;
+      const pz = 0.02 + Math.cos(yaw) * Math.cos(pitch) * R * 0.98;
+
+      const dir = new THREE.Vector3(px - cx, py, pz - 0.02).normalize();
+
+      // The poked hole
+      const h = new THREE.Mesh(holeGeo, holeMat);
+      h.position.set(px, py, pz).addScaledVector(dir, -0.012);
+      h.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      h.castShadow = false;
+      muzzle.add(h);
+
+      // A stubby bristle out of most of them
+      if (hash3(r * 11.0, c * 6.0, side) > 0.32) {
+        const b = new THREE.Mesh(bristleGeo, bristleMat);
+        const out = dir.clone().multiplyScalar(0.045);
+        b.position.set(px + out.x, py + out.y, pz + out.z);
+        const bend = dir.clone();
+        bend.y -= 0.42;
+        bend.x += side * 0.25;
+        bend.normalize();
+        b.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), bend);
+        b.scale.setScalar(0.75 + 0.6 * hash3(c * 2.2, r * 4.4, side * 6.6));
+        b.castShadow = false;
+        muzzle.add(b);
+      }
+    }
+  }
+}
+pokeMuzzle(1);
+pokeMuzzle(-1);
+
+/* ---------- Tusks: two stubby off-white pegs ---------- */
+function makeTusk() {
+  const pts = [];
+  const SEG = 18;
+  for (let i = 0; i <= SEG; i++) {
+    const t = i / SEG;
+    // Thick at the gum, tapering to a rounded blunt tip.
+    const r = 0.082 * (1 - 0.55 * t) * (1 - 0.42 * Math.pow(Math.max(0, t - 0.78) / 0.22, 2));
+    pts.push(new THREE.Vector2(Math.max(0.004, r), t * 0.52));
+  }
+  const g = new THREE.LatheGeometry(pts, 40);
+  // Gentle inward-backward curve.
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const t = THREE.MathUtils.clamp(v.y / 0.52, 0, 1);
+    v.z += t * t * 0.055;
+    v.x += t * t * 0.020;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  clayify(g, { amp: 0.006, freq: 12.0, thumbs: false, seed: 44.0 });
+  return g;
+}
+const tuskMat = clayMat(0xe9e2cf, 0.66);
+[-1, 1].forEach((s) => {
+  const t = new THREE.Mesh(makeTusk(), tuskMat);
+  t.position.set(0.16 * s, -0.20, 0.44);
+  t.rotation.set(Math.PI + 0.30, 0, 0.16 * s);
+  t.castShadow = true;
+  t.receiveShadow = true;
+  muzzle.add(t);
+
+  // Gum socket ring where the tusk enters the muzzle
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.072, 0.016, 8, 24),
+    clayMat(0x9a7259, 0.95)
+  );
+  ring.position.set(0.16 * s, -0.19, 0.42);
+  ring.rotation.set(0.35, 0, 0);
+  ring.castShadow = false;
+  ring.receiveShadow = true;
+  muzzle.add(ring);
+});
+
+/* ---------- Eyes: small, beady, set high and wide ---------- */
+[-1, 1].forEach((s) => {
+  const socketGeo = new THREE.SphereGeometry(0.115, 32, 24);
+  socketGeo.scale(1.0, 0.82, 0.6);
+  const socket = new THREE.Mesh(socketGeo, clayMat(0x7d6248, 0.96));
+  socket.position.set(0.245 * s, 0.10, 0.475);
+  socket.rotation.y = 0.30 * s;
+  socket.castShadow = false;
+  socket.receiveShadow = true;
+  head.add(socket);
+
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.072, 32, 24), clayMat(0x1c1512, 0.35));
+  eye.position.set(0.248 * s, 0.10, 0.525);
+  eye.castShadow = false;
+  head.add(eye);
+
+  const glint = new THREE.Mesh(
+    new THREE.SphereGeometry(0.020, 16, 12),
+    new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.25, emissive: 0x555555 })
+  );
+  glint.position.set(0.248 * s + 0.024 * s, 0.128, 0.578);
+  head.add(glint);
+
+  // Heavy clay eyelid pressed over the top
+  const lid = new THREE.Mesh(
+    new THREE.SphereGeometry(0.098, 28, 20, 0, Math.PI * 2, 0, Math.PI * 0.55),
+    clayMat(0x8a6c50, 0.95)
+  );
+  lid.position.set(0.248 * s, 0.112, 0.512);
+  lid.rotation.set(0.42, 0, 0.16 * s);
+  lid.castShadow = false;
+  lid.receiveShadow = true;
+  head.add(lid);
+});
+
+/* ---------- Rosy blush pads on the cheeks ---------- */
+[-1, 1].forEach((s) => {
+  const g = new THREE.SphereGeometry(0.17, 32, 24);
+  g.scale(1.0, 0.78, 0.36);
+  clayify(g, { amp: 0.008, freq: 8.0, thumbs: false, seed: 60 + s });
+  const b = new THREE.Mesh(g, clayMat(0xc9776c, 0.9));
+  b.position.set(0.375 * s, -0.115, 0.315);
+  b.rotation.set(0.05, 0.62 * s, 0.18 * s);
+  b.castShadow = false;
+  b.receiveShadow = true;
+  head.add(b);
+});
+
+/* ---------- Brow tufts / forehead crease ---------- */
+[-1, 1].forEach((s) => {
+  const brow = new THREE.Mesh(
+    new THREE.TorusGeometry(0.10, 0.021, 8, 20, 1.9),
+    clayMat(0x7a5f47, 0.96)
+  );
+  brow.position.set(0.245 * s, 0.235, 0.47);
+  brow.rotation.set(0.35, 0.25 * s, s > 0 ? 2.6 : Math.PI - 2.6 + Math.PI);
+  brow.castShadow = false;
+  brow.receiveShadow = true;
+  head.add(brow);
+});
+
+/* ---------- Neck fold: rolls of clay between head and body ---------- */
+const foldMat = clayMat(0x84674e, 0.96);
+for (let i = 0; i < 2; i++) {
+  const g = new THREE.TorusGeometry(0.50 + i * 0.10, 0.085 - i * 0.008, 12, 48);
+  g.scale(1.06, 1.0, 0.92);
+  clayify(g, { amp: 0.012, freq: 6.0, thumbs: false, seed: 70 + i * 3 });
+  const f = new THREE.Mesh(g, foldMat);
+  f.position.set(0, 1.60 - i * 0.14, 0.02 + i * 0.02);
+  f.rotation.set(Math.PI / 2 - 0.16, 0, 0);
+  f.castShadow = true;
+  f.receiveShadow = true;
+  walrus.add(f);
+}
+
+/* ---------- Flipper stubs: pressed flat against the ground ---------- */
+function makeFlipper(seed) {
+  const g = new THREE.SphereGeometry(0.34, 56, 40);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.x *= 0.90;
+    v.y *= 0.34;           // squashed flat
+    v.z *= 1.30;           // paddled forward
+    // taper toward the toe
+    const t = THREE.MathUtils.smoothstep(v.z, 0.0, 0.44);
+    v.x *= 1 - 0.22 * t;
+    v.y *= 1 - 0.30 * t;
+    // splay the heel
+    const h = THREE.MathUtils.smoothstep(-v.z, 0.0, 0.4);
+    v.x *= 1 + 0.16 * h;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  clayify(g, { amp: 0.014, freq: 5.0, thumbs: true, thumbScale: 0.30, seed: seed });
+  return g;
+}
+
+function buildFrontFlipper(side) {
+  const grp = new THREE.Group();
+  const f = addMesh(grp, makeFlipper(80 + side * 5), clayMat(0x846349, 0.95));
+  f.position.set(0, 0, 0);
+
+  // Toe grooves scraped in with a tool
+  for (let i = -1; i <= 1; i++) {
+    const groove = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.013, 0.19, 5, 10),
+      clayMat(0x5d4534, 0.98)
+    );
+    groove.position.set(i * 0.085, 0.098, 0.24);
+    groove.rotation.set(Math.PI / 2 - 0.10, i * 0.14, 0);
+    groove.castShadow = false;
+    groove.receiveShadow = true;
+    grp.add(groove);
+  }
+
+  // Little claw nubs at the toe edge
+  for (let i = -1; i <= 1; i++) {
+    const claw = new THREE.Mesh(
+      new THREE.SphereGeometry(0.026, 14, 10),
+      clayMat(0x6a5240, 0.85)
+    );
+    claw.scale.set(1.0, 0.7, 1.5);
+    claw.position.set(i * 0.085, 0.055, 0.415);
+    claw.castShadow = false;
+    grp.add(claw);
+  }
+  return grp;
+}
+
+[-1, 1].forEach((s) => {
+  const fl = buildFrontFlipper(s);
+  fl.position.set(0.72 * s, 0.135, 0.60);
+  fl.rotation.set(0.02, -0.42 * s, 0.06 * s);
+  walrus.add(fl);
+});
+
+// Rear flipper stubs, tucked and flattened at the base
+function buildRearFlipper(side) {
+  const grp = new THREE.Group();
+  const g = new THREE.SphereGeometry(0.30, 48, 36);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.x *= 1.05;
+    v.y *= 0.30;
+    v.z *= 0.92;
+    const t = THREE.MathUtils.smoothstep(v.x * side, 0.0, 0.32);
+    v.z *= 1 + 0.28 * t;
+    v.y *= 1 - 0.18 * t;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  clayify(g, { amp: 0.013, freq: 5.6, thumbs: true, thumbScale: 0.25, seed: 90 + side * 4 });
+  const f = addMesh(grp, g, clayMat(0x7d5d46, 0.95));
+  f.position.set(0, 0, 0);
+
+  for (let i = -1; i <= 1; i++) {
+    const groove = new THREE.Mesh(
+      new THREE.CapsuleGeometry(0.011, 0.15, 5, 10),
+      clayMat(0x59422f, 0.98)
+    );
+    groove.position.set(side * 0.16, 0.082, i * 0.085);
+    groove.rotation.set(0, 0, Math.PI / 2);
+    groove.castShadow = false;
+    groove.receiveShadow = true;
+    grp.add(groove);
+  }
+  return grp;
+}
+[-1, 1].forEach((s) => {
+  const rf = buildRearFlipper(s);
+  rf.position.set(0.50 * s, 0.10, -0.68);
+  rf.rotation.set(0.0, 0.30 * s, 0.0);
+  walrus.add(rf);
+});
+
+// Small tail flap between the rear flippers
+{
+  const g = new THREE.SphereGeometry(0.20, 40, 30);
+  g.scale(1.1, 0.34, 0.70);
+  clayify(g, { amp: 0.012, freq: 7.0, thumbs: false, seed: 101 });
+  const tail = addMesh(walrus, g, clayMat(0x795942, 0.95));
+  tail.position.set(0, 0.085, -0.86);
+  tail.rotation.x = 0.08;
+}
+
+/* ---------- Extra hand-pressed detail: a few pinched clay ridges ---------- */
+const pinchMat = clayMat(0x7c5f47, 0.97);
+for (let i = 0; i < 7; i++) {
+  const a = i / 7 * Math.PI * 2 + 0.4;
+  const g = new THREE.CapsuleGeometry(0.024 + 0.008 * hash3(i, 1, 2), 0.20 + 0.12 * hash3(i, 3, 4), 6, 12);
+  const p = new THREE.Mesh(g, pinchMat);
+  const r = 0.99;
+  p.position.set(Math.cos(a) * r * 0.95, 0.34 + 0.62 * hash3(i, 5, 6), Math.sin(a) * r * 0.86 + 0.05);
+  p.rotation.set(hash3(i, 7, 8) * 1.4 - 0.7, -a, 1.1 + hash3(i, 9, 10) * 0.8);
+  p.castShadow = false;
+  p.receiveShadow = true;
+  walrus.add(p);
+}
+
+/* ---------- Base contact shadow patty (clay squish where it meets ground) ---------- */
+{
+  const g = new THREE.CylinderGeometry(1.10, 1.22, 0.10, 64, 1);
+  clayify(g, { amp: 0.018, freq: 4.0, thumbs: false, seed: 130 });
+  const patty = addMesh(walrus, g, clayMat(0x836448, 0.96));
+  patty.position.set(0, 0.05, 0.06);
+  patty.scale.set(1.0, 1.0, 1.06);
+}
+
+/* ---------- Final placement ---------- */
+walrus.position.y = 0.0;
+walrus.scale.setScalar(0.92);
+
+/* ============================================================
+   Animation loop
+   ============================================================ */
+let t0 = performance.now();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = (performance.now() - t0) * 0.001;
+
+  // Gentle claymation "breathing" — slight squash & stretch.
+  const breathe = Math.sin(t * 1.15) * 0.012;
+  body.scale.set(1 + breathe * 0.8, 1 - breathe, 1 + breathe * 0.9);
+  head.position.y = 1.92 + Math.sin(t * 1.15 + 0.5) * 0.012;
+  head.rotation.z = Math.sin(t * 0.47) * 0.028;
+  head.rotation.y = Math.sin(t * 0.31) * 0.05;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   Resize
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Clockwork Gear Orb</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0b0d; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(210, 190, 150, 0.5); letter-spacing: 0.3px;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit • scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+/* ---------------------------------------------------------------------------
+   Scene + gradient studio background
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+
+function gradientBackground() {
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0.0, '#20252d');
+  g.addColorStop(0.5, '#141821');
+  g.addColorStop(1.0, '#07080b');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 16, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = gradientBackground();
+
+/* Neutral studio environment for realistic metal reflections (procedural) */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------------------------------------------------------------------------
+   Camera
+--------------------------------------------------------------------------- */
+const camera = new THREE.PerspectiveCamera(
+  45, window.innerWidth / window.innerHeight, 0.1, 100
+);
+camera.position.set(0.6, 1.9, 7.8);
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key + fill + rim + warm inner core glow
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0x9fb6d4, 0x120d08, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1db, 2.4);
+key.position.set(5.5, 8.5, 5.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -4.5;
+key.shadow.camera.right = 4.5;
+key.shadow.camera.top = 4.5;
+key.shadow.camera.bottom = -4.5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8fb0ff, 0.55);
+fill.position.set(-6, 2, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd39a, 1.5);
+rim.position.set(-4.5, 5, -8);
+scene.add(rim);
+
+const coreGlow = new THREE.PointLight(0xffcf90, 7.0, 6.5, 2.0);
+coreGlow.position.set(0, 0, 0);
+scene.add(coreGlow);
+
+/* ---------------------------------------------------------------------------
+   Shadow-only ground plane
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.85;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Aged brass / copper materials
+--------------------------------------------------------------------------- */
+const MATS = {
+  brass:      new THREE.MeshStandardMaterial({ color: 0x9c7a3c, metalness: 1.0, roughness: 0.40, envMapIntensity: 1.15 }),
+  brassLight: new THREE.MeshStandardMaterial({ color: 0xc59c5a, metalness: 1.0, roughness: 0.30, envMapIntensity: 1.25 }),
+  copper:     new THREE.MeshStandardMaterial({ color: 0xaa6438, metalness: 1.0, roughness: 0.38, envMapIntensity: 1.15 }),
+  patina:     new THREE.MeshStandardMaterial({ color: 0x6f6c47, metalness: 0.9, roughness: 0.62, envMapIntensity: 0.9  }),
+  steel:      new THREE.MeshStandardMaterial({ color: 0x4a4a54, metalness: 1.0, roughness: 0.45, envMapIntensity: 1.0  }),
+  polished:   new THREE.MeshStandardMaterial({ color: 0xe4c274, metalness: 1.0, roughness: 0.12, envMapIntensity: 1.55, emissive: 0x2a1a06, emissiveIntensity: 0.35 })
+};
+
+/* ---------------------------------------------------------------------------
+   Procedural gear geometry
+--------------------------------------------------------------------------- */
+const spinners = [];               // { obj, speed } — animated each frame
+const ZAXIS = new THREE.Vector3(0, 0, 1);
+
+function spokeHole(rOut, rIn, a0, a1) {
+  const path = new THREE.Path();
+  const steps = 6;
+  const P = (r, a) => [Math.cos(a) * r, Math.sin(a) * r];
+  path.moveTo(...P(rOut, a0));
+  for (let k = 1; k <= steps; k++) path.lineTo(...P(rOut, a0 + (a1 - a0) * k / steps));
+  for (let k = 0; k <= steps; k++) path.lineTo(...P(rIn, a1 - (a1 - a0) * k / steps));
+  path.closePath();
+  return path;
+}
+
+function makeGearShape(pitchR, teeth, toothH, axleR, spokes) {
+  const shape = new THREE.Shape();
+  const outerR = pitchR + toothH * 0.5;
+  const rootR  = pitchR - toothH * 0.5;
+  const ang    = (Math.PI * 2) / teeth;
+  const tipFrac = 0.42;
+  const P = (r, a) => [Math.cos(a) * r, Math.sin(a) * r];
+
+  shape.moveTo(...P(rootR, 0));
+  for (let i = 0; i < teeth; i++) {
+    const base = i * ang;
+    shape.lineTo(...P(outerR, base + ang * (0.5 - tipFrac / 2)));
+    shape.lineTo(...P(outerR, base + ang * (0.5 + tipFrac / 2)));
+    shape.lineTo(...P(rootR,  base + ang));
+  }
+
+  // central axle bore
+  const bore = new THREE.Path();
+  bore.absarc(0, 0, axleR, 0, Math.PI * 2, true);
+  shape.holes.push(bore);
+
+  // spoke cut-outs
+  if (spokes > 0) {
+    const rimInner = rootR - Math.max(0.09, toothH * 0.9);
+    const rHub     = axleR + Math.max(0.09, pitchR * 0.15);
+    if (rimInner > rHub + 0.06) {
+      const seg = (Math.PI * 2) / spokes;
+      const spokeW = 0.4; // fraction of segment kept solid as spoke
+      for (let i = 0; i < spokes; i++) {
+        const a0 = i * seg + seg * spokeW * 0.5;
+        const a1 = (i + 1) * seg - seg * spokeW * 0.5;
+        shape.holes.push(spokeHole(rimInner, rHub, a0, a1));
+      }
+    }
+  }
+  return shape;
+}
+
+function createGear(cfg) {
+  const {
+    pitchR, teeth, toothH, thickness, material,
+    spokes = 0, hub = true
+  } = cfg;
+
+  const shape = makeGearShape(pitchR, teeth, toothH, cfg.axleR, spokes);
+  const bevel = Math.min(0.022, pitchR * 0.06);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 2,
+    curveSegments: 3,
+    steps: 1
+  });
+  geo.center();
+
+  const group = new THREE.Group();
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  if (hub) {
+    const hubGeo = new THREE.CylinderGeometry(cfg.axleR * 1.5, cfg.axleR * 1.5, thickness + 0.06, 20);
+    const hubMesh = new THREE.Mesh(hubGeo, MATS.polished);
+    hubMesh.rotation.x = Math.PI / 2; // align cylinder axis to gear axle (z)
+    hubMesh.castShadow = true;
+    hubMesh.receiveShadow = true;
+    group.add(hubMesh);
+  }
+  return group;
+}
+
+/* Place an object on the orb shell, axle pointing radially outward */
+function placeRadial(obj, dir, radius) {
+  obj.position.copy(dir).multiplyScalar(radius);
+  obj.quaternion.setFromUnitVectors(ZAXIS, dir);
+}
+
+/* Evenly distributed directions on a sphere (Fibonacci) */
+function fibonacciDirs(n) {
+  const dirs = [];
+  const phi = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < n; i++) {
+    const y = 1 - (i / (n - 1)) * 2;
+    const r = Math.sqrt(Math.max(0, 1 - y * y));
+    const t = phi * i;
+    dirs.push(new THREE.Vector3(Math.cos(t) * r, y, Math.sin(t) * r).normalize());
+  }
+  return dirs;
+}
+
+/* ---------------------------------------------------------------------------
+   Build the ONE centered sculpture
+--------------------------------------------------------------------------- */
+const orb = new THREE.Group();
+scene.add(orb);
+
+const shellMats = [MATS.brass, MATS.copper, MATS.brassLight, MATS.patina];
+
+/* --- Polished core --- */
+const core = new THREE.Group();
+const coreSphere = new THREE.Mesh(new THREE.SphereGeometry(0.5, 48, 32), MATS.polished);
+coreSphere.castShadow = true;
+coreSphere.receiveShadow = true;
+core.add(coreSphere);
+
+// banding rings around the core
+const band1 = new THREE.Mesh(new THREE.TorusGeometry(0.52, 0.032, 16, 64), MATS.brassLight);
+band1.rotation.x = Math.PI / 2;
+core.add(band1);
+const band2 = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.028, 16, 64), MATS.copper);
+band2.rotation.y = Math.PI / 2.5;
+core.add(band2);
+[band1, band2].forEach(b => { b.castShadow = true; b.receiveShadow = true; });
+
+// small pole finials
+[-1, 1].forEach(s => {
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 0.16, 16), MATS.brassLight);
+  cap.position.set(0, 0.53 * s, 0);
+  cap.castShadow = true; cap.receiveShadow = true;
+  core.add(cap);
+});
+orb.add(core);
+
+/* --- Central gyroscope spindles (thin steel axles) --- */
+const spindleLen = 4.5;
+[
+  new THREE.Euler(0, 0, 0),               // vertical (y)
+  new THREE.Euler(0, 0, Math.PI / 2),     // along x
+  new THREE.Euler(Math.PI / 2, 0, 0)      // along z
+].forEach(rot => {
+  const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, spindleLen, 12), MATS.steel);
+  rod.setRotationFromEuler(rot);
+  rod.castShadow = true; rod.receiveShadow = true;
+  orb.add(rod);
+});
+
+/* --- Big equatorial ring gear --- */
+const ringGear1 = createGear({
+  pitchR: 2.12, teeth: 72, toothH: 0.16, thickness: 0.26,
+  axleR: 1.94, material: MATS.brass, spokes: 0, hub: false
+});
+ringGear1.rotation.x = Math.PI / 2;
+orb.add(ringGear1);
+spinners.push({ obj: ringGear1, speed: 0.12 });
+
+/* --- Vertical ring gear (nested) --- */
+const ringGear2 = createGear({
+  pitchR: 1.96, teeth: 66, toothH: 0.15, thickness: 0.24,
+  axleR: 1.79, material: MATS.copper, spokes: 0, hub: false
+});
+ringGear2.rotation.y = Math.PI / 2;
+orb.add(ringGear2);
+spinners.push({ obj: ringGear2, speed: -0.15 });
+
+/* --- Thin armillary tori for structure --- */
+const armillaryConfigs = [
+  { r: 2.04, tube: 0.05, mat: MATS.patina,     euler: new THREE.Euler(Math.PI / 2, 0.6, 0) },
+  { r: 1.88, tube: 0.045, mat: MATS.brassLight, euler: new THREE.Euler(0.7, 0, Math.PI / 3) }
+];
+armillaryConfigs.forEach(c => {
+  const t = new THREE.Mesh(new THREE.TorusGeometry(c.r, c.tube, 18, 128), c.mat);
+  t.setRotationFromEuler(c.euler);
+  t.castShadow = true; t.receiveShadow = true;
+  orb.add(t);
+});
+
+/* --- Outer shell of interlocking gears --- */
+const outerDirs = fibonacciDirs(17);
+outerDirs.forEach((dir, i) => {
+  const pitchR = 0.34 + (i % 4) * 0.075 + (i % 3) * 0.02;
+  const teeth = Math.max(9, Math.round(pitchR * 32));
+  const toothH = pitchR * 0.3;
+  const thickness = 0.14;
+  const axleR = pitchR * 0.16;
+  const spokes = pitchR > 0.44 ? (i % 2 ? 6 : 5) : 0;
+  const mat = shellMats[i % shellMats.length];
+
+  const gear = createGear({ pitchR, teeth, toothH, thickness, axleR, material: mat, spokes });
+  const radius = 1.82 + ((i * 7) % 5) * 0.03;
+  placeRadial(gear, dir, radius);
+  gear.rotateZ((i * 1.37) % (Math.PI * 2)); // random-ish phase for interlock look
+  orb.add(gear);
+  spinners.push({ obj: gear, speed: (i % 2 ? 1 : -1) * (0.28 + (i % 3) * 0.12) });
+});
+
+/* --- Inner mid-layer gears (adds depth to the hollow shell) --- */
+const midDirs = fibonacciDirs(9);
+midDirs.forEach((dir, i) => {
+  const pitchR = 0.26 + (i % 3) * 0.06;
+  const teeth = Math.max(9, Math.round(pitchR * 34));
+  const toothH = pitchR * 0.3;
+  const thickness = 0.11;
+  const axleR = pitchR * 0.18;
+  const mat = shellMats[(i + 2) % shellMats.length];
+
+  const gear = createGear({ pitchR, teeth, toothH, thickness, axleR, material: mat, spokes: 0 });
+  placeRadial(gear, dir, 1.08 + (i % 2) * 0.05);
+  gear.rotateZ((i * 2.1) % (Math.PI * 2));
+  orb.add(gear);
+  spinners.push({ obj: gear, speed: (i % 2 ? -1 : 1) * (0.4 + (i % 2) * 0.2) });
+});
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.enablePan = false;
+controls.minDistance = 4.2;
+controls.maxDistance = 18;
+controls.target.set(0, 0, 0);
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------------------------------------------------------------------------
+   Animate
+--------------------------------------------------------------------------- */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  for (const s of spinners) s.obj.rotateZ(s.speed * dt);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

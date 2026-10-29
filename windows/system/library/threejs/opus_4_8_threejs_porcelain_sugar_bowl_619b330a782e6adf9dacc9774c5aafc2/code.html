@@ -1,0 +1,1039 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Porcelain Sugar Bowl</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14161a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    color: rgba(255,255,255,0.35); letter-spacing: 0.08em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Porcelain Sugar Bowl &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181c);
+scene.fog = new THREE.Fog(0x16181c, 0.9, 3.2);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.30, 0.24, 0.40);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.minDistance = 0.20;
+controls.maxDistance = 1.30;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 0.062, 0);
+
+/* ============================================================
+   Studio environment (procedural) for glossy glaze reflections
+   ============================================================ */
+function buildStudioEnvironment(rend) {
+  const envScene = new THREE.Scene();
+
+  // Soft gradient dome
+  const domeGeo = new THREE.SphereGeometry(8, 32, 24);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      top:    { value: new THREE.Color(0xbfc6d0) },
+      mid:    { value: new THREE.Color(0x6a7078) },
+      bottom: { value: new THREE.Color(0x14161a) }
+    },
+    vertexShader: `
+      varying vec3 vPos;
+      void main() {
+        vPos = position;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vPos;
+      uniform vec3 top; uniform vec3 mid; uniform vec3 bottom;
+      void main() {
+        float h = normalize(vPos).y;
+        vec3 c = (h > 0.0) ? mix(mid, top, pow(h, 0.7)) : mix(mid, bottom, pow(-h, 0.6));
+        gl_FragColor = vec4(c, 1.0);
+      }
+    `
+  });
+  envScene.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // Rectangular soft-boxes (bright panels) -> crisp highlights on the glaze
+  function panel(w, h, x, y, z, color, intensity, lookAtOrigin = true) {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide })
+    );
+    m.position.set(x, y, z);
+    if (lookAtOrigin) m.lookAt(0, 0, 0);
+    envScene.add(m);
+  }
+  panel(5.0, 3.0, -2.6,  3.4,  2.0, 0xffffff, 5.2);
+  panel(4.2, 4.2,  3.6,  1.6, -1.2, 0xdfe6f2, 2.4);
+  panel(3.0, 2.0, -1.2,  0.6, -4.0, 0xf3e6d8, 1.6);
+  panel(6.0, 0.7,  0.0,  4.6,  0.0, 0xffffff, 3.0);
+
+  const pmrem = new THREE.PMREMGenerator(rend);
+  pmrem.compileEquirectangularShader();
+  const rt = pmrem.fromScene(envScene, 0.02);
+  pmrem.dispose();
+  domeGeo.dispose(); domeMat.dispose();
+  envScene.traverse(o => { if (o.isMesh && o.geometry) o.geometry.dispose(); });
+  return rt.texture;
+}
+const envMap = buildStudioEnvironment(renderer);
+scene.environment = envMap;
+
+/* ============================================================
+   Lighting
+   ============================================================ */
+scene.add(new THREE.HemisphereLight(0xdfe6f2, 0x1a1c20, 0.45));
+
+const key = new THREE.DirectionalLight(0xfff6ec, 2.5);
+key.position.set(0.42, 0.68, 0.44);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 3.0;
+key.shadow.camera.left = -0.28;
+key.shadow.camera.right = 0.28;
+key.shadow.camera.top = 0.28;
+key.shadow.camera.bottom = -0.28;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.006;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xcfdcf2, 0.62);
+fill.position.set(-0.55, 0.34, 0.30);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xeaf1ff, 1.35);
+rim.position.set(-0.30, 0.42, -0.62);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffe9d2, 0.35, 1.2, 2.0);
+bounce.position.set(0.10, -0.05, 0.18);
+scene.add(bounce);
+
+/* ============================================================
+   Ground: shadow-only plane + faint surface disc
+   ============================================================ */
+const shadowFloor = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.42 })
+);
+shadowFloor.rotation.x = -Math.PI / 2;
+shadowFloor.position.y = 0;
+shadowFloor.receiveShadow = true;
+scene.add(shadowFloor);
+
+// Very subtle table sheen (does not receive shadows; purely aesthetic vignette)
+const tableGeo = new THREE.CircleGeometry(1.1, 96);
+const tableMat = new THREE.MeshBasicMaterial({
+  color: 0x2a2e35, transparent: true, opacity: 0.55, depthWrite: false
+});
+{
+  // radial fade via vertex colors
+  const pos = tableGeo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const r = Math.hypot(pos.getX(i), pos.getY(i)) / 1.1;
+    const f = Math.pow(1.0 - Math.min(r, 1.0), 1.6);
+    colors[i * 3 + 0] = f; colors[i * 3 + 1] = f; colors[i * 3 + 2] = f;
+  }
+  tableGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  tableMat.vertexColors = true;
+}
+const table = new THREE.Mesh(tableGeo, tableMat);
+table.rotation.x = -Math.PI / 2;
+table.position.y = -0.0008;
+scene.add(table);
+
+/* ============================================================
+   Global design constants  (real-world metres; bowl ≈ 11 cm tall)
+   ============================================================ */
+const RIBS = 16;                 // melon flutes
+const RADIAL = RIBS * 16;        // radial segments (multiple of RIBS)
+const RIB_DEPTH = 0.052;         // flute amplitude as fraction of radius
+const TWO_PI = Math.PI * 2;
+
+// Fluting profile: rounded melon lobes (cos wave, softened)
+function fluteFactor(theta, blend) {
+  // blend in [0,1] : 0 = perfectly round, 1 = full flute depth
+  const w = Math.cos(theta * RIBS);
+  // soften the valleys slightly so lobes read as rounded melon segments
+  const s = w * 0.5 + 0.5;                 // 0..1
+  const shaped = Math.pow(s, 0.85) * 2.0 - 1.0;
+  return 1.0 + shaped * RIB_DEPTH * blend;
+}
+
+/* ============================================================
+   Materials
+   ============================================================ */
+// Glossy bone-white porcelain glaze
+const porcelain = new THREE.MeshPhysicalMaterial({
+  color: 0xf6f2e9,
+  roughness: 0.075,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.035,
+  sheen: 0.35,
+  sheenRoughness: 0.6,
+  sheenColor: new THREE.Color(0xfff8ec),
+  envMapIntensity: 1.15,
+  transmission: 0.0,
+  ior: 1.52,
+  specularIntensity: 1.0
+});
+porcelain.side = THREE.DoubleSide;
+
+// Subsurface-ish inner glaze (slightly cooler, less clearcoat)
+const porcelainInner = new THREE.MeshPhysicalMaterial({
+  color: 0xefeade,
+  roughness: 0.16,
+  metalness: 0.0,
+  clearcoat: 0.75,
+  clearcoatRoughness: 0.09,
+  envMapIntensity: 0.85,
+  side: THREE.DoubleSide
+});
+
+// Cobalt blue underglaze
+const cobalt = new THREE.MeshPhysicalMaterial({
+  color: 0x1d3f9c,
+  roughness: 0.13,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.05,
+  envMapIntensity: 1.0,
+  side: THREE.DoubleSide
+});
+const cobaltDeep = cobalt.clone();
+cobaltDeep.color = new THREE.Color(0x14307c);
+
+// Fired gold lustre
+const gold = new THREE.MeshPhysicalMaterial({
+  color: 0xd9ab52,
+  roughness: 0.17,
+  metalness: 1.0,
+  clearcoat: 0.6,
+  clearcoatRoughness: 0.12,
+  envMapIntensity: 1.35,
+  side: THREE.DoubleSide
+});
+
+// Crazing lines: hairline dark cracks in the glaze near the foot
+const crazingMat = new THREE.LineBasicMaterial({
+  color: 0x9a9285, transparent: true, opacity: 0.5
+});
+
+/* ============================================================
+   Utility: lathe-style fluted surface generator
+   Builds a revolved surface from a profile [{r, y, flute}] with
+   per-ring flute blending, smooth normals, and UVs.
+   ============================================================ */
+function makeFlutedLathe(profile, radialSegments, opts = {}) {
+  const closeTop = !!opts.closeTop;
+  const rows = profile.length;
+  const cols = radialSegments;
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i < rows; i++) {
+    const p = profile[i];
+    const v = i / (rows - 1);
+    for (let j = 0; j <= cols; j++) {
+      const t = j / cols;
+      const theta = t * TWO_PI;
+      const f = fluteFactor(theta, p.flute);
+      const r = p.r * f;
+      positions.push(Math.cos(theta) * r, p.y, Math.sin(theta) * r);
+      uvs.push(t, v);
+    }
+  }
+
+  const stride = cols + 1;
+  for (let i = 0; i < rows - 1; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * stride + j;
+      const b = a + 1;
+      const c = a + stride;
+      const d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  // Weld the seam normals (j=0 and j=cols share a location)
+  const nrm = geo.attributes.normal;
+  for (let i = 0; i < rows; i++) {
+    const a = i * stride;
+    const b = i * stride + cols;
+    const nx = nrm.getX(a) + nrm.getX(b);
+    const ny = nrm.getY(a) + nrm.getY(b);
+    const nz = nrm.getZ(a) + nrm.getZ(b);
+    const len = Math.hypot(nx, ny, nz) || 1;
+    nrm.setXYZ(a, nx / len, ny / len, nz / len);
+    nrm.setXYZ(b, nx / len, ny / len, nz / len);
+  }
+  nrm.needsUpdate = true;
+
+  if (closeTop) geo.computeBoundingSphere();
+  return geo;
+}
+
+// Smoothstep helper
+const smoothstep = (e0, e1, x) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+
+/* ============================================================
+   THE OBJECT
+   ============================================================ */
+const bowl = new THREE.Group();
+scene.add(bowl);
+
+/* -------- Dimensions (metres) -------------------------------
+   foot ring      : r 0.030, y 0 .. 0.008
+   body           : y 0.008 .. 0.078,  max r 0.052
+   rim / gallery  : y 0.078
+   lid dome       : y 0.078 .. 0.112
+   rosebud finial : y 0.108 .. 0.132
+   overall height : ~0.132 m (13 cm), width w/ handles ~0.135 m
+   ------------------------------------------------------------ */
+
+const BODY_TOP = 0.0780;
+const R_RIM    = 0.0470;
+
+/* ---------- 1. BODY (outer wall, fluted melon form) ---------- */
+function bodyProfile() {
+  const pts = [];
+  const N = 116;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;                 // 0 at foot, 1 at rim
+    const y = 0.0055 + t * (BODY_TOP - 0.0055);
+
+    // Radius curve: narrow foot -> full melon belly -> slight tuck at rim
+    let r;
+    const belly = 0.0520;
+    if (t < 0.14) {
+      // flare out of the foot
+      const u = t / 0.14;
+      r = 0.0250 + (0.0392 - 0.0250) * Math.pow(u, 0.62);
+    } else if (t < 0.52) {
+      const u = (t - 0.14) / 0.38;
+      r = 0.0392 + (belly - 0.0392) * Math.sin(u * Math.PI * 0.5);
+    } else {
+      const u = (t - 0.52) / 0.48;
+      // gentle shoulder, tucking in to the gallery rim
+      r = belly - (belly - R_RIM) * Math.pow(u, 1.55);
+    }
+
+    // Flute blend: none right at the foot, full through the belly,
+    // easing off just below the rim so the gallery stays circular.
+    const flute = smoothstep(0.035, 0.24, t) * (1.0 - smoothstep(0.86, 0.995, t) * 0.82);
+
+    pts.push({ r, y, flute });
+  }
+  return pts;
+}
+
+const bodyGeo = makeFlutedLathe(bodyProfile(), RADIAL);
+const bodyMesh = new THREE.Mesh(bodyGeo, porcelain);
+bodyMesh.castShadow = true;
+bodyMesh.receiveShadow = true;
+bowl.add(bodyMesh);
+
+/* ---------- 1b. INNER WALL (thin porcelain, ~3 mm) ---------- */
+function innerProfile() {
+  const src = bodyProfile();
+  const pts = [];
+  const wall = 0.0032;
+  for (let i = 0; i < src.length; i++) {
+    const p = src[i];
+    const t = i / (src.length - 1);
+    // Interior is smooth (not fluted) and bottoms out above the foot
+    const yInner = 0.0125 + t * (BODY_TOP - 0.0125);
+    const rInner = Math.max(0.0006, p.r - wall - 0.0012 * (1 - t));
+    pts.push({ r: rInner, y: yInner, flute: 0.0 });
+  }
+  // add a small centre cap at the base of the interior
+  pts.unshift({ r: 0.0000, y: 0.0118, flute: 0 });
+  pts.splice(1, 0, { r: 0.0090, y: 0.0119, flute: 0 });
+  pts.splice(2, 0, { r: 0.0170, y: 0.0124, flute: 0 });
+  return pts;
+}
+const innerGeo = makeFlutedLathe(innerProfile(), 128);
+const innerMesh = new THREE.Mesh(innerGeo, porcelainInner);
+innerMesh.receiveShadow = true;
+bowl.add(innerMesh);
+
+/* ---------- 1c. RIM LIP (rolls the wall over at the top) ---------- */
+const rimLip = new THREE.Mesh(
+  new THREE.TorusGeometry(R_RIM - 0.0016, 0.0016, 18, 200),
+  porcelain
+);
+rimLip.rotation.x = Math.PI / 2;
+rimLip.position.y = BODY_TOP;
+rimLip.castShadow = true;
+rimLip.receiveShadow = true;
+bowl.add(rimLip);
+
+/* ---------- 2. FOOT RING ---------- */
+const footProfile = [
+  { r: 0.0232, y: 0.0000, flute: 0 },
+  { r: 0.0288, y: 0.0000, flute: 0 },
+  { r: 0.0296, y: 0.0012, flute: 0 },
+  { r: 0.0298, y: 0.0034, flute: 0 },
+  { r: 0.0290, y: 0.0054, flute: 0 },
+  { r: 0.0262, y: 0.0064, flute: 0 },
+  { r: 0.0250, y: 0.0062, flute: 0 },
+  { r: 0.0244, y: 0.0040, flute: 0 },
+  { r: 0.0238, y: 0.0016, flute: 0 },
+  { r: 0.0232, y: 0.0002, flute: 0 }
+];
+const footGeo = makeFlutedLathe(footProfile, 160);
+const footMesh = new THREE.Mesh(footGeo, porcelain);
+footMesh.castShadow = true;
+footMesh.receiveShadow = true;
+bowl.add(footMesh);
+
+// under-base disc (recessed, unglazed-looking matte)
+const baseDisc = new THREE.Mesh(
+  new THREE.CircleGeometry(0.0236, 64),
+  new THREE.MeshStandardMaterial({ color: 0xece7dc, roughness: 0.62, metalness: 0.0 })
+);
+baseDisc.rotation.x = Math.PI / 2;
+baseDisc.position.y = 0.0016;
+bowl.add(baseDisc);
+
+/* ---------- 3. CRAZING (hairline glaze cracks near the foot) ---------- */
+function buildCrazing() {
+  const group = new THREE.Group();
+  // deterministic pseudo-random
+  let seed = 20260720;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+
+  const prof = bodyProfile();
+  // sample body radius at parameter t
+  const radiusAt = (t) => {
+    const idx = Math.min(prof.length - 1, Math.max(0, Math.round(t * (prof.length - 1))));
+    return prof[idx];
+  };
+
+  const CRACKS = 46;
+  for (let c = 0; c < CRACKS; c++) {
+    // cluster crazing low on the body (t 0.02 .. 0.30)
+    const t0 = 0.015 + Math.pow(rnd(), 1.5) * 0.30;
+    let theta = rnd() * TWO_PI;
+    let t = t0;
+    const pts = [];
+    const segs = 5 + Math.floor(rnd() * 7);
+    let dTheta = (rnd() - 0.5) * 0.10;
+    let dT = (rnd() - 0.5) * 0.030;
+    for (let s = 0; s <= segs; s++) {
+      const p = radiusAt(t);
+      const f = fluteFactor(theta, p.flute);
+      const r = p.r * f * 1.0016;   // sit a hair proud of the glaze
+      pts.push(new THREE.Vector3(Math.cos(theta) * r, p.y, Math.sin(theta) * r));
+      // wander
+      dTheta += (rnd() - 0.5) * 0.055;
+      dT += (rnd() - 0.5) * 0.016;
+      theta += dTheta * 0.55;
+      t = Math.min(0.42, Math.max(0.008, t + dT * 0.55));
+    }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const samples = curve.getPoints(segs * 6);
+    const g = new THREE.BufferGeometry().setFromPoints(samples);
+    const line = new THREE.Line(g, crazingMat);
+    group.add(line);
+  }
+  return group;
+}
+bowl.add(buildCrazing());
+
+/* ---------- 4. SCROLLED LOOP HANDLES (two, opposed) ---------- */
+function makeScrollHandle() {
+  const g = new THREE.Group();
+
+  // Main loop: a C-shaped ear standing off the body, in the X/Y plane,
+  // pushed outward in +X. Built as a tube along a hand-shaped curve.
+  const loopPts = [];
+  // Attachment high on the shoulder
+  loopPts.push(new THREE.Vector3(0.0455, 0.0700, 0));
+  loopPts.push(new THREE.Vector3(0.0560, 0.0715, 0));
+  loopPts.push(new THREE.Vector3(0.0648, 0.0668, 0));
+  loopPts.push(new THREE.Vector3(0.0678, 0.0570, 0));
+  loopPts.push(new THREE.Vector3(0.0648, 0.0468, 0));
+  loopPts.push(new THREE.Vector3(0.0560, 0.0412, 0));
+  loopPts.push(new THREE.Vector3(0.0470, 0.0398, 0));
+  // Attachment low on the belly
+  loopPts.push(new THREE.Vector3(0.0410, 0.0392, 0));
+
+  const loopCurve = new THREE.CatmullRomCurve3(loopPts, false, 'catmullrom', 0.35);
+
+  // Tapered tube (thicker at the top attachment, thinner at the tail)
+  const TSEG = 120, RSEG = 14;
+  const tubePos = [], tubeUV = [], tubeIdx = [];
+  const frames = loopCurve.computeFrenetFrames(TSEG, false);
+  for (let i = 0; i <= TSEG; i++) {
+    const u = i / TSEG;
+    const P = loopCurve.getPointAt(u);
+    const N = frames.normals[i], B = frames.binormals[i];
+    // thickness profile: strap-like, slightly flattened
+    const thick = 0.0044 * (1.0 - 0.32 * Math.pow(u, 1.4)) * (0.86 + 0.14 * Math.sin(u * Math.PI));
+    const flat = 0.62;   // flatten across the strap width
+    for (let j = 0; j <= RSEG; j++) {
+      const a = (j / RSEG) * TWO_PI;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const x = P.x + (N.x * ca * thick + B.x * sa * thick * flat);
+      const y = P.y + (N.y * ca * thick + B.y * sa * thick * flat);
+      const z = P.z + (N.z * ca * thick + B.z * sa * thick * flat);
+      tubePos.push(x, y, z);
+      tubeUV.push(j / RSEG, u);
+    }
+  }
+  const st = RSEG + 1;
+  for (let i = 0; i < TSEG; i++) {
+    for (let j = 0; j < RSEG; j++) {
+      const a = i * st + j, b = a + 1, c = a + st, d = c + 1;
+      tubeIdx.push(a, c, b, b, c, d);
+    }
+  }
+  const tubeGeo = new THREE.BufferGeometry();
+  tubeGeo.setAttribute('position', new THREE.Float32BufferAttribute(tubePos, 3));
+  tubeGeo.setAttribute('uv', new THREE.Float32BufferAttribute(tubeUV, 2));
+  tubeGeo.setIndex(tubeIdx);
+  tubeGeo.computeVertexNormals();
+  const loopMesh = new THREE.Mesh(tubeGeo, porcelain);
+  loopMesh.castShadow = true;
+  loopMesh.receiveShadow = true;
+  g.add(loopMesh);
+
+  // Scroll volute at the lower tail — a flat spiral curling under
+  function volute(cx, cy, startR, turns, taper, rot, sign) {
+    const pts = [];
+    const N = 90;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const ang = rot + sign * u * TWO_PI * turns;
+      const rr = startR * (1 - taper * u);
+      pts.push(new THREE.Vector3(cx + Math.cos(ang) * rr, cy + Math.sin(ang) * rr, 0));
+    }
+    const cv = new THREE.CatmullRomCurve3(pts);
+    const geo = new THREE.TubeGeometry(cv, 96, 0.0021, 10, false);
+    // taper the tube radius manually by scaling ring vertices
+    const pos = geo.attributes.position;
+    const tubularSegments = 96, radialSegments = 10;
+    for (let i = 0; i <= tubularSegments; i++) {
+      const u = i / tubularSegments;
+      const s = 1.0 - 0.55 * u;
+      const P = cv.getPointAt(Math.min(1, u));
+      for (let j = 0; j <= radialSegments; j++) {
+        const k = i * (radialSegments + 1) + j;
+        const vx = pos.getX(k), vy = pos.getY(k), vz = pos.getZ(k);
+        pos.setXYZ(k, P.x + (vx - P.x) * s, P.y + (vy - P.y) * s, P.z + (vz - P.z) * s);
+      }
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, porcelain);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    return m;
+  }
+
+  // lower scroll (curls inward/up)
+  g.add(volute(0.0492, 0.0356, 0.0062, 0.92, 0.62, Math.PI * 0.55, 1));
+  // upper thumb-rest scroll (small, curls outward)
+  g.add(volute(0.0538, 0.0742, 0.0044, 0.85, 0.60, -Math.PI * 0.35, -1));
+
+  // Attachment pads where the handle meets the wall (blend the joint)
+  function pad(x, y, s) {
+    const p = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 14), porcelain);
+    p.position.set(x, y, 0);
+    p.scale.set(s * 0.9, s * 1.35, s * 1.05);
+    p.castShadow = true;
+    p.receiveShadow = true;
+    return p;
+  }
+  g.add(pad(0.0452, 0.0700, 0.0052));
+  g.add(pad(0.0432, 0.0396, 0.0050));
+
+  return g;
+}
+
+const handleA = makeScrollHandle();
+bowl.add(handleA);
+const handleB = makeScrollHandle();
+handleB.rotation.y = Math.PI;
+bowl.add(handleB);
+
+/* ---------- 5. COBALT + GOLD ON THE BODY ---------- */
+// Thin gold line just under the body rim
+function bodyRadiusAtY(y) {
+  const prof = bodyProfile();
+  for (let i = 1; i < prof.length; i++) {
+    if (prof[i].y >= y) {
+      const p0 = prof[i - 1], p1 = prof[i];
+      const k = (y - p0.y) / Math.max(1e-9, p1.y - p0.y);
+      return { r: p0.r + (p1.r - p0.r) * k, flute: p0.flute + (p1.flute - p0.flute) * k };
+    }
+  }
+  const last = prof[prof.length - 1];
+  return { r: last.r, flute: last.flute };
+}
+
+function bandOnBody(y, height, mat, offset = 1.004) {
+  const cols = RADIAL;
+  const positions = [], indices = [], uvs = [];
+  const rows = 2;
+  for (let i = 0; i < rows; i++) {
+    const yy = y + (i === 0 ? -height / 2 : height / 2);
+    const s = bodyRadiusAtY(yy);
+    for (let j = 0; j <= cols; j++) {
+      const th = (j / cols) * TWO_PI;
+      const r = s.r * fluteFactor(th, s.flute) * offset;
+      positions.push(Math.cos(th) * r, yy, Math.sin(th) * r);
+      uvs.push(j / cols, i);
+    }
+  }
+  const st = cols + 1;
+  for (let j = 0; j < cols; j++) {
+    const a = j, b = a + 1, c = a + st, d = c + 1;
+    indices.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, mat);
+  m.renderOrder = 2;
+  return m;
+}
+
+// gold line near the body rim + a hairline at the foot
+bowl.add(bandOnBody(0.0742, 0.0010, gold, 1.0035));
+bowl.add(bandOnBody(0.0140, 0.0008, gold, 1.0035));
+
+// Cobalt hairline accenting the base of each flute valley near the foot
+{
+  const cols = RADIAL;
+  const y = 0.0205, h = 0.0012;
+  bowl.add(bandOnBody(y, h, cobalt, 1.0030));
+}
+
+/* ---------- 6. LID ---------- */
+const lid = new THREE.Group();
+lid.position.y = 0;
+bowl.add(lid);
+
+const LID_BASE_Y = 0.0790;
+const LID_R = 0.0492;     // slight overhang over the bowl rim
+const LID_TOP_Y = 0.1105;
+
+function lidProfile() {
+  const pts = [];
+  // flange / drip edge
+  pts.push({ r: 0.0392, y: LID_BASE_Y - 0.0018, flute: 0.0 });
+  pts.push({ r: LID_R - 0.0024, y: LID_BASE_Y - 0.0022, flute: 0.10 });
+  pts.push({ r: LID_R, y: LID_BASE_Y + 0.0010, flute: 0.18 });
+  pts.push({ r: LID_R - 0.0006, y: LID_BASE_Y + 0.0044, flute: 0.42 });
+
+  // dome
+  const N = 80;
+  for (let i = 1; i <= N; i++) {
+    const t = i / N;
+    const ang = t * Math.PI * 0.5;
+    const r = (LID_R - 0.0018) * Math.cos(ang * 0.985);
+    const y = LID_BASE_Y + 0.0044 + (LID_TOP_Y - LID_BASE_Y - 0.0044) * Math.sin(ang);
+    // full flute across the dome, easing to nothing at the very crown
+    const flute = 0.95 * (1.0 - smoothstep(0.72, 1.0, t));
+    pts.push({ r: Math.max(0.00035, r), y, flute });
+  }
+  pts.push({ r: 0.00035, y: LID_TOP_Y + 0.0006, flute: 0 });
+  return pts;
+}
+const lidGeo = makeFlutedLathe(lidProfile(), RADIAL);
+const lidMesh = new THREE.Mesh(lidGeo, porcelain);
+lidMesh.castShadow = true;
+lidMesh.receiveShadow = true;
+lid.add(lidMesh);
+
+// lid underside + locating gallery ring that drops into the bowl
+const lidUnderProfile = [
+  { r: 0.0000, y: LID_BASE_Y + 0.0002, flute: 0 },
+  { r: 0.0140, y: LID_BASE_Y - 0.0004, flute: 0 },
+  { r: 0.0270, y: LID_BASE_Y - 0.0018, flute: 0 },
+  { r: 0.0352, y: LID_BASE_Y - 0.0034, flute: 0 },
+  { r: 0.0392, y: LID_BASE_Y - 0.0026, flute: 0 },
+  { r: 0.0398, y: LID_BASE_Y - 0.0012, flute: 0 }
+];
+const lidUnder = new THREE.Mesh(makeFlutedLathe(lidUnderProfile, 128), porcelainInner);
+lidUnder.receiveShadow = true;
+lid.add(lidUnder);
+
+const gallery = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.0430, 0.0424, 0.0075, 96, 1, true),
+  porcelainInner
+);
+gallery.position.y = LID_BASE_Y - 0.0052;
+gallery.castShadow = true;
+lid.add(gallery);
+
+// gold rim line on the lid edge
+function goldRingAt(y, radius, tube, seg = 220) {
+  const t = new THREE.Mesh(new THREE.TorusGeometry(radius, tube, 12, seg), gold);
+  t.rotation.x = Math.PI / 2;
+  t.position.y = y;
+  t.castShadow = true;
+  return t;
+}
+lid.add(goldRingAt(LID_BASE_Y + 0.0004, LID_R * 0.999, 0.00075));
+
+/* ---------- 7. COBALT VINE BORDER TRACING EACH RIB ---------- */
+/*  A painted vine runs up each rib of the dome: a sinuous stem with
+    small leaves and dots, sitting a hair proud of the glaze so it
+    reads as underglaze decoration.                                  */
+
+// Sample the lid surface radius at a given dome parameter t and theta
+const lidPts = lidProfile();
+function lidSurfaceAt(t, theta, lift = 1.0) {
+  // t in 0..1 maps over the dome portion of the profile (skip the flange rows)
+  const start = 3;
+  const idxF = start + t * (lidPts.length - 1 - start);
+  const i0 = Math.max(start, Math.min(lidPts.length - 2, Math.floor(idxF)));
+  const k = Math.min(1, Math.max(0, idxF - i0));
+  const p0 = lidPts[i0], p1 = lidPts[i0 + 1];
+  const r = (p0.r + (p1.r - p0.r) * k);
+  const y = (p0.y + (p1.y - p0.y) * k);
+  const fl = (p0.flute + (p1.flute - p0.flute) * k);
+  const rr = r * fluteFactor(theta, fl) * lift;
+  return new THREE.Vector3(Math.cos(theta) * rr, y, Math.sin(theta) * rr);
+}
+
+function buildVine() {
+  const grp = new THREE.Group();
+
+  for (let rib = 0; rib < RIBS; rib++) {
+    // rib crest angle: cos(theta*RIBS) = 1  ->  theta = 2πk/RIBS
+    const base = (rib / RIBS) * TWO_PI;
+
+    // --- stem: sinuous curve climbing the rib crest ---
+    const stemPts = [];
+    const STEPS = 46;
+    for (let i = 0; i <= STEPS; i++) {
+      const t = 0.045 + (i / STEPS) * 0.70;
+      const wiggle = Math.sin(i / STEPS * Math.PI * 2.6) * 0.055 * (TWO_PI / RIBS);
+      stemPts.push(lidSurfaceAt(t, base + wiggle, 1.0045));
+    }
+    const stemCurve = new THREE.CatmullRomCurve3(stemPts);
+    const stemGeo = new THREE.TubeGeometry(stemCurve, 96, 0.00058, 6, false);
+    grp.add(new THREE.Mesh(stemGeo, cobalt));
+
+    // --- leaves: small pointed ovals alternating off the stem ---
+    const LEAVES = 4;
+    for (let l = 0; l < LEAVES; l++) {
+      const t = 0.13 + l * 0.155;
+      const side = (l % 2 === 0) ? 1 : -1;
+      const wiggle = Math.sin((t - 0.045) / 0.70 * Math.PI * 2.6) * 0.055 * (TWO_PI / RIBS);
+      const aBase = base + wiggle;
+      const spread = side * 0.235 * (TWO_PI / RIBS);
+
+      const leafPts = [];
+      const LS = 16;
+      for (let i = 0; i <= LS; i++) {
+        const u = i / LS;
+        const th = aBase + spread * Math.sin(u * Math.PI * 0.5);
+        const tt = t + 0.055 * u * (1 - 0.35 * u);
+        leafPts.push(lidSurfaceAt(tt, th, 1.0045));
+      }
+      const leafCurve = new THREE.CatmullRomCurve3(leafPts);
+      const lg = new THREE.TubeGeometry(leafCurve, 30, 0.00075, 6, false);
+      // taper toward the tip
+      const pos = lg.attributes.position;
+      const TS = 30, RS = 6;
+      for (let i = 0; i <= TS; i++) {
+        const u = i / TS;
+        const s = 1.0 - 0.75 * u * u;
+        const P = leafCurve.getPointAt(Math.min(1, u));
+        for (let j = 0; j <= RS; j++) {
+          const kk = i * (RS + 1) + j;
+          pos.setXYZ(kk,
+            P.x + (pos.getX(kk) - P.x) * s,
+            P.y + (pos.getY(kk) - P.y) * s,
+            P.z + (pos.getZ(kk) - P.z) * s);
+        }
+      }
+      pos.needsUpdate = true;
+      lg.computeVertexNormals();
+      grp.add(new THREE.Mesh(lg, cobaltDeep));
+
+      // little berry dot opposite the leaf
+      const dotP = lidSurfaceAt(t + 0.02, aBase - spread * 0.55, 1.0050);
+      const dot = new THREE.Mesh(new THREE.SphereGeometry(0.00085, 10, 8), cobalt);
+      dot.position.copy(dotP);
+      dot.scale.set(1, 0.55, 1);
+      grp.add(dot);
+    }
+  }
+
+  // Cobalt border band running around the base of the dome, tracing the flutes
+  {
+    const cols = RADIAL;
+    const positions = [], indices = [], uvs = [];
+    const rowsT = [0.028, 0.052];
+    for (let i = 0; i < 2; i++) {
+      for (let j = 0; j <= cols; j++) {
+        const th = (j / cols) * TWO_PI;
+        const P = lidSurfaceAt(rowsT[i], th, 1.0035);
+        positions.push(P.x, P.y, P.z);
+        uvs.push(j / cols, i);
+      }
+    }
+    const st = cols + 1;
+    for (let j = 0; j < cols; j++) {
+      const a = j, b = a + 1, c = a + st, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    g.setIndex(indices);
+    g.computeVertexNormals();
+    grp.add(new THREE.Mesh(g, cobalt));
+  }
+
+  // Scalloped cobalt swags between ribs, just above the border band
+  for (let rib = 0; rib < RIBS; rib++) {
+    const a0 = (rib / RIBS) * TWO_PI;
+    const a1 = ((rib + 1) / RIBS) * TWO_PI;
+    const pts = [];
+    const N = 20;
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const th = a0 + (a1 - a0) * u;
+      const t = 0.072 + Math.sin(u * Math.PI) * 0.052;
+      pts.push(lidSurfaceAt(t, th, 1.0042));
+    }
+    const cv = new THREE.CatmullRomCurve3(pts);
+    grp.add(new THREE.Mesh(new THREE.TubeGeometry(cv, 40, 0.00050, 6, false), cobalt));
+  }
+
+  return grp;
+}
+lid.add(buildVine());
+
+/* ---------- 8. ROSEBUD FINIAL ---------- */
+function buildRosebud() {
+  const g = new THREE.Group();
+
+  // Short pedestal / collar the bud sits on
+  const collarProfile = [
+    { r: 0.0088, y: 0.0000, flute: 0 },
+    { r: 0.0086, y: 0.0016, flute: 0 },
+    { r: 0.0060, y: 0.0034, flute: 0 },
+    { r: 0.0050, y: 0.0052, flute: 0 },
+    { r: 0.0052, y: 0.0068, flute: 0 }
+  ];
+  const collar = new THREE.Mesh(makeFlutedLathe(collarProfile, 72), porcelain);
+  collar.castShadow = true;
+  collar.receiveShadow = true;
+  g.add(collar);
+
+  // Calyx leaves splaying at the base of the bud
+  const CAL = 5;
+  for (let i = 0; i < CAL; i++) {
+    const a = (i / CAL) * TWO_PI + 0.25;
+    const pts = [];
+    const N = 14;
+    for (let k = 0; k <= N; k++) {
+      const u = k / N;
+      const rr = 0.0052 + 0.0060 * Math.sin(u * Math.PI * 0.62);
+      const yy = 0.0064 + 0.0058 * u - 0.0038 * u * u;
+      pts.push(new THREE.Vector3(Math.cos(a) * rr, yy, Math.sin(a) * rr));
+    }
+    const cv = new THREE.CatmullRomCurve3(pts);
+    const geo = new THREE.TubeGeometry(cv, 26, 0.0014, 8, false);
+    const pos = geo.attributes.position;
+    const TS = 26, RS = 8;
+    for (let ii = 0; ii <= TS; ii++) {
+      const u = ii / TS;
+      const s = (0.55 + 0.85 * Math.sin(u * Math.PI * 0.9)) * (1 - 0.55 * u * u);
+      const P = cv.getPointAt(Math.min(1, u));
+      for (let j = 0; j <= RS; j++) {
+        const kk = ii * (RS + 1) + j;
+        pos.setXYZ(kk,
+          P.x + (pos.getX(kk) - P.x) * s,
+          P.y + (pos.getY(kk) - P.y) * s,
+          P.z + (pos.getZ(kk) - P.z) * s);
+      }
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+    const m = new THREE.Mesh(geo, porcelain);
+    m.castShadow = true;
+    g.add(m);
+  }
+
+  // Bud core (tight inner spiral of furled petals)
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.0052, 24, 18), porcelain);
+  core.position.y = 0.0136;
+  core.scale.set(0.92, 1.35, 0.92);
+  core.castShadow = true;
+  core.receiveShadow = true;
+  g.add(core);
+
+  // Petals: curved shells wrapped around the core in three whorls
+  function petalGeometry(w, h, curl, cup) {
+    // Build a curved quad sheet: u across width, v up height
+    const CU = 18, CV = 22;
+    const positions = [], indices = [], uvs = [];
+    for (let iv = 0; iv <= CV; iv++) {
+      const v = iv / CV;
+      for (let iu = 0; iu <= CU; iu++) {
+        const u = iu / CU * 2 - 1;              // -1..1
+        // width tapers at top and bottom (petal outline)
+        const widthAt = Math.sin(Math.pow(v, 0.72) * Math.PI * 0.92);
+        const x = u * w * (0.30 + 0.70 * widthAt);
+        const y = v * h;
+        // curl backwards near the top, cup inwards across the width
+        const z = -curl * Math.pow(v, 1.9) * h - cup * (1 - u * u) * w * (0.35 + 0.65 * v);
+        positions.push(x, y, z);
+        uvs.push((u + 1) / 2, v);
+      }
+    }
+    const st = CU + 1;
+    for (let iv = 0; iv < CV; iv++) {
+      for (let iu = 0; iu < CU; iu++) {
+        const a = iv * st + iu, b = a + 1, c = a + st, d = c + 1;
+        indices.push(a, c, b, b, c, d);
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+    geo.setIndex(indices);
+    geo.computeVertexNormals();
+    return geo;
+  }
+
+  const whorls = [
+    { count: 3, w: 0.0042, h: 0.0102, r: 0.0026, y: 0.0092, tilt: 0.10, curl: 0.34, cup: 0.62, phase: 0.0 },
+    { count: 5, w: 0.0055, h: 0.0122, r: 0.0044, y: 0.0080, tilt: 0.26, curl: 0.50, cup: 0.58, phase: 0.6 },
+    { count: 6, w: 0.0066, h: 0.0128, r: 0.0062, y: 0.0068, tilt: 0.52, curl: 0.66, cup: 0.50, phase: 1.15 }
+  ];
+
+  whorls.forEach((wh) => {
+    for (let i = 0; i < wh.count; i++) {
+      const a = (i / wh.count) * TWO_PI + wh.phase;
+      const geo = petalGeometry(wh.w, wh.h, wh.curl, wh.cup);
+      const m = new THREE.Mesh(geo, porcelain);
+      m.position.set(Math.cos(a) * wh.r, wh.y, Math.sin(a) * wh.r);
+      m.rotation.order = 'YXZ';
+      m.rotation.y = -a + Math.PI / 2;
+      m.rotation.x = wh.tilt;
+      m.castShadow = true;
+      m.receiveShadow = true;
+      g.add(m);
+    }
+  });
+
+  // faint cobalt tip touch on the outer petals' edges: a tiny ring of dots
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * TWO_PI + 1.15;
+    const d = new THREE.Mesh(new THREE.SphereGeometry(0.00055, 8, 6), cobalt);
+    d.position.set(Math.cos(a) * 0.0072, 0.0184, Math.sin(a) * 0.0072);
+    g.add(d);
+  }
+
+  return g;
+}
+const finial = buildRosebud();
+finial.position.y = LID_TOP_Y - 0.0022;
+lid.add(finial);
+
+// gold hairline ring around the finial collar base
+const finialRing = goldRingAt(LID_TOP_Y - 0.0012, 0.0090, 0.00045, 96);
+lid.add(finialRing);
+
+/* ---------- 9. Centre & frame the object ---------- */
+{
+  const box = new THREE.Box3().setFromObject(bowl);
+  const c = new THREE.Vector3();
+  box.getCenter(c);
+  bowl.position.x -= c.x;
+  bowl.position.z -= c.z;
+  controls.target.set(0, (box.min.y + box.max.y) * 0.5, 0);
+  controls.update();
+}
+
+/* ============================================================
+   Resize + Render loop
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

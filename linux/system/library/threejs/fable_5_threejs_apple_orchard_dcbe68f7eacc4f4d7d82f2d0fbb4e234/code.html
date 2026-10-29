@@ -1,0 +1,366 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Apple Orchard Section — three.js</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17181c; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Deterministic PRNG (reproducible orchard)
+// ---------------------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(1379);
+const rr = (a, b) => a + (b - a) * rand();
+
+// Smooth position-based noise (consistent across duplicated seam vertices,
+// so displaced meshes never crack).
+function lump(x, y, z) {
+  return 0.55 * Math.sin(2.1 * x + 1.4 * y + 0.9)
+       + 0.30 * Math.sin(1.7 * y + 2.6 * z + 2.0)
+       + 0.15 * Math.sin(2.9 * z + 1.9 * x + 4.0);
+}
+
+// ---------------------------------------------------------------------------
+// Renderer / scene / camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17181c);
+scene.fog = new THREE.Fog(0x17181c, 28, 70);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(9.5, 5.2, 11.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 4;
+controls.maxDistance = 35;
+controls.maxPolarAngle = Math.PI * 0.495;
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambience + warm directional key + cool fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbfd4e6, 0x3a3128, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0da, 2.4);
+key.position.set(8, 12, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -10;
+key.shadow.camera.right = 10;
+key.shadow.camera.top = 10;
+key.shadow.camera.bottom = -10;
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 40;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.025;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8fb3d9, 0.45);
+fill.position.set(-9, 4, 5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdfe8ff, 0.7);
+rim.position.set(-4, 7, -10);
+scene.add(rim);
+
+// Subtle studio floor: receives shadows only
+const shadowFloor = new THREE.Mesh(
+  new THREE.PlaneGeometry(90, 90),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+shadowFloor.rotation.x = -Math.PI / 2;
+shadowFloor.position.y = -0.5;
+shadowFloor.receiveShadow = true;
+scene.add(shadowFloor);
+
+// ---------------------------------------------------------------------------
+// THE object: one orchard-section diorama group, centered at the origin
+// ---------------------------------------------------------------------------
+const orchard = new THREE.Group();
+scene.add(orchard);
+
+// --- Terrain (gently undulating grass, meter scale, 14 m x 8 m patch) ------
+const W = 14, D = 8;
+
+function baseHeight(x, z) {
+  return 0.22 * Math.sin(x * 0.55 + 1.7) * Math.cos(z * 0.75 + 0.4)
+       + 0.13 * Math.sin(x * 1.15 + z * 0.85 + 2.1)
+       + 0.05 * Math.sin(x * 2.3 - z * 1.7 + 0.8)
+       + 0.12;
+}
+function edgeFalloff(x, z) {
+  const fx = 1 - THREE.MathUtils.smoothstep(Math.abs(x), W / 2 - 1.6, W / 2 - 0.02);
+  const fz = 1 - THREE.MathUtils.smoothstep(Math.abs(z), D / 2 - 1.3, D / 2 - 0.02);
+  return fx * fz;
+}
+function terrainY(x, z) {
+  return baseHeight(x, z) * edgeFalloff(x, z);
+}
+
+const groundGeo = new THREE.PlaneGeometry(W, D, 100, 60);
+groundGeo.rotateX(-Math.PI / 2);
+{
+  const pos = groundGeo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const cA = new THREE.Color(0x5a8236);
+  const cB = new THREE.Color(0x3d6a24);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, terrainY(x, z));
+    const n = THREE.MathUtils.clamp(0.5 + 0.5 * lump(x * 0.55, 0, z * 0.55), 0, 1);
+    c.copy(cA).lerp(cB, n);
+    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+  }
+  groundGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  groundGeo.computeVertexNormals();
+}
+const ground = new THREE.Mesh(
+  groundGeo,
+  new THREE.MeshStandardMaterial({ color: 0xffffff, vertexColors: true, roughness: 1.0, metalness: 0 })
+);
+ground.receiveShadow = true;
+orchard.add(ground);
+
+// Soil block beneath (diorama slab; terrain edges pinch to y=0 to meet it)
+const soil = new THREE.Mesh(
+  new THREE.BoxGeometry(W, 0.5, D),
+  new THREE.MeshStandardMaterial({ color: 0x5b4531, roughness: 1.0, metalness: 0 })
+);
+soil.position.y = -0.25;
+soil.castShadow = true;
+soil.receiveShadow = true;
+orchard.add(soil);
+
+// --- Shared materials -------------------------------------------------------
+const barkMat = new THREE.MeshStandardMaterial({ color: 0x6b4e38, roughness: 1.0, metalness: 0 });
+const appleMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.45, metalness: 0 });
+const foliageBase = new THREE.Color(0x4a7a28);
+
+const appleGeo = new THREE.SphereGeometry(0.045, 10, 8);
+appleGeo.scale(1, 0.92, 1);
+const appleColor = new THREE.Color();
+
+// --- Apple tree builder -----------------------------------------------------
+// Realistic small orchard tree: ~0.3 m trunk diameter at base, clear trunk to
+// ~1.1 m, rounded canopy ~3 m across, total height ~3.6 m.
+function buildTree() {
+  const tree = new THREE.Group();
+
+  // Trunk: tapered, bark-jittered cylinder
+  const trunkGeo = new THREE.CylinderGeometry(0.10, 0.17, 1.9, 12, 10);
+  trunkGeo.translate(0, 0.95, 0);
+  {
+    const p = trunkGeo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.set(p.getX(i), p.getY(i), p.getZ(i));
+      const rl = Math.hypot(v.x, v.z);
+      if (rl > 1e-5) {
+        const n = lump(v.x * 7.0, v.y * 3.0, v.z * 7.0);
+        const k = 1 + 0.09 * n;
+        p.setX(i, v.x * k);
+        p.setZ(i, v.z * k);
+      }
+    }
+    trunkGeo.computeVertexNormals();
+  }
+  const trunk = new THREE.Mesh(trunkGeo, barkMat);
+  trunk.rotation.z = rr(-0.045, 0.045);
+  trunk.castShadow = true;
+  trunk.receiveShadow = true;
+  tree.add(trunk);
+
+  // Scaffold branches reaching into the canopy
+  const up = new THREE.Vector3(0, 1, 0);
+  const nBranches = 5;
+  for (let i = 0; i < nBranches; i++) {
+    const len = rr(1.0, 1.4);
+    const bGeo = new THREE.CylinderGeometry(0.024, 0.055, len, 7);
+    bGeo.translate(0, len / 2, 0);
+    const branch = new THREE.Mesh(bGeo, barkMat);
+    const theta = (i / nBranches) * Math.PI * 2 + rr(-0.35, 0.35);
+    const tilt = rr(0.55, 0.95); // 31–54 degrees off vertical
+    const dir = new THREE.Vector3(
+      Math.cos(theta) * Math.sin(tilt),
+      Math.cos(tilt),
+      Math.sin(theta) * Math.sin(tilt)
+    ).normalize();
+    branch.quaternion.setFromUnitVectors(up, dir);
+    branch.position.set(rr(-0.04, 0.04), rr(1.0, 1.4), rr(-0.04, 0.04));
+    branch.castShadow = true;
+    branch.receiveShadow = true;
+    tree.add(branch);
+  }
+
+  // Canopy: cluster of noisy blobs -> one rounded leafy crown
+  const blobs = [{ c: new THREE.Vector3(0, 2.35, 0), r: 1.15 }];
+  const nRing = 6;
+  const ringOff = rr(0, Math.PI * 2);
+  for (let i = 0; i < nRing; i++) {
+    const th = (i / nRing) * Math.PI * 2 + ringOff + rr(-0.2, 0.2);
+    const hr = rr(0.68, 0.95);
+    blobs.push({
+      c: new THREE.Vector3(Math.cos(th) * hr, rr(2.0, 2.65), Math.sin(th) * hr),
+      r: rr(0.62, 0.88)
+    });
+  }
+  blobs.push({ c: new THREE.Vector3(rr(-0.15, 0.15), rr(2.95, 3.1), rr(-0.15, 0.15)), r: rr(0.62, 0.78) });
+
+  const applePts = [];
+  for (const b of blobs) {
+    const g = new THREE.IcosahedronGeometry(b.r, 3);
+    const px = rr(0, 10), py = rr(0, 10), pz = rr(0, 10);
+    const p = g.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.set(p.getX(i), p.getY(i), p.getZ(i));
+      const k = 1 + 0.15 * lump(v.x * 2.0 + px, v.y * 2.0 + py, v.z * 2.0 + pz);
+      p.setXYZ(i, v.x * k, v.y * k, v.z * k);
+    }
+    g.computeVertexNormals();
+    const mat = new THREE.MeshStandardMaterial({
+      color: foliageBase.clone().offsetHSL(rr(-0.02, 0.02), rr(-0.06, 0.05), rr(-0.035, 0.03)),
+      roughness: 0.92,
+      metalness: 0,
+      flatShading: true
+    });
+    const blob = new THREE.Mesh(g, mat);
+    blob.position.copy(b.c);
+    blob.castShadow = true;
+    blob.receiveShadow = true;
+    tree.add(blob);
+
+    // Apples hanging on this blob's surface
+    const nApples = Math.round(b.r * 15);
+    for (let i = 0; i < nApples; i++) {
+      const y = rr(-0.75, 0.6);
+      const th = rr(0, Math.PI * 2);
+      const s = Math.sqrt(Math.max(0, 1 - y * y));
+      const dir = new THREE.Vector3(Math.cos(th) * s, y, Math.sin(th) * s);
+      applePts.push(b.c.clone().addScaledVector(dir, b.r * rr(0.9, 1.02)));
+    }
+  }
+
+  // Instanced apples for this tree
+  const apples = new THREE.InstancedMesh(appleGeo, appleMat, applePts.length);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < applePts.length; i++) {
+    m.makeTranslation(applePts[i].x, applePts[i].y, applePts[i].z);
+    apples.setMatrixAt(i, m);
+    appleColor.setHSL(rr(-0.005, 0.045), rr(0.68, 0.85), rr(0.32, 0.44));
+    apples.setColorAt(i, appleColor);
+  }
+  apples.castShadow = true;
+  tree.add(apples);
+
+  return tree;
+}
+
+// --- Plant three trees in a regular row, 4 m spacing ------------------------
+const spacing = 4;
+for (let i = -1; i <= 1; i++) {
+  const tx = i * spacing;
+  const tz = rr(-0.2, 0.2);
+  const tree = buildTree();
+  tree.position.set(tx, terrainY(tx, tz) - 0.02, tz);
+  tree.rotation.y = rr(0, Math.PI * 2);
+  tree.scale.setScalar(rr(0.92, 1.08));
+  orchard.add(tree);
+}
+
+// --- Fallen apples on the grass ---------------------------------------------
+{
+  const nFallen = 9;
+  const fallen = new THREE.InstancedMesh(appleGeo, appleMat, nFallen);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < nFallen; i++) {
+    const tx = (Math.floor(i / 3) - 1) * spacing + rr(-1.7, 1.7);
+    const tz = rr(-1.7, 1.7);
+    m.makeTranslation(tx, terrainY(tx, tz) + 0.038, tz);
+    fallen.setMatrixAt(i, m);
+    appleColor.setHSL(rr(0.0, 0.05), rr(0.65, 0.8), rr(0.3, 0.42));
+    fallen.setColorAt(i, appleColor);
+  }
+  fallen.castShadow = true;
+  orchard.add(fallen);
+}
+
+// --- Grass tufts -------------------------------------------------------------
+{
+  const nTufts = 650;
+  const tuftGeo = new THREE.ConeGeometry(0.025, 0.14, 4);
+  tuftGeo.translate(0, 0.07, 0);
+  const tuftMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1.0, metalness: 0 });
+  const tufts = new THREE.InstancedMesh(tuftGeo, tuftMat, nTufts);
+  const dummy = new THREE.Object3D();
+  const c = new THREE.Color();
+  for (let i = 0; i < nTufts; i++) {
+    const x = rr(-W / 2 + 0.6, W / 2 - 0.6);
+    const z = rr(-D / 2 + 0.5, D / 2 - 0.5);
+    dummy.position.set(x, terrainY(x, z) - 0.005, z);
+    dummy.rotation.set(rr(-0.15, 0.15), rr(0, Math.PI * 2), rr(-0.15, 0.15));
+    dummy.scale.set(rr(0.7, 1.5), rr(0.7, 1.6), rr(0.7, 1.5));
+    dummy.updateMatrix();
+    tufts.setMatrixAt(i, dummy.matrix);
+    c.setHSL(rr(0.22, 0.28), rr(0.42, 0.58), rr(0.24, 0.36));
+    tufts.setColorAt(i, c);
+  }
+  orchard.add(tufts);
+}
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

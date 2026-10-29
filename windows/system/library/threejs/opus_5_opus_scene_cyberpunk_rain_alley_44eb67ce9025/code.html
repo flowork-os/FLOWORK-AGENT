@@ -1,0 +1,751 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cyberpunk Rain Alley</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#080b16}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------- 1. CONFIG & PALETTE  --  every tunable of the alley diorama lives here ---------- */
+const CFG = {
+  seed: 20260816,
+  halfWidth: 5.8,     // inner facade planes sit at x = +/- halfWidth
+  alleyEnd: 15,       // alley runs from -alleyEnd .. +alleyEnd along z
+  rainCount: 620,
+  steamCount: 320,
+  exposure: 1.2
+};
+const COL = {
+  curb: 0x4a5266, steelDark: 0x39414f, steel: 0x6c778c, rust: 0x7a4a3a,
+  wood: 0x8a6440, canvasRed: 0xc4453f, neonPink: 0xff3d8b, neonCyan: 0x39e6ff,
+  neonAmber: 0xffb03a, neonLime: 0x7cff5a, neonViolet: 0xa46bff, holo: 0x64d8ff,
+  fog: 0x161f36
+};
+
+/* ---------- 2. PRNG, MESH & CANVAS HELPERS  --  all randomness is seeded ---------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CFG.seed);
+const rand = (a, b) => a + (b - a) * rng();
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = arr => arr[Math.min(arr.length - 1, Math.floor(rng() * arr.length))];
+
+function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true){
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = shadow;
+  return m;
+}
+const box = (w, h, d, mat, x, y, z, s) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z, s);
+const cyl = (rt, rb, h, n, mat, x, y, z, s) => mesh(new THREE.CylinderGeometry(rt, rb, h, n), mat, x, y, z, s);
+function ctx2d(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c.getContext('2d');
+}
+function canvasTex(canvas, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry); t.anisotropy = 4;
+  return t;
+}
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES ---------- */
+// Soft radial blob reused by every fake-bloom sprite and steam puff.
+function makeGlowCanvas(){
+  const g = ctx2d(128, 128), grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0.00, 'rgba(255,255,255,1)'); grad.addColorStop(0.22, 'rgba(255,255,255,0.62)');
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.16)'); grad.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return g.canvas;
+}
+const GLOW_TEX = canvasTex(makeGlowCanvas());
+
+// Wet asphalt: gravel speckle, oil stains and scuffed lane marks.
+function makeAsphaltCanvas(){
+  const g = ctx2d(512, 512);
+  g.fillStyle = '#3a4257'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2600; i++){
+    const v = 46 + Math.floor(rng() * 74);
+    g.fillStyle = `rgba(${v},${v + 8},${v + 24},${0.25 + rng() * 0.4})`;
+    g.fillRect(rng() * 512, rng() * 512, 1 + rng() * 3, 1 + rng() * 3);
+  }
+  for (let i = 0; i < 24; i++){
+    const x = rng() * 512, y = rng() * 512, r = 26 + rng() * 90;
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, 'rgba(20,26,42,0.5)'); grad.addColorStop(1, 'rgba(20,26,42,0)');
+    g.fillStyle = grad; g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  g.strokeStyle = 'rgba(138,152,180,0.22)'; g.lineWidth = 2;
+  for (let i = 0; i < 30; i++){
+    const x = rng() * 512, y = rng() * 512, a = rng() * 6.28, l = 12 + rng() * 46;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l); g.stroke();
+  }
+  return g.canvas;
+}
+
+// Facade pair: albedo canvas plus a matching emissive canvas so lit windows glow.
+const WINDOW_COLORS = ['#ffcf8a', '#8fd8ff', '#ff9ad2', '#c9f7a0', '#fff0c4', '#9aa8ff'];
+function makeFacadeCanvases(base, cols, rows){
+  const W = 256, H = 512, a = ctx2d(W, H), e = ctx2d(W, H);
+  a.fillStyle = base; a.fillRect(0, 0, W, H);
+  e.fillStyle = '#000000'; e.fillRect(0, 0, W, H);
+  for (let i = 0; i < 520; i++){
+    const v = Math.floor(rng() * 40);
+    a.fillStyle = `rgba(${v + 36},${v + 40},${v + 54},${0.10 + rng() * 0.22})`;
+    a.fillRect(rng() * W, rng() * H, 3 + rng() * 22, 3 + rng() * 26);
+  }
+  const mx = W / cols, my = H / rows;
+  for (let r = 0; r < rows; r++){
+    a.fillStyle = 'rgba(14,18,30,0.55)';
+    a.fillRect(0, r * my + my * 0.88, W, my * 0.12);
+    for (let q = 0; q < cols; q++){
+      const x = q * mx + mx * 0.17, y = r * my + my * 0.14, w = mx * 0.66, h = my * 0.6;
+      a.fillStyle = '#101728'; a.fillRect(x - 3, y - 3, w + 6, h + 6);
+      const lit = rng() < 0.62, col = lit ? pick(WINDOW_COLORS) : '#212a3e';
+      a.fillStyle = col; a.fillRect(x, y, w, h);
+      if (lit){
+        e.fillStyle = col; e.fillRect(x, y, w, h);
+        const blinds = randInt(1, 3);
+        for (let b = 0; b < blinds; b++){
+          e.fillStyle = 'rgba(0,0,0,0.5)'; e.fillRect(x, y + h * (0.16 + 0.26 * b), w, h * 0.09);
+          a.fillStyle = 'rgba(0,0,0,0.35)'; a.fillRect(x, y + h * (0.16 + 0.26 * b), w, h * 0.09);
+        }
+      }
+      a.fillStyle = 'rgba(10,13,22,0.9)'; a.fillRect(x + w * 0.5, y, 2, h);
+    }
+  }
+  return { a: a.canvas, e: e.canvas };
+}
+const FACADES = [
+  makeFacadeCanvases('#4a5568', 4, 8),
+  makeFacadeCanvases('#584a54', 3, 7),
+  makeFacadeCanvases('#414d67', 5, 9)
+];
+function facadeMaterial(v, rx, ry){
+  const f = FACADES[v % FACADES.length];
+  return new THREE.MeshStandardMaterial({
+    map: canvasTex(f.a, rx, ry), emissiveMap: canvasTex(f.e, rx, ry),
+    emissive: 0xffffff, emissiveIntensity: 1.05, roughness: 0.85, metalness: 0.08
+  });
+}
+
+// Kanji-like glyph: a few deterministic strokes inside a square cell.
+function drawGlyph(g, x, y, s){
+  g.lineCap = 'round';
+  g.lineWidth = Math.max(2, s * 0.1);
+  for (let i = 0, n = randInt(3, 6); i < n; i++){
+    g.beginPath();
+    if (rng() < 0.5){
+      const yy = y + s * (0.16 + 0.68 * rng());
+      g.moveTo(x + s * (0.06 + 0.12 * rng()), yy); g.lineTo(x + s * (0.94 - 0.16 * rng()), yy);
+    } else {
+      const xx = x + s * (0.16 + 0.68 * rng());
+      g.moveTo(xx, y + s * (0.06 + 0.12 * rng())); g.lineTo(xx, y + s * (0.94 - 0.16 * rng()));
+    }
+    g.stroke();
+  }
+  if (rng() < 0.4) g.strokeRect(x + s * 0.16, y + s * 0.16, s * 0.68, s * 0.68);
+}
+// Neon signboard: dark panel, glowing frame and a column/row of glyphs.
+function makeSignCanvas(hex, vertical, cells){
+  const W = vertical ? 128 : 128 * cells, H = vertical ? 128 * cells : 128, g = ctx2d(W, H);
+  g.fillStyle = '#131727'; g.fillRect(0, 0, W, H);
+  g.strokeStyle = hex; g.lineWidth = 8; g.strokeRect(6, 6, W - 12, H - 12);
+  g.shadowColor = hex; g.shadowBlur = 26; g.strokeStyle = hex;
+  for (let i = 0; i < cells; i++){
+    drawGlyph(g, vertical ? 16 : 16 + i * 128, vertical ? 16 + i * 128 : 16, 96);
+  }
+  g.shadowBlur = 0;
+  return g.canvas;
+}
+// Holographic advert: scan-lined gradient with floating glyphs and data bars.
+function makeHoloCanvas(){
+  const W = 256, H = 384, g = ctx2d(W, H);
+  const grad = g.createLinearGradient(0, 0, 0, H);
+  grad.addColorStop(0, '#0d2f4c'); grad.addColorStop(0.5, '#12719c'); grad.addColorStop(1, '#0c2743');
+  g.fillStyle = grad; g.fillRect(0, 0, W, H);
+  g.shadowColor = '#8ceaff'; g.shadowBlur = 18; g.strokeStyle = '#d5f7ff';
+  for (let i = 0; i < 4; i++) drawGlyph(g, 30 + (i % 2) * 110, 40 + Math.floor(i / 2) * 130, 96);
+  g.shadowBlur = 0; g.fillStyle = 'rgba(180,245,255,0.6)';
+  for (let i = 0; i < 22; i++) g.fillRect(18 + rng() * 200, 300 + rng() * 60, 6 + rng() * 40, 5);
+  g.fillStyle = 'rgba(0,0,0,0.30)';
+  for (let y = 0; y < H; y += 4) g.fillRect(0, y, W, 2);
+  return g.canvas;
+}
+// Slatted metal for AC grilles, vent covers and roller shutters.
+function makeSlatCanvas(base, slat){
+  const g = ctx2d(128, 128);
+  g.fillStyle = base; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = slat;
+  for (let y = 6; y < 128; y += 12) g.fillRect(4, y, 120, 6);
+  g.strokeStyle = 'rgba(0,0,0,0.5)'; g.lineWidth = 3; g.strokeRect(2, 2, 124, 124);
+  return g.canvas;
+}
+
+/* ---------- 4. SHARED MATERIALS ---------- */
+const MAT = {
+  road: new THREE.MeshStandardMaterial({ map: canvasTex(makeAsphaltCanvas(), 14, 14), roughness: 0.52, metalness: 0.3 }),
+  concrete: new THREE.MeshStandardMaterial({ color: COL.curb, roughness: 0.94, metalness: 0.05 }),
+  steel: new THREE.MeshStandardMaterial({ color: COL.steel, roughness: 0.45, metalness: 0.8 }),
+  steelDark: new THREE.MeshStandardMaterial({ color: COL.steelDark, roughness: 0.6, metalness: 0.7 }),
+  rust: new THREE.MeshStandardMaterial({ color: COL.rust, roughness: 0.85, metalness: 0.3 }),
+  wood: new THREE.MeshStandardMaterial({ color: COL.wood, roughness: 0.8, metalness: 0.05 }),
+  cable: new THREE.MeshStandardMaterial({ color: 0x232838, roughness: 0.75, metalness: 0.25 }),
+  grille: new THREE.MeshStandardMaterial({ map: canvasTex(makeSlatCanvas('#6b7588', '#333c4c')), roughness: 0.6, metalness: 0.65 }),
+  shutter: new THREE.MeshStandardMaterial({ map: canvasTex(makeSlatCanvas('#574f63', '#2d2836'), 2, 1), roughness: 0.7, metalness: 0.5 })
+};
+const neonMat = hex => new THREE.MeshBasicMaterial({ color: hex, toneMapped: false });
+function glowSprite(hex, size, opacity = 0.85){
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: GLOW_TEX, color: hex, blending: THREE.AdditiveBlending,
+    transparent: true, opacity, depthWrite: false, toneMapped: false
+  }));
+  s.scale.set(size, size, 1);
+  return s;
+}
+
+/* ---------- 5. BUILDER FUNCTIONS  --  each focal structure returns its own Group ---------- */
+// Flanking tenement: textured facade, parapet neon strip, roof clutter, shutter.
+function buildTenement(depth, len, h, variant, edgeHex){
+  const g = new THREE.Group();
+  const side = facadeMaterial(variant, Math.max(1, Math.round(len / 3.4)), Math.max(1, Math.round(h / 3.2)));
+  const cap = new THREE.MeshStandardMaterial({ color: 0x3b4356, roughness: 0.95 });
+  g.add(mesh(new THREE.BoxGeometry(depth, h, len), [side, side, cap, cap, side, side], 0, h / 2, 0));
+  g.add(box(depth + 0.34, 0.6, len + 0.34, MAT.concrete, 0, h + 0.25, 0));
+  g.add(box(depth + 0.28, 0.3, len + 0.28, MAT.concrete, 0, h * 0.52, 0));
+  // glowing edge strip along the alley-facing parapet
+  g.add(box(0.1, 0.14, len + 0.3, neonMat(edgeHex), depth / 2 + 0.2, h + 0.5, 0, false));
+  // roof clutter: water tank, vents, railing posts, antenna mast with beacon
+  const tank = cyl(0.75, 0.75, 1.5, 12, MAT.rust, rand(-depth * 0.2, depth * 0.2), h + 1.3, rand(-len * 0.3, len * 0.3));
+  g.add(tank, cyl(0.8, 0.8, 0.18, 12, MAT.steelDark, tank.position.x, h + 2.1, tank.position.z));
+  for (let i = 0; i < 3; i++) g.add(box(rand(0.8, 1.5), rand(0.5, 1.0), rand(0.8, 1.5), MAT.steelDark,
+    rand(-depth * 0.28, depth * 0.28), h + rand(0.75, 1.05), rand(-len * 0.36, len * 0.36)));
+  for (let i = 0; i < 5; i++) g.add(cyl(0.05, 0.05, 0.8, 6, MAT.steel, -depth / 2 + 0.2, h + 0.9, -len * 0.4 + i * len * 0.2));
+  const mastH = rand(2.2, 3.6);
+  const mast = cyl(0.05, 0.08, mastH, 6, MAT.steel, rand(-1, 1), h + 0.5 + mastH / 2, rand(-len * 0.3, len * 0.3));
+  const beacon = glowSprite(COL.neonPink, 1.1, 0.9);
+  beacon.position.set(mast.position.x, mast.position.y + mastH / 2, mast.position.z);
+  g.add(mast, beacon);
+  const door = mesh(new THREE.PlaneGeometry(2.2, 2.7), MAT.shutter, depth / 2 + 0.02, 1.35, rand(-len * 0.25, len * 0.25), false);
+  door.rotation.y = Math.PI / 2; g.add(door);
+  return g;
+}
+
+// Layered neon signboard: emissive panel, tube frame, halo sprite, point light.
+function buildNeonSign(hex, cells, vertical, scale){
+  const g = new THREE.Group();
+  const tex = canvasTex(makeSignCanvas('#' + new THREE.Color(hex).getHexString(), vertical, cells));
+  const w = (vertical ? 1 : cells) * scale, h = (vertical ? cells : 1) * scale;
+  const panel = box(w, h, 0.22, new THREE.MeshStandardMaterial({ map: tex, emissiveMap: tex,
+    emissive: 0xffffff, emissiveIntensity: 1.8, roughness: 0.6, metalness: 0.2 }), 0, 0, 0);
+  const tube = neonMat(hex);
+  for (const [bw, bh, bx, by] of [[w, 0.09, 0, h / 2], [w, 0.09, 0, -h / 2], [0.09, h, w / 2, 0], [0.09, h, -w / 2, 0]])
+    g.add(box(bw, bh, 0.1, tube, bx, by, 0.13, false));
+  const halo = glowSprite(hex, Math.max(w, h) * 1.6, 0.55);
+  const lamp = new THREE.PointLight(hex, 30, 17, 1.9);
+  halo.position.z = 0.5; lamp.position.z = 1.4; g.add(panel, halo, lamp);
+  g.userData = { halo, panel, lamp, base: 1.8, glow: 30, phase: rand(0, 6.28), rate: rand(1.2, 3.4) };
+  return g;
+}
+
+// Steaming noodle stall: counter, glowing canopy, stools, bowls, paper lanterns.
+function buildNoodleStall(){
+  const g = new THREE.Group();
+  g.add(box(2.3, 1.15, 5.0, MAT.wood, 0, 0.575, 0));
+  g.add(box(2.6, 0.14, 5.3, MAT.steel, 0, 1.2, 0));
+  g.add(box(2.4, 0.5, 5.1, MAT.steelDark, 0, 0.25, 0));
+  for (let i = 0; i < 4; i++) g.add(cyl(0.07, 0.07, 2.5, 8, MAT.steel, i < 2 ? -1.05 : 1.05, 1.25, i % 2 ? -2.2 : 2.2));
+  g.add(box(2.8, 0.18, 5.6, new THREE.MeshStandardMaterial({
+    color: COL.canvasRed, roughness: 0.75, emissive: 0x6b1a0c, emissiveIntensity: 0.75 }), -0.35, 2.6, 0));
+  g.add(box(2.9, 0.1, 5.7, neonMat(COL.neonAmber), -0.35, 2.46, 0, false));
+  const under = new THREE.PointLight(0xffb257, 55, 13, 1.8);
+  under.position.set(0, 2.25, 0); g.add(under);
+  const bowlGeo = new THREE.CylinderGeometry(0.26, 0.16, 0.24, 14);
+  const bowlMat = new THREE.MeshStandardMaterial({ color: 0xf3eee2, roughness: 0.55 });
+  for (let i = 0; i < 5; i++) g.add(mesh(bowlGeo, bowlMat, rand(-0.5, 0.6), 1.39, -2.0 + i * 1.0));
+  const burner = glowSprite(COL.neonAmber, 1.6, 0.5);
+  burner.position.set(-0.55, 1.35, 1.6);
+  g.add(burner, cyl(0.44, 0.4, 0.62, 16, MAT.steel, -0.55, 1.58, 1.6));
+  for (let i = 0; i < 3; i++){
+    g.add(cyl(0.26, 0.24, 0.12, 12, MAT.rust, 1.95, 0.78, -1.5 + i * 1.5));
+    g.add(cyl(0.07, 0.09, 0.72, 8, MAT.steelDark, 1.95, 0.36, -1.5 + i * 1.5));
+  }
+  const lanternMat = new THREE.MeshStandardMaterial({ color: 0xff8a5c, emissive: 0xff6a2c, emissiveIntensity: 2.4, roughness: 0.5 });
+  const lanterns = [];
+  for (let i = 0; i < 4; i++){
+    const z = -2.0 + i * 1.35;
+    g.add(mesh(new THREE.SphereGeometry(0.2, 12, 10), lanternMat, 1.4, 2.15, z, false));
+    const halo = glowSprite(0xff8a45, 1.3, 0.75);
+    halo.position.set(1.4, 2.15, z); g.add(halo); lanterns.push(halo);
+  }
+  g.userData = { lanterns, under };
+  return g;
+}
+
+// Flickering holographic advertisement on a projector plinth.
+function buildHoloAd(){
+  const g = new THREE.Group();
+  const tex = canvasTex(makeHoloCanvas());
+  const mat = new THREE.MeshBasicMaterial({
+    map: tex, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending,
+    depthWrite: false, side: THREE.DoubleSide, toneMapped: false
+  });
+  const a = mesh(new THREE.PlaneGeometry(3.0, 4.4), mat, 0, 0, 0, false);
+  const b = mesh(new THREE.PlaneGeometry(3.0, 4.4), mat.clone(), 0, 0, 0, false);
+  const halo = glowSprite(COL.holo, 6.2, 0.3);
+  b.rotation.y = Math.PI / 2;
+  g.add(a, b, halo, cyl(0.5, 0.62, 0.3, 12, MAT.steelDark, 0, -2.5, 0));
+  const ring = mesh(new THREE.TorusGeometry(0.45, 0.05, 8, 24), neonMat(COL.holo), 0, -2.32, 0, false);
+  ring.rotation.x = Math.PI / 2; g.add(ring);
+  const lamp = new THREE.PointLight(COL.holo, 40, 20, 1.8); g.add(lamp);
+  g.userData = { panes: [a, b], halo, lamp, tex };
+  return g;
+}
+
+// Stack of wall-mounted air conditioners with condensate drips.
+function buildAcStack(count){
+  const g = new THREE.Group();
+  const drips = [];
+  const dropMat = new THREE.MeshStandardMaterial({ color: 0xb6dcff, emissive: 0x2d5a7a, emissiveIntensity: 1.4, roughness: 0.2 });
+  for (let i = 0; i < count; i++){
+    const w = rand(1.0, 1.4), h = rand(0.7, 0.95);
+    const unit = box(w, h, 1.2, MAT.grille, rand(-0.15, 0.15), i * 1.3, rand(-0.4, 0.4));
+    const fan = mesh(new THREE.CircleGeometry(h * 0.36, 16), MAT.steelDark, unit.position.x + w / 2 + 0.01, unit.position.y, unit.position.z, false);
+    const drop = mesh(new THREE.SphereGeometry(0.05, 6, 5), dropMat, unit.position.x, unit.position.y - h / 2, unit.position.z, false);
+    fan.rotation.y = Math.PI / 2;
+    g.add(unit, fan, drop, box(0.12, 0.12, 1.3, MAT.rust, unit.position.x - w / 2, unit.position.y - h / 2, unit.position.z));
+    drips.push({ mesh: drop, top: unit.position.y - h / 2, phase: rng() * 3 });
+  }
+  g.userData = { drips };
+  return g;
+}
+
+// Alley dumpster with sloped lid, wheels, painted stripe and a bin bag.
+function buildDumpster(hex){
+  const g = new THREE.Group();
+  g.add(box(1.6, 1.1, 2.6, new THREE.MeshStandardMaterial({ color: hex, roughness: 0.72, metalness: 0.35 }), 0, 0.75, 0));
+  const lid = box(1.7, 0.14, 2.7, MAT.steelDark, 0, 1.36, 0);
+  lid.rotation.x = -0.09; g.add(lid);
+  const stripe = mesh(new THREE.PlaneGeometry(2.4, 0.3), neonMat(COL.neonLime), 0.81, 0.95, 0, false);
+  stripe.rotation.y = Math.PI / 2; g.add(stripe);
+  for (let i = 0; i < 4; i++){
+    const wheel = cyl(0.16, 0.16, 0.1, 10, MAT.steelDark, i < 2 ? -0.65 : 0.65, 0.16, i % 2 ? -1.05 : 1.05);
+    wheel.rotation.z = Math.PI / 2; g.add(wheel);
+  }
+  const bag = mesh(new THREE.SphereGeometry(0.32, 10, 8), new THREE.MeshStandardMaterial({ color: 0x2b3243, roughness: 0.9 }), 0.2, 1.55, rand(-0.6, 0.6));
+  bag.scale.y = 0.8; g.add(bag);
+  return g;
+}
+
+// Glowing vending machine, rows of cans behind the lit front panel.
+function buildVendingMachine(){
+  const g = new THREE.Group();
+  g.add(box(1.5, 2.4, 0.9, new THREE.MeshStandardMaterial({ color: 0x364160, roughness: 0.55, metalness: 0.45 }), 0, 1.2, 0));
+  g.add(mesh(new THREE.PlaneGeometry(1.2, 1.9), new THREE.MeshBasicMaterial({ color: 0x0d3350, toneMapped: false }), 0, 1.4, 0.46, false));
+  const canGeo = new THREE.BoxGeometry(0.16, 0.26, 0.05);
+  const canMats = [neonMat(COL.neonCyan), neonMat(COL.neonPink), neonMat(COL.neonLime), neonMat(COL.neonAmber)];
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 5; c++)
+    g.add(mesh(canGeo, canMats[randInt(0, 3)], -0.48 + c * 0.24, 0.72 + r * 0.36, 0.48, false));
+  const halo = glowSprite(COL.neonCyan, 3.6, 0.42), lamp = new THREE.PointLight(COL.neonCyan, 26, 12, 2.0);
+  halo.position.set(0, 1.6, 0.9); lamp.position.set(0, 1.5, 1.0);
+  g.add(halo, lamp, box(1.54, 0.22, 0.94, neonMat(COL.neonCyan), 0, 2.32, 0, false));
+  return g;
+}
+
+// Hovering delivery drone: ducted rotors, cargo pod, blinking nav beacons.
+function buildDrone(){
+  const g = new THREE.Group();
+  g.add(box(0.9, 0.28, 0.62, new THREE.MeshStandardMaterial({ color: 0x5c6c92, roughness: 0.4, metalness: 0.7,
+    emissive: 0x1d3350, emissiveIntensity: 1.2 }), 0, 0, 0));
+  const shell = mesh(new THREE.SphereGeometry(0.3, 12, 8), MAT.steel, 0, 0.14, 0);
+  shell.scale.set(1.3, 0.5, 0.9); g.add(shell);
+  g.add(box(0.46, 0.4, 0.42, MAT.wood, 0, -0.34, 0));
+  const bladeMat = new THREE.MeshStandardMaterial({ color: 0xa3b4cc, roughness: 0.4, transparent: true, opacity: 0.7 });
+  const rotors = [];
+  for (let i = 0; i < 4; i++){
+    const sx = i < 2 ? -0.62 : 0.62, sz = i % 2 ? -0.46 : 0.46;
+    const arm = cyl(0.05, 0.05, 0.85, 6, MAT.steelDark, sx * 0.5, 0.02, sz * 0.5);
+    const blade = box(0.72, 0.02, 0.09, bladeMat, sx, 0.17, sz, false);
+    const ring = mesh(new THREE.TorusGeometry(0.36, 0.022, 6, 18), MAT.steelDark, sx, 0.17, sz, false);
+    arm.rotation.set(0, Math.atan2(sz, sx), Math.PI / 2); ring.rotation.x = Math.PI / 2;
+    g.add(arm, blade, ring, cyl(0.08, 0.1, 0.14, 8, MAT.steel, sx, 0.08, sz)); rotors.push(blade);
+  }
+  const beaconA = glowSprite(COL.neonPink, 0.9, 0.95), beaconB = glowSprite(COL.neonCyan, 0.9, 0.95);
+  beaconA.position.set(-0.5, -0.12, 0); beaconB.position.set(0.5, -0.12, 0);
+  const lamp = new THREE.PointLight(0xcfeaff, 16, 9, 2.0);
+  lamp.position.y = -0.3; g.add(beaconA, beaconB, lamp);
+  g.userData = { rotors, beaconA, beaconB };
+  return g;
+}
+
+// Sagging bundle of overhead cables strung between the two rooftops.
+function buildCableSpan(z, yA, yB, sag, hex){
+  const g = new THREE.Group();
+  const strands = randInt(3, 5);
+  for (let i = 0; i < strands; i++){
+    const off = (i - strands / 2) * 0.16;
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(-CFG.halfWidth - 0.4, yA + off, z + rand(-0.3, 0.3)),
+      new THREE.Vector3(rand(-1.4, 1.4), (yA + yB) / 2 - sag + off, z + rand(-0.5, 0.5)),
+      new THREE.Vector3(CFG.halfWidth + 0.4, yB + off, z + rand(-0.3, 0.3))
+    ]);
+    g.add(mesh(new THREE.TubeGeometry(curve, 22, 0.035, 5, false), MAT.cable));
+    if (i === 0 && hex){
+      for (let b = 1; b < 5; b++){
+        const p = curve.getPoint(b / 5), halo = glowSprite(hex, 0.8, 0.6);
+        halo.position.set(p.x, p.y - 0.1, p.z);
+        g.add(halo, mesh(new THREE.SphereGeometry(0.08, 8, 6), neonMat(hex), p.x, p.y - 0.1, p.z, false));
+      }
+    }
+  }
+  return g;
+}
+
+// Wall plumbing: rusted drop pipe with clamps, valve wheel and a lateral run.
+function buildPipeRun(height, len){
+  const g = new THREE.Group();
+  g.add(cyl(0.11, 0.11, height, 10, MAT.rust, 0, height / 2, 0));
+  const run = cyl(0.09, 0.09, len, 10, MAT.steel, 0, height * 0.72, len / 2);
+  run.rotation.x = Math.PI / 2; g.add(run);
+  for (let i = 0; i < 3; i++){
+    const clamp = mesh(new THREE.TorusGeometry(0.15, 0.04, 6, 12), MAT.steelDark, 0, height * (0.2 + i * 0.3), 0, false);
+    clamp.rotation.x = Math.PI / 2; g.add(clamp);
+  }
+  const valve = mesh(new THREE.TorusGeometry(0.2, 0.05, 6, 14), MAT.rust, 0, height * 0.4, 0, false);
+  valve.rotation.y = Math.PI / 2; g.add(valve);
+  return g;
+}
+
+// Street vent grate that the steam columns rise from.
+function buildVentGrate(){
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.09, 2.0, MAT.steelDark, 0, 0.045, 0));
+  const slat = new THREE.BoxGeometry(1.3, 0.05, 0.09);
+  for (let i = 0; i < 9; i++) g.add(mesh(slat, MAT.steel, 0, 0.1, -0.85 + i * 0.21, false));
+  return g;
+}
+
+// Puddle: glossy sheet of standing water plus a smeared neon reflection.
+function buildPuddle(r, hex){
+  const g = new THREE.Group();
+  const pool = mesh(new THREE.CircleGeometry(r, 20),
+    new THREE.MeshStandardMaterial({ color: 0x2b3854, roughness: 0.3, metalness: 0.45 }), 0, 0.012, 0, false);
+  pool.rotation.x = -Math.PI / 2; g.add(pool);
+  const smear = mesh(new THREE.PlaneGeometry(r * 0.7, r * 1.9), new THREE.MeshBasicMaterial({
+    map: GLOW_TEX, color: hex, blending: THREE.AdditiveBlending,
+    transparent: true, opacity: 0.6, depthWrite: false, toneMapped: false }), 0, 0.02, 0, false);
+  smear.rotation.x = -Math.PI / 2; g.add(smear);
+  g.userData = { smear, phase: rand(0, 6.28) };
+  return g;
+}
+
+/* ---------- 6. SCENE, RENDERER & CAMERA ---------- */
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(COL.fog, 0.0125);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = CFG.exposure;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 460);
+camera.position.set(13.5, 35, 24);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+controls.target.set(0, 3.0, 0);
+controls.minDistance = 24; controls.maxDistance = 70;
+controls.maxPolarAngle = 1.15;
+
+// Gradient night dome: indigo overhead washing into the fog tint at the horizon.
+const skyCtx = ctx2d(8, 256);
+const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
+skyGrad.addColorStop(0.00, '#0d1631'); skyGrad.addColorStop(0.42, '#1e2856');
+skyGrad.addColorStop(0.68, '#3a3363'); skyGrad.addColorStop(1.00, '#161f36');
+skyCtx.fillStyle = skyGrad; skyCtx.fillRect(0, 0, 8, 256);
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(190, 24, 16), new THREE.MeshBasicMaterial({
+  map: canvasTex(skyCtx.canvas), side: THREE.BackSide, fog: false, toneMapped: false })));
+
+/* ---------- 7. LAYOUT  --  ground, tenement rows, skyline, signage and alley props ---------- */
+const ground = mesh(new THREE.PlaneGeometry(320, 320), MAT.road, 0, 0, 0, false);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+for (const s of [-1, 1]) scene.add(box(0.6, 0.22, CFG.alleyEnd * 2 + 6, MAT.concrete, s * (CFG.halfWidth - 0.3), 0.11, 0));
+
+const alley = new THREE.Group(); scene.add(alley);
+const BLOCKS = [
+  { s: -1, z: -10.5, depth: 6.0, len: 11, h: 9.0, v: 0, e: COL.neonCyan },
+  { s: -1, z: 0.5, depth: 5.4, len: 9, h: 7.4, v: 1, e: COL.neonPink },
+  { s: -1, z: 11.0, depth: 6.4, len: 11, h: 9.4, v: 2, e: COL.neonViolet },
+  { s: 1, z: -9.0, depth: 6.0, len: 12, h: 8.4, v: 2, e: COL.neonPink },
+  { s: 1, z: 2.5, depth: 5.4, len: 10, h: 7.0, v: 0, e: COL.neonAmber },
+  { s: 1, z: 13.0, depth: 6.4, len: 10, h: 9.2, v: 1, e: COL.neonCyan }
+];
+for (const b of BLOCKS){
+  const t = buildTenement(b.depth, b.len, b.h, b.v, b.e);
+  t.position.set(b.s * (CFG.halfWidth + b.depth / 2), 0, b.z);
+  if (b.s > 0) t.rotation.y = Math.PI;   // keep shutters and strips facing the alley
+  alley.add(t);
+}
+// Distant skyline: far outside the orbit radius so it never blocks the alley.
+for (let i = 0; i < 18; i++){
+  const ang = (i / 18) * Math.PI * 2 + rand(-0.14, 0.14), rad = rand(58, 92), h = rand(20, 46), w = rand(7, 13);
+  scene.add(mesh(new THREE.BoxGeometry(w, h, w), facadeMaterial(i % 3, Math.max(1, Math.round(w / 3.4)), Math.max(2, Math.round(h / 3.2))),
+    Math.cos(ang) * rad, h / 2, Math.sin(ang) * rad, false));
+}
+
+const signs = [];
+function placeSign(hex, cells, vertical, scale, x, y, z, ry){
+  const s = buildNeonSign(hex, cells, vertical, scale);
+  s.position.set(x, y, z); s.rotation.y = ry;
+  alley.add(s); signs.push(s);
+}
+placeSign(COL.neonPink, 3, true, 1.5, -CFG.halfWidth + 0.2, 5.4, -4.5, Math.PI / 2);
+placeSign(COL.neonCyan, 3, true, 1.4, CFG.halfWidth - 0.2, 5.0, 7.5, -Math.PI / 2);
+placeSign(COL.neonLime, 2, false, 1.3, CFG.halfWidth - 0.2, 6.4, -9.5, -Math.PI / 2);
+placeSign(COL.neonAmber, 3, false, 1.0, -CFG.halfWidth + 0.2, 4.3, 2.0, Math.PI / 2);
+placeSign(COL.neonViolet, 2, true, 1.2, -CFG.halfWidth + 0.2, 6.2, 10.5, Math.PI / 2);
+// blade signs jut into the alley so they stay readable from every yaw angle
+placeSign(COL.neonCyan, 2, false, 1.1, -CFG.halfWidth + 1.7, 7.2, -12.0, 0);
+placeSign(COL.neonPink, 2, false, 1.0, CFG.halfWidth - 1.7, 6.6, 4.0, 0);
+
+const stall = buildNoodleStall();
+stall.position.set(-CFG.halfWidth + 1.5, 0, 1.5); alley.add(stall);
+const holo = buildHoloAd();
+holo.position.set(0.4, 6.2, -13.0); alley.add(holo);
+const drone = buildDrone();
+drone.position.set(1.6, 4.9, 6.4); drone.scale.setScalar(1.45); alley.add(drone);
+const vend = buildVendingMachine();
+vend.position.set(CFG.halfWidth - 0.7, 0, 9.6); vend.rotation.y = -Math.PI / 2; alley.add(vend);
+
+const acStacks = [];
+for (const [x, y, z, n, ry] of [[-CFG.halfWidth + 0.6, 2.6, -7.5, 3, 0], [CFG.halfWidth - 0.6, 3.0, 5.0, 3, Math.PI],
+                                [CFG.halfWidth - 0.6, 2.4, -3.0, 2, Math.PI]]){
+  const ac = buildAcStack(n);
+  ac.position.set(x, y, z); ac.rotation.y = ry;
+  alley.add(ac); acStacks.push(ac);
+}
+for (const [x, z, ry, hex] of [[CFG.halfWidth - 1.1, -4.6, 0.1, 0x386a58], [CFG.halfWidth - 1.1, -7.6, -0.06, 0x475678],
+                               [-CFG.halfWidth + 1.1, -10.6, 0.05, 0x60435a]]){
+  const d = buildDumpster(hex);
+  d.position.set(x, 0, z); d.rotation.y = ry; alley.add(d);
+}
+for (const [x, z, ry] of [[CFG.halfWidth - 0.35, -1.0, 0], [-CFG.halfWidth + 0.35, 8.0, Math.PI]]){
+  const p = buildPipeRun(rand(6, 7.2), 6);
+  p.position.set(x, 0, z); p.rotation.y = ry; alley.add(p);
+}
+const grates = [];
+for (const [x, z] of [[-0.8, -6.0], [1.2, 4.0], [-1.6, 11.5]]){
+  const gr = buildVentGrate();
+  gr.position.set(x, 0, z); gr.rotation.y = rand(-0.2, 0.2);
+  alley.add(gr); grates.push(gr.position);
+}
+const puddles = [];
+for (const [x, z, r, hex] of [[-2.2, -3.0, 1.5, COL.neonPink], [2.4, 1.0, 1.7, COL.neonAmber], [0.2, 8.5, 1.6, COL.neonCyan],
+                              [-2.8, 12.5, 1.2, COL.neonViolet], [1.6, -10.5, 1.4, COL.neonLime]]){
+  const p = buildPuddle(r, hex);
+  p.position.set(x, 0, z); p.rotation.y = rand(-0.4, 0.4);
+  alley.add(p); puddles.push(p);
+}
+for (const [z, ya, yb, sag, hex] of [[-12, 8.2, 7.7, 1.5, null], [-6.5, 8.4, 7.8, 1.9, COL.neonAmber], [-1.0, 7.0, 8.0, 1.6, null],
+                                     [4.5, 6.8, 6.6, 1.4, COL.neonCyan], [9.5, 8.8, 8.7, 2.1, null], [13.5, 9.0, 8.8, 1.7, COL.neonPink]])
+  alley.add(buildCableSpan(z, ya, yb, sag, hex));
+// scattered crates, drum barrels and neon-capped bollards
+const crateMat = new THREE.MeshStandardMaterial({ color: 0x7d664c, roughness: 0.85 });
+for (let i = 0; i < 9; i++){
+  const s = rand(0.5, 0.9);
+  const crate = box(s, s, s, crateMat, (rng() < 0.5 ? -1 : 1) * rand(2.9, 4.5), s / 2, rand(-13, 14));
+  crate.rotation.y = rand(0, Math.PI); alley.add(crate);
+}
+for (let i = 0; i < 5; i++){
+  const x = (rng() < 0.5 ? -1 : 1) * rand(3.2, 4.4), z = rand(-12, 13);
+  alley.add(cyl(0.36, 0.36, 1.0, 12, MAT.rust, x, 0.5, z));
+  const ring = mesh(new THREE.TorusGeometry(0.37, 0.03, 6, 14), MAT.steelDark, x, 0.78, z, false);
+  ring.rotation.x = Math.PI / 2; alley.add(ring);
+}
+for (let i = 0; i < 6; i++){
+  const x = (i % 2 ? 1 : -1) * (CFG.halfWidth - 0.75), z = -12 + i * 5;
+  alley.add(cyl(0.09, 0.11, 0.8, 8, MAT.steelDark, x, 0.4, z));
+  alley.add(mesh(new THREE.SphereGeometry(0.12, 8, 6), neonMat(COL.neonAmber), x, 0.82, z, false));
+}
+
+/* ---------- 8. RAIN, STEAM & LIGHTING RIG ---------- */
+// Rain: a single LineSegments whose vertex positions are rewritten each frame.
+const rainPos = new Float32Array(CFG.rainCount * 6);
+const rainSpeed = new Float32Array(CFG.rainCount);
+for (let i = 0; i < CFG.rainCount; i++){
+  const x = rand(-18, 18), z = rand(-22, 22), y = rand(0, 24), len = rand(0.5, 1.1);
+  rainPos.set([x, y, z, x + 0.06, y - len, z], i * 6);
+  rainSpeed[i] = rand(11, 19);
+}
+const rainGeo = new THREE.BufferGeometry();
+rainGeo.setAttribute('position', new THREE.BufferAttribute(rainPos, 3));
+scene.add(new THREE.LineSegments(rainGeo, new THREE.LineBasicMaterial({
+  color: 0xc8dfff, transparent: true, opacity: 0.45, toneMapped: false })));
+
+// Steam: additive points rising from the grates and the noodle pot.
+const emitters = grates.concat([new THREE.Vector3(-CFG.halfWidth + 0.95, 2.1, 3.1)]);
+const steamGeo = new THREE.BufferGeometry();
+steamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CFG.steamCount * 3), 3));
+steamGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CFG.steamCount * 3), 3));
+const steamData = [];
+for (let i = 0; i < CFG.steamCount; i++){
+  const e = emitters[i % emitters.length];
+  steamData.push({ ox: e.x, oy: e.y || 0.1, oz: e.z, r: rand(0.1, 0.7), a: rand(0, 6.28),
+                   life: rand(3.2, 6.0), t: rand(0, 6), rise: rand(0.5, 1.1) });
+}
+scene.add(new THREE.Points(steamGeo, new THREE.PointsMaterial({
+  map: GLOW_TEX, size: 1.2, transparent: true, opacity: 0.42, depthWrite: false,
+  blending: THREE.AdditiveBlending, vertexColors: true, toneMapped: false })));
+
+// Layered rig: cool moon key with shadows, hemisphere + ambient fill so every
+// structure stays legible at night, then coloured accents that sell the neon.
+const moon = new THREE.DirectionalLight(0xb4ccff, 1.7);
+moon.position.set(20, 30, 14);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -28; moon.shadow.camera.right = 28;
+moon.shadow.camera.top = 28; moon.shadow.camera.bottom = -28;
+moon.shadow.camera.far = 90; moon.shadow.bias = -0.0007; moon.shadow.normalBias = 0.03;
+scene.add(moon);
+const bounce = new THREE.DirectionalLight(0xff6bb5, 0.45); bounce.position.set(-18, 10, -16);
+const rim = new THREE.DirectionalLight(0x53d9ff, 0.42); rim.position.set(-9, 13, 20);
+scene.add(bounce, rim);
+scene.add(new THREE.HemisphereLight(0x4a63a0, 0x2b2340, 1.15));
+scene.add(new THREE.AmbientLight(0x5c6e93, 0.6));
+
+const streetLamps = [];
+for (const [x, y, z, hex, power] of [[-2.5, 5.0, -6.0, 0xff5fa8, 46], [2.6, 4.6, 3.0, 0x59e9ff, 44],
+                                     [0.0, 4.2, 12.0, 0xffc46a, 40], [-1.5, 5.4, -12.0, 0x9d7bff, 36]]){
+  const light = new THREE.PointLight(hex, power, 22, 1.9);
+  light.position.set(x, y, z);
+  const halo = glowSprite(hex, 2.4, 0.35); halo.position.set(x, y, z);
+  scene.add(light, halo);
+  streetLamps.push({ light, halo, base: power, phase: rand(0, 6.28), rate: rand(0.7, 1.9) });
+}
+
+/* ---------- 9. ANIMATION LOOP ---------- */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.getElapsedTime();
+
+  // rain streaks fall and wrap back up to the cloud line
+  const rp = rainGeo.attributes.position.array;
+  for (let i = 0; i < CFG.rainCount; i++){
+    const o = i * 6, drop = rainSpeed[i] * dt;
+    rp[o + 1] -= drop; rp[o + 4] -= drop;
+    if (rp[o + 4] < 0){
+      const h = rand(20, 26);
+      rp[o + 1] = h; rp[o + 4] = h - rand(0.5, 1.1);
+    }
+  }
+  rainGeo.attributes.position.needsUpdate = true;
+
+  // steam columns drift upward, spreading and fading as they rise
+  const sp = steamGeo.attributes.position.array, sc = steamGeo.attributes.color.array;
+  for (let i = 0; i < CFG.steamCount; i++){
+    const d = steamData[i];
+    d.t += dt;
+    if (d.t > d.life) d.t -= d.life;
+    const k = d.t / d.life, o = i * 3, spread = d.r + k * 1.1;
+    sp[o] = d.ox + Math.cos(d.a + k * 1.6) * spread;
+    sp[o + 1] = d.oy + k * d.life * d.rise;
+    sp[o + 2] = d.oz + Math.sin(d.a + k * 1.6) * spread;
+    const fade = Math.sin(Math.PI * k) * 0.26;
+    sc[o] = fade * 0.85; sc[o + 1] = fade * 0.92; sc[o + 2] = fade;
+  }
+  steamGeo.attributes.position.needsUpdate = true;
+  steamGeo.attributes.color.needsUpdate = true;
+
+  // neon signs flicker, each on its own phase and rate
+  for (const s of signs){
+    const u = s.userData, f = 0.84 + 0.16 * Math.sin(t * u.rate + u.phase) - (rng() < 0.01 ? 0.3 : 0);
+    u.panel.material.emissiveIntensity = u.base * f;
+    u.halo.material.opacity = 0.55 * f;
+    u.lamp.intensity = u.glow * f;
+  }
+
+  // holographic advert: scrolling scanlines, slow sway and brightness dropouts
+  const hu = holo.userData;
+  hu.tex.offset.y = (t * 0.12) % 1;
+  const hf = 0.65 + 0.35 * Math.abs(Math.sin(t * 1.7)) - (rng() < 0.025 ? 0.3 : 0);
+  for (const p of hu.panes) p.material.opacity = Math.max(0.15, 0.78 * hf);
+  hu.halo.material.opacity = 0.3 * hf;
+  hu.lamp.intensity = 40 * hf;
+  holo.rotation.y = Math.sin(t * 0.25) * 0.12;
+  holo.position.y = 6.2 + Math.sin(t * 0.7) * 0.1;
+
+  // delivery drone hovers, drifts down the alley and spins its rotors
+  drone.position.set(1.6 + Math.cos(t * 0.24) * 0.7, 4.9 + Math.sin(t * 0.9) * 0.22, 6.4 + Math.sin(t * 0.31) * 1.8);
+  drone.rotation.set(0, Math.sin(t * 0.31) * 0.25, Math.sin(t * 0.9) * 0.04);
+  const du = drone.userData;
+  for (let i = 0; i < du.rotors.length; i++) du.rotors[i].rotation.y += dt * 26 * (i % 2 ? 1 : -1);
+  const blink = (t % 1.2) < 0.6;
+  du.beaconA.material.opacity = blink ? 0.95 : 0.12;
+  du.beaconB.material.opacity = blink ? 0.12 : 0.95;
+
+  // stall lanterns breathe and the canopy light pulses with the burner
+  const su = stall.userData;
+  for (let i = 0; i < su.lanterns.length; i++){
+    su.lanterns[i].material.opacity = 0.62 + 0.22 * Math.sin(t * 1.3 + i * 1.1);
+  }
+  su.under.intensity = 55 + Math.sin(t * 2.1) * 5;
+
+  // condensate keeps dripping off the stacked AC units
+  for (const ac of acStacks){
+    for (const d of ac.userData.drips){
+      d.phase += dt * 0.55;
+      const k = d.phase % 1;
+      d.mesh.position.y = d.top - k * (d.top + ac.position.y);
+      d.mesh.visible = k < 0.92;
+    }
+  }
+
+  // puddles shimmer in sympathy with the signs above them
+  for (const p of puddles) p.userData.smear.material.opacity = 0.36 + 0.2 * Math.sin(t * 1.6 + p.userData.phase);
+
+  // accent street lamps buzz slightly out of sync with each other
+  for (const s of streetLamps){
+    const f = 0.85 + 0.15 * Math.sin(t * s.rate + s.phase);
+    s.light.intensity = s.base * f;
+    s.halo.material.opacity = 0.35 * f;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 10. RESIZE ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

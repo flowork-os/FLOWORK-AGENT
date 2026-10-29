@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lantern Festival River</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a1026}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================== CONFIG / PALETTE ============================== */
+const SEED = 88150215;
+const PAL = {
+  skyTop: '#070b20', skyMid: '#141c42', skyHorizon: '#3a3566', skyGlow: '#5c4470', skyDeep: '#090e1f',
+  fog: 0x151c3a, water: 0x152441, bank: 0x27352d,
+  woodDark: 0x4a3020, woodRed: 0x8a4030, plank: 0x6e4a2c,
+  pagodaWall: '#5a2822', pagodaRoof: 0x2a2430,
+  leaf: 0x3f6b46, stone: 0x6a6f78,
+  paperWarm: 0xffb45e, flame: 0xff8c3a, moon: 0xfff3d0
+};
+const LANTERN_TINTS = [0xffb45e, 0xff8a4a, 0xff6a5a, 0xffd98a, 0xff9ad0, 0xffc46a];
+const RIVER_HALF_W = 7.5, RIVER_LEN = 84, FLOW_SPEED = 1.15;
+const N_RIVER_LANTERNS = 230, N_SKY_LANTERNS = 44;
+
+/* ============================== PRNG / HELPERS ============================== */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(SEED);
+const rand = (lo, hi) => lo + rng() * (hi - lo);
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+function shadowed(mesh, cast = true, receive = true) { mesh.castShadow = cast; mesh.receiveShadow = receive; return mesh; }
+function makeCanvas(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+function canvasTex(c, srgb = true) {
+  const t = new THREE.CanvasTexture(c);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
+}
+// Arched bridge deck profile (z across the river → deck height).
+const deckY = (z) => 0.92 + 2.05 * Math.cos(Math.PI * z / 17.4);
+
+/* ============================== CANVAS TEXTURES ============================== */
+function skyTexture() {
+  const c = makeCanvas(1024, 512), g = c.getContext('2d');
+  const gr = g.createLinearGradient(0, 0, 0, 512);
+  gr.addColorStop(0, PAL.skyTop); gr.addColorStop(0.45, PAL.skyMid); gr.addColorStop(0.72, PAL.skyHorizon);
+  gr.addColorStop(0.82, PAL.skyGlow); gr.addColorStop(0.9, '#241f3f'); gr.addColorStop(1, PAL.skyDeep);
+  g.fillStyle = gr; g.fillRect(0, 0, 1024, 512);
+  for (let i = 0; i < 380; i++) { // pinprick stars above the horizon band
+    const s = rng() < 0.1 ? 2 : 1;
+    g.fillStyle = `rgba(255,244,224,${rand(0.25, 0.9)})`;
+    g.fillRect(rng() * 1024, rng() * 250, s, s);
+  }
+  return canvasTex(c);
+}
+function waterTexture() {
+  const c = makeCanvas(512, 256), g = c.getContext('2d');
+  g.fillStyle = '#16253f'; g.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 300; i++) { // horizontal current streaks
+    const y = rng() * 256, w = rand(30, 130);
+    g.strokeStyle = `rgba(${120 + rand(0, 60) | 0},${150 + rand(0, 60) | 0},${190 + rand(0, 50) | 0},${rand(0.04, 0.14)})`;
+    g.lineWidth = rand(1, 2.4); g.beginPath();
+    g.moveTo(rng() * 512, y); g.lineTo((rng() * 512 + w) % 512, y + rand(-3, 3)); g.stroke();
+  }
+  return canvasTex(c);
+}
+function grassTexture() {
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.fillStyle = '#2b3a31'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2400; i++) {
+    g.fillStyle = rng() < 0.5 ? 'rgba(60,86,66,0.5)' : 'rgba(28,40,32,0.55)';
+    g.fillRect(rng() * 256, rng() * 256, 2, rand(2, 5));
+  }
+  return canvasTex(c);
+}
+function paperTexture() { // soft vertical ribs for every paper lantern
+  const c = makeCanvas(64, 64), g = c.getContext('2d');
+  g.fillStyle = '#ffe6c4'; g.fillRect(0, 0, 64, 64);
+  for (let x = 0; x < 64; x += 8) { g.fillStyle = 'rgba(190,120,60,0.35)'; g.fillRect(x, 0, 2, 64); }
+  g.fillStyle = 'rgba(120,60,30,0.5)'; g.fillRect(0, 0, 64, 4); g.fillRect(0, 60, 64, 4);
+  return canvasTex(c);
+}
+function pagodaWallTextures() { // albedo + emissive window band per tier face
+  const cA = makeCanvas(128, 128), a = cA.getContext('2d');
+  const cE = makeCanvas(128, 128), e = cE.getContext('2d');
+  a.fillStyle = PAL.pagodaWall; a.fillRect(0, 0, 128, 128);
+  a.fillStyle = '#3c1d18'; a.fillRect(0, 0, 6, 128); a.fillRect(122, 0, 6, 128);
+  e.fillStyle = '#000'; e.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 3; i++) {
+    const x = 22 + i * 32;
+    a.fillStyle = '#2a1512'; a.fillRect(x - 3, 40, 26, 56);
+    a.fillStyle = '#ffca7a'; a.fillRect(x, 44, 20, 48);
+    a.fillStyle = '#5a2822'; a.fillRect(x + 8, 44, 3, 48);
+    e.fillStyle = '#ff9a4e'; e.fillRect(x, 44, 20, 48); e.fillStyle = '#331508'; e.fillRect(x + 8, 44, 3, 48);
+  }
+  return { map: canvasTex(cA), emissiveMap: canvasTex(cE) };
+}
+function softDotTexture() {
+  const c = makeCanvas(64, 64), g = c.getContext('2d');
+  const gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.5)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+/* ============================== MATERIALS ============================== */
+const TEX = { paper: paperTexture(), dot: softDotTexture(), water: waterTexture() };
+const DS = THREE.DoubleSide; // mirrored reflection copies flip winding, so key mats are double-sided
+const MAT = {
+  water: new THREE.MeshStandardMaterial({ map: TEX.water, color: PAL.water, transparent: true,
+    opacity: 0.66, roughness: 0.35, metalness: 0.1, depthWrite: false }),
+  bank:  new THREE.MeshStandardMaterial({ map: grassTexture(), color: 0x9fb894, roughness: 0.95, side: DS }),
+  path:  new THREE.MeshStandardMaterial({ color: 0x8a8f96, roughness: 0.9, side: DS }),
+  plank: new THREE.MeshStandardMaterial({ color: PAL.plank, roughness: 0.85, side: DS }),
+  woodDark: new THREE.MeshStandardMaterial({ color: PAL.woodDark, roughness: 0.85, side: DS }),
+  woodRed: new THREE.MeshStandardMaterial({ color: PAL.woodRed, roughness: 0.75, side: DS }),
+  roof:  new THREE.MeshStandardMaterial({ color: PAL.pagodaRoof, roughness: 0.7, metalness: 0.15, side: DS, flatShading: true }),
+  trunk: new THREE.MeshStandardMaterial({ color: 0x4a3826, roughness: 0.95, side: DS }),
+  leaf:  new THREE.MeshStandardMaterial({ color: PAL.leaf, roughness: 0.9, side: DS, flatShading: true }),
+  strand: new THREE.MeshStandardMaterial({ color: 0x4a7a50, roughness: 0.9, side: DS }),
+  stone: new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.9, side: DS }),
+  hull:  new THREE.MeshStandardMaterial({ color: 0x54382a, roughness: 0.8, side: DS }),
+  hill:  new THREE.MeshStandardMaterial({ color: 0x1c2742, roughness: 1, flatShading: true }),
+  paper: new THREE.MeshBasicMaterial({ map: TEX.paper, color: 0xffffff, side: DS }),
+  flame: new THREE.MeshStandardMaterial({ color: 0xffe2b0, emissive: PAL.flame, emissiveIntensity: 2.6 }),
+  gold:  new THREE.MeshStandardMaterial({ color: 0xd9a33b, roughness: 0.4, metalness: 0.6, side: DS }),
+  moon:  new THREE.MeshBasicMaterial({ color: PAL.moon, fog: false })
+};
+
+/* ============================== ENVIRONMENT BUILDERS ============================== */
+function buildSky() {
+  const grp = new THREE.Group();
+  grp.add(new THREE.Mesh(new THREE.SphereGeometry(170, 32, 20),
+    new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false })));
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(6.2, 24, 24), MAT.moon);
+  moon.position.set(-46, 34, -98); grp.add(moon);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.dot, color: 0xf5e6b8,
+    transparent: true, opacity: 0.4, fog: false, depthWrite: false }));
+  halo.scale.setScalar(42); halo.position.copy(moon.position); grp.add(halo);
+  return grp;
+}
+function buildHills() {
+  const grp = new THREE.Group();
+  const spots = [[-40, -70, 26], [8, -78, 32], [52, -66, 24], [-30, 72, 28], [34, 74, 30], [-72, 10, 24], [72, -6, 24]];
+  for (const [x, z, r] of spots) {
+    const h = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), MAT.hill);
+    h.position.set(x, -r * 0.62, z); h.scale.y = rand(0.5, 0.7); grp.add(h);
+  }
+  return grp;
+}
+// Water plane + both banks with stone footpaths; banks join the reflection group.
+function buildBanks() {
+  const grp = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const bank = shadowed(new THREE.Mesh(new THREE.BoxGeometry(RIVER_LEN, 1.2, 34), MAT.bank), false, true);
+    bank.position.set(0, 0, s * (RIVER_HALF_W + 17)); grp.add(bank);
+    const path = shadowed(new THREE.Mesh(new THREE.BoxGeometry(RIVER_LEN, 0.06, 1.7), MAT.path), false, true);
+    path.position.set(0, 0.62, s * (RIVER_HALF_W + 2.1)); grp.add(path);
+  }
+  return grp;
+}
+
+/* ============================== FOCAL BUILDERS ============================== */
+// Arched wooden bridge crowded with hanging paper lanterns.
+function buildBridge() {
+  const grp = new THREE.Group(), dummy = new THREE.Object3D();
+  for (let i = 0; i < 15; i++) { // deck planks following the arch
+    const z = -8.5 + i * (17 / 14), y = deckY(z);
+    const slope = Math.atan(-2.05 * Math.PI / 17.4 * Math.sin(Math.PI * z / 17.4));
+    const plank = shadowed(new THREE.Mesh(new THREE.BoxGeometry(2.5, 0.12, 1.3), MAT.plank));
+    plank.position.set(0, y, z); plank.rotation.x = -slope; grp.add(plank);
+  }
+  const railPts = (xo, yo) => { // rail curves offset from the deck line
+    const pts = [];
+    for (let i = 0; i <= 12; i++) { const z = -8.2 + i * (16.4 / 12); pts.push(new THREE.Vector3(xo, deckY(z) + yo, z)); }
+    return new THREE.CatmullRomCurve3(pts);
+  };
+  for (const s of [-1, 1]) {
+    grp.add(shadowed(new THREE.Mesh(new THREE.TubeGeometry(railPts(s * 1.16, 0.86), 24, 0.055, 6), MAT.woodRed)));
+    grp.add(shadowed(new THREE.Mesh(new THREE.TubeGeometry(railPts(s * 1.22, -0.12), 24, 0.09, 6), MAT.woodDark)));
+  }
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.95, 0.1), MAT.woodRed, 18);
+  let pi = 0;
+  for (const s of [-1, 1]) for (let i = 0; i < 9; i++) {
+    const z = -8 + i * 2; dummy.position.set(s * 1.16, deckY(z) + 0.42, z);
+    dummy.rotation.set(0, 0, 0); dummy.updateMatrix(); posts.setMatrixAt(pi++, dummy.matrix);
+  }
+  posts.castShadow = true; grp.add(posts);
+  for (const s of [-1, 1]) { // stone abutments onto each bank
+    const ab = shadowed(new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.5, 1.6), MAT.stone));
+    ab.position.set(0, 0.78, s * 9.0); grp.add(ab);
+  }
+  // Overhead lantern string between two end poles + rows hung along both rails.
+  for (const s of [-1, 1]) {
+    const pole = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.08, 2.6, 8), MAT.woodRed));
+    pole.position.set(0, deckY(s * 7.6) + 1.3, s * 7.6); grp.add(pole);
+  }
+  const stringPts = [];
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10, z = -7.6 + t * 15.2;
+    stringPts.push(new THREE.Vector3(0, deckY(z) + 2.5 - Math.sin(t * Math.PI) * 0.55, z));
+  }
+  const stringCurve = new THREE.CatmullRomCurve3(stringPts);
+  grp.add(new THREE.Mesh(new THREE.TubeGeometry(stringCurve, 20, 0.02, 5), MAT.woodDark));
+  const bodies = new THREE.InstancedMesh(new THREE.SphereGeometry(0.2, 10, 8), MAT.paper, 25);
+  const tassels = new THREE.InstancedMesh(new THREE.ConeGeometry(0.05, 0.16, 6), MAT.gold, 25);
+  let li = 0;
+  const placeLantern = (p, sc) => {
+    dummy.position.copy(p); dummy.scale.set(sc, sc * 0.82, sc); dummy.updateMatrix();
+    bodies.setMatrixAt(li, dummy.matrix);
+    dummy.position.y -= 0.2 * sc; dummy.scale.setScalar(sc); dummy.updateMatrix();
+    tassels.setMatrixAt(li, dummy.matrix);
+    bodies.setColorAt(li, new THREE.Color(pick(LANTERN_TINTS))); li++;
+  };
+  for (let i = 0; i < 7; i++) placeLantern(stringCurve.getPoint((i + 0.5) / 7).add(new THREE.Vector3(0, -0.28, 0)), 1.25);
+  for (const s of [-1, 1]) for (let i = 0; i < 9; i++) {
+    const z = -7.2 + i * 1.8;
+    placeLantern(new THREE.Vector3(s * 1.34, deckY(z) + 0.32, z), 0.9);
+  }
+  grp.add(bodies, tassels);
+  return grp;
+}
+// Multi-tiered riverside pagoda, dark against the sky with lit window bands.
+function buildPagoda() {
+  const grp = new THREE.Group(), wall = pagodaWallTextures();
+  const wallMat = new THREE.MeshStandardMaterial({ map: wall.map, emissiveMap: wall.emissiveMap,
+    emissive: 0xffa050, emissiveIntensity: 1.5, roughness: 0.85, side: DS });
+  const base = shadowed(new THREE.Mesh(new THREE.BoxGeometry(4.6, 0.6, 4.6), MAT.stone));
+  base.position.y = 0.3; grp.add(base);
+  const widths = [3.3, 2.7, 2.15, 1.65];
+  let y = 0.6;
+  for (let i = 0; i < 4; i++) {
+    const w = widths[i], h = 1.55;
+    const body = shadowed(new THREE.Mesh(new THREE.BoxGeometry(w, h, w), wallMat));
+    body.position.y = y + h / 2; grp.add(body);
+    const roof = shadowed(new THREE.Mesh(new THREE.ConeGeometry(w * 0.98, 0.85, 4), MAT.roof));
+    roof.position.y = y + h + 0.32; roof.rotation.y = Math.PI / 4; roof.scale.y = 0.78; grp.add(roof);
+    y += h + 0.42;
+  }
+  const spire = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 1.2, 6), MAT.gold);
+  spire.position.y = y + 0.55; grp.add(spire);
+  const orb = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 8), MAT.flame);
+  orb.position.y = y + 1.15; grp.add(orb);
+  return grp;
+}
+// Weeping willow whose strands trail toward the water.
+function buildWillow(lean) {
+  const grp = new THREE.Group();
+  const trunk = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.28, 3.4, 8), MAT.trunk));
+  trunk.position.y = 1.7; trunk.rotation.x = lean; grp.add(trunk);
+  const crown = new THREE.Group(); crown.name = 'crown';
+  crown.position.set(0, 3.5, lean * 3.2);
+  const puff = shadowed(new THREE.Mesh(new THREE.SphereGeometry(1.25, 10, 8), MAT.leaf));
+  puff.scale.y = 0.66; crown.add(puff);
+  const strandCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0.4, 0), new THREE.Vector3(0.55, -0.5, 0),
+    new THREE.Vector3(0.82, -1.7, 0), new THREE.Vector3(0.9, -3.0, 0)]);
+  const strandGeo = new THREE.TubeGeometry(strandCurve, 10, 0.035, 4);
+  const strands = new THREE.InstancedMesh(strandGeo, MAT.strand, 30);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 30; i++) {
+    dummy.position.set(0, rand(-0.15, 0.15), 0);
+    dummy.rotation.y = i / 30 * Math.PI * 2 + rand(-0.1, 0.1);
+    dummy.scale.setScalar(rand(0.75, 1.15)); dummy.updateMatrix();
+    strands.setMatrixAt(i, dummy.matrix);
+  }
+  strands.castShadow = true; crown.add(strands);
+  grp.add(crown);
+  return grp;
+}
+// Moored rowboat with a little candle lamp on its prow.
+function buildRowboat() {
+  const grp = new THREE.Group();
+  const hull = shadowed(new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.34, 0.85), MAT.hull));
+  hull.position.y = 0.22; grp.add(hull);
+  for (const s of [-1, 1]) { // raked bow and stern
+    const cap = shadowed(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.3, 0.72), MAT.hull));
+    cap.position.set(s * 1.3, 0.34, 0); cap.rotation.z = -s * 0.5; grp.add(cap);
+  }
+  const seat = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.06, 0.8), MAT.plank);
+  seat.position.y = 0.42; grp.add(seat);
+  const lampPost = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.5, 6), MAT.woodDark);
+  lampPost.position.set(1.05, 0.68, 0); grp.add(lampPost);
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 8), MAT.flame);
+  lamp.position.set(1.05, 0.98, 0); grp.add(lamp);
+  return grp;
+}
+// Stone toro lantern for the bank footpaths.
+function buildStoneLantern() {
+  const grp = new THREE.Group();
+  const base = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.3, 0.5, 8), MAT.stone));
+  base.position.y = 0.25; grp.add(base);
+  const box = shadowed(new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, 0.42), MAT.stone));
+  box.position.y = 0.72; grp.add(box);
+  const glow = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.2, 0.3), MAT.flame);
+  glow.position.y = 0.72; grp.add(glow);
+  const cap = shadowed(new THREE.Mesh(new THREE.ConeGeometry(0.42, 0.3, 4), MAT.stone), true, false);
+  cap.position.y = 1.02; cap.rotation.y = Math.PI / 4; grp.add(cap);
+  return grp;
+}
+
+/* ============================== RENDERER / SCENE / CAMERA ============================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.22;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 55, 150);
+
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 420);
+camera.position.set(17, 10.5, 23);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.2, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.0;
+controls.minDistance = 12; controls.maxDistance = 48;
+controls.maxPolarAngle = 1.42;
+
+/* ============================== ASSEMBLY / LAYOUT ============================== */
+scene.add(buildSky(), buildHills());
+// Everything inside structuresRoot is cloned into a mirrored twin below the water.
+const structuresRoot = new THREE.Group();
+structuresRoot.add(buildBanks());
+const bridge = buildBridge(); structuresRoot.add(bridge);
+const pagoda = buildPagoda();
+pagoda.position.set(-16, 0.6, -13.5); pagoda.rotation.y = 0.5; structuresRoot.add(pagoda);
+const willowSpots = [[7.5, 6.7, -0.16, 2.1], [-8, -6.7, 0.16, 4.9], [19, -7.0, 0.15, 0.6], [-21, 7.0, -0.14, 3.8]];
+willowSpots.forEach(([x, z, lean, ry], i) => {
+  const w = buildWillow(Math.abs(lean)); w.name = 'willow' + i;
+  w.position.set(x, 0.6, z); w.rotation.y = ry + (z > 0 ? Math.PI / 2 : -Math.PI / 2);
+  w.scale.setScalar(rand(0.9, 1.25)); structuresRoot.add(w);
+});
+const boatSpots = [[10.5, 5.6, 0.4], [-25, 5.2, -0.25], [27, -5.4, 2.9]];
+const boats = boatSpots.map(([x, z, ry], i) => {
+  const b = buildRowboat(); b.name = 'boat' + i;
+  b.position.set(x, 0.02, z); b.rotation.y = ry; structuresRoot.add(b); return b;
+});
+[[3.6, 8.9], [-3.6, 9.4], [4.2, -9.2], [-14, -9.0]].forEach(([x, z]) => {
+  const s = buildStoneLantern(); s.position.set(x, 0.62, z);
+  s.rotation.y = rand(0, Math.PI); structuresRoot.add(s);
+});
+scene.add(structuresRoot);
+// Mirrored twin: flip Y so every lantern, window and flame doubles in the river.
+const mirrorRoot = structuresRoot.clone(true);
+mirrorRoot.scale.y = -1;
+mirrorRoot.traverse((o) => { o.castShadow = false; o.receiveShadow = false; });
+scene.add(mirrorRoot);
+const mirrorBoats = boats.map((b) => mirrorRoot.getObjectByName(b.name));
+const willowCrowns = willowSpots.map((s, i) => structuresRoot.getObjectByName('willow' + i).getObjectByName('crown'));
+const mirrorCrowns = willowSpots.map((s, i) => mirrorRoot.getObjectByName('willow' + i).getObjectByName('crown'));
+// Water surface goes in last so the mirrored world shows through its tint.
+const water = new THREE.Mesh(new THREE.PlaneGeometry(RIVER_LEN, RIVER_HALF_W * 2), MAT.water);
+water.rotation.x = -Math.PI / 2; scene.add(water);
+MAT.water.map.repeat.set(6, 2);
+
+/* ---------- drifting river lanterns + rising sky lanterns (mirrored pairs) ---------- */
+function mirroredInstances(geo, mat, n, tintable) {
+  const a = new THREE.InstancedMesh(geo, mat, n);
+  if (tintable) for (let i = 0; i < n; i++) a.setColorAt(i, new THREE.Color(pick(LANTERN_TINTS)));
+  const b = new THREE.InstancedMesh(geo, mat, n);
+  b.instanceMatrix = a.instanceMatrix; b.instanceColor = a.instanceColor;
+  b.scale.y = -1; a.frustumCulled = b.frustumCulled = false;
+  scene.add(a, b); return a;
+}
+const riverLanterns = mirroredInstances(new THREE.SphereGeometry(0.21, 9, 7), MAT.paper, N_RIVER_LANTERNS, true);
+const riverSeeds = [];
+for (let i = 0; i < N_RIVER_LANTERNS; i++)
+  riverSeeds.push({ x: rand(-42, 42), z: rand(-6.4, 6.4), spd: rand(0.7, 1.3), ph: rand(0, Math.PI * 2), sc: rand(0.7, 1.2) });
+const skyLanterns = mirroredInstances(new THREE.CylinderGeometry(0.26, 0.17, 0.5, 8), MAT.paper, N_SKY_LANTERNS, true);
+const skySeeds = [];
+for (let i = 0; i < N_SKY_LANTERNS; i++)
+  skySeeds.push({ x: rand(-34, 34), z: rand(-24, 24), spd: rand(0.014, 0.03), ph: rng(), drift: rand(-0.4, 0.4), sc: rand(0.85, 1.5) });
+// Sparkle glints skimming the water surface.
+const N_SPARK = 90, sparkPos = new Float32Array(N_SPARK * 3);
+for (let i = 0; i < N_SPARK; i++) {
+  sparkPos[i * 3] = rand(-40, 40); sparkPos[i * 3 + 1] = 0.05; sparkPos[i * 3 + 2] = rand(-7, 7);
+}
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({ map: TEX.dot, color: 0xffd9a0,
+  size: 0.32, transparent: true, opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending }));
+sparks.frustumCulled = false; scene.add(sparks);
+
+/* ============================== LIGHTING RIG ============================== */
+scene.add(new THREE.HemisphereLight(0x7e90cf, 0x1e2838, 0.6));
+scene.add(new THREE.AmbientLight(0x323c66, 0.5));
+const moonLight = new THREE.DirectionalLight(0xcfe0ff, 1.25);
+moonLight.position.set(-30, 38, -30); moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.left = -32; moonLight.shadow.camera.right = 32;
+moonLight.shadow.camera.top = 32; moonLight.shadow.camera.bottom = -32;
+moonLight.shadow.camera.far = 110; moonLight.shadow.bias = -0.0008;
+scene.add(moonLight);
+const bridgeGlow = new THREE.PointLight(0xff9a4a, 34, 14, 2); bridgeGlow.position.set(0, 4.6, 0); scene.add(bridgeGlow);
+const pagodaGlow = new THREE.PointLight(0xffa050, 26, 15, 2); pagodaGlow.position.set(-15, 4.5, -12); scene.add(pagodaGlow);
+const riverGlowA = new THREE.PointLight(0xff8c3a, 30, 17, 2); riverGlowA.position.set(14, 1.6, 0); scene.add(riverGlowA);
+const riverGlowB = new THREE.PointLight(0xff8c3a, 30, 17, 2); riverGlowB.position.set(-16, 1.6, 2); scene.add(riverGlowB);
+const boatGlow = new THREE.PointLight(0xffc070, 10, 7, 2); boatGlow.position.set(10.5, 1.4, 5.6); scene.add(boatGlow);
+
+/* ============================== ANIMATION LOOP ============================== */
+const clock = new THREE.Clock();
+const dummy = new THREE.Object3D();
+renderer.setAnimationLoop(() => {
+  const t = clock.getElapsedTime();
+  // 1) hundreds of paper lanterns drifting downstream (mirror shares the buffer)
+  for (let i = 0; i < N_RIVER_LANTERNS; i++) {
+    const s = riverSeeds[i];
+    let x = s.x + t * FLOW_SPEED * s.spd;
+    x = ((x + 42) % 84 + 84) % 84 - 42;
+    dummy.position.set(x, 0.1 + Math.sin(t * 1.4 + s.ph) * 0.045, s.z + Math.sin(t * 0.5 + s.ph) * 0.35);
+    dummy.rotation.set(Math.sin(t * 1.1 + s.ph) * 0.08, s.ph, Math.cos(t * 0.9 + s.ph) * 0.08);
+    dummy.scale.set(s.sc, s.sc * 0.72, s.sc); dummy.updateMatrix();
+    riverLanterns.setMatrixAt(i, dummy.matrix);
+  }
+  riverLanterns.instanceMatrix.needsUpdate = true;
+  // 2) sky lanterns rising into the night
+  for (let i = 0; i < N_SKY_LANTERNS; i++) {
+    const s = skySeeds[i], cy = ((t * s.spd + s.ph) % 1);
+    dummy.position.set(s.x + cy * s.drift * 14 + Math.sin(t * 0.6 + i) * 0.4, 2.2 + cy * 27, s.z);
+    dummy.rotation.set(0, i, Math.sin(t * 0.8 + i) * 0.07);
+    dummy.scale.setScalar(s.sc); dummy.updateMatrix();
+    skyLanterns.setMatrixAt(i, dummy.matrix);
+  }
+  skyLanterns.instanceMatrix.needsUpdate = true;
+  // 3) flowing water + sparkling glints
+  MAT.water.map.offset.x -= 0.00042; MAT.water.map.offset.y = Math.sin(t * 0.4) * 0.006;
+  sparks.material.opacity = 0.4 + Math.sin(t * 2.3) * 0.2;
+  // 4) willows swaying (originals and reflections in lockstep)
+  willowCrowns.forEach((c, i) => {
+    const r = Math.sin(t * 0.7 + i * 1.9) * 0.05;
+    c.rotation.z = r; mirrorCrowns[i].rotation.z = r;
+  });
+  // 5) moored boats bobbing on the current
+  boats.forEach((b, i) => {
+    const y = 0.02 + Math.sin(t * 0.9 + i * 2.1) * 0.05, rz = Math.sin(t * 0.8 + i) * 0.04;
+    b.position.y = y; b.rotation.z = rz;
+    mirrorBoats[i].position.y = y; mirrorBoats[i].rotation.z = rz;
+  });
+  // 6) candle flicker: paper glow pulse + point light shimmer
+  const pulse = 0.9 + Math.sin(t * 5.2) * 0.06 + Math.sin(t * 13.7) * 0.04;
+  MAT.paper.color.setScalar(pulse);
+  MAT.flame.emissiveIntensity = 2.3 + Math.sin(t * 7.1) * 0.5;
+  bridgeGlow.intensity = 32 + Math.sin(t * 6.3) * 3;
+  riverGlowA.intensity = 28 + Math.sin(t * 4.7) * 4; riverGlowB.intensity = 28 + Math.cos(t * 5.3) * 4;
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+/* ============================== RESIZE ============================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

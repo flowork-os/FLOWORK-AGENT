@@ -1,0 +1,570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Plush Teddy Bear</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #e9dfd1;
+    }
+    canvas { display: block; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9dfd1);
+scene.fog = new THREE.Fog(0xe9dfd1, 12, 24);
+
+const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(0, 2.8, 9.5);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.25, 0.15);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.enablePan = false;
+controls.minDistance = 6.5;
+controls.maxDistance = 13;
+controls.minPolarAngle = 0.72;
+controls.maxPolarAngle = 1.75;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.42;
+
+scene.add(new THREE.HemisphereLight(0xfff8ed, 0x74685f, 2.15));
+
+const keyLight = new THREE.DirectionalLight(0xffe9cf, 4.2);
+keyLight.position.set(-4.5, 7, 6);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -5;
+keyLight.shadow.camera.right = 5;
+keyLight.shadow.camera.top = 7;
+keyLight.shadow.camera.bottom = -3;
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 18;
+keyLight.shadow.bias = -0.0002;
+keyLight.shadow.normalBias = 0.025;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xb9d2e8, 1.25);
+fillLight.position.set(5, 3.5, 2);
+scene.add(fillLight);
+
+const rimLight = new THREE.PointLight(0xffd6b3, 18, 12, 2);
+rimLight.position.set(0, 5.5, -4);
+scene.add(rimLight);
+
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(30, 30),
+  new THREE.MeshStandardMaterial({ color: 0xd9cbbb, roughness: 1, metalness: 0 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = -0.34;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const bear = new THREE.Group();
+bear.rotation.y = -0.04;
+scene.add(bear);
+
+const brown = new THREE.Color(0x9a6844);
+const lightBrown = new THREE.Color(0xc99769);
+const wornBrown = new THREE.Color(0x845637);
+const threadColor = new THREE.Color(0x5d3727);
+const darkColor = new THREE.Color(0x201713);
+
+function seededRandom(seed) {
+  let value = seed >>> 0;
+  return () => {
+    value = (value * 1664525 + 1013904223) >>> 0;
+    return value / 4294967296;
+  };
+}
+
+function organicSphereGeometry(seed, widthSegments = 48, heightSegments = 32) {
+  const geometry = new THREE.SphereGeometry(1, widthSegments, heightSegments);
+  const position = geometry.attributes.position;
+  for (let i = 0; i < position.count; i++) {
+    const x = position.getX(i);
+    const y = position.getY(i);
+    const z = position.getZ(i);
+    const ripple =
+      Math.sin(x * 8.3 + seed * 0.7) *
+      Math.sin(y * 7.1 - seed * 0.4) *
+      Math.sin(z * 9.2 + seed) * 0.018 +
+      Math.sin((x + y) * 13.0 + seed) * 0.007;
+    const stuffing = 1 + ripple;
+    position.setXYZ(i, x * stuffing, y * stuffing, z * stuffing);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+const fuzzVertexShader = `
+  uniform float pointSize;
+  varying float vShade;
+  void main() {
+    vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
+    gl_Position = projectionMatrix * mvPosition;
+    gl_PointSize = pointSize * (300.0 / max(1.0, -mvPosition.z));
+    vShade = 0.88 + 0.12 * normal.y;
+  }
+`;
+
+const fuzzFragmentShader = `
+  uniform vec3 fuzzColor;
+  varying float vShade;
+  void main() {
+    vec2 p = gl_PointCoord - vec2(0.5);
+    float d = length(p);
+    if (d > 0.5) discard;
+    float alpha = smoothstep(0.5, 0.08, d) * 0.48;
+    gl_FragColor = vec4(fuzzColor * vShade, alpha);
+  }
+`;
+
+function createFuzz(seed, color, count = 850) {
+  const random = seededRandom(seed * 971 + 17);
+  const positions = new Float32Array(count * 3);
+  const normals = new Float32Array(count * 3);
+
+  for (let i = 0; i < count; i++) {
+    const y = 1 - 2 * ((i + 0.5) / count);
+    const radius = Math.sqrt(Math.max(0, 1 - y * y));
+    const angle = i * 2.399963229728653 + random() * 0.2;
+    let x = Math.cos(angle) * radius;
+    let z = Math.sin(angle) * radius;
+    const variation = 1.018 + (random() - 0.5) * 0.035;
+    x *= variation;
+    const py = y * variation;
+    z *= variation;
+    positions[i * 3] = x;
+    positions[i * 3 + 1] = py;
+    positions[i * 3 + 2] = z;
+    const normal = new THREE.Vector3(x, py, z).normalize();
+    normals[i * 3] = normal.x;
+    normals[i * 3 + 1] = normal.y;
+    normals[i * 3 + 2] = normal.z;
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+
+  const material = new THREE.ShaderMaterial({
+    uniforms: {
+      fuzzColor: { value: color.clone().multiplyScalar(1.04) },
+      pointSize: { value: 1.75 }
+    },
+    vertexShader: fuzzVertexShader,
+    fragmentShader: fuzzFragmentShader,
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.NormalBlending
+  });
+
+  return new THREE.Points(geometry, material);
+}
+
+function plushPart({
+  color = brown,
+  position,
+  scale,
+  rotation = [0, 0, 0],
+  seed = 1,
+  fuzz = 850,
+  roughness = 1
+}) {
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    roughness,
+    metalness: 0,
+    envMapIntensity: 0.15
+  });
+  const mesh = new THREE.Mesh(organicSphereGeometry(seed), material);
+  mesh.position.set(...position);
+  mesh.scale.set(...scale);
+  mesh.rotation.set(...rotation);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  const fuzzPoints = createFuzz(seed, color, fuzz);
+  mesh.add(fuzzPoints);
+  bear.add(mesh);
+  return mesh;
+}
+
+plushPart({
+  position: [0, 1.82, 0],
+  scale: [1.34, 1.58, 0.86],
+  seed: 11,
+  fuzz: 1450
+});
+
+plushPart({
+  position: [0, 4.02, 0.02],
+  scale: [1.30, 1.17, 1.04],
+  seed: 22,
+  fuzz: 1250
+});
+
+plushPart({
+  position: [-1.01, 4.77, -0.01],
+  scale: [0.56, 0.59, 0.42],
+  rotation: [0.05, 0.05, -0.13],
+  seed: 31,
+  fuzz: 500
+});
+
+plushPart({
+  position: [1.01, 4.77, -0.01],
+  scale: [0.56, 0.59, 0.42],
+  rotation: [0.05, -0.05, 0.13],
+  seed: 32,
+  fuzz: 500
+});
+
+plushPart({
+  color: lightBrown,
+  position: [-1.02, 4.79, 0.35],
+  scale: [0.35, 0.37, 0.12],
+  rotation: [-0.05, 0.02, -0.13],
+  seed: 33,
+  fuzz: 260
+});
+
+plushPart({
+  color: lightBrown,
+  position: [1.02, 4.79, 0.35],
+  scale: [0.35, 0.37, 0.12],
+  rotation: [-0.05, -0.02, 0.13],
+  seed: 34,
+  fuzz: 260
+});
+
+plushPart({
+  position: [-1.43, 2.24, 0.04],
+  scale: [0.57, 1.24, 0.59],
+  rotation: [0.08, -0.06, -0.43],
+  seed: 41,
+  fuzz: 750
+});
+
+plushPart({
+  position: [1.43, 2.24, 0.04],
+  scale: [0.57, 1.24, 0.59],
+  rotation: [0.08, 0.06, 0.43],
+  seed: 42,
+  fuzz: 750
+});
+
+plushPart({
+  position: [-0.96, 0.67, 0.38],
+  scale: [0.84, 1.03, 0.76],
+  rotation: [0.23, -0.05, -0.30],
+  seed: 51,
+  fuzz: 900
+});
+
+plushPart({
+  position: [0.96, 0.67, 0.38],
+  scale: [0.84, 1.03, 0.76],
+  rotation: [0.23, 0.05, 0.30],
+  seed: 52,
+  fuzz: 900
+});
+
+plushPart({
+  color: lightBrown,
+  position: [-1.06, 0.43, 0.98],
+  scale: [0.57, 0.64, 0.22],
+  rotation: [-0.08, 0.06, -0.22],
+  seed: 61,
+  fuzz: 350
+});
+
+plushPart({
+  color: lightBrown,
+  position: [1.06, 0.43, 0.98],
+  scale: [0.57, 0.64, 0.22],
+  rotation: [-0.08, -0.06, 0.22],
+  seed: 62,
+  fuzz: 350
+});
+
+plushPart({
+  color: lightBrown,
+  position: [0, 3.72, 0.88],
+  scale: [0.73, 0.51, 0.47],
+  rotation: [-0.04, 0, 0],
+  seed: 71,
+  fuzz: 600
+});
+
+function tube(points, radius, color, segments = 48) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  const geometry = new THREE.TubeGeometry(curve, segments, radius, 7, false);
+  const material = new THREE.MeshStandardMaterial({
+    color,
+    roughness: 0.92,
+    metalness: 0
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.castShadow = true;
+  bear.add(mesh);
+  return mesh;
+}
+
+function buttonEye(x) {
+  const buttonMaterial = new THREE.MeshStandardMaterial({
+    color: darkColor,
+    roughness: 0.38,
+    metalness: 0.05
+  });
+
+  const button = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.185, 0.185, 0.095, 32, 1, false),
+    buttonMaterial
+  );
+  button.rotation.x = Math.PI / 2;
+  button.position.set(x, 4.18, 1.005);
+  button.castShadow = true;
+  bear.add(button);
+
+  const holeMaterial = new THREE.MeshStandardMaterial({
+    color: 0x090706,
+    roughness: 1
+  });
+
+  for (const [dx, dy] of [[-0.047, -0.047], [0.047, -0.047], [-0.047, 0.047], [0.047, 0.047]]) {
+    const hole = new THREE.Mesh(
+      new THREE.SphereGeometry(0.021, 12, 8),
+      holeMaterial
+    );
+    hole.position.set(x + dx, 4.18 + dy, 1.061);
+    bear.add(hole);
+  }
+
+  tube([
+    new THREE.Vector3(x - 0.048, 4.133, 1.074),
+    new THREE.Vector3(x, 4.18, 1.082),
+    new THREE.Vector3(x + 0.048, 4.227, 1.074)
+  ], 0.010, new THREE.Color(0x8c705d), 12);
+}
+
+buttonEye(-0.43);
+buttonEye(0.43);
+
+const nose = plushPart({
+  color: darkColor,
+  position: [0, 3.80, 1.305],
+  scale: [0.29, 0.19, 0.15],
+  rotation: [0.04, 0, 0],
+  seed: 81,
+  fuzz: 190,
+  roughness: 0.88
+});
+
+for (let i = -2; i <= 2; i++) {
+  const x = i * 0.065;
+  tube([
+    new THREE.Vector3(x - 0.018, 3.87, 1.447),
+    new THREE.Vector3(x, 3.80, 1.462),
+    new THREE.Vector3(x + 0.012, 3.73, 1.443)
+  ], 0.009, new THREE.Color(0x4c3024), 10);
+}
+
+tube([
+  new THREE.Vector3(0, 3.67, 1.354),
+  new THREE.Vector3(0, 3.54, 1.365),
+  new THREE.Vector3(0, 3.45, 1.347)
+], 0.022, threadColor, 18);
+
+tube([
+  new THREE.Vector3(0, 3.45, 1.347),
+  new THREE.Vector3(-0.10, 3.38, 1.34),
+  new THREE.Vector3(-0.23, 3.37, 1.31)
+], 0.018, threadColor, 18);
+
+tube([
+  new THREE.Vector3(0, 3.45, 1.347),
+  new THREE.Vector3(0.10, 3.38, 1.34),
+  new THREE.Vector3(0.23, 3.37, 1.31)
+], 0.018, threadColor, 18);
+
+const muzzleSeamPoints = [];
+for (let i = 0; i <= 44; i++) {
+  const angle = i / 44 * Math.PI * 2;
+  muzzleSeamPoints.push(new THREE.Vector3(
+    Math.cos(angle) * 0.70,
+    3.71 + Math.sin(angle) * 0.48,
+    1.255 + Math.cos(angle) * 0.015
+  ));
+}
+const muzzleCurve = new THREE.CatmullRomCurve3(muzzleSeamPoints, true);
+const muzzleSeam = new THREE.Mesh(
+  new THREE.TubeGeometry(muzzleCurve, 90, 0.012, 6, true),
+  new THREE.MeshStandardMaterial({ color: 0x76503a, roughness: 1 })
+);
+bear.add(muzzleSeam);
+
+tube([
+  new THREE.Vector3(0, 1.02, 0.862),
+  new THREE.Vector3(-0.015, 1.48, 0.884),
+  new THREE.Vector3(0.018, 1.95, 0.888),
+  new THREE.Vector3(-0.01, 2.45, 0.84),
+  new THREE.Vector3(0, 2.82, 0.72)
+], 0.013, threadColor, 52);
+
+for (let i = 0; i < 8; i++) {
+  const y = 1.13 + i * 0.215;
+  const width = 0.075 + (i % 2) * 0.014;
+  tube([
+    new THREE.Vector3(-width, y - 0.018, 0.895),
+    new THREE.Vector3(0, y, 0.91),
+    new THREE.Vector3(width, y + 0.018, 0.895)
+  ], 0.012, threadColor, 9);
+}
+
+function limbSeam(side) {
+  const sx = side;
+  tube([
+    new THREE.Vector3(sx * 1.50, 2.95, 0.48),
+    new THREE.Vector3(sx * 1.68, 2.52, 0.53),
+    new THREE.Vector3(sx * 1.78, 2.08, 0.52),
+    new THREE.Vector3(sx * 1.78, 1.66, 0.48)
+  ], 0.011, wornBrown, 40);
+
+  for (let i = 0; i < 5; i++) {
+    const y = 1.82 + i * 0.22;
+    const x = sx * (1.76 - i * 0.035);
+    tube([
+      new THREE.Vector3(x - 0.055, y, 0.535),
+      new THREE.Vector3(x, y + 0.022, 0.548),
+      new THREE.Vector3(x + 0.055, y, 0.535)
+    ], 0.009, threadColor, 7);
+  }
+}
+limbSeam(-1);
+limbSeam(1);
+
+function toeStitches(cx, cy, angle) {
+  for (let i = -1; i <= 1; i++) {
+    const x = cx + i * 0.17;
+    tube([
+      new THREE.Vector3(x - 0.035, cy + 0.18, 1.205),
+      new THREE.Vector3(x, cy + 0.25, 1.225),
+      new THREE.Vector3(x + 0.035, cy + 0.18, 1.205)
+    ], 0.012, new THREE.Color(0x8b5f43), 9);
+  }
+}
+toeStitches(-1.06, 0.43, -0.2);
+toeStitches(1.06, 0.43, 0.2);
+
+const patchMaterial = new THREE.MeshStandardMaterial({
+  color: 0x7f9a91,
+  roughness: 1,
+  metalness: 0,
+  side: THREE.DoubleSide
+});
+const patch = new THREE.Mesh(
+  new THREE.CircleGeometry(0.27, 5),
+  patchMaterial
+);
+patch.position.set(-0.76, 1.77, 0.755);
+patch.rotation.set(-0.12, -0.22, 0.18);
+patch.scale.set(1, 1.12, 1);
+patch.castShadow = true;
+bear.add(patch);
+
+const patchCorners = [
+  [-0.91, 1.95], [-0.62, 2.00], [-0.51, 1.74],
+  [-0.71, 1.51], [-0.99, 1.61]
+];
+for (let i = 0; i < patchCorners.length; i++) {
+  const a = patchCorners[i];
+  const b = patchCorners[(i + 1) % patchCorners.length];
+  const mx = (a[0] + b[0]) * 0.5;
+  const my = (a[1] + b[1]) * 0.5;
+  const dx = b[0] - a[0];
+  const dy = b[1] - a[1];
+  const length = Math.sqrt(dx * dx + dy * dy);
+  const nx = -dy / length * 0.035;
+  const ny = dx / length * 0.035;
+  tube([
+    new THREE.Vector3(mx - nx, my - ny, 0.805),
+    new THREE.Vector3(mx, my, 0.826),
+    new THREE.Vector3(mx + nx, my + ny, 0.805)
+  ], 0.011, threadColor, 8);
+}
+
+const looseThread = tube([
+  new THREE.Vector3(-0.96, 1.61, 0.80),
+  new THREE.Vector3(-1.05, 1.53, 0.78),
+  new THREE.Vector3(-1.01, 1.43, 0.73)
+], 0.009, threadColor, 15);
+looseThread.castShadow = false;
+
+const groundShadow = new THREE.Mesh(
+  new THREE.CircleGeometry(2.35, 64),
+  new THREE.MeshBasicMaterial({
+    color: 0x6e594b,
+    transparent: true,
+    opacity: 0.10,
+    depthWrite: false
+  })
+);
+groundShadow.rotation.x = -Math.PI / 2;
+groundShadow.scale.set(1, 0.52, 1);
+groundShadow.position.set(0, -0.325, 0.25);
+scene.add(groundShadow);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+});
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const time = clock.getElapsedTime();
+  bear.position.y = Math.sin(time * 0.72) * 0.012;
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>

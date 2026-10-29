@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sky Pirate Airship Deck</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #2b1a4e; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   CONFIG & PALETTE — swashbuckling sunset fantasy
+   ============================================================ */
+const CONFIG = {
+  seed: 77120814,
+  deckY: 4.2,             // top of the hull bowl
+  balloonCenterY: 19.5,
+  balloonRadii: new THREE.Vector3(14.2, 8.4, 8.4),
+  cloudY: -13,
+  fogColor: 0xd88a5a,
+  fogDensity: 0.0035
+};
+const PALETTE = {
+  woodDark:   0x5e3a20,
+  woodLight:  0xb07c46,
+  brass:      0xc8963c,
+  rope:       0xa8845a,
+  iron:       0x3a3632,
+  cloudLit:   0xffe2cc,
+  cloudShade: 0xd88ba0,
+  sun:        0xffd27a,
+  skyKey:     0xffb066,
+  skyFillTop: 0xffc8a0,
+  skyFillBot: 0x6b3a5a,
+  lantern:    0xffb454
+};
+
+/* ============================================================
+   SEEDED PRNG & HELPERS — every random choice flows through prng()
+   ============================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const prng = mulberry32(CONFIG.seed);
+const rr = (lo, hi) => lo + prng() * (hi - lo);
+const ri = (lo, hi) => Math.floor(rr(lo, hi + 1));
+// shorthand: build a mesh, place it, flag its shadows — used by every builder
+function mesh(geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0, shadow = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.rotation.set(rx, ry, rz);
+  m.castShadow = m.receiveShadow = shadow;
+  return m;
+}
+// cylinder stretched between two points — the workhorse for all rigging
+function makeRope(from, to, radius, material) {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  const rope = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len, 5), material);
+  rope.position.copy(from).addScaledVector(dir, 0.5);
+  rope.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return rope;
+}
+// nearest point on the balloon ellipsoid surface along a direction from center
+function balloonSurface(dir) {
+  const r = CONFIG.balloonRadii;
+  const n = dir.clone().normalize();
+  return new THREE.Vector3(n.x * r.x, CONFIG.balloonCenterY + n.y * r.y, n.z * r.z);
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.14;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(CONFIG.fogColor, CONFIG.fogDensity);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 700);
+camera.position.set(26, 16, 34);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 10, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 22;
+controls.maxDistance = 70;
+controls.maxPolarAngle = 1.52;
+
+/* ============================================================
+   PROCEDURAL CANVAS TEXTURES
+   ============================================================ */
+function makeWoodTexture(base, plankH) {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = base; g.fillRect(0, 0, 512, 512);
+  for (let y = 0; y < 512; y += plankH) {              // planks + seams
+    g.fillStyle = `rgba(40,20,8,${rr(0.25, 0.5).toFixed(2)})`;
+    g.fillRect(0, y, 512, 3);
+    g.fillRect(ri(0, 400), y, 3, plankH);              // staggered butt joints
+    for (let i = 0; i < 22; i++) {                     // grain streaks
+      g.strokeStyle = `rgba(60,30,10,${rr(0.05, 0.22).toFixed(2)})`;
+      g.lineWidth = rr(1, 2.5);
+      const gy = y + rr(4, plankH - 4);
+      g.beginPath(); g.moveTo(0, gy);
+      g.bezierCurveTo(170, gy + rr(-4, 4), 340, gy + rr(-4, 4), 512, gy + rr(-3, 3));
+      g.stroke();
+    }
+    g.fillStyle = 'rgba(20,12,6,0.55)';                // nail heads
+    g.fillRect(ri(10, 200), y + plankH / 2, 3, 3);
+    g.fillRect(ri(300, 500), y + plankH / 2, 3, 3);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeBalloonTexture() {
+  const c = document.createElement('canvas'); c.width = 1024; c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#96403a'; g.fillRect(0, 0, 1024, 512);
+  for (let x = 0; x < 1024; x += 128) {                // alternating panels
+    if ((x / 128) % 2) { g.fillStyle = 'rgba(130,44,40,0.55)'; g.fillRect(x, 0, 128, 512); }
+    g.fillStyle = 'rgba(50,14,12,0.6)'; g.fillRect(x, 0, 4, 512);
+  }
+  for (let i = 0; i < 9; i++) {                        // canvas patches + stitches
+    const x = rr(30, 940), y = rr(60, 420), w = rr(46, 110), h = rr(40, 90);
+    g.fillStyle = i % 3 ? '#c9a86b' : '#8a7a54';
+    g.fillRect(x, y, w, h);
+    g.strokeStyle = 'rgba(50,30,14,0.9)';
+    g.lineWidth = 3; g.setLineDash([9, 7]);
+    g.strokeRect(x + 4, y + 4, w - 8, h - 8);
+    g.setLineDash([]);
+  }
+  g.strokeStyle = 'rgba(255,220,160,0.16)';            // weathered highlights
+  for (let i = 0; i < 40; i++) {
+    g.lineWidth = rr(1, 3);
+    const y = rr(0, 512);
+    g.beginPath(); g.moveTo(0, y); g.lineTo(1024, y + rr(-20, 20)); g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeFlagTexture() {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 160;
+  const g = c.getContext('2d');
+  g.fillStyle = '#141216'; g.fillRect(0, 0, 256, 160);
+  g.strokeStyle = 'rgba(255,240,220,0.14)';            // worn cloth ribs
+  for (let y = 8; y < 160; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(256, y); g.stroke(); }
+  g.fillStyle = '#f2ede4';
+  g.save(); g.translate(128, 66);
+  g.beginPath(); g.arc(0, 0, 34, Math.PI * 0.95, Math.PI * 0.05); g.fill();   // cranium
+  g.fillRect(-16, 22, 32, 14);                                                // jaw
+  g.fillStyle = '#141216';
+  g.beginPath(); g.arc(-13, -4, 8, 0, 7); g.arc(13, -4, 8, 0, 7); g.fill();   // eyes
+  g.beginPath(); g.moveTo(0, 6); g.lineTo(-5, 16); g.lineTo(5, 16); g.fill(); // nose
+  for (let x = -12; x <= 12; x += 8) g.fillRect(x - 1, 24, 2, 10);            // teeth
+  g.restore();
+  g.strokeStyle = '#f2ede4'; g.lineWidth = 9; g.lineCap = 'round';
+  for (const s of [-1, 1]) {                                                  // crossbones
+    g.beginPath(); g.moveTo(128 - s * 62, 104); g.lineTo(128 + s * 62, 132); g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeSkyTexture() {
+  const c = document.createElement('canvas'); c.width = 64; c.height = 512;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.0, '#241748');
+  grad.addColorStop(0.34, '#5a2a63');
+  grad.addColorStop(0.52, '#a04868');
+  grad.addColorStop(0.66, '#e07850');
+  grad.addColorStop(0.78, '#ffb066');
+  grad.addColorStop(1.0, '#ffd9a0');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeGlowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 4, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255,244,214,1)');
+  grad.addColorStop(0.4, 'rgba(255,214,150,0.5)');
+  grad.addColorStop(1, 'rgba(255,180,110,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+const deckTex = makeWoodTexture('#8a5a30', 42);
+const hullTex = makeWoodTexture('#5e3a20', 64);
+const crateTex = makeWoodTexture('#9a6a3a', 120);
+const balloonTex = makeBalloonTexture();
+const flagTex = makeFlagTexture();
+const skyTex = makeSkyTexture();
+const glowTex = makeGlowTexture();
+
+/* ============================================================
+   SHARED MATERIALS
+   ============================================================ */
+const deckMat = new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.85, metalness: 0.05 });
+const hullMat = new THREE.MeshStandardMaterial({ map: hullTex, roughness: 0.8, metalness: 0.05 });
+const crateMat = new THREE.MeshStandardMaterial({ map: crateTex, roughness: 0.9 });
+const darkWoodMat = new THREE.MeshStandardMaterial({ color: PALETTE.woodDark, roughness: 0.85 });
+const lightWoodMat = new THREE.MeshStandardMaterial({ color: PALETTE.woodLight, roughness: 0.8 });
+const brassMat = new THREE.MeshStandardMaterial({ color: PALETTE.brass, roughness: 0.32, metalness: 0.85 });
+const ironMat = new THREE.MeshStandardMaterial({ color: PALETTE.iron, roughness: 0.6, metalness: 0.7 });
+const ropeMat = new THREE.MeshStandardMaterial({ color: PALETTE.rope, roughness: 0.95 });
+const balloonMat = new THREE.MeshStandardMaterial({
+  map: balloonTex, roughness: 0.75, metalness: 0.02,
+  emissive: 0x3a1210, emissiveIntensity: 0.5
+});
+const cloudMat = new THREE.MeshStandardMaterial({
+  color: PALETTE.cloudLit, roughness: 1, flatShading: true,
+  emissive: PALETTE.cloudShade, emissiveIntensity: 0.55
+});
+const lanternGlassMat = new THREE.MeshStandardMaterial({
+  color: PALETTE.lantern, emissive: PALETTE.lantern, emissiveIntensity: 1.6,
+  transparent: true, opacity: 0.92
+});
+
+/* ============================================================
+   BUILDER: sunset sky dome + low sun
+   ============================================================ */
+function buildSkyDome() {
+  const grp = new THREE.Group();
+  grp.add(new THREE.Mesh(
+    new THREE.SphereGeometry(320, 32, 20),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false })
+  ));
+  const sun = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: PALETTE.sun, fog: false, transparent: true,
+    opacity: 0.95, depthWrite: false
+  }));
+  sun.scale.setScalar(150);
+  sun.position.set(-230, 26, -140);
+  grp.add(sun);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: sea of sunset clouds drifting below the hull
+   ============================================================ */
+let cloudSpin;
+function buildCloudSea() {
+  const grp = new THREE.Group();
+  const count = 150;
+  const inst = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), cloudMat, count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  const p = new THREE.Vector3(), s = new THREE.Vector3(), col = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const ang = rr(0, Math.PI * 2);
+    const rad = 24 + Math.pow(prng(), 0.7) * 200;
+    p.set(Math.cos(ang) * rad, CONFIG.cloudY + rr(-3.5, 3.5), Math.sin(ang) * rad);
+    s.set(rr(6, 17), rr(2, 4), rr(5, 13));
+    e.set(0, rr(0, Math.PI * 2), 0);
+    q.setFromEuler(e);
+    m.compose(p, q, s);
+    inst.setMatrixAt(i, m);
+    // puffs toward the sun catch more rose-gold light
+    const warm = THREE.MathUtils.clamp(0.5 - p.x / 300, 0.15, 0.95);
+    inst.setColorAt(i, col.setHSL(0.055, 0.5, 0.72 + warm * 0.18));
+  }
+  inst.instanceColor.needsUpdate = true;
+  grp.add(inst);
+  // solid haze floor far beneath the puffs
+  const floor = mesh(new THREE.CircleGeometry(300, 48),
+    new THREE.MeshBasicMaterial({ color: 0xf0a878 }),
+    0, CONFIG.cloudY - 7, 0, -Math.PI / 2, 0, 0, false);
+  grp.add(floor);
+  cloudSpin = grp;
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: wooden hull with deck, rails, forecastle & stern
+   ============================================================ */
+function buildHull() {
+  const grp = new THREE.Group();
+  // bowl of revolution stretched into a boat body
+  const profile = [
+    new THREE.Vector2(0.01, 0), new THREE.Vector2(2.6, 0.35), new THREE.Vector2(4.1, 1.4),
+    new THREE.Vector2(4.9, 2.7), new THREE.Vector2(5.2, 4.0), new THREE.Vector2(5.05, 4.4)
+  ];
+  const body = mesh(new THREE.LatheGeometry(profile, 26), hullMat);
+  body.scale.set(2.45, 1, 1);
+  grp.add(body);
+  // deck plank ellipse
+  deckTex.repeat.set(3, 3);
+  const deck = mesh(new THREE.CircleGeometry(5.02, 40), deckMat, 0, CONFIG.deckY, 0, -Math.PI / 2);
+  deck.scale.x = 2.45;
+  grp.add(deck);
+  // keel beam, bow prow and tucked stern skeg
+  grp.add(mesh(new THREE.BoxGeometry(20, 1.1, 0.5), darkWoodMat, 0, 0.3, 0));
+  grp.add(mesh(new THREE.ConeGeometry(1.15, 4.6, 6), hullMat, 13.6, 3.3, 0, 0, 0, -Math.PI / 2));
+  grp.add(mesh(new THREE.BoxGeometry(2.1, 1.7, 0.5), darkWoodMat, -12.1, 2.4, 0, 0, 0, 0.3));
+  // raised quarterdeck (stern) and forecastle (bow)
+  for (const c of [{ x: -9.4, w: 5.6 }, { x: 9.6, w: 4.4 }]) {
+    grp.add(mesh(new THREE.BoxGeometry(c.w, 1.5, 7.6), hullMat, c.x, CONFIG.deckY + 0.75, 0));
+    grp.add(mesh(new THREE.BoxGeometry(c.w + 0.5, 0.22, 8.1), deckMat, c.x, CONFIG.deckY + 1.55, 0));
+  }
+  // railing: posts around the deck ellipse + elliptical cap rail
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.16, 1.1, 0.16), lightWoodMat, 26);
+  const m = new THREE.Matrix4();
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2;
+    m.setPosition(Math.cos(a) * 4.82 * 2.45, CONFIG.deckY + 0.55, Math.sin(a) * 4.82);
+    posts.setMatrixAt(i, m);
+  }
+  posts.castShadow = true;
+  grp.add(posts);
+  const capRail = mesh(new THREE.TorusGeometry(4.82, 0.09, 6, 48), lightWoodMat,
+                       0, CONFIG.deckY + 1.1, 0, Math.PI / 2);
+  capRail.scale.x = 2.45;
+  grp.add(capRail);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: patched balloon slung above with straps and fins
+   ============================================================ */
+let balloonMesh;
+function buildBalloon() {
+  const grp = new THREE.Group();
+  balloonMesh = mesh(new THREE.SphereGeometry(1, 40, 26), balloonMat, 0, CONFIG.balloonCenterY, 0);
+  balloonMesh.scale.copy(CONFIG.balloonRadii);
+  grp.add(balloonMesh);
+  // girth straps hugging the envelope
+  for (const x0 of [-6.5, 0, 6.5]) {
+    const r = CONFIG.balloonRadii.y * Math.sqrt(1 - (x0 / CONFIG.balloonRadii.x) ** 2);
+    grp.add(mesh(new THREE.TorusGeometry(r + 0.1, 0.14, 6, 40), darkWoodMat,
+                 x0, CONFIG.balloonCenterY, 0, 0, Math.PI / 2, 0, false));
+  }
+  // brass nose cone + angled wooden tail fins
+  grp.add(mesh(new THREE.ConeGeometry(1.5, 2.6, 12), brassMat,
+               CONFIG.balloonRadii.x + 0.9, CONFIG.balloonCenterY, 0, 0, 0, -Math.PI / 2));
+  for (const ry of [0, Math.PI / 2]) {
+    grp.add(mesh(new THREE.BoxGeometry(3.6, 2.6, 0.18), hullMat,
+                 -CONFIG.balloonRadii.x + 0.8, CONFIG.balloonCenterY + 1.2, 0, 0, ry, 0.35));
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: rigging — sling ropes and two rope ladders
+   ============================================================ */
+function buildRigging() {
+  const grp = new THREE.Group();
+  for (let i = 0; i < 10; i++) {                       // rail anchors → envelope
+    const a = (i / 10) * Math.PI * 2 + 0.31;
+    const p = new THREE.Vector3(Math.cos(a) * 4.75 * 2.45, CONFIG.deckY + 1.05, Math.sin(a) * 4.75);
+    const up = new THREE.Vector3(p.x * 0.55, CONFIG.balloonCenterY - 2, p.z * 1.4);
+    const attach = balloonSurface(new THREE.Vector3(up.x, up.y - CONFIG.balloonCenterY, up.z));
+    grp.add(makeRope(p, attach, 0.055, ropeMat));
+    grp.add(mesh(new THREE.BoxGeometry(0.32, 0.18, 0.32), ironMat, p.x, p.y, p.z, 0, 0, 0, false));
+  }
+  // rope ladders climbing to the envelope on both beams
+  for (const side of [-1, 1]) {
+    const foot = new THREE.Vector3(side * 2.5, CONFIG.deckY + 0.1, side * 3.9);
+    const head = balloonSurface(new THREE.Vector3(side * 0.25, -0.72, side * 0.62));
+    const rails = [];
+    for (const off of [-0.42, 0.42]) {
+      const f = foot.clone(); f.x += off;
+      const h = head.clone(); h.x += off;
+      rails.push([f, h]);
+      grp.add(makeRope(f, h, 0.05, ropeMat));
+    }
+    for (let i = 1; i <= 8; i++) {                     // rungs between the rails
+      const t = i / 9;
+      grp.add(makeRope(rails[0][0].clone().lerp(rails[0][1], t),
+                       rails[1][0].clone().lerp(rails[1][1], t), 0.045, lightWoodMat));
+    }
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: spoked helm wheel on the quarterdeck
+   ============================================================ */
+let helmWheel;
+function buildHelm() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.BoxGeometry(0.7, 1.5, 1.1), darkWoodMat, 0, 0.75, 0));
+  helmWheel = new THREE.Group();
+  helmWheel.add(mesh(new THREE.TorusGeometry(1.05, 0.09, 8, 26), lightWoodMat));
+  helmWheel.add(mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.3, 10), brassMat, 0, 0, 0, 0, 0, Math.PI / 2));
+  for (let i = 0; i < 4; i++) {                        // 4 through-spokes = 8 handles
+    helmWheel.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 2.9, 6), lightWoodMat,
+                       0, 0, 0, (i / 4) * Math.PI, 0, 0));
+  }
+  helmWheel.position.y = 1.95;
+  helmWheel.rotation.y = Math.PI / 2;                  // face along the ship axis
+  grp.add(helmWheel);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: brass cannon on a wheeled wooden mount
+   ============================================================ */
+function buildCannon() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.17, 0.26, 2.3, 14), brassMat, 0, 0.78, 0.55, Math.PI / 2));
+  grp.add(mesh(new THREE.TorusGeometry(0.18, 0.05, 6, 14), brassMat, 0, 0.82, 1.68, 0, 0, 0, false));
+  grp.add(mesh(new THREE.SphereGeometry(0.24, 10, 8), brassMat, 0, 0.74, -0.6, 0, 0, 0, false));
+  grp.add(mesh(new THREE.BoxGeometry(0.9, 0.5, 1.5), darkWoodMat, 0, 0.42, 0));
+  const wheelGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.14, 12);
+  for (const wx of [-0.5, 0.5]) for (const wz of [-0.5, 0.55]) {
+    grp.add(mesh(wheelGeo, lightWoodMat, wx, 0.3, wz, 0, 0, Math.PI / 2));
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: props — barrels, crates, lanterns, spyglass, flag,
+   propeller, rope coil, treasure chest
+   ============================================================ */
+function buildBarrel() {
+  const grp = new THREE.Group();
+  const pts = [
+    new THREE.Vector2(0.01, 0), new THREE.Vector2(0.34, 0), new THREE.Vector2(0.5, 0.16),
+    new THREE.Vector2(0.56, 0.55), new THREE.Vector2(0.5, 0.94), new THREE.Vector2(0.34, 1.1),
+    new THREE.Vector2(0.01, 1.1)
+  ];
+  grp.add(mesh(new THREE.LatheGeometry(pts, 14), crateMat));
+  for (const y of [0.24, 0.86]) {
+    grp.add(mesh(new THREE.CylinderGeometry(0.545, 0.545, 0.08, 14, 1, true), ironMat,
+                 0, y, 0, 0, 0, 0, false));
+  }
+  return grp;
+}
+function buildCrateStack(n) {
+  const grp = new THREE.Group();
+  let y = 0;
+  for (let i = 0; i < n; i++) {
+    const s = rr(0.85, 1.2);
+    grp.add(mesh(new THREE.BoxGeometry(s, s * 0.92, s), crateMat,
+                 rr(-0.12, 0.12), y + s * 0.46, rr(-0.12, 0.12), 0, rr(-0.3, 0.3), 0));
+    y += s * 0.92;
+  }
+  return grp;
+}
+const lanternPivots = [];
+function buildLantern(withLight) {
+  const pivot = new THREE.Group();                     // swings from its hook
+  pivot.add(mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 4), ironMat, 0, -0.25, 0, 0, 0, 0, false));
+  pivot.add(mesh(new THREE.ConeGeometry(0.24, 0.2, 8), ironMat, 0, -0.55, 0, 0, 0, 0, false));
+  pivot.add(mesh(new THREE.CylinderGeometry(0.15, 0.18, 0.34, 8), lanternGlassMat,
+                 0, -0.78, 0, 0, 0, 0, false));
+  pivot.add(mesh(new THREE.CylinderGeometry(0.2, 0.16, 0.08, 8), ironMat, 0, -0.98, 0, 0, 0, 0, false));
+  if (withLight) {
+    const glow = new THREE.PointLight(PALETTE.lantern, 26, 16, 1.9);
+    glow.position.y = -0.78;
+    pivot.add(glow);
+    pivot.userData.glow = glow;
+  }
+  lanternPivots.push(pivot);
+  return pivot;
+}
+function buildSpyglass() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.66, 10), brassMat, 0, 0, 0, 0, 0, 0, false));
+  grp.add(mesh(new THREE.CylinderGeometry(0.075, 0.075, 0.52, 10), brassMat, 0, 0.55, 0, 0, 0, 0, false));
+  grp.add(mesh(new THREE.CylinderGeometry(0.055, 0.055, 0.4, 10), ironMat, 0, 0.98, 0, 0, 0, 0, false));
+  return grp;
+}
+let flagGeo, flagBase;
+function buildFlag() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.09, 5.4, 8), darkWoodMat, 0, 2.7, 0));
+  grp.add(mesh(new THREE.SphereGeometry(0.14, 8, 6), brassMat, 0, 5.45, 0, 0, 0, 0, false));
+  flagGeo = new THREE.PlaneGeometry(3.6, 2.1, 22, 8);
+  flagGeo.translate(1.8, 0, 0);                        // hoist edge at the pole
+  flagBase = flagGeo.attributes.position.array.slice();
+  const cloth = mesh(flagGeo, new THREE.MeshStandardMaterial({
+    map: flagTex, side: THREE.DoubleSide, roughness: 0.9
+  }), 0, 4.2, 0, 0, Math.PI, 0);                       // streams aft of the pole
+  grp.add(cloth);
+  return grp;
+}
+let propeller;
+function buildPropeller() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.5, 12), brassMat, 0, 0, 0, 0, 0, Math.PI / 2));
+  propeller = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const arm = new THREE.Group();
+    arm.add(mesh(new THREE.BoxGeometry(0.14, 2.6, 0.5), lightWoodMat, 0, 1.3, 0, 0, 0.6, 0));
+    arm.rotation.x = (i / 3) * Math.PI * 2;
+    propeller.add(arm);
+  }
+  grp.add(propeller);
+  return grp;
+}
+function buildRopeCoil() {
+  const grp = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    grp.add(mesh(new THREE.TorusGeometry(0.42 - i * 0.05, 0.07, 6, 16), ropeMat,
+                 0, 0.07 + i * 0.12, 0, Math.PI / 2, 0, 0, false));
+  }
+  return grp;
+}
+function buildChest() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.BoxGeometry(1.2, 0.6, 0.75), hullMat, 0, 0.3, 0));
+  grp.add(mesh(new THREE.CylinderGeometry(0.38, 0.38, 1.2, 10, 1, false, 0, Math.PI), crateMat,
+               0, 0.6, 0, 0, 0, Math.PI / 2));
+  grp.add(mesh(new THREE.BoxGeometry(0.16, 0.2, 0.06), brassMat, 0, 0.5, 0.39, 0, 0, 0, false));
+  return grp;
+}
+
+/* ============================================================
+   ASSEMBLY & LAYOUT — everything aboard rides one bobbing group
+   ============================================================ */
+scene.add(buildSkyDome());
+scene.add(buildCloudSea());
+
+const ship = new THREE.Group();
+ship.add(buildHull());
+ship.add(buildBalloon());
+ship.add(buildRigging());
+
+const helm = buildHelm();
+helm.position.set(-9.6, CONFIG.deckY + 1.6, 0);
+ship.add(helm);
+
+const cannonSpots = [
+  { x: 2.5, z: 3.3, rot: 0.15 }, { x: -2.8, z: 3.35, rot: -0.2 },
+  { x: 2.0, z: -3.3, rot: Math.PI - 0.15 }, { x: -3.4, z: -3.3, rot: Math.PI + 0.2 }
+];
+for (const spot of cannonSpots) {
+  const cannon = buildCannon();
+  cannon.position.set(spot.x, CONFIG.deckY, spot.z);
+  cannon.rotation.y = spot.rot;                        // muzzles point over the beam
+  ship.add(cannon);
+}
+
+for (let i = 0; i < 6; i++) {                          // rum barrels amidships
+  const barrel = buildBarrel();
+  barrel.position.set(rr(-1.5, 6.5), CONFIG.deckY, rr(-2.4, 2.4));
+  barrel.rotation.y = rr(0, Math.PI * 2);
+  if (i === 5) { barrel.rotation.z = Math.PI / 2; barrel.position.y += 0.5; }
+  ship.add(barrel);
+}
+const crates = buildCrateStack(3);
+crates.position.set(5.9, CONFIG.deckY, -1.9);
+ship.add(crates);
+const crates2 = buildCrateStack(2);
+crates2.position.set(-5.2, CONFIG.deckY, 2.4);
+ship.add(crates2);
+
+// lanterns on hooked posts fore, mid and aft
+const lanternSpots = [
+  { x: -11.5, z: 2.9, lit: true }, { x: 0.4, z: -4.55, lit: true }, { x: 11.2, z: 2.4, lit: false }
+];
+for (const spot of lanternSpots) {
+  const py = CONFIG.deckY + 1.15 + (Math.abs(spot.x) > 9 ? 1.5 : 0);
+  ship.add(mesh(new THREE.CylinderGeometry(0.09, 0.11, 2.3, 8), darkWoodMat, spot.x, py, spot.z));
+  ship.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.7, 6), darkWoodMat,
+                spot.x + 0.35, py + 1.1, spot.z, 0, 0, Math.PI / 2, false));
+  const lantern = buildLantern(spot.lit);
+  lantern.position.set(spot.x + 0.66, py + 1.08, spot.z);
+  ship.add(lantern);
+}
+
+const spyglass = buildSpyglass();
+spyglass.position.set(-7.4, CONFIG.deckY + 2.75, 3.9);
+spyglass.rotation.set(0.9, 0.5, -0.5);                 // propped on the quarterdeck rail
+ship.add(spyglass);
+
+const flag = buildFlag();
+flag.position.set(-13.4, CONFIG.deckY + 1.4, 0);
+flag.rotation.z = -0.12;
+ship.add(flag);
+
+const prop = buildPropeller();
+prop.position.set(-13.9, 2.4, 0);
+ship.add(prop);
+
+const coil = buildRopeCoil();
+coil.position.set(3.4, CONFIG.deckY, 0.4);
+ship.add(coil);
+const chest = buildChest();
+chest.position.set(-8.2, CONFIG.deckY + 1.66, -2.2);
+chest.rotation.y = 0.5;
+ship.add(chest);
+scene.add(ship);
+
+/* ============================================================
+   LIGHTING RIG — low sun key, generous sky fill, lantern accents
+   ============================================================ */
+const sunLight = new THREE.DirectionalLight(PALETTE.skyKey, 3.2);
+sunLight.position.set(-60, 22, -34);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = sunLight.shadow.camera.bottom = -34;
+sunLight.shadow.camera.right = sunLight.shadow.camera.top = 34;
+sunLight.shadow.camera.far = 160;
+sunLight.shadow.bias = -0.0004;
+scene.add(sunLight, sunLight.target);
+
+const skyFill = new THREE.HemisphereLight(PALETTE.skyFillTop, PALETTE.skyFillBot, 1.45);
+scene.add(skyFill);
+
+const bounce = new THREE.DirectionalLight(0xff9a70, 0.9);  // warm bounce off the clouds
+bounce.position.set(30, -18, 20);
+scene.add(bounce);
+
+/* ============================================================
+   ANIMATION LOOP — drift, bob, flutter, swing, spin, flicker
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 1) the cloud sea slides past beneath the hull (slow carousel drift)
+  cloudSpin.rotation.y = t * 0.012;
+
+  // 2) the whole ship rides gentle air swells
+  ship.position.y = Math.sin(t * 0.5) * 0.45;
+  ship.rotation.z = Math.sin(t * 0.4) * 0.02;
+  ship.rotation.x = Math.sin(t * 0.31 + 1.2) * 0.014;
+
+  // 3) jolly-roger flutter: travelling wave grows toward the fly edge
+  const fp = flagGeo.attributes.position;
+  for (let i = 0; i < fp.count; i++) {
+    const bx = flagBase[i * 3], by = flagBase[i * 3 + 1];
+    const edge = bx / 3.6;
+    fp.setZ(i, Math.sin(bx * 2.0 - t * 6 + by * 0.9) * 0.34 * edge * edge);
+  }
+  fp.needsUpdate = true;
+  flagGeo.computeVertexNormals();
+
+  // 4) lanterns swing on their hooks; lit ones flicker softly
+  lanternPivots.forEach((pivot, i) => {
+    pivot.rotation.z = Math.sin(t * 1.25 + i * 2.1) * 0.16;
+    pivot.rotation.x = Math.sin(t * 0.9 + i * 1.4) * 0.1;
+    if (pivot.userData.glow) {
+      pivot.userData.glow.intensity = 24 + Math.sin(t * 9 + i * 5) * 3 + Math.sin(t * 23 + i) * 2;
+    }
+  });
+
+  // 5) stern propeller spins; helm wheel eases port and starboard
+  propeller.rotation.x = t * 7;
+  helmWheel.rotation.x = Math.sin(t * 0.3) * 0.5;
+
+  // 6) balloon breathes almost imperceptibly
+  const breathe = 1 + Math.sin(t * 0.7) * 0.006;
+  balloonMesh.scale.set(CONFIG.balloonRadii.x * breathe, CONFIG.balloonRadii.y * breathe,
+                        CONFIG.balloonRadii.z * breathe);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

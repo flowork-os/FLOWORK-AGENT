@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Procedural Fern Clump</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #121417; }
+  #c { display: block; width: 100%; height: 100%; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px; margin: 0;
+    font: 12px/1.4 system-ui, sans-serif; color: rgba(230,235,230,0.45);
+    letter-spacing: 0.02em; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<p id="hint">Fern clump — drag to orbit · scroll to zoom</p>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+// ---------------------------------------------------------------------------
+// Scene & camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141619);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(2.9, 1.55, 3.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.target.set(0, 0.62, 0);
+controls.minDistance = 1.6;
+controls.maxDistance = 9;
+controls.maxPolarAngle = Math.PI * 0.52;
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xdfeee6, 0x1a1c16, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2dc, 2.4);
+key.position.set(3.5, 6.0, 2.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 20;
+const d = 2.6;
+key.shadow.camera.left = -d;
+key.shadow.camera.right = d;
+key.shadow.camera.top = d;
+key.shadow.camera.bottom = -d;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x3a5170, 0.6);
+fill.position.set(-3.5, 1.8, 2.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xa8c1ff, 1.5);
+rim.position.set(-2.2, 3.8, -3.2);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane — receives shadows only
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(7, 64),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const rand = Math.random;
+const Z_REF = new THREE.Vector3(0, 0, 1);
+const clamp = THREE.MathUtils.clamp;
+
+// A tube of varying radius that follows a curve, framed with a stable
+// reference vector (avoids Frenet-frame flipping on near-planar curves).
+function taperedTube(curve, tubularSegments, radiusFn, radialSegments, ref) {
+  const positions = [], normals = [], indices = [];
+  const up = ref.clone().normalize();
+  for (let i = 0; i <= tubularSegments; i++) {
+    const t = i / tubularSegments;
+    const p = curve.getPointAt(t);
+    const T = curve.getTangentAt(t).normalize();
+    let N = new THREE.Vector3().crossVectors(up, T);
+    if (N.lengthSq() < 1e-6) N.set(1, 0, 0);
+    N.normalize();
+    const B = new THREE.Vector3().crossVectors(T, N).normalize();
+    const r = radiusFn(t);
+    for (let j = 0; j <= radialSegments; j++) {
+      const a = (j / radialSegments) * Math.PI * 2;
+      const c = Math.cos(a), s = Math.sin(a);
+      const nx = c * N.x + s * B.x;
+      const ny = c * N.y + s * B.y;
+      const nz = c * N.z + s * B.z;
+      normals.push(nx, ny, nz);
+      positions.push(p.x + r * nx, p.y + r * ny, p.z + r * nz);
+    }
+  }
+  for (let i = 1; i <= tubularSegments; i++) {
+    for (let j = 1; j <= radialSegments; j++) {
+      const a = (radialSegments + 1) * (i - 1) + (j - 1);
+      const b = (radialSegments + 1) * i + (j - 1);
+      const c = (radialSegments + 1) * i + j;
+      const e = (radialSegments + 1) * (i - 1) + j;
+      indices.push(a, b, e, b, c, e);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setIndex(indices);
+  return geo;
+}
+
+// A single leaflet (pinna): lanceolate, gently toothed, unit length along +X,
+// with a slight midrib fold so it doesn't read as flat paper.
+function makeLeafletGeometry() {
+  const len = 1.0, halfW = 0.17, seg = 11, teeth = 7;
+  const top = [];
+  for (let i = 1; i <= seg; i++) {
+    const t = i / seg;
+    let w = halfW * Math.pow(Math.sin(Math.PI * t), 0.72);
+    w *= 1 + 0.12 * Math.sin(t * Math.PI * teeth * 2);
+    top.push([t * len, w]);
+  }
+  top[top.length - 1] = [len, 0];
+
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  for (const [x, w] of top) shape.lineTo(x, w);
+  for (let i = top.length - 2; i >= 0; i--) shape.lineTo(top[i][0], -top[i][1]);
+  shape.lineTo(0, 0);
+
+  const geo = new THREE.ShapeGeometry(shape, 14);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    pos.setZ(i, 0.11 * Math.abs(y) - 0.05 * x); // fold up + slight tip droop
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Frond stem centreline in local space (x = outward, y = up, small z wobble).
+function frondCurve(L, droop) {
+  const base = [
+    [0.00, 0.00], [0.04, 0.24], [0.12, 0.46], [0.25, 0.65],
+    [0.43, 0.80], [0.62, 0.88], [0.80, 0.88], [0.94, 0.82], [1.00, 0.74]
+  ];
+  const reach = L * 0.62;
+  const height = L * 1.05;
+  const pts = base.map(([nx, ny], k) => {
+    const nx2 = nx * (1 + droop * 0.35);
+    const ny2 = ny * (1 - droop * nx);
+    const wob = (rand() - 0.5) * 0.05 * L * (k / (base.length - 1));
+    return new THREE.Vector3(
+      nx2 * reach + (rand() - 0.5) * 0.012 * L,
+      ny2 * height,
+      wob
+    );
+  });
+  return new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+}
+
+// Crozier / fiddlehead: rises then curls into an inward spiral.
+function crozierCurve(L) {
+  const pts = [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(0.012 * L, 0.30 * L, 0),
+    new THREE.Vector3(0.0, 0.55 * L, 0.01 * L),
+  ];
+  const r = 0.15 * L, cy = 0.55 * L + r, turns = Math.PI * 2 * 1.75, steps = 26;
+  for (let i = 0; i <= steps; i++) {
+    const f = i / steps, a = f * turns, rr = r * (1 - 0.72 * f);
+    pts.push(new THREE.Vector3(Math.sin(a) * rr, cy - Math.cos(a) * rr, 0.02 * L * Math.sin(a)));
+  }
+  return new THREE.CatmullRomCurve3(pts);
+}
+
+// ---------------------------------------------------------------------------
+// Build the fern clump
+// ---------------------------------------------------------------------------
+const fern = new THREE.Group();
+scene.add(fern);
+
+const stemGeos = [];
+const fiddleGeos = [];
+const leaflets = []; // { m: Matrix4, c: Color }
+const ONE = new THREE.Vector3(1, 1, 1);
+const tmpColor = new THREE.Color();
+
+const NUM_FRONDS = 27;
+const leafGap = 0.03;
+
+for (let i = 0; i < NUM_FRONDS; i++) {
+  // Length: mostly mature fronds with a few short young ones.
+  let L = 0.72 + 0.62 * Math.pow(rand(), 0.85);
+  if (rand() < 0.18) L *= 0.55;
+
+  const droop = 0.05 + 0.22 * rand() + (L - 0.7) * 0.12;
+  const curve = frondCurve(L, droop);
+  const stemLen = curve.getLength();
+
+  // Placement: radiate around a small crown, chaotic fan.
+  const azimuth = (i / NUM_FRONDS) * Math.PI * 2 + (rand() - 0.5) * 0.55 + rand() * 6.28;
+  const tiltX = (rand() - 0.5) * 0.16;
+  const tiltZ = (rand() - 0.5) * 0.16;
+  const rBase = 0.02 + rand() * 0.045;
+  const basePos = new THREE.Vector3(
+    Math.cos(azimuth) * rBase,
+    0.02 + rand() * 0.03,
+    Math.sin(azimuth) * rBase
+  );
+  const frondQuat = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(tiltX, azimuth, tiltZ, 'YXZ')
+  );
+  const frondMatrix = new THREE.Matrix4().compose(basePos, frondQuat, ONE);
+
+  // --- stem (rachis) ---
+  const rBaseR = 0.010 + 0.006 * clamp(L - 0.7, 0, 0.7);
+  const rTipR = 0.0028;
+  const radiusFn = t => THREE.MathUtils.lerp(rBaseR, rTipR, Math.pow(t, 0.65));
+  const segs = Math.max(26, Math.floor(stemLen * 42));
+  const stemGeo = taperedTube(curve, segs, radiusFn, 6, Z_REF);
+  stemGeo.applyMatrix4(frondMatrix);
+  stemGeos.push(stemGeo);
+
+  // --- leaflets along the stem ---
+  const frondHue = -0.02 + 0.04 * rand();
+  const frondLight = -0.03 + 0.06 * rand();
+  const maxLeaf = L * 0.095;
+  const u0 = 0.14;                       // bare stipe near the base
+  const startLen = stemLen * u0;
+  const nPairs = Math.max(5, Math.floor((stemLen - startLen) / leafGap));
+
+  for (let k = 0; k < nPairs; k++) {
+    const s = startLen + (k + 0.5) * leafGap;
+    const u = s / stemLen;
+    if (u > 0.992) break;
+
+    const p = curve.getPointAt(u);
+    const T = curve.getTangentAt(u).normalize();
+    const side = Z_REF;
+    const upl = new THREE.Vector3().crossVectors(side, T).normalize();
+
+    const tt = (u - u0) / (1 - u0);
+    const prof = Math.pow(Math.sin(Math.PI * clamp(tt, 0, 1)), 0.6);
+    const leafLen = maxLeaf * (0.35 + 0.65 * prof) * (0.85 + 0.3 * rand());
+
+    for (const sign of [1, -1]) {
+      const sweep = 0.42 + 0.35 * u + 0.12 * rand();
+      const lift = 0.24 * (1 - 0.5 * u) + 0.1 * rand();
+      const dir = new THREE.Vector3()
+        .addScaledVector(side, sign * 0.92)
+        .addScaledVector(T, sweep)
+        .addScaledVector(upl, lift)
+        .normalize();
+
+      const X = dir;
+      const Y = new THREE.Vector3().crossVectors(upl, X).normalize();
+      const Z = new THREE.Vector3().crossVectors(X, Y).normalize();
+      const rot = new THREE.Matrix4().makeBasis(X, Y, Z);
+      const quat = new THREE.Quaternion().setFromRotationMatrix(rot);
+      quat.multiply(new THREE.Quaternion().setFromAxisAngle(
+        new THREE.Vector3(1, 0, 0), (rand() - 0.5) * 0.7
+      ));
+
+      const lm = new THREE.Matrix4().compose(
+        p, quat, new THREE.Vector3(leafLen, leafLen, leafLen)
+      );
+      const fm = new THREE.Matrix4().multiplyMatrices(frondMatrix, lm);
+
+      // Fresh green; tips a touch lighter & more yellow-green.
+      const h = clamp(0.30 + frondHue - 0.06 * tt - 0.02 * rand(), 0.18, 0.36);
+      const sat = clamp(0.46 + 0.2 * rand(), 0.3, 0.72);
+      const light = clamp(0.30 + frondLight + 0.14 * tt + 0.06 * rand(), 0.24, 0.52);
+      const c = new THREE.Color().setHSL(h, sat, light, THREE.SRGBColorSpace);
+
+      leaflets.push({ m: fm, c });
+    }
+  }
+}
+
+// --- fiddleheads at the crown ---
+const avgL = 1.0;
+for (let i = 0; i < 5; i++) {
+  const Lf = avgL * (0.28 + rand() * 0.12);
+  const curve = crozierCurve(Lf);
+  const az = rand() * Math.PI * 2;
+  const rB = 0.015 + rand() * 0.03;
+  const q = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler((rand() - 0.5) * 0.2, az, (rand() - 0.5) * 0.2, 'YXZ')
+  );
+  const pos = new THREE.Vector3(Math.cos(az) * rB, 0.01, Math.sin(az) * rB);
+  const m = new THREE.Matrix4().compose(pos, q, ONE);
+  const geo = taperedTube(curve, 40, t => THREE.MathUtils.lerp(0.016 * Lf * 6, 0.006 * Lf * 6, t), 6, Z_REF);
+  geo.applyMatrix4(m);
+  fiddleGeos.push(geo);
+}
+
+// ---------------------------------------------------------------------------
+// Assemble meshes
+// ---------------------------------------------------------------------------
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x60702f, roughness: 0.85, metalness: 0.0 });
+const stemMesh = new THREE.Mesh(BufferGeometryUtils.mergeGeometries(stemGeos, false), stemMat);
+stemMesh.castShadow = true;
+stemMesh.receiveShadow = true;
+fern.add(stemMesh);
+
+const fiddleMat = new THREE.MeshStandardMaterial({ color: 0x9db24a, roughness: 0.7, metalness: 0.0 });
+const fiddleMesh = new THREE.Mesh(BufferGeometryUtils.mergeGeometries(fiddleGeos, false), fiddleMat);
+fiddleMesh.castShadow = true;
+fiddleMesh.receiveShadow = true;
+fern.add(fiddleMesh);
+
+const leafMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  roughness: 0.5,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  emissive: 0x0b1e0a,
+  emissiveIntensity: 0.12
+});
+const leafMesh = new THREE.InstancedMesh(makeLeafletGeometry(), leafMat, leaflets.length);
+leafMesh.castShadow = true;
+leafMesh.receiveShadow = true;
+leafMesh.frustumCulled = false; // bounding sphere doesn't cover all instances
+for (let i = 0; i < leaflets.length; i++) {
+  leafMesh.setMatrixAt(i, leaflets[i].m);
+  leafMesh.setColorAt(i, leaflets[i].c);
+}
+leafMesh.instanceMatrix.needsUpdate = true;
+if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
+fern.add(leafMesh);
+
+// --- soil / root mound at the base ---
+const mound = new THREE.Mesh(
+  new THREE.SphereGeometry(0.16, 28, 18, 0, Math.PI * 2, 0, Math.PI * 0.5),
+  new THREE.MeshStandardMaterial({ color: 0x3a2c1e, roughness: 0.98, metalness: 0.0 })
+);
+mound.scale.set(1, 0.5, 1);
+mound.position.y = 0.0;
+mound.castShadow = true;
+mound.receiveShadow = true;
+fern.add(mound);
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

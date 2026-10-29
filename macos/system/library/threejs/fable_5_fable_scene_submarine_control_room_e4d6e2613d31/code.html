@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Submarine Control Room</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#06090c}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ===================== 1. CONFIG / PALETTE ===================== */
+const HULL = { R: 4.4, axisY: 2.4, len: 16 };   // cylindrical pressure hull, axis along x
+const SEED = 0xB0A75EA;
+const PAL = {
+  fog:      0x06090c,
+  hullBase: '#4d5a54',        // institutional seafoam-grey paint
+  deckBase: '#2b2f33',
+  steel:    0x39404a,
+  panel:    0x46554e,
+  brass:    0xa8853c,
+  copper:   0x8a5a3a,
+  red:      0xa32820,
+  cream:    0xe8e4d4,
+  bunk:     0x5a4632,
+  blanket:  0x2e3f5c,
+  scopeGrn: 0x39ff88,
+  lampWarm: 0xffd9a2
+};
+
+/* ===================== 2. SEEDED PRNG / HELPERS ===================== */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(SEED);
+const rand = (lo, hi) => lo + rng() * (hi - lo);
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+function canvasTexture(canvas, rx = 1, ry = 1) {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(rx, ry);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+/* ===================== 3. PROCEDURAL TEXTURES ===================== */
+// --- riveted hull plating with seams, wear and stencils ---
+function drawHullCanvas(withText) {
+  const [c, g] = makeCanvas(512, 512);
+  g.fillStyle = PAL.hullBase; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 60; i++) {                       // mottled paint wear
+    g.fillStyle = rng() < 0.5 ? 'rgba(28,36,32,0.07)' : 'rgba(190,200,190,0.05)';
+    g.beginPath(); g.arc(rng() * 512, rng() * 512, rand(12, 55), 0, 6.283); g.fill();
+  }
+  g.strokeStyle = 'rgba(18,24,22,0.6)'; g.lineWidth = 3;
+  for (let s = 0; s <= 2; s++) {                       // plate seams
+    g.beginPath(); g.moveTo(0, s * 256); g.lineTo(512, s * 256); g.stroke();
+    g.beginPath(); g.moveTo(s * 256, 0); g.lineTo(s * 256, 512); g.stroke();
+  }
+  for (let s = 0; s <= 2; s++) for (let i = 12; i < 512; i += 30) {   // rivet rows
+    for (const [rx, ry] of [[i, s * 256 + 11], [s * 256 + 11, i]]) {
+      g.fillStyle = '#68746d';
+      g.beginPath(); g.arc((rx + 512) % 512, (ry + 512) % 512, 4, 0, 6.283); g.fill();
+      g.fillStyle = 'rgba(255,255,255,0.25)';
+      g.beginPath(); g.arc((rx + 511) % 512, (ry + 511) % 512, 1.6, 0, 6.283); g.fill();
+    }
+  }
+  if (withText) {                                      // mirrored so the BackSide hull reads right
+    g.save(); g.scale(-1, 1);
+    g.font = 'bold 22px monospace'; g.fillStyle = 'rgba(230,230,210,0.5)';
+    g.fillText('MBT-2 VENT', -190, 140);
+    g.fillText('RIG FOR DIVE', -452, 400);
+    g.restore();
+    g.fillStyle = 'rgba(200,60,40,0.55)'; g.fillRect(60, 152, 130, 6);
+  }
+  return c;
+}
+// --- diamond-plate deck ---
+function makeDeckTexture() {
+  const [c, g] = makeCanvas(512, 512);
+  g.fillStyle = PAL.deckBase; g.fillRect(0, 0, 512, 512);
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    g.save(); g.translate(x * 32 + 16, y * 32 + 16); g.rotate((x + y) % 2 ? 0.785 : -0.785);
+    g.fillStyle = '#3a4046'; g.fillRect(-9, -3, 18, 6);
+    g.fillStyle = 'rgba(255,255,255,0.09)'; g.fillRect(-9, -3, 18, 2);
+    g.restore();
+  }
+  g.strokeStyle = 'rgba(12,14,16,0.7)'; g.lineWidth = 4;
+  for (let s = 0; s <= 512; s += 256) {
+    g.beginPath(); g.moveTo(0, s); g.lineTo(512, s); g.stroke();
+    g.beginPath(); g.moveTo(s, 0); g.lineTo(s, 512); g.stroke();
+  }
+  for (let i = 0; i < 260; i++) {                      // grime speckle
+    g.fillStyle = `rgba(0,0,0,${rand(0.05, 0.2)})`;
+    g.fillRect(rng() * 512, rng() * 512, 2, 2);
+  }
+  return canvasTexture(c, 5, 2.3);
+}
+// --- nautical chart for the plot table ---
+function makeChartTexture() {
+  const [c, g] = makeCanvas(512, 384);
+  g.fillStyle = '#d9d3b2'; g.fillRect(0, 0, 512, 384);
+  g.strokeStyle = 'rgba(90,130,160,0.5)'; g.lineWidth = 1;
+  for (let x = 0; x < 512; x += 42) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 384); g.stroke(); }
+  for (let y = 0; y < 384; y += 42) { g.beginPath(); g.moveTo(0, y); g.lineTo(512, y); g.stroke(); }
+  g.fillStyle = '#b3a878';                             // landmass
+  g.beginPath(); g.moveTo(0, 0); g.lineTo(210, 0); g.lineTo(160, 60); g.lineTo(190, 130);
+  g.lineTo(120, 190); g.lineTo(30, 170); g.lineTo(0, 230); g.closePath(); g.fill();
+  g.strokeStyle = '#6b6040'; g.lineWidth = 3; g.stroke();
+  g.strokeStyle = 'rgba(70,110,150,0.8)'; g.lineWidth = 1.5; g.setLineDash([7, 5]);
+  for (const r of [60, 105, 150]) {                    // depth contours
+    g.beginPath(); g.arc(150, 140, r, -0.6, 1.8); g.stroke();
+  }
+  g.setLineDash([]);
+  g.font = '15px monospace'; g.fillStyle = '#3c465a';
+  for (let i = 0; i < 14; i++) g.fillText(String(Math.floor(rand(18, 96))), rand(220, 480), rand(30, 360));
+  g.strokeStyle = '#28303c'; g.lineWidth = 2;          // compass rose
+  g.beginPath(); g.arc(408, 96, 46, 0, 6.283); g.stroke();
+  for (let i = 0; i < 8; i++) {
+    const a = i * 0.785;
+    g.beginPath(); g.moveTo(408, 96);
+    g.lineTo(408 + Math.cos(a) * (i % 2 ? 26 : 46), 96 + Math.sin(a) * (i % 2 ? 26 : 46)); g.stroke();
+  }
+  g.strokeStyle = '#a33226'; g.lineWidth = 3;          // pencilled course
+  g.beginPath(); g.moveTo(70, 330); g.lineTo(250, 250); g.lineTo(430, 290); g.stroke();
+  g.fillStyle = '#a33226';
+  for (const [px, py] of [[70, 330], [250, 250], [430, 290]]) g.fillRect(px - 4, py - 4, 8, 8);
+  return canvasTexture(c);
+}
+// --- instrument gauge face ---
+function makeGaugeTexture(label) {
+  const [c, g] = makeCanvas(128, 128);
+  g.fillStyle = '#20242a'; g.fillRect(0, 0, 128, 128);
+  g.fillStyle = PAL.cream; g.beginPath(); g.arc(64, 64, 56, 0, 6.283); g.fill();
+  g.strokeStyle = '#20242a'; g.lineWidth = 4; g.beginPath(); g.arc(64, 64, 56, 0, 6.283); g.stroke();
+  g.strokeStyle = '#a33226'; g.lineWidth = 6;
+  g.beginPath(); g.arc(64, 64, 46, -0.5, 0.6); g.stroke();   // red zone
+  g.strokeStyle = '#20242a'; g.lineWidth = 2.5;
+  for (let i = 0; i <= 12; i++) {                      // tick marks
+    const a = -2.35 + i * (4.7 / 12);
+    g.beginPath();
+    g.moveTo(64 + Math.cos(a) * 46, 64 + Math.sin(a) * 46);
+    g.lineTo(64 + Math.cos(a) * (i % 3 ? 51 : 40), 64 + Math.sin(a) * (i % 3 ? 51 : 40));
+    g.stroke();
+  }
+  g.font = 'bold 13px monospace'; g.textAlign = 'center'; g.fillStyle = '#20242a';
+  g.fillText(label, 64, 96);
+  return canvasTexture(c);
+}
+
+/* ===================== 4. SHARED MATERIALS ===================== */
+const hullCanvas = drawHullCanvas(true);
+const MAT = {
+  hull:  new THREE.MeshStandardMaterial({ map: canvasTexture(hullCanvas, 6, 2), roughness: 0.85,
+                                          metalness: 0.25, side: THREE.BackSide }),
+  cap:   new THREE.MeshStandardMaterial({ map: canvasTexture(drawHullCanvas(false), 2, 2),
+                                          roughness: 0.85, metalness: 0.25 }),
+  deck:  new THREE.MeshStandardMaterial({ map: makeDeckTexture(), roughness: 0.9, metalness: 0.35 }),
+  steel: new THREE.MeshStandardMaterial({ color: PAL.steel, roughness: 0.6, metalness: 0.55 }),
+  panel: new THREE.MeshStandardMaterial({ color: PAL.panel, roughness: 0.7, metalness: 0.3 }),
+  dark:  new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.7, metalness: 0.3 }),
+  brass: new THREE.MeshStandardMaterial({ color: PAL.brass, roughness: 0.35, metalness: 0.85 }),
+  copper:new THREE.MeshStandardMaterial({ color: PAL.copper, roughness: 0.45, metalness: 0.75 }),
+  red:   new THREE.MeshStandardMaterial({ color: PAL.red, roughness: 0.5, metalness: 0.35 }),
+  bunk:  new THREE.MeshStandardMaterial({ color: PAL.bunk, roughness: 0.95 }),
+  blanket:new THREE.MeshStandardMaterial({ color: PAL.blanket, roughness: 1 }),
+  linen: new THREE.MeshStandardMaterial({ color: 0xcfc9b4, roughness: 1 }),
+  paper: new THREE.MeshStandardMaterial({ map: makeChartTexture(), roughness: 0.95 }),
+  bulb:  new THREE.MeshStandardMaterial({ color: 0x2a2015, emissive: PAL.lampWarm, emissiveIntensity: 2.4 }),
+  domeRed: new THREE.MeshStandardMaterial({ color: 0x3a0906, emissive: 0xff2a18, emissiveIntensity: 1.6,
+                                            transparent: true, opacity: 0.92 })
+};
+const needles = [];   // { mesh, base, speed, phase } — trembling gauge needles
+
+/* ===================== 5. BUILDER FUNCTIONS ===================== */
+function box(w, h, d, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+function cyl(r1, r2, h, mat, seg = 14) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), mat);
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+// --- pressure hull: cylinder shell + bulkhead caps + deck + bilge ---
+function buildHull() {
+  const g = new THREE.Group();
+  const shell = new THREE.Mesh(new THREE.CylinderGeometry(HULL.R, HULL.R, HULL.len, 48, 1, true), MAT.hull);
+  shell.rotation.z = Math.PI / 2;
+  shell.position.y = HULL.axisY;
+  shell.receiveShadow = true;
+  g.add(shell);
+  for (const s of [-1, 1]) {
+    const cap = new THREE.Mesh(new THREE.CircleGeometry(HULL.R, 48), MAT.cap);
+    cap.position.set(s * HULL.len / 2, HULL.axisY, 0);
+    cap.rotation.y = -s * Math.PI / 2;
+    cap.receiveShadow = true;
+    g.add(cap);
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.07, 8, 24), MAT.steel);   // hatch coaming
+    ring.position.set(s * (HULL.len / 2 - 0.08), 1.35, 0.9);
+    ring.rotation.y = Math.PI / 2;
+    const door = new THREE.Mesh(new THREE.CircleGeometry(0.6, 24), MAT.panel);
+    door.position.set(s * (HULL.len / 2 - 0.1), 1.35, 0.9);
+    door.rotation.y = -s * Math.PI / 2;
+    const dogWheel = buildValveWheel(0.24, MAT.steel);
+    dogWheel.position.set(s * (HULL.len / 2 - 0.2), 1.35, 0.9);
+    dogWheel.rotation.y = -s * Math.PI / 2;
+    g.add(ring, door, dogWheel);
+  }
+  const deck = new THREE.Mesh(new THREE.PlaneGeometry(HULL.len, 7.2), MAT.deck);
+  deck.rotation.x = -Math.PI / 2;
+  deck.receiveShadow = true;
+  g.add(deck);
+  const bilge = box(HULL.len - 0.05, 2.0, 7.1, MAT.dark);   // fills the void below the deck
+  bilge.position.y = -1.0;
+  g.add(bilge);
+  return g;
+}
+// --- periscope column with fold-down handles and eyepiece ---
+function buildPeriscope() {
+  const g = new THREE.Group();
+  const plat = cyl(0.95, 1.05, 0.14, MAT.steel, 8);
+  plat.position.y = 0.07;
+  const column = cyl(0.14, 0.14, 6.8, MAT.steel, 16);
+  column.position.y = 3.4;
+  const housing = cyl(0.3, 0.26, 1.25, MAT.brass, 16);
+  housing.position.y = 1.75;
+  const eyepiece = box(0.34, 0.3, 0.42, MAT.dark);
+  eyepiece.position.set(0, 1.62, 0.34);
+  const lensL = cyl(0.055, 0.055, 0.16, MAT.brass, 10);
+  lensL.rotation.x = Math.PI / 2; lensL.position.set(-0.09, 1.62, 0.58);
+  const lensR = lensL.clone(); lensR.position.x = 0.09;
+  g.add(plat, column, housing, eyepiece, lensL, lensR);
+  for (const s of [-1, 1]) {                           // fold-down training handles
+    const arm = cyl(0.035, 0.035, 0.62, MAT.steel, 8);
+    arm.position.set(s * 0.42, 1.28, 0.1);
+    arm.rotation.z = -s * 2.25;                        // folded ~40 degrees down and outward
+    const grip = cyl(0.055, 0.055, 0.3, MAT.dark, 8);
+    grip.position.set(s * 0.66, 1.08, 0.1);
+    grip.rotation.z = -s * 2.25;
+    g.add(arm, grip);
+  }
+  return g;
+}
+// --- sonar station with sweeping green scope ---
+const sonarBlips = [];
+for (let i = 0; i < 7; i++) sonarBlips.push({ a: rand(0, 6.28), r: rand(22, 108) });
+function buildSonarStation() {
+  const g = new THREE.Group();
+  const [scopeCanvas, sg] = makeCanvas(256, 256);
+  sg.fillStyle = '#03140a'; sg.fillRect(0, 0, 256, 256);
+  const scopeTex = canvasTexture(scopeCanvas);
+  g.userData.drawScope = (t) => {
+    sg.fillStyle = 'rgba(3,16,8,0.25)'; sg.fillRect(0, 0, 256, 256);   // phosphor decay
+    sg.strokeStyle = 'rgba(60,255,140,0.45)'; sg.lineWidth = 1.5;
+    for (const r of [38, 76, 112]) { sg.beginPath(); sg.arc(128, 128, r, 0, 6.283); sg.stroke(); }
+    sg.globalAlpha = 0.35;
+    sg.beginPath(); sg.moveTo(10, 128); sg.lineTo(246, 128);
+    sg.moveTo(128, 10); sg.lineTo(128, 246); sg.stroke();
+    sg.globalAlpha = 1;
+    const a = t * 1.5;
+    sg.strokeStyle = '#96ffbe'; sg.lineWidth = 3;
+    sg.beginPath(); sg.moveTo(128, 128);
+    sg.lineTo(128 + Math.cos(a) * 114, 128 + Math.sin(a) * 114); sg.stroke();
+    for (const b of sonarBlips) {                      // contacts flare as the sweep passes
+      let d = (a - b.a) % 6.283; if (d < 0) d += 6.283;
+      const glow = Math.max(0, 1 - d * 0.5);
+      if (glow > 0.03) {
+        sg.fillStyle = `rgba(130,255,170,${glow.toFixed(3)})`;
+        sg.beginPath(); sg.arc(128 + Math.cos(b.a) * b.r, 128 + Math.sin(b.a) * b.r, 4.5, 0, 6.283); sg.fill();
+      }
+    }
+    scopeTex.needsUpdate = true;
+  };
+  const cabinet = box(1.5, 1.35, 0.8, MAT.panel); cabinet.position.y = 0.675;
+  const desk = box(1.5, 0.08, 0.5, MAT.steel); desk.position.set(0, 0.95, 0.6);
+  const head = box(1.3, 1.15, 0.55, MAT.steel); head.position.set(0, 1.95, -0.1);
+  const bezel = cyl(0.52, 0.52, 0.1, MAT.dark, 24);
+  bezel.rotation.x = Math.PI / 2; bezel.position.set(0, 1.95, 0.2);
+  const screen = new THREE.Mesh(new THREE.CircleGeometry(0.44, 24),
+    new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: scopeTex,
+      emissiveIntensity: 1.5, roughness: 0.3 }));
+  screen.position.set(0, 1.95, 0.26);
+  g.add(cabinet, desk, head, bezel, screen);
+  for (let i = 0; i < 4; i++) {                        // tuning knobs under the scope
+    const knob = cyl(0.05, 0.06, 0.06, MAT.brass, 10);
+    knob.rotation.x = Math.PI / 2;
+    knob.position.set(-0.45 + i * 0.3, 1.45, 0.2);
+    g.add(knob);
+  }
+  addGauge(g, -0.45, 2.35, 0.18, 0, 0.3, 'DEPTH');
+  const glow = new THREE.PointLight(PAL.scopeGrn, 14, 5, 2);
+  glow.position.set(0, 2.0, 0.8);
+  g.add(glow);
+  return g;
+}
+// --- chart table with instruments ---
+function buildChartTable() {
+  const g = new THREE.Group();
+  const top = box(2.3, 0.1, 1.35, MAT.bunk); top.position.y = 1.02;
+  const chart = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 1.12), MAT.paper);
+  chart.rotation.x = -Math.PI / 2; chart.position.y = 1.076; chart.rotation.z = 0.04;
+  chart.receiveShadow = true;
+  g.add(top, chart);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const leg = box(0.12, 0.97, 0.12, MAT.steel);
+    leg.position.set(sx * 1.0, 0.485, sz * 0.56); g.add(leg);
+  }
+  const rail = box(2.3, 0.07, 0.05, MAT.brass); rail.position.set(0, 1.09, 0.67); g.add(rail);
+  const shelf = box(2.1, 0.06, 1.1, MAT.steel); shelf.position.y = 0.32; g.add(shelf);
+  const ruler = box(0.85, 0.02, 0.09, MAT.brass); ruler.position.set(-0.3, 1.09, 0.22);
+  ruler.rotation.y = 0.35; g.add(ruler);
+  const divider = new THREE.Group();                   // brass dividers, legs in a V
+  for (const s of [-1, 1]) {
+    const dLeg = cyl(0.012, 0.02, 0.42, MAT.brass, 6);
+    dLeg.position.set(s * 0.05, -0.02, 0); dLeg.rotation.z = s * 0.28;
+    divider.add(dLeg);
+  }
+  const hinge = new THREE.Mesh(new THREE.SphereGeometry(0.035, 8, 6), MAT.brass);
+  hinge.position.y = 0.18; divider.add(hinge);
+  divider.position.set(0.42, 1.12, -0.15); divider.rotation.z = 1.35; divider.rotation.y = 0.7;
+  g.add(divider);
+  const mug = cyl(0.07, 0.06, 0.14, MAT.linen, 12);
+  mug.position.set(0.92, 1.14, 0.42); g.add(mug);
+  const lampArm = cyl(0.025, 0.025, 0.6, MAT.steel, 8);
+  lampArm.position.set(-0.95, 1.35, -0.5); lampArm.rotation.z = 0.5; g.add(lampArm);
+  const shade = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.16, 14, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x1d3a2a, roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide }));
+  shade.position.set(-0.78, 1.62, -0.5); g.add(shade);
+  const lampBulb = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 6), MAT.bulb);
+  lampBulb.position.set(-0.78, 1.57, -0.5); g.add(lampBulb);
+  return g;
+}
+// --- stacked crew bunks in the aft alcove ---
+function buildBunks() {
+  const g = new THREE.Group();
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const post = cyl(0.045, 0.045, 2.5, MAT.steel, 8);
+    post.position.set(sx * 1.15, 1.25, sz * 0.55); g.add(post);
+  }
+  for (let lvl = 0; lvl < 2; lvl++) {
+    const y = 0.55 + lvl * 1.05;
+    const frame = box(2.35, 0.09, 1.2, MAT.steel); frame.position.y = y;
+    const mattress = box(2.2, 0.14, 1.05, MAT.linen); mattress.position.y = y + 0.1;
+    const blanketMesh = box(1.55, 0.07, 1.06, MAT.blanket); blanketMesh.position.set(-0.3, y + 0.2, 0);
+    const pillow = box(0.42, 0.09, 0.8, MAT.linen); pillow.position.set(0.85, y + 0.2, 0);
+    g.add(frame, mattress, blanketMesh, pillow);
+    for (const s of [-1, 1]) {                         // chain suspension between frames
+      const chain = cyl(0.018, 0.018, 0.9, MAT.steel, 6);
+      chain.position.set(s * 1.1, y + 0.55, -0.5);
+      g.add(chain);
+    }
+  }
+  const curtainRod = cyl(0.02, 0.02, 2.4, MAT.brass, 8);
+  curtainRod.rotation.z = Math.PI / 2; curtainRod.position.set(0, 2.62, 0.62); g.add(curtainRod);
+  const curtain = box(0.9, 1.0, 0.03, new THREE.MeshStandardMaterial({ color: 0x4a5748, roughness: 1 }));
+  curtain.position.set(-0.7, 2.1, 0.62); g.add(curtain);
+  const locker = box(0.6, 0.5, 0.5, MAT.panel); locker.position.set(1.45, 0.25, 0.9); g.add(locker);
+  return g;
+}
+// --- helm: gauge board and twin brass steering wheels ---
+function buildHelmStation() {
+  const g = new THREE.Group();
+  const board = box(0.18, 1.7, 3.1, MAT.panel); board.position.set(-0.55, 1.65, 0);
+  g.add(board);
+  const labels = ['DEPTH', 'TRIM', 'AIR', 'SPEED'];
+  for (let i = 0; i < 4; i++)
+    addGauge(g, -0.44, i % 2 ? 1.25 : 2.0, i < 2 ? -1.1 : 1.1, Math.PI / 2, 0.5, labels[i]);
+  addGauge(g, -0.44, 1.62, 0, Math.PI / 2, 0.62, 'ANGLE');
+  const wheels = [];
+  for (const s of [-1, 1]) {
+    const pedestal = cyl(0.09, 0.13, 1.0, MAT.steel, 10);
+    pedestal.position.set(0.35, 0.5, s * 0.95);
+    const wheel = buildValveWheel(0.42, MAT.brass);   // big brass planesman wheel
+    wheel.position.set(0.35, 1.15, s * 0.95);
+    wheel.rotation.y = Math.PI / 2;
+    g.add(pedestal, wheel);
+    wheels.push(wheel);
+  }
+  g.userData.wheels = wheels;
+  return g;
+}
+// --- valve wheel (torus + spokes), reused everywhere ---
+function buildValveWheel(radius, mat) {
+  const w = new THREE.Group();
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(radius, radius * 0.16, 8, 18), mat);
+  rim.castShadow = true;
+  w.add(rim);
+  for (let i = 0; i < 3; i++) {
+    const spoke = cyl(radius * 0.1, radius * 0.1, radius * 1.9, mat, 6);
+    spoke.rotation.z = i * Math.PI / 3;
+    w.add(spoke);
+  }
+  const hub = new THREE.Mesh(new THREE.SphereGeometry(radius * 0.28, 8, 6), mat);
+  w.add(hub);
+  return w;
+}
+// --- standing manifold: riser pipes with red valve wheels ---
+function buildManifold() {
+  const g = new THREE.Group();
+  const base = box(1.7, 0.85, 0.5, MAT.panel); base.position.y = 0.425;
+  g.add(base);
+  const header = cyl(0.09, 0.09, 1.7, MAT.copper, 10);
+  header.rotation.z = Math.PI / 2; header.position.y = 1.95; g.add(header);
+  for (let i = 0; i < 4; i++) {
+    const x = -0.6 + i * 0.4;
+    const riser = cyl(0.07, 0.07, 1.1, MAT.copper, 10);
+    riser.position.set(x, 1.4, 0); g.add(riser);
+    const stub = cyl(0.05, 0.05, 0.22, MAT.copper, 8);
+    stub.rotation.x = Math.PI / 2; stub.position.set(x, 1.45, 0.16); g.add(stub);
+    const wheel = buildValveWheel(0.17, MAT.red);
+    wheel.position.set(x, 1.45, 0.3); g.add(wheel);
+  }
+  addGauge(g, 0.55, 0.95, 0.26, 0, 0.34, 'PSI');
+  return g;
+}
+// --- wall of valve wheels: panel rack with two rows of wheels ---
+function buildValvePanel() {
+  const g = new THREE.Group();
+  const backboard = box(2.2, 1.9, 0.14, MAT.panel); backboard.position.y = 1.35;
+  g.add(backboard);
+  for (let r = 0; r < 2; r++) for (let i = 0; i < 3; i++) {
+    const x = -0.7 + i * 0.7, y = 0.95 + r * 0.8;
+    const stub = cyl(0.05, 0.05, 0.24, MAT.copper, 8);
+    stub.rotation.x = Math.PI / 2; stub.position.set(x, y, 0.17); g.add(stub);
+    const wheel = buildValveWheel(r ? 0.19 : 0.16, (r + i) % 2 ? MAT.red : MAT.brass);
+    wheel.position.set(x, y, 0.32); g.add(wheel);
+    const pipe = cyl(0.045, 0.045, y - 0.05, MAT.copper, 8);
+    pipe.position.set(x, (y - 0.05) / 2, 0.1); g.add(pipe);
+  }
+  addGauge(g, 0.85, 2.05, 0.1, 0, 0.3, 'TANK');
+  return g;
+}
+// --- engine order telegraph on a brass pedestal ---
+function buildTelegraph() {
+  const g = new THREE.Group();
+  const stem = cyl(0.06, 0.1, 1.05, MAT.brass, 10); stem.position.y = 0.52;
+  const head = cyl(0.3, 0.3, 0.14, MAT.brass, 20);
+  head.rotation.x = Math.PI / 2; head.position.y = 1.25;
+  const face = new THREE.Mesh(new THREE.CircleGeometry(0.26, 20),
+    new THREE.MeshStandardMaterial({ map: makeGaugeTexture('AHEAD'), roughness: 0.5 }));
+  face.position.set(0, 1.25, 0.078);
+  const handle = cyl(0.02, 0.02, 0.3, MAT.steel, 6);
+  handle.position.set(0.1, 1.38, 0.1); handle.rotation.z = -0.6;
+  g.add(stem, head, face, handle);
+  return g;
+}
+// --- rotating red alert beacon ---
+function buildAlertBeacon() {
+  const g = new THREE.Group();
+  const mount = cyl(0.16, 0.2, 0.12, MAT.steel, 10); mount.position.y = -0.06;
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.19, 14, 10, 0, 6.283, 0, 1.9), MAT.domeRed);
+  dome.rotation.x = Math.PI; dome.position.y = -0.3;
+  const cageV = new THREE.Group();
+  for (let i = 0; i < 4; i++) {
+    const bar = cyl(0.012, 0.012, 0.32, MAT.steel, 5);
+    bar.position.set(Math.cos(i * 1.57) * 0.2, -0.28, Math.sin(i * 1.57) * 0.2);
+    cageV.add(bar);
+  }
+  const spin = new THREE.Group();
+  const redSpot = new THREE.SpotLight(0xff2a18, 130, 13, 0.5, 0.55, 1.3);
+  redSpot.position.set(0, -0.28, 0);
+  redSpot.target.position.set(3, -1.4, 0);
+  spin.add(redSpot, redSpot.target);
+  const redPoint = new THREE.PointLight(0xff2a18, 10, 7, 2);
+  redPoint.position.y = -0.28;
+  g.add(mount, dome, cageV, spin, redPoint);
+  g.userData = { spin, dome };
+  return g;
+}
+// --- caged ceiling lamp ---
+function buildCageLamp() {
+  const g = new THREE.Group();
+  const stem = cyl(0.04, 0.04, 0.22, MAT.steel, 8); stem.position.y = -0.1;
+  const shade = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.16, 12, 1, true),
+    new THREE.MeshStandardMaterial({ color: 0x39404a, roughness: 0.5, metalness: 0.6, side: THREE.DoubleSide }));
+  shade.position.y = -0.26;
+  const bulbMesh = new THREE.Mesh(new THREE.SphereGeometry(0.07, 10, 8), MAT.bulb);
+  bulbMesh.position.y = -0.34;
+  const light = new THREE.PointLight(PAL.lampWarm, 34, 11, 2);
+  light.position.y = -0.42;
+  g.add(stem, shade, bulbMesh, light);
+  return g;
+}
+// --- ladder up to the conning-tower trunk hatch ---
+function buildLadder() {
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const rail = cyl(0.03, 0.03, 6.1, MAT.steel, 8);
+    rail.position.set(0, 3.05, s * 0.26); g.add(rail);
+  }
+  for (let i = 0; i < 9; i++) {
+    const rung = cyl(0.022, 0.022, 0.52, MAT.steel, 6);
+    rung.rotation.x = Math.PI / 2; rung.position.y = 0.5 + i * 0.65;
+    g.add(rung);
+  }
+  const trunk = cyl(0.48, 0.48, 0.5, MAT.panel, 22);   // stub of the tower trunk
+  trunk.position.set(0, 6.5, 0.55);
+  const hatchRing = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.055, 8, 22), MAT.steel);
+  hatchRing.rotation.x = Math.PI / 2; hatchRing.position.set(0, 6.22, 0.55);
+  const hatchLid = cyl(0.4, 0.4, 0.06, MAT.steel, 22);
+  hatchLid.position.set(0, 6.2, 0.55);
+  g.add(trunk, hatchRing, hatchLid);
+  return g;
+}
+// --- crew stool ---
+function buildStool() {
+  const g = new THREE.Group();
+  const post = cyl(0.05, 0.07, 0.52, MAT.steel, 8); post.position.y = 0.26;
+  const seat = cyl(0.2, 0.22, 0.07, MAT.bunk, 14); seat.position.y = 0.55;
+  const foot = cyl(0.16, 0.18, 0.04, MAT.dark, 10); foot.position.y = 0.02;
+  g.add(post, seat, foot);
+  return g;
+}
+// --- shared gauge helper: face plane + trembling needle ---
+function addGauge(parent, x, y, z, ry, size, label) {
+  const face = new THREE.Mesh(new THREE.PlaneGeometry(size, size),
+    new THREE.MeshStandardMaterial({ map: makeGaugeTexture(label), roughness: 0.55 }));
+  face.position.set(x, y, z); face.rotation.y = ry;
+  const needle = new THREE.Mesh(new THREE.BoxGeometry(size * 0.05, size * 0.4, 0.012), MAT.red.clone());
+  needle.geometry.translate(0, size * 0.16, 0);
+  needle.position.set(x, y, z).add(new THREE.Vector3(Math.sin(ry) * 0.012, 0, Math.cos(ry) * 0.012));
+  needle.rotation.y = ry;
+  needle.rotation.z = rand(-1.4, 1.4);
+  parent.add(face, needle);
+  needles.push({ mesh: needle, base: needle.rotation.z, speed: rand(4, 9), phase: rand(0, 6.28) });
+}
+
+/* ===================== 6. RENDERER / SCENE / CAMERA ===================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.32;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.fog);
+scene.fog = new THREE.Fog(PAL.fog, 16, 46);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(10, 12, 14);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.3, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 11;
+controls.maxDistance = 30;
+controls.minPolarAngle = 0.55;
+controls.maxPolarAngle = 1.25;
+
+/* ===================== 7. ASSEMBLY / LAYOUT ===================== */
+scene.add(buildHull());
+function place(obj, x, y, z, ry = 0) {
+  obj.position.set(x, y, z); obj.rotation.y = ry;
+  scene.add(obj);
+  return obj;
+}
+const periscope = place(buildPeriscope(), 0, 0, 0.5);
+const sonar = place(buildSonarStation(), -2.9, 0, -2.3, 0.15);
+place(buildStool(), -2.8, 0, -1.15);
+place(buildChartTable(), 2.9, 0, 1.7, -0.12);
+place(buildStool(), 2.4, 0, 0.55);
+place(buildBunks(), 6.3, 0, -1.9);
+const helm = place(buildHelmStation(), -6.4, 0, 0.3);
+place(buildStool(), -5.1, 0, 1.25);
+place(buildManifold(), -4.6, 0, 2.55, Math.PI + 0.12);
+place(buildManifold(), 0.6, 0, -2.75, 0.06);
+place(buildValvePanel(), 4.55, 0, -2.75, 0.12);
+place(buildTelegraph(), -4.7, 0, -1.6, 0.5);
+place(buildLadder(), 1.7, 0, -0.7);
+const beacon = place(buildAlertBeacon(), -1.6, 6.72, -0.1);
+place(buildCageLamp(), -4.8, 6.78, 0);
+place(buildCageLamp(), 4.8, 6.78, 0);
+
+// overhead pipe runs with flanges and hangers, kept near the crown of the hull
+const pipeRuns = [[-0.9, 6.15, 0.11], [0.5, 6.45, 0.09], [1.1, 6.1, 0.13]];
+for (const [pz, py, pr] of pipeRuns) {
+  const pipe = cyl(pr, pr, HULL.len - 0.4, pz > 0 ? MAT.copper : MAT.steel, 12);
+  pipe.rotation.z = Math.PI / 2;
+  pipe.position.set(0, py, pz);
+  scene.add(pipe);
+  const crownY = HULL.axisY + Math.sqrt(HULL.R * HULL.R - pz * pz);
+  for (let i = -2; i <= 2; i++) {
+    const fx = i * 3.4 + 0.9;
+    const flange = cyl(pr * 1.5, pr * 1.5, 0.09, MAT.steel, 12);
+    flange.rotation.z = Math.PI / 2;
+    flange.position.set(fx, py, pz);
+    const hanger = cyl(0.022, 0.022, crownY - py, MAT.steel, 6);
+    hanger.position.set(fx, (crownY + py) / 2, pz);
+    scene.add(flange, hanger);
+  }
+}
+// low hull-side valves: wall stub plus a riser to the deck, so they read grounded
+for (const [vx, vs] of [[-3.6, 1], [1.9, 1], [5.6, 1], [-0.8, -1]]) {
+  const grp = new THREE.Group();
+  const stub = cyl(0.06, 0.06, 1.4, MAT.copper, 8);
+  stub.rotation.x = Math.PI / 2; stub.position.z = -0.7;
+  const riser = cyl(0.05, 0.05, 1.7, MAT.copper, 8);
+  riser.position.set(0, -0.85, -0.35);
+  grp.add(stub, riser, buildValveWheel(0.2, MAT.red));
+  grp.position.set(vx, 1.7, vs * 3.15);
+  grp.rotation.y = vs > 0 ? Math.PI : 0;
+  scene.add(grp);
+}
+// drooping cable runs along the crown, clear of trunk and beacon
+for (const [cz, sag, y0] of [[-1.5, 0.3, 6.3], [1.6, 0.28, 6.35]]) {
+  const pts = [];
+  for (let i = 0; i <= 8; i++) {
+    const u = i / 8;
+    pts.push(new THREE.Vector3(-7.4 + u * 14.8, y0 - Math.sin(u * Math.PI) * sag, cz));
+  }
+  const cable = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 24, 0.028, 6), MAT.dark);
+  scene.add(cable);
+}
+
+/* ===================== 8. LIGHTING RIG ===================== */
+const hemi = new THREE.HemisphereLight(0x44586a, 0x0a0c08, 0.95);
+scene.add(hemi);
+const keySpot = new THREE.SpotLight(0xfff1d8, 270, 26, 1.15, 0.55, 1.8);
+keySpot.position.set(0.5, 7.2, 1.2);
+keySpot.target.position.set(0, 0, 0);
+keySpot.castShadow = true;
+keySpot.shadow.mapSize.set(2048, 2048);
+keySpot.shadow.bias = -0.0004;
+keySpot.shadow.camera.near = 2; keySpot.shadow.camera.far = 20;
+scene.add(keySpot, keySpot.target);
+const chartFill = new THREE.PointLight(0xffe2b8, 12, 9, 2);   // warm spill over the plot corner
+chartFill.position.set(3.4, 3.4, 1.0); scene.add(chartFill);
+
+/* ===================== 9. ANIMATION LOOP ===================== */
+const clock = new THREE.Clock();
+let scopeTimer = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = clock.getDelta();
+  const t = clock.elapsedTime;
+
+  // 1) sonar sweep redraw (~15 fps) with pinging contacts
+  scopeTimer += dt;
+  if (scopeTimer > 0.066) { scopeTimer = 0; sonar.userData.drawScope(t); }
+
+  // 2) red alert lamp slowly rotating, dome breathing
+  beacon.userData.spin.rotation.y = t * 1.9;
+  beacon.userData.dome.material.emissiveIntensity = 1.5 + Math.sin(t * 3.8) * 0.5;
+
+  // 3) gauge needles tremble around their set points
+  for (const n of needles)
+    n.mesh.rotation.z = n.base + Math.sin(t * n.speed + n.phase) * 0.055 +
+                        Math.sin(t * 11.3 + n.phase * 2.0) * 0.02;
+
+  // 4) periscope trains slowly back and forth
+  periscope.rotation.y = Math.sin(t * 0.22) * 0.55;
+
+  // 5) helm wheels hunt gently as the boat holds trim
+  helm.userData.wheels[0].rotation.x = Math.sin(t * 0.45) * 0.3;
+  helm.userData.wheels[1].rotation.x = Math.sin(t * 0.45 + 1.3) * 0.25;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ===================== 10. RESIZE ===================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

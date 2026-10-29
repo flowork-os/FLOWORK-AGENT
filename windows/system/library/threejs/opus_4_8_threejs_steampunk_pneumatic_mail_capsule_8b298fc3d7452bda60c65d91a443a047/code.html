@@ -1,0 +1,1480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Steampunk Mail Capsule</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #14120f; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 "Georgia", "Times New Roman", serif; color: #a8977c;
+    letter-spacing: 0.16em; text-transform: uppercase; opacity: 0.55;
+    pointer-events: none; user-select: none; text-shadow: 0 1px 3px #000;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Steampunk Mail Capsule &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14120f);
+scene.fog = new THREE.FogExp2(0x14120f, 0.030);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(2.35, 1.35, 3.05);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 1.6;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 0.92, 0);
+
+/* ============================================================
+   Procedural micro-textures (canvas based, no external assets)
+   ============================================================ */
+function makeCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  return c;
+}
+
+// value-noise helper -----------------------------------------
+function noiseGrid(n, seed) {
+  let s = seed >>> 0;
+  const rnd = () => {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5; s >>>= 0;
+    return (s >>> 0) / 4294967296;
+  };
+  const g = new Float32Array(n * n);
+  for (let i = 0; i < n * n; i++) g[i] = rnd();
+  return g;
+}
+function sampleGrid(g, n, x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  const i = ((xi % n) + n) % n, j = ((yi % n) + n) % n;
+  const i2 = (i + 1) % n, j2 = (j + 1) % n;
+  const a = g[j * n + i], b = g[j * n + i2], c = g[j2 * n + i], d = g[j2 * n + i2];
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+function fbm(g, n, x, y, oct) {
+  let amp = 0.5, f = 1, sum = 0, norm = 0;
+  for (let o = 0; o < oct; o++) {
+    sum += amp * sampleGrid(g, n, x * f, y * f);
+    norm += amp;
+    amp *= 0.5; f *= 2;
+  }
+  return sum / norm;
+}
+
+// Aged brass / patina map ------------------------------------
+function makePatinaTexture(size, base, patina, dark, patinaAmount, repeatX, repeatY) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const gA = noiseGrid(64, 1337);
+  const gB = noiseGrid(64, 90210);
+  const cb = new THREE.Color(base), cp = new THREE.Color(patina), cd = new THREE.Color(dark);
+  const tmp = new THREE.Color();
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size * 8, v = y / size * 8;
+      const n1 = fbm(gA, 64, u, v, 5);
+      const n2 = fbm(gB, 64, u * 3.1 + 11, v * 3.1 + 7, 4);
+      // vertical streaking (oil / weathering runs)
+      const streak = fbm(gA, 64, u * 0.6, v * 6.0 + 40, 3);
+      let p = THREE.MathUtils.smoothstep(n1 * 0.7 + n2 * 0.3, 0.48, 0.78) * patinaAmount;
+      tmp.copy(cb).lerp(cp, p);
+      const grime = THREE.MathUtils.smoothstep(streak, 0.55, 0.95) * 0.55 + (1 - n2) * 0.16;
+      tmp.lerp(cd, THREE.MathUtils.clamp(grime, 0, 0.75));
+      const spec = (n2 - 0.5) * 0.10;
+      const i = (y * size + x) * 4;
+      img.data[i]     = THREE.MathUtils.clamp((tmp.r + spec) * 255, 0, 255);
+      img.data[i + 1] = THREE.MathUtils.clamp((tmp.g + spec) * 255, 0, 255);
+      img.data[i + 2] = THREE.MathUtils.clamp((tmp.b + spec) * 255, 0, 255);
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX || 1, repeatY || 1);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// Roughness variation map (grime = rougher) -------------------
+function makeRoughTexture(size, lo, hi, seed, repeatX, repeatY) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const g = noiseGrid(64, seed);
+  const g2 = noiseGrid(64, seed * 7 + 3);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size * 8, v = y / size * 8;
+      const n = fbm(g, 64, u, v, 5) * 0.65 + fbm(g2, 64, u * 0.5, v * 5.0, 3) * 0.35;
+      const val = THREE.MathUtils.clamp(lo + (hi - lo) * n, 0, 1) * 255;
+      const i = (y * size + x) * 4;
+      img.data[i] = img.data[i + 1] = img.data[i + 2] = val;
+      img.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX || 1, repeatY || 1);
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// Leather grain (color + bump) --------------------------------
+function makeLeatherTextures(size) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  const cb = makeCanvas(size);
+  const cbx = cb.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const bmp = cbx.createImageData(size, size);
+  const g = noiseGrid(64, 4242);
+  const g2 = noiseGrid(64, 8811);
+  const base = new THREE.Color(0x53331c);
+  const dark = new THREE.Color(0x1d1109);
+  const light = new THREE.Color(0x7d5230);
+  const tmp = new THREE.Color();
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size * 26, v = y / size * 26;
+      const cell = fbm(g, 64, u, v, 4);
+      const cell2 = fbm(g2, 64, u * 2.3, v * 2.3, 3);
+      const grain = cell * 0.6 + cell2 * 0.4;
+      tmp.copy(base);
+      tmp.lerp(dark, THREE.MathUtils.smoothstep(grain, 0.30, 0.05));
+      tmp.lerp(light, THREE.MathUtils.smoothstep(grain, 0.62, 0.92) * 0.7);
+      const i = (y * size + x) * 4;
+      img.data[i] = tmp.r * 255; img.data[i + 1] = tmp.g * 255; img.data[i + 2] = tmp.b * 255; img.data[i + 3] = 255;
+      const b = THREE.MathUtils.clamp(grain, 0, 1) * 255;
+      bmp.data[i] = bmp.data[i + 1] = bmp.data[i + 2] = b; bmp.data[i + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  cbx.putImageData(bmp, 0, 0);
+  const t1 = new THREE.CanvasTexture(c);
+  const t2 = new THREE.CanvasTexture(cb);
+  for (const t of [t1, t2]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.repeat.set(6, 1);
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  }
+  t1.colorSpace = THREE.SRGBColorSpace;
+  return { map: t1, bump: t2 };
+}
+
+// Aged paper (letters / address tag) --------------------------
+function makePaperTexture(size, withWriting) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#e6d7b4';
+  ctx.fillRect(0, 0, size, size);
+  const g = noiseGrid(64, 5150);
+  const img = ctx.getImageData(0, 0, size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = fbm(g, 64, x / size * 6, y / size * 6, 4);
+      const stain = THREE.MathUtils.smoothstep(n, 0.55, 0.95);
+      const i = (y * size + x) * 4;
+      img.data[i]     = THREE.MathUtils.clamp(img.data[i] - stain * 62 - (1 - n) * 14, 0, 255);
+      img.data[i + 1] = THREE.MathUtils.clamp(img.data[i + 1] - stain * 74 - (1 - n) * 16, 0, 255);
+      img.data[i + 2] = THREE.MathUtils.clamp(img.data[i + 2] - stain * 92 - (1 - n) * 20, 0, 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  if (withWriting) {
+    ctx.strokeStyle = 'rgba(38,26,18,0.62)';
+    ctx.lineWidth = Math.max(1, size / 180);
+    let seed = 12345;
+    const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    for (let line = 0; line < 7; line++) {
+      const y = size * (0.20 + line * 0.095);
+      let x = size * 0.14;
+      ctx.beginPath();
+      ctx.moveTo(x, y);
+      while (x < size * 0.86) {
+        const seg = size * (0.02 + rnd() * 0.05);
+        ctx.quadraticCurveTo(x + seg * 0.5, y + (rnd() - 0.5) * size * 0.035, x + seg, y);
+        x += seg + size * 0.006;
+      }
+      ctx.stroke();
+    }
+    // a wax-red stamp mark
+    ctx.fillStyle = 'rgba(120,26,22,0.55)';
+    ctx.beginPath();
+    ctx.arc(size * 0.76, size * 0.80, size * 0.10, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// Gauge dial face --------------------------------------------
+function makeGaugeFaceTexture(size, label, ticks) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  const R = size / 2;
+  // enamel background
+  const grd = ctx.createRadialGradient(R * 0.8, R * 0.75, R * 0.1, R, R, R);
+  grd.addColorStop(0, '#f3e8cd');
+  grd.addColorStop(0.72, '#e0d0ac');
+  grd.addColorStop(1, '#b7a37d');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, size, size);
+
+  // aging blotches
+  const g = noiseGrid(64, 777);
+  const img = ctx.getImageData(0, 0, size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = fbm(g, 64, x / size * 5, y / size * 5, 4);
+      const s = THREE.MathUtils.smoothstep(n, 0.6, 0.95) * 60;
+      const i = (y * size + x) * 4;
+      img.data[i] -= s * 0.5; img.data[i + 1] -= s * 0.7; img.data[i + 2] -= s;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  ctx.translate(R, R);
+  // outer ring
+  ctx.strokeStyle = '#2a2018';
+  ctx.lineWidth = size * 0.022;
+  ctx.beginPath(); ctx.arc(0, 0, R * 0.90, 0, Math.PI * 2); ctx.stroke();
+  ctx.lineWidth = size * 0.010;
+  ctx.beginPath(); ctx.arc(0, 0, R * 0.80, 0, Math.PI * 2); ctx.stroke();
+
+  // ticks over 270 degrees, starting at 135deg
+  const start = Math.PI * 0.75, span = Math.PI * 1.5;
+  for (let i = 0; i <= ticks; i++) {
+    const t = i / ticks;
+    const a = start + span * t;
+    const major = i % 2 === 0;
+    const r1 = R * 0.79, r2 = R * (major ? 0.63 : 0.70);
+    ctx.strokeStyle = '#241b13';
+    ctx.lineWidth = size * (major ? 0.020 : 0.010);
+    ctx.beginPath();
+    ctx.moveTo(Math.cos(a) * r1, Math.sin(a) * r1);
+    ctx.lineTo(Math.cos(a) * r2, Math.sin(a) * r2);
+    ctx.stroke();
+    if (major) {
+      ctx.fillStyle = '#241b13';
+      ctx.font = `700 ${size * 0.085}px Georgia, serif`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(String(i * 5), Math.cos(a) * R * 0.51, Math.sin(a) * R * 0.51);
+    }
+  }
+  // red danger arc
+  ctx.strokeStyle = 'rgba(150,32,22,0.85)';
+  ctx.lineWidth = size * 0.030;
+  ctx.beginPath();
+  ctx.arc(0, 0, R * 0.735, start + span * 0.80, start + span);
+  ctx.stroke();
+
+  // label
+  ctx.fillStyle = '#2b211a';
+  ctx.font = `600 ${size * 0.075}px Georgia, serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, 0, -R * 0.30);
+  ctx.font = `italic ${size * 0.055}px Georgia, serif`;
+  ctx.fillText('LBS / IN²', 0, R * 0.36);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// Address tag face -------------------------------------------
+function makeTagTexture(size) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#d9c69c';
+  ctx.fillRect(0, 0, size, size);
+  const g = noiseGrid(64, 31337);
+  const img = ctx.getImageData(0, 0, size, size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const n = fbm(g, 64, x / size * 7, y / size * 7, 4);
+      const s = THREE.MathUtils.smoothstep(n, 0.5, 0.92) * 70;
+      const i = (y * size + x) * 4;
+      img.data[i] -= s * 0.55; img.data[i + 1] -= s * 0.75; img.data[i + 2] -= s;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  ctx.fillStyle = '#332318';
+  ctx.textAlign = 'center';
+  ctx.font = `700 ${size * 0.115}px Georgia, serif`;
+  ctx.fillText('TUBE No. 7', size / 2, size * 0.30);
+  ctx.font = `${size * 0.085}px Georgia, serif`;
+  ctx.fillText('AETHER POST', size / 2, size * 0.46);
+  ctx.fillText('STN. VICTORIA', size / 2, size * 0.585);
+  ctx.strokeStyle = 'rgba(51,35,24,0.75)';
+  ctx.lineWidth = size * 0.012;
+  ctx.beginPath(); ctx.moveTo(size * 0.16, size * 0.365); ctx.lineTo(size * 0.84, size * 0.365); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(size * 0.16, size * 0.655); ctx.lineTo(size * 0.84, size * 0.655); ctx.stroke();
+  ctx.font = `italic ${size * 0.07}px Georgia, serif`;
+  ctx.fillStyle = 'rgba(120,32,24,0.8)';
+  ctx.fillText('URGENT · PNEUMATIC', size / 2, size * 0.78);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+/* ============================================================
+   Materials
+   ============================================================ */
+const brassMap   = makePatinaTexture(512, 0xb8873a, 0x4e7d63, 0x2b2016, 0.42, 3, 1);
+const brassRough = makeRoughTexture(512, 0.18, 0.62, 21, 3, 1);
+
+const copperMap   = makePatinaTexture(512, 0xa85f34, 0x3f7a63, 0x24170f, 0.50, 2, 1);
+const copperRough = makeRoughTexture(512, 0.20, 0.66, 55, 2, 1);
+
+const lacquerMap   = makePatinaTexture(512, 0x6d3f1f, 0x8a5a2a, 0x1a0f08, 0.35, 4, 1);
+const lacquerRough = makeRoughTexture(512, 0.14, 0.48, 88, 4, 1);
+
+const ironMap   = makePatinaTexture(512, 0x4a4038, 0x6a4a2e, 0x14100c, 0.35, 2, 1);
+const ironRough = makeRoughTexture(512, 0.34, 0.78, 12, 2, 1);
+
+const leatherTex = makeLeatherTextures(512);
+const paperTex   = makePaperTexture(256, true);
+const tagTex     = makeTagTexture(512);
+
+const matBrass = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: brassMap, roughnessMap: brassRough,
+  metalness: 1.0, roughness: 0.42
+});
+const matBrassPolished = new THREE.MeshStandardMaterial({
+  color: 0xd8a24f, metalness: 1.0, roughness: 0.24,
+  roughnessMap: brassRough
+});
+const matCopper = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: copperMap, roughnessMap: copperRough,
+  metalness: 1.0, roughness: 0.40
+});
+const matLacquer = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: lacquerMap, roughnessMap: lacquerRough,
+  metalness: 0.55, roughness: 0.34
+});
+const matIron = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: ironMap, roughnessMap: ironRough,
+  metalness: 0.92, roughness: 0.62
+});
+const matDarkIron = new THREE.MeshStandardMaterial({
+  color: 0x3a332c, metalness: 0.9, roughness: 0.58
+});
+const matLeather = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: leatherTex.map, bumpMap: leatherTex.bump, bumpScale: 0.012,
+  metalness: 0.05, roughness: 0.78
+});
+const matPaper = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: paperTex, metalness: 0.0, roughness: 0.92, side: THREE.DoubleSide
+});
+const matGlass = new THREE.MeshPhysicalMaterial({
+  color: 0xdfe9e6, metalness: 0.0, roughness: 0.06,
+  transmission: 0.94, thickness: 0.012, ior: 1.5,
+  transparent: true, opacity: 0.42, side: THREE.DoubleSide
+});
+const matNeedle = new THREE.MeshStandardMaterial({ color: 0x1d1512, metalness: 0.6, roughness: 0.45 });
+const matRedNeedle = new THREE.MeshStandardMaterial({ color: 0x8e2018, metalness: 0.3, roughness: 0.5 });
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+const CAP = new THREE.Group();      // the single object
+scene.add(CAP);
+
+function mesh(geo, mat, parent) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  (parent || CAP).add(m);
+  return m;
+}
+
+// Slotted screw / rivet ---------------------------------------
+const rivetGeo = new THREE.SphereGeometry(1, 12, 8, 0, Math.PI * 2, 0, Math.PI * 0.5);
+const rivetBaseGeo = new THREE.CylinderGeometry(1, 1.06, 0.45, 12);
+const slotGeo = new THREE.BoxGeometry(1.75, 0.16, 0.24);
+
+function makeRivet(r, slotted) {
+  const g = new THREE.Group();
+  const head = new THREE.Mesh(rivetGeo, matBrassPolished);
+  head.scale.set(r, r * (slotted ? 0.42 : 0.72), r);
+  head.castShadow = true; head.receiveShadow = true;
+  g.add(head);
+  const base = new THREE.Mesh(rivetBaseGeo, matBrassPolished);
+  base.scale.set(r * 1.02, r * 0.5, r * 1.02);
+  base.position.y = -r * 0.10;
+  base.castShadow = true; base.receiveShadow = true;
+  g.add(base);
+  if (slotted) {
+    const slot = new THREE.Mesh(slotGeo, matDarkIron);
+    slot.scale.set(r * 0.62, r * 0.5, r * 0.55);
+    slot.position.y = r * 0.34;
+    g.add(slot);
+  }
+  return g;
+}
+
+// Rings of rivets around the barrel ---------------------------
+function rivetRing(y, radius, count, r, slotted, phase, parent) {
+  const grp = new THREE.Group();
+  for (let i = 0; i < count; i++) {
+    const a = phase + (i / count) * Math.PI * 2;
+    const rv = makeRivet(r, slotted && (i % 2 === 0));
+    rv.position.set(Math.cos(a) * radius, y, Math.sin(a) * radius);
+    // orient outward (local +Y points away from axis)
+    rv.rotation.order = 'YXZ';
+    rv.rotation.y = -a;
+    rv.rotation.z = -Math.PI / 2;
+    grp.add(rv);
+  }
+  (parent || CAP).add(grp);
+  return grp;
+}
+
+/* ============================================================
+   BARREL PROFILE — bullet shaped capsule (lathe)
+   Total height ~1.62 units (a ~1.6 m tall pneumatic carrier)
+   Radius ~0.30
+   ============================================================ */
+const R_BODY = 0.30;
+const Y_BASE = 0.06;          // bottom of the capsule above ground
+const H_BODY = 1.10;          // cylindrical section
+const Y_SHOULDER = Y_BASE + H_BODY;
+
+// Lathe profile points (x = radius, y = height)
+const profile = [];
+profile.push(new THREE.Vector2(0.0001, Y_BASE - 0.02));
+profile.push(new THREE.Vector2(R_BODY * 0.55, Y_BASE - 0.02));
+profile.push(new THREE.Vector2(R_BODY * 0.88, Y_BASE + 0.005));
+profile.push(new THREE.Vector2(R_BODY * 0.985, Y_BASE + 0.045));
+profile.push(new THREE.Vector2(R_BODY, Y_BASE + 0.10));
+profile.push(new THREE.Vector2(R_BODY, Y_SHOULDER));
+// ogive nose: radius follows a smooth bullet curve
+const NOSE_H = 0.46;
+for (let i = 1; i <= 26; i++) {
+  const t = i / 26;
+  // tangent-ogive-ish falloff
+  const rr = R_BODY * Math.pow(Math.cos(t * Math.PI * 0.5), 0.62);
+  const yy = Y_SHOULDER + NOSE_H * t;
+  profile.push(new THREE.Vector2(Math.max(rr, 0.0025), yy));
+}
+const Y_TIP = Y_SHOULDER + NOSE_H;
+
+const barrelGeo = new THREE.LatheGeometry(profile, 96);
+barrelGeo.computeVertexNormals();
+const barrel = mesh(barrelGeo, matLacquer);
+barrel.name = 'barrel';
+
+// Inner dark shell so the porthole reads as a cavity ----------
+const innerGeo = new THREE.CylinderGeometry(R_BODY * 0.955, R_BODY * 0.955, H_BODY * 0.98, 48, 1, true);
+const matInner = new THREE.MeshStandardMaterial({
+  color: 0x241a12, metalness: 0.5, roughness: 0.85, side: THREE.BackSide
+});
+const inner = new THREE.Mesh(innerGeo, matInner);
+inner.position.y = Y_BASE + H_BODY * 0.5;
+inner.receiveShadow = true;
+CAP.add(inner);
+
+/* ============================================================
+   BRASS HOOPS (riveted bands) around the barrel
+   ============================================================ */
+function brassHoop(y, height, over, ribbed) {
+  const rr = R_BODY + over;
+  const g = new THREE.Group();
+  const shape = [];
+  shape.push(new THREE.Vector2(R_BODY * 0.99, y - height / 2));
+  shape.push(new THREE.Vector2(rr, y - height / 2 + 0.012));
+  shape.push(new THREE.Vector2(rr, y + height / 2 - 0.012));
+  shape.push(new THREE.Vector2(R_BODY * 0.99, y + height / 2));
+  const geo = new THREE.LatheGeometry(shape, 80);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, matBrass);
+  m.castShadow = true; m.receiveShadow = true;
+  g.add(m);
+  if (ribbed) {
+    const ribGeo = new THREE.TorusGeometry(rr + 0.004, 0.010, 8, 72);
+    const rib = new THREE.Mesh(ribGeo, matBrassPolished);
+    rib.rotation.x = Math.PI / 2;
+    rib.position.y = y;
+    rib.castShadow = true; rib.receiveShadow = true;
+    g.add(rib);
+  }
+  CAP.add(g);
+  return { group: g, radius: rr };
+}
+
+const hoopYs = [
+  Y_BASE + 0.115,
+  Y_BASE + 0.40,
+  Y_BASE + 0.72,
+  Y_SHOULDER - 0.045
+];
+hoopYs.forEach((y, i) => {
+  const h = brassHoop(y, i === 3 ? 0.085 : 0.070, 0.018, i % 2 === 1);
+  rivetRing(y, h.radius + 0.002, 16, 0.0165, true, i * 0.11);
+});
+
+// Extra slotted-screw rows between hoops (detail on every band)
+rivetRing(Y_BASE + 0.258, R_BODY + 0.004, 12, 0.012, true, 0.26);
+rivetRing(Y_BASE + 0.560, R_BODY + 0.004, 12, 0.012, true, 0.13);
+rivetRing(Y_BASE + 0.905, R_BODY + 0.004, 12, 0.012, true, 0.40);
+
+/* ============================================================
+   LEATHER SEALING GASKET (thick wrapped band, low on barrel)
+   ============================================================ */
+const gasketY = Y_BASE + 0.245;
+{
+  const gGeo = new THREE.CylinderGeometry(R_BODY + 0.042, R_BODY + 0.042, 0.16, 64, 1, true);
+  const gask = new THREE.Mesh(gGeo, matLeather);
+  gask.position.y = gasketY;
+  gask.castShadow = true; gask.receiveShadow = true;
+  CAP.add(gask);
+  // rounded lips
+  const lipGeo = new THREE.TorusGeometry(R_BODY + 0.036, 0.021, 12, 72);
+  for (const s of [-1, 1]) {
+    const lip = new THREE.Mesh(lipGeo, matLeather);
+    lip.rotation.x = Math.PI / 2;
+    lip.position.y = gasketY + s * 0.079;
+    lip.castShadow = true; lip.receiveShadow = true;
+    CAP.add(lip);
+  }
+  // brass retaining strap with buckle
+  const strapGeo = new THREE.TorusGeometry(R_BODY + 0.048, 0.0085, 8, 72);
+  const strap = new THREE.Mesh(strapGeo, matBrassPolished);
+  strap.rotation.x = Math.PI / 2;
+  strap.position.y = gasketY;
+  strap.castShadow = true;
+  CAP.add(strap);
+  const buckle = new THREE.Mesh(new THREE.BoxGeometry(0.055, 0.075, 0.020), matBrassPolished);
+  buckle.position.set(0, gasketY, R_BODY + 0.058);
+  buckle.castShadow = true; buckle.receiveShadow = true;
+  CAP.add(buckle);
+  const bScrew = makeRivet(0.011, true);
+  bScrew.position.set(0, gasketY, R_BODY + 0.070);
+  bScrew.rotation.x = Math.PI / 2;
+  CAP.add(bScrew);
+}
+
+// A second, thinner gasket up near the shoulder
+{
+  const y2 = Y_SHOULDER - 0.145;
+  const gGeo = new THREE.CylinderGeometry(R_BODY + 0.028, R_BODY + 0.028, 0.075, 64, 1, true);
+  const g2 = new THREE.Mesh(gGeo, matLeather);
+  g2.position.y = y2;
+  g2.castShadow = true; g2.receiveShadow = true;
+  CAP.add(g2);
+  const lipGeo = new THREE.TorusGeometry(R_BODY + 0.024, 0.014, 10, 64);
+  for (const s of [-1, 1]) {
+    const lip = new THREE.Mesh(lipGeo, matLeather);
+    lip.rotation.x = Math.PI / 2;
+    lip.position.y = y2 + s * 0.036;
+    lip.castShadow = true; lip.receiveShadow = true;
+    CAP.add(lip);
+  }
+}
+
+/* ============================================================
+   HINGED PORTHOLE HATCH  (front, mid-barrel) — swung open,
+   revealing rolled letters inside.
+   ============================================================ */
+const PORT_Y = Y_BASE + 0.615;
+const PORT_R = 0.175;
+const FRONT = new THREE.Vector3(0, 0, 1);
+
+// --- recessed frame welded to the barrel
+{
+  const frameGrp = new THREE.Group();
+  // curved collar (torus flattened into the barrel wall)
+  const collar = new THREE.Mesh(new THREE.TorusGeometry(PORT_R + 0.016, 0.026, 14, 60), matBrass);
+  collar.castShadow = true; collar.receiveShadow = true;
+  frameGrp.add(collar);
+  // flange plate
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(PORT_R + 0.042, PORT_R + 0.042, 0.016, 56), matBrass);
+  plate.rotation.x = Math.PI / 2;
+  plate.position.z = -0.012;
+  plate.castShadow = true; plate.receiveShadow = true;
+  frameGrp.add(plate);
+  // dark cavity ring (interior lip)
+  const lipIn = new THREE.Mesh(new THREE.CylinderGeometry(PORT_R - 0.004, PORT_R - 0.004, 0.075, 48, 1, true), matInner.clone());
+  lipIn.material.side = THREE.DoubleSide;
+  lipIn.material.color = new THREE.Color(0x2a1e15);
+  lipIn.rotation.x = Math.PI / 2;
+  lipIn.position.z = -0.045;
+  lipIn.receiveShadow = true;
+  frameGrp.add(lipIn);
+  // leather seal ring inside frame
+  const seal = new THREE.Mesh(new THREE.TorusGeometry(PORT_R + 0.001, 0.013, 10, 52), matLeather);
+  seal.position.z = -0.008;
+  seal.castShadow = true; seal.receiveShadow = true;
+  frameGrp.add(seal);
+  // slotted screws around the flange
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2 + 0.12;
+    const rv = makeRivet(0.0135, true);
+    rv.position.set(Math.cos(a) * (PORT_R + 0.030), Math.sin(a) * (PORT_R + 0.030), 0.006);
+    rv.rotation.x = Math.PI / 2;
+    frameGrp.add(rv);
+  }
+  frameGrp.position.set(0, PORT_Y, Math.sqrt(Math.max(R_BODY * R_BODY - 0, 0)) - 0.012);
+  // push slightly into the curved wall
+  frameGrp.position.z = R_BODY - 0.028;
+  CAP.add(frameGrp);
+}
+
+// --- interior: rolled letters bundle
+{
+  const lettersGrp = new THREE.Group();
+  lettersGrp.position.set(0, PORT_Y, R_BODY * 0.10);
+
+  const rollGeo = new THREE.CylinderGeometry(1, 1, 1, 20, 1, false);
+  const seedRolls = [
+    [-0.075, 0.055, 0.020, 0.038, 0.255, 0.10, -0.16],
+    [ 0.010, 0.070, -0.010, 0.034, 0.240, -0.06, 0.10],
+    [ 0.082, 0.040, 0.026, 0.036, 0.230, 0.14, 0.06],
+    [-0.030, -0.020, 0.040, 0.033, 0.250, -0.12, -0.05],
+    [ 0.055, -0.048, 0.008, 0.031, 0.235, 0.05, 0.18],
+    [-0.088, -0.058, -0.012, 0.030, 0.225, -0.18, 0.02],
+    [ 0.000, -0.090, 0.030, 0.032, 0.215, 0.08, -0.09]
+  ];
+  seedRolls.forEach((s, i) => {
+    const [x, y, z, r, len, rx, rz] = s;
+    const roll = new THREE.Mesh(rollGeo, matPaper);
+    roll.scale.set(r, len, r);
+    roll.position.set(x, y, z);
+    roll.rotation.set(Math.PI / 2 + rx, i * 0.7, rz);
+    roll.castShadow = true; roll.receiveShadow = true;
+    lettersGrp.add(roll);
+
+    // ribbon tie
+    const ribbon = new THREE.Mesh(
+      new THREE.TorusGeometry(r * 1.06, r * 0.13, 8, 20),
+      new THREE.MeshStandardMaterial({ color: i % 2 ? 0x7d2b22 : 0x2f4a3c, roughness: 0.75, metalness: 0.0 })
+    );
+    ribbon.position.copy(roll.position);
+    ribbon.rotation.copy(roll.rotation);
+    ribbon.rotateX(Math.PI / 2);
+    ribbon.translateZ(len * 0.14);
+    ribbon.castShadow = true;
+    lettersGrp.add(ribbon);
+  });
+
+  // a folded flat letter leaning at the back of the cavity
+  const flat = new THREE.Mesh(new THREE.PlaneGeometry(0.20, 0.15), matPaper);
+  flat.position.set(0.01, 0.005, -0.075);
+  flat.rotation.set(-0.16, 0.10, 0.05);
+  flat.castShadow = true; flat.receiveShadow = true;
+  lettersGrp.add(flat);
+
+  CAP.add(lettersGrp);
+}
+
+// --- the hatch door itself (hinged open to the right)
+const hingeAngle = THREE.MathUtils.degToRad(64);
+const hingePivot = new THREE.Group();
+hingePivot.position.set(PORT_R + 0.055, PORT_Y, R_BODY - 0.012);
+hingePivot.rotation.y = -hingeAngle;
+CAP.add(hingePivot);
+
+{
+  const door = new THREE.Group();
+  door.position.x = -(PORT_R + 0.055); // door center relative to hinge
+  hingePivot.add(door);
+
+  // door body: brass ring frame
+  const ringProfile = [];
+  ringProfile.push(new THREE.Vector2(PORT_R - 0.052, -0.014));
+  ringProfile.push(new THREE.Vector2(PORT_R - 0.048, -0.019));
+  ringProfile.push(new THREE.Vector2(PORT_R + 0.026, -0.021));
+  ringProfile.push(new THREE.Vector2(PORT_R + 0.034, -0.010));
+  ringProfile.push(new THREE.Vector2(PORT_R + 0.034, 0.012));
+  ringProfile.push(new THREE.Vector2(PORT_R + 0.022, 0.023));
+  ringProfile.push(new THREE.Vector2(PORT_R - 0.050, 0.021));
+  ringProfile.push(new THREE.Vector2(PORT_R - 0.052, 0.010));
+  ringProfile.push(new THREE.Vector2(PORT_R - 0.052, -0.014));
+  const ringGeo = new THREE.LatheGeometry(ringProfile, 64);
+  ringGeo.computeVertexNormals();
+  const ring = new THREE.Mesh(ringGeo, matBrass);
+  ring.rotation.x = Math.PI / 2;
+  ring.castShadow = true; ring.receiveShadow = true;
+  door.add(ring);
+
+  // glass pane
+  const pane = new THREE.Mesh(new THREE.CylinderGeometry(PORT_R - 0.045, PORT_R - 0.045, 0.010, 48), matGlass);
+  pane.rotation.x = Math.PI / 2;
+  pane.castShadow = false; pane.receiveShadow = false;
+  door.add(pane);
+
+  // radial muntins (bars across the glass)
+  for (let i = 0; i < 2; i++) {
+    const bar = new THREE.Mesh(new THREE.BoxGeometry((PORT_R - 0.045) * 2, 0.012, 0.014), matBrassPolished);
+    bar.rotation.z = i * Math.PI / 2;
+    bar.position.z = 0.008;
+    bar.castShadow = true; bar.receiveShadow = true;
+    door.add(bar);
+  }
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.022, 16), matBrassPolished);
+  hub.rotation.x = Math.PI / 2;
+  hub.position.z = 0.010;
+  hub.castShadow = true;
+  door.add(hub);
+
+  // slotted screws on the door frame
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2 + 0.25;
+    const rv = makeRivet(0.0125, true);
+    rv.position.set(Math.cos(a) * (PORT_R + 0.004), Math.sin(a) * (PORT_R + 0.004), 0.022);
+    rv.rotation.x = Math.PI / 2;
+    door.add(rv);
+  }
+
+  // latch handle on the far edge of the door
+  const latchBase = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.032, 0.020, 20), matBrass);
+  latchBase.rotation.x = Math.PI / 2;
+  latchBase.position.set(-(PORT_R + 0.010), 0, 0.026);
+  latchBase.castShadow = true; latchBase.receiveShadow = true;
+  door.add(latchBase);
+  const latchArm = new THREE.Mesh(new THREE.BoxGeometry(0.105, 0.020, 0.014), matBrassPolished);
+  latchArm.position.set(-(PORT_R + 0.010) - 0.030, 0.028, 0.038);
+  latchArm.rotation.z = 0.45;
+  latchArm.castShadow = true; latchArm.receiveShadow = true;
+  door.add(latchArm);
+  const latchKnob = new THREE.Mesh(new THREE.SphereGeometry(0.017, 16, 12), matBrassPolished);
+  latchKnob.position.set(-(PORT_R + 0.010) - 0.078, 0.055, 0.038);
+  latchKnob.castShadow = true; latchKnob.receiveShadow = true;
+  door.add(latchKnob);
+
+  // hinge knuckles between barrel and door
+  for (const dy of [-0.075, 0.075]) {
+    const knuckle = new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.052, 14), matBrass);
+    knuckle.position.set(0, dy, 0);
+    knuckle.castShadow = true; knuckle.receiveShadow = true;
+    hingePivot.add(knuckle);
+  }
+  const pin = new THREE.Mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.235, 12), matBrassPolished);
+  pin.castShadow = true;
+  hingePivot.add(pin);
+  const pinCapTop = new THREE.Mesh(new THREE.SphereGeometry(0.013, 12, 10), matBrassPolished);
+  pinCapTop.position.y = 0.122; pinCapTop.castShadow = true;
+  hingePivot.add(pinCapTop);
+  const pinCapBot = pinCapTop.clone();
+  pinCapBot.position.y = -0.122;
+  hingePivot.add(pinCapBot);
+
+  // hinge strap bolted to barrel
+  const strapPlate = new THREE.Mesh(new THREE.BoxGeometry(0.030, 0.185, 0.055), matBrass);
+  strapPlate.position.set(PORT_R + 0.055 + 0.012, PORT_Y, R_BODY - 0.045);
+  strapPlate.rotation.y = -0.35;
+  strapPlate.castShadow = true; strapPlate.receiveShadow = true;
+  CAP.add(strapPlate);
+  for (const dy of [-0.062, 0.0, 0.062]) {
+    const rv = makeRivet(0.012, true);
+    rv.position.set(PORT_R + 0.070, PORT_Y + dy, R_BODY - 0.030);
+    rv.rotation.z = -Math.PI / 2;
+    rv.rotation.y = -0.35;
+    CAP.add(rv);
+  }
+}
+
+/* ============================================================
+   NOSE CONE CLUSTER
+   ============================================================ */
+// Nose collar band where instruments mount
+const noseCollarY = Y_SHOULDER + 0.055;
+{
+  const rAt = R_BODY * Math.pow(Math.cos((0.055 / NOSE_H) * Math.PI * 0.5), 0.62);
+  const collar = new THREE.Mesh(
+    new THREE.CylinderGeometry(rAt + 0.020, rAt + 0.024, 0.085, 64, 1, true), matBrass
+  );
+  collar.position.y = noseCollarY;
+  collar.castShadow = true; collar.receiveShadow = true;
+  CAP.add(collar);
+  const lipT = new THREE.Mesh(new THREE.TorusGeometry(rAt + 0.020, 0.011, 10, 64), matBrassPolished);
+  lipT.rotation.x = Math.PI / 2; lipT.position.y = noseCollarY + 0.042;
+  lipT.castShadow = true; CAP.add(lipT);
+  const lipB = new THREE.Mesh(new THREE.TorusGeometry(rAt + 0.024, 0.011, 10, 64), matBrassPolished);
+  lipB.rotation.x = Math.PI / 2; lipB.position.y = noseCollarY - 0.042;
+  lipB.castShadow = true; CAP.add(lipB);
+  rivetRing(noseCollarY, rAt + 0.028, 14, 0.013, true, 0.2);
+}
+
+// helper: radius of the ogive nose at a given height
+function noseRadius(y) {
+  const t = THREE.MathUtils.clamp((y - Y_SHOULDER) / NOSE_H, 0, 1);
+  return Math.max(R_BODY * Math.pow(Math.cos(t * Math.PI * 0.5), 0.62), 0.004);
+}
+
+/* ---------- Copper pressure gauges (2, angled off the nose) ---------- */
+function buildGauge(dialR, label, ticks, needleAngle) {
+  const g = new THREE.Group();
+  // body case
+  const caseGeo = new THREE.CylinderGeometry(dialR * 1.05, dialR * 0.95, dialR * 0.62, 40);
+  const body = new THREE.Mesh(caseGeo, matCopper);
+  body.rotation.x = Math.PI / 2;
+  body.castShadow = true; body.receiveShadow = true;
+  g.add(body);
+
+  // rear boss
+  const boss = new THREE.Mesh(new THREE.CylinderGeometry(dialR * 0.42, dialR * 0.52, dialR * 0.5, 20), matCopper);
+  boss.rotation.x = Math.PI / 2;
+  boss.position.z = -dialR * 0.52;
+  boss.castShadow = true; boss.receiveShadow = true;
+  g.add(boss);
+
+  // dial face
+  const face = new THREE.Mesh(
+    new THREE.CircleGeometry(dialR * 0.90, 48),
+    new THREE.MeshStandardMaterial({
+      map: makeGaugeFaceTexture(384, label, ticks),
+      roughness: 0.55, metalness: 0.05
+    })
+  );
+  face.position.z = dialR * 0.30;
+  face.receiveShadow = true;
+  g.add(face);
+
+  // needle
+  const needle = new THREE.Mesh(new THREE.BoxGeometry(dialR * 0.80, dialR * 0.055, dialR * 0.030), matNeedle);
+  needle.geometry.translate(dialR * 0.30, 0, 0);
+  needle.position.z = dialR * 0.335;
+  needle.rotation.z = needleAngle;
+  needle.castShadow = true;
+  g.add(needle);
+  const redTell = new THREE.Mesh(new THREE.BoxGeometry(dialR * 0.66, dialR * 0.030, dialR * 0.018), matRedNeedle);
+  redTell.geometry.translate(dialR * 0.26, 0, 0);
+  redTell.position.z = dialR * 0.322;
+  redTell.rotation.z = needleAngle + 0.7;
+  g.add(redTell);
+  const pinM = new THREE.Mesh(new THREE.CylinderGeometry(dialR * 0.075, dialR * 0.075, dialR * 0.10, 14), matBrassPolished);
+  pinM.rotation.x = Math.PI / 2;
+  pinM.position.z = dialR * 0.365;
+  pinM.castShadow = true;
+  g.add(pinM);
+
+  // bezel
+  const bezelProfile = [
+    new THREE.Vector2(dialR * 0.88, dialR * 0.26),
+    new THREE.Vector2(dialR * 1.02, dialR * 0.30),
+    new THREE.Vector2(dialR * 1.10, dialR * 0.40),
+    new THREE.Vector2(dialR * 1.10, dialR * 0.20),
+    new THREE.Vector2(dialR * 1.02, dialR * 0.14),
+    new THREE.Vector2(dialR * 0.88, dialR * 0.26)
+  ];
+  const bezel = new THREE.Mesh(new THREE.LatheGeometry(bezelProfile, 44), matBrass);
+  bezel.rotation.x = -Math.PI / 2;
+  bezel.castShadow = true; bezel.receiveShadow = true;
+  g.add(bezel);
+
+  // glass over the dial
+  const glass = new THREE.Mesh(new THREE.CircleGeometry(dialR * 0.92, 40), matGlass);
+  glass.position.z = dialR * 0.395;
+  g.add(glass);
+
+  // knurled screws on bezel
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2 + 0.3;
+    const rv = makeRivet(dialR * 0.085, true);
+    rv.position.set(Math.cos(a) * dialR * 1.02, Math.sin(a) * dialR * 1.02, dialR * 0.40);
+    rv.rotation.x = Math.PI / 2;
+    g.add(rv);
+  }
+  return g;
+}
+
+// Curved copper pipe from barrel to a gauge
+function copperPipe(points, radius, mat) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  const geo = new THREE.TubeGeometry(curve, 48, radius, 10, false);
+  const m = new THREE.Mesh(geo, mat || matCopper);
+  m.castShadow = true; m.receiveShadow = true;
+  CAP.add(m);
+  // union nuts
+  [0.18, 0.62].forEach(t => {
+    const p = curve.getPointAt(t);
+    const tan = curve.getTangentAt(t);
+    const nut = new THREE.Mesh(new THREE.CylinderGeometry(radius * 2.0, radius * 2.0, radius * 2.6, 6), matBrass);
+    nut.position.copy(p);
+    nut.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan.clone().normalize());
+    nut.castShadow = true; nut.receiveShadow = true;
+    CAP.add(nut);
+  });
+  return m;
+}
+
+// --- Gauge A (front-left of nose)
+{
+  const gA = buildGauge(0.088, 'PRESSURE', 8, THREE.MathUtils.degToRad(155));
+  const aAng = THREE.MathUtils.degToRad(214);
+  const gy = Y_SHOULDER + 0.205;
+  const rr = noseRadius(gy);
+  const dirX = Math.cos(aAng), dirZ = Math.sin(aAng);
+  gA.position.set(dirX * (rr + 0.115), gy, dirZ * (rr + 0.115));
+  gA.lookAt(new THREE.Vector3(dirX * (rr + 1.2), gy + 0.25, dirZ * (rr + 1.2)));
+  CAP.add(gA);
+
+  // bracket arm
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.020, 0.022, 0.10), matBrass);
+  arm.position.set(dirX * (rr + 0.055), gy - 0.012, dirZ * (rr + 0.055));
+  arm.lookAt(new THREE.Vector3(0, gy, 0));
+  arm.castShadow = true; arm.receiveShadow = true;
+  CAP.add(arm);
+
+  copperPipe([
+    new THREE.Vector3(dirX * (noseRadius(noseCollarY) + 0.012), noseCollarY - 0.02, dirZ * (noseRadius(noseCollarY) + 0.012)),
+    new THREE.Vector3(dirX * (rr + 0.075), Y_SHOULDER + 0.085, dirZ * (rr + 0.075)),
+    new THREE.Vector3(dirX * (rr + 0.108), gy - 0.085, dirZ * (rr + 0.108)),
+    new THREE.Vector3(dirX * (rr + 0.108), gy - 0.052, dirZ * (rr + 0.108))
+  ], 0.0125);
+}
+
+// --- Gauge B (smaller, right side of nose)
+{
+  const gB = buildGauge(0.062, 'VACUUM', 6, THREE.MathUtils.degToRad(65));
+  const aAng = THREE.MathUtils.degToRad(322);
+  const gy = Y_SHOULDER + 0.165;
+  const rr = noseRadius(gy);
+  const dirX = Math.cos(aAng), dirZ = Math.sin(aAng);
+  gB.position.set(dirX * (rr + 0.092), gy, dirZ * (rr + 0.092));
+  gB.lookAt(new THREE.Vector3(dirX * (rr + 1.2), gy + 0.20, dirZ * (rr + 1.2)));
+  CAP.add(gB);
+
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.018, 0.085), matBrass);
+  arm.position.set(dirX * (rr + 0.048), gy - 0.010, dirZ * (rr + 0.048));
+  arm.lookAt(new THREE.Vector3(0, gy, 0));
+  arm.castShadow = true; arm.receiveShadow = true;
+  CAP.add(arm);
+
+  copperPipe([
+    new THREE.Vector3(dirX * (noseRadius(noseCollarY) + 0.010), noseCollarY - 0.015, dirZ * (noseRadius(noseCollarY) + 0.010)),
+    new THREE.Vector3(dirX * (rr + 0.060), Y_SHOULDER + 0.075, dirZ * (rr + 0.060)),
+    new THREE.Vector3(dirX * (rr + 0.086), gy - 0.070, dirZ * (rr + 0.086)),
+    new THREE.Vector3(dirX * (rr + 0.086), gy - 0.040, dirZ * (rr + 0.040 + 0.046))
+  ], 0.0100);
+}
+
+/* ---------- Tiny governor flywheel (Watt-style, spinning) ---------- */
+const governor = new THREE.Group();
+const govBalls = [];
+let govSpindle = null;
+{
+  const aAng = THREE.MathUtils.degToRad(96);
+  const gy = Y_SHOULDER + 0.145;
+  const rr = noseRadius(gy);
+  const dirX = Math.cos(aAng), dirZ = Math.sin(aAng);
+
+  governor.position.set(dirX * (rr + 0.062), gy, dirZ * (rr + 0.062));
+  governor.rotation.y = -aAng;
+  CAP.add(governor);
+
+  // mounting bracket
+  const bracket = new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.020, 0.062), matBrass);
+  bracket.position.set(0, -0.055, -0.012);
+  bracket.castShadow = true; bracket.receiveShadow = true;
+  governor.add(bracket);
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.0125, 0.016, 0.075, 16), matBrass);
+  post.position.set(0, -0.020, 0);
+  post.castShadow = true; post.receiveShadow = true;
+  governor.add(post);
+  for (const dx of [-0.026, 0.026]) {
+    const rv = makeRivet(0.010, true);
+    rv.position.set(dx, -0.046, 0.016);
+    rv.rotation.x = 0.0;
+    governor.add(rv);
+  }
+
+  // rotating assembly
+  govSpindle = new THREE.Group();
+  govSpindle.position.y = 0.020;
+  governor.add(govSpindle);
+
+  const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.0065, 0.0065, 0.135, 12), matBrassPolished);
+  shaft.position.y = 0.030;
+  shaft.castShadow = true;
+  govSpindle.add(shaft);
+
+  // flywheel disc with spokes
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.058, 0.0095, 10, 40), matIron);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = -0.008;
+  rim.castShadow = true; rim.receiveShadow = true;
+  govSpindle.add(rim);
+  const hubW = new THREE.Mesh(new THREE.CylinderGeometry(0.0155, 0.0155, 0.026, 16), matBrass);
+  hubW.position.y = -0.008;
+  hubW.castShadow = true; hubW.receiveShadow = true;
+  govSpindle.add(hubW);
+  for (let i = 0; i < 6; i++) {
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.050, 0.007, 0.0085), matIron);
+    spoke.position.set(Math.cos(i / 6 * Math.PI * 2) * 0.031, -0.008, Math.sin(i / 6 * Math.PI * 2) * 0.031);
+    spoke.rotation.y = -i / 6 * Math.PI * 2;
+    spoke.castShadow = true; spoke.receiveShadow = true;
+    govSpindle.add(spoke);
+  }
+
+  // top collar + arms + fly balls
+  const topCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.016, 14), matBrass);
+  topCollar.position.y = 0.092;
+  topCollar.castShadow = true;
+  govSpindle.add(topCollar);
+  const capBall = new THREE.Mesh(new THREE.SphereGeometry(0.0105, 14, 10), matBrassPolished);
+  capBall.position.y = 0.104;
+  capBall.castShadow = true;
+  govSpindle.add(capBall);
+
+  for (let i = 0; i < 2; i++) {
+    const armPivot = new THREE.Group();
+    armPivot.position.y = 0.088;
+    armPivot.rotation.y = i * Math.PI;
+    govSpindle.add(armPivot);
+
+    const arm = new THREE.Mesh(new THREE.CylinderGeometry(0.0042, 0.0042, 0.086, 10), matBrassPolished);
+    arm.geometry.translate(0, -0.043, 0);
+    arm.rotation.z = -0.62;
+    arm.castShadow = true;
+    armPivot.add(arm);
+
+    const ball = new THREE.Mesh(new THREE.SphereGeometry(0.0175, 18, 14), matBrassPolished);
+    ball.position.set(Math.sin(0.62) * 0.086, -Math.cos(0.62) * 0.086, 0);
+    ball.castShadow = true; ball.receiveShadow = true;
+    armPivot.add(ball);
+    govBalls.push({ pivot: armPivot, arm, ball, base: 0.62 });
+
+    // lower link to sliding collar
+    const link = new THREE.Mesh(new THREE.CylinderGeometry(0.0032, 0.0032, 0.055, 8), matBrassPolished);
+    link.position.set(Math.sin(0.62) * 0.040, -0.058, 0);
+    link.rotation.z = 0.85;
+    link.castShadow = true;
+    armPivot.add(link);
+  }
+
+  const slideCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.0145, 0.0145, 0.014, 14), matBrass);
+  slideCollar.position.y = 0.032;
+  slideCollar.castShadow = true;
+  govSpindle.add(slideCollar);
+
+  // little brass cage guard around the flywheel
+  const guard = new THREE.Mesh(new THREE.TorusGeometry(0.070, 0.0045, 8, 36, Math.PI * 1.35), matBrass);
+  guard.rotation.x = Math.PI / 2;
+  guard.rotation.z = 0.4;
+  guard.position.y = 0.012;
+  guard.castShadow = true;
+  governor.add(guard);
+}
+
+/* ---------- Chained address tag cluster ---------- */
+{
+  const tagAnchorAng = THREE.MathUtils.degToRad(30);
+  const anchorY = Y_SHOULDER + 0.09;
+  const rr = noseRadius(anchorY);
+  const ax = Math.cos(tagAnchorAng) * (rr + 0.014);
+  const az = Math.sin(tagAnchorAng) * (rr + 0.014);
+
+  // eyelet
+  const eye = new THREE.Mesh(new THREE.TorusGeometry(0.017, 0.0055, 10, 22), matBrassPolished);
+  eye.position.set(ax, anchorY, az);
+  eye.rotation.y = -tagAnchorAng;
+  eye.rotation.x = Math.PI / 2;
+  eye.castShadow = true;
+  CAP.add(eye);
+  const eyeBolt = makeRivet(0.014, true);
+  eyeBolt.position.set(Math.cos(tagAnchorAng) * (rr + 0.004), anchorY, Math.sin(tagAnchorAng) * (rr + 0.004));
+  eyeBolt.rotation.order = 'YXZ';
+  eyeBolt.rotation.y = -tagAnchorAng;
+  eyeBolt.rotation.z = -Math.PI / 2;
+  CAP.add(eyeBolt);
+
+  // catenary chain of torus links
+  const linkGeo = new THREE.TorusGeometry(0.0115, 0.0034, 8, 18);
+  const chainEnd = new THREE.Vector3(
+    ax + Math.cos(tagAnchorAng) * 0.052,
+    anchorY - 0.175,
+    az + Math.sin(tagAnchorAng) * 0.052
+  );
+  const start = new THREE.Vector3(ax, anchorY - 0.020, az);
+  const mid = new THREE.Vector3(
+    (start.x + chainEnd.x) * 0.5 + Math.cos(tagAnchorAng) * 0.040,
+    (start.y + chainEnd.y) * 0.5 - 0.030,
+    (start.z + chainEnd.z) * 0.5 + Math.sin(tagAnchorAng) * 0.040
+  );
+  const chainCurve = new THREE.CatmullRomCurve3([start, mid, chainEnd]);
+  const NLINKS = 11;
+  const up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < NLINKS; i++) {
+    const t = i / (NLINKS - 1);
+    const p = chainCurve.getPointAt(t);
+    const tan = chainCurve.getTangentAt(t).normalize();
+    const link = new THREE.Mesh(linkGeo, matBrassPolished);
+    link.position.copy(p);
+    link.quaternion.setFromUnitVectors(up, tan);
+    link.rotateY(i % 2 === 0 ? 0 : Math.PI / 2);
+    link.castShadow = true; link.receiveShadow = true;
+    CAP.add(link);
+  }
+
+  // tag cluster hanging from chain end
+  const tagGroup = new THREE.Group();
+  tagGroup.position.copy(chainEnd);
+  tagGroup.rotation.y = -tagAnchorAng + 0.25;
+  tagGroup.rotation.z = 0.10;
+  CAP.add(tagGroup);
+
+  // main paper tag with clipped corners
+  const tagShape = new THREE.Shape();
+  const tw = 0.085, th = 0.115, chamf = 0.024;
+  tagShape.moveTo(-tw, -th + chamf * 0.4);
+  tagShape.lineTo(-tw, th - chamf);
+  tagShape.lineTo(-tw + chamf, th);
+  tagShape.lineTo(tw - chamf, th);
+  tagShape.lineTo(tw, th - chamf);
+  tagShape.lineTo(tw, -th + chamf * 0.4);
+  tagShape.lineTo(0, -th);
+  tagShape.lineTo(-tw, -th + chamf * 0.4);
+  const tagGeo = new THREE.ExtrudeGeometry(tagShape, { depth: 0.004, bevelEnabled: false });
+  tagGeo.center();
+  const tagMat = new THREE.MeshStandardMaterial({ map: tagTex, roughness: 0.88, metalness: 0.0, side: THREE.DoubleSide });
+  // Map UVs across the tag face
+  {
+    const pos = tagGeo.attributes.position;
+    const uv = tagGeo.attributes.uv;
+    for (let i = 0; i < pos.count; i++) {
+      uv.setXY(i, (pos.getX(i) + tw) / (2 * tw), (pos.getY(i) + th) / (2 * th));
+    }
+    uv.needsUpdate = true;
+  }
+  const tag = new THREE.Mesh(tagGeo, tagMat);
+  tag.position.y = -0.095;
+  tag.castShadow = true; tag.receiveShadow = true;
+  tagGroup.add(tag);
+
+  // brass grommet + short link to the chain
+  const grom = new THREE.Mesh(new THREE.TorusGeometry(0.010, 0.0032, 8, 18), matBrassPolished);
+  grom.position.y = -0.010;
+  grom.castShadow = true;
+  tagGroup.add(grom);
+  const grom2 = new THREE.Mesh(new THREE.TorusGeometry(0.0085, 0.0028, 8, 16), matBrassPolished);
+  grom2.position.y = -0.026;
+  grom2.rotation.y = Math.PI / 2;
+  grom2.castShadow = true;
+  tagGroup.add(grom2);
+  const tagEyelet = new THREE.Mesh(new THREE.TorusGeometry(0.0085, 0.0035, 8, 16), matBrassPolished);
+  tagEyelet.position.y = -0.043;
+  tagEyelet.rotation.x = Math.PI / 2;
+  tagEyelet.castShadow = true;
+  tagGroup.add(tagEyelet);
+
+  // secondary small brass identity disc (cluster)
+  const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.030, 0.030, 0.0045, 28), matBrassPolished);
+  disc.rotation.x = Math.PI / 2;
+  disc.position.set(0.052, -0.062, 0.018);
+  disc.rotation.z = 0.4;
+  disc.castShadow = true; disc.receiveShadow = true;
+  tagGroup.add(disc);
+  const discRing = new THREE.Mesh(new THREE.TorusGeometry(0.0075, 0.0026, 8, 14), matBrassPolished);
+  discRing.position.set(0.052, -0.028, 0.018);
+  discRing.rotation.y = Math.PI / 2;
+  discRing.castShadow = true;
+  tagGroup.add(discRing);
+  // stamped rim on the disc
+  const discRim = new THREE.Mesh(new THREE.TorusGeometry(0.0245, 0.0022, 8, 30), matBrass);
+  discRim.rotation.x = Math.PI / 2;
+  discRim.position.set(0.052, -0.062, 0.0205);
+  tagGroup.add(discRim);
+
+  // a small lead seal + wire (cluster third element)
+  const seal = new THREE.Mesh(new THREE.CylinderGeometry(0.0135, 0.0135, 0.007, 18), matDarkIron);
+  seal.rotation.x = Math.PI / 2;
+  seal.position.set(-0.050, -0.048, -0.010);
+  seal.rotation.z = -0.3;
+  seal.castShadow = true; seal.receiveShadow = true;
+  tagGroup.add(seal);
+  const wireCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, -0.020, 0),
+    new THREE.Vector3(-0.030, -0.030, -0.008),
+    new THREE.Vector3(-0.050, -0.044, -0.010)
+  ]);
+  const wire = new THREE.Mesh(new THREE.TubeGeometry(wireCurve, 20, 0.0018, 6, false), matBrassPolished);
+  wire.castShadow = true;
+  tagGroup.add(wire);
+}
+
+/* ---------- Nose tip fitting ---------- */
+{
+  const tipRing = new THREE.Mesh(new THREE.CylinderGeometry(0.040, 0.055, 0.045, 28), matBrass);
+  tipRing.position.y = Y_TIP - 0.015;
+  tipRing.castShadow = true; tipRing.receiveShadow = true;
+  CAP.add(tipRing);
+  const tipCap = new THREE.Mesh(new THREE.SphereGeometry(0.040, 24, 16, 0, Math.PI * 2, 0, Math.PI * 0.55), matBrassPolished);
+  tipCap.position.y = Y_TIP + 0.006;
+  tipCap.castShadow = true; tipCap.receiveShadow = true;
+  CAP.add(tipCap);
+  const tipStud = new THREE.Mesh(new THREE.CylinderGeometry(0.0085, 0.0085, 0.030, 12), matBrassPolished);
+  tipStud.position.y = Y_TIP + 0.038;
+  tipStud.castShadow = true;
+  CAP.add(tipStud);
+  const tipBall = new THREE.Mesh(new THREE.SphereGeometry(0.0155, 16, 12), matBrassPolished);
+  tipBall.position.y = Y_TIP + 0.058;
+  tipBall.castShadow = true;
+  CAP.add(tipBall);
+  rivetRing(Y_TIP - 0.026, 0.049, 8, 0.0095, true, 0.15);
+}
+
+/* ============================================================
+   TAIL: felt/leather piston seal skirt + base plate
+   ============================================================ */
+{
+  const skirtY = Y_BASE + 0.035;
+  const skirt = new THREE.Mesh(new THREE.CylinderGeometry(R_BODY + 0.050, R_BODY + 0.030, 0.075, 64, 1, true), matLeather);
+  skirt.position.y = skirtY;
+  skirt.castShadow = true; skirt.receiveShadow = true;
+  CAP.add(skirt);
+  const skirtLip = new THREE.Mesh(new THREE.TorusGeometry(R_BODY + 0.048, 0.016, 10, 64), matLeather);
+  skirtLip.rotation.x = Math.PI / 2;
+  skirtLip.position.y = skirtY + 0.034;
+  skirtLip.castShadow = true; skirtLip.receiveShadow = true;
+  CAP.add(skirtLip);
+
+  // base plate with bumper
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(R_BODY * 0.72, R_BODY * 0.60, 0.030, 40), matIron);
+  plate.position.y = Y_BASE - 0.026;
+  plate.castShadow = true; plate.receiveShadow = true;
+  CAP.add(plate);
+  const bumper = new THREE.Mesh(new THREE.SphereGeometry(R_BODY * 0.44, 28, 16, 0, Math.PI * 2, Math.PI * 0.5, Math.PI * 0.5), matLeather);
+  bumper.scale.y = 0.55;
+  bumper.position.y = Y_BASE - 0.036;
+  bumper.castShadow = true; bumper.receiveShadow = true;
+  CAP.add(bumper);
+  rivetRing(Y_BASE - 0.026, R_BODY * 0.68, 8, 0.011, true, 0.3);
+
+  // small drain valve on the tail band
+  const valveAng = THREE.MathUtils.degToRad(200);
+  const vx = Math.cos(valveAng), vz = Math.sin(valveAng);
+  const valve = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.020, 0.050, 16), matCopper);
+  valve.position.set(vx * (R_BODY + 0.035), Y_BASE + 0.145, vz * (R_BODY + 0.035));
+  valve.rotation.z = -Math.PI / 2 * vx;
+  valve.rotation.x = Math.PI / 2 * vz;
+  valve.castShadow = true; valve.receiveShadow = true;
+  CAP.add(valve);
+  const wheel = new THREE.Mesh(new THREE.TorusGeometry(0.026, 0.005, 8, 24), matBrassPolished);
+  wheel.position.set(vx * (R_BODY + 0.070), Y_BASE + 0.145, vz * (R_BODY + 0.070));
+  wheel.lookAt(new THREE.Vector3(0, Y_BASE + 0.145, 0));
+  wheel.castShadow = true; wheel.receiveShadow = true;
+  CAP.add(wheel);
+  for (let i = 0; i < 3; i++) {
+    const sp = new THREE.Mesh(new THREE.BoxGeometry(0.048, 0.005, 0.005), matBrassPolished);
+    sp.position.copy(wheel.position);
+    sp.quaternion.copy(wheel.quaternion);
+    sp.rotateZ(i * Math.PI / 3);
+    sp.castShadow = true;
+    CAP.add(sp);
+  }
+}
+
+/* ============================================================
+   Maker's plate on the barrel (stamped brass)
+   ============================================================ */
+{
+  const pAng = THREE.MathUtils.degToRad(148);
+  const py = Y_BASE + 0.615;
+  const px = Math.cos(pAng), pz = Math.sin(pAng);
+  const plateG = new THREE.Group();
+  const pl = new THREE.Mesh(new THREE.BoxGeometry(0.115, 0.062, 0.008), matBrassPolished);
+  pl.castShadow = true; pl.receiveShadow = true;
+  plateG.add(pl);
+  for (let i = 0; i < 4; i++) {
+    const sx = (i % 2 ? 1 : -1) * 0.046;
+    const sy = (i < 2 ? 1 : -1) * 0.021;
+    const rv = makeRivet(0.0075, true);
+    rv.position.set(sx, sy, 0.006);
+    rv.rotation.x = Math.PI / 2;
+    plateG.add(rv);
+  }
+  // engraved lines
+  for (let i = 0; i < 3; i++) {
+    const ln = new THREE.Mesh(new THREE.BoxGeometry(0.062, 0.004, 0.002), matDarkIron);
+    ln.position.set(-0.004, 0.015 - i * 0.015, 0.0048);
+    plateG.add(ln);
+  }
+  plateG.position.set(px * (R_BODY + 0.002), py, pz * (R_BODY + 0.002));
+  plateG.lookAt(new THREE.Vector3(px * 2, py, pz * 2));
+  CAP.add(plateG);
+}
+
+/* ============================================================
+   Oil smudge decals (dark translucent patches hugging barrel)
+   ============================================================ */
+{
+  const smudgeMat = new THREE.MeshStandardMaterial({
+    color: 0x120c07, roughness: 0.95, metalness: 0.2,
+    transparent: true, opacity: 0.55, depthWrite: false,
+    side: THREE.DoubleSide
+  });
+  const smudges = [
+    [30, Y_BASE + 0.33, 0.55, 0.22],
+    [255, Y_BASE + 0.86, 0.40, 0.30],
+    [110, Y_BASE + 0.19, 0.35, 0.16],
+    [188, Y_BASE + 0.66, 0.48, 0.24],
+    [340, Y_BASE + 0.47, 0.30, 0.20]
+  ];
+  smudges.forEach(([deg, y, arc, h], i) => {
+    const a0 = THREE.MathUtils.degToRad(deg);
+    const geo = new THREE.CylinderGeometry(R_BODY + 0.0035, R_BODY + 0.0035, h, 24, 1, true, a0, arc);
+    const m = new THREE.Mesh(geo, smudgeMat);
+    m.position.y = y;
+    m.renderOrder = 2;
+    CAP.add(m);
+  });
+}
+
+/* ============================================================
+   Ground plane (shadow only) + lighting
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.46 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = Y_BASE - 0.062;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// faint reflective disc under the capsule to ground it visually
+const disc = new THREE.Mesh(
+  new THREE.CircleGeometry(1.5, 64),
+  new THREE.MeshStandardMaterial({ color: 0x1b1814, roughness: 0.62, metalness: 0.25 })
+);
+disc.rotation.x = -Math.PI / 2;
+disc.position.y = Y_BASE - 0.064;
+disc.receiveShadow = true;
+scene.add(disc);
+
+const hemi = new THREE.HemisphereLight(0x8fa5b8, 0x2a1d12, 0.42);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffd9a8, 3.1);
+key.position.set(2.6, 3.4, 2.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 14;
+key.shadow.camera.left = -1.8;
+key.shadow.camera.right = 1.8;
+key.shadow.camera.top = 2.4;
+key.shadow.camera.bottom = -0.6;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.018;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x86a6c4, 0.75);
+fill.position.set(-3.0, 1.4, 1.8);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffb066, 1.5);
+rim.position.set(-1.6, 2.1, -3.2);
+scene.add(rim);
+
+// warm practical glow near the nose instruments
+const emberA = new THREE.PointLight(0xffa03c, 1.1, 2.2, 2.0);
+emberA.position.set(0.28, Y_SHOULDER + 0.18, 0.32);
+scene.add(emberA);
+
+const emberB = new THREE.PointLight(0x6fd0ff, 0.45, 2.0, 2.0);
+emberB.position.set(-0.42, Y_BASE + 0.75, 0.55);
+scene.add(emberB);
+
+/* ============================================================
+   Center the object precisely on the origin's vertical axis
+   and frame it
+   ============================================================ */
+CAP.updateMatrixWorld(true);
+const bbox = new THREE.Box3().setFromObject(CAP);
+const center = bbox.getCenter(new THREE.Vector3());
+controls.target.set(0, center.y, 0);
+
+/* ============================================================
+   Animation
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  // governor spins; fly balls rise/fall gently with "speed"
+  if (govSpindle) {
+    govSpindle.rotation.y += dt * 3.4;
+    const swing = 0.62 - 0.16 * (0.5 + 0.5 * Math.sin(t * 0.8));
+    govBalls.forEach(b => {
+      b.arm.rotation.z = -swing;
+      b.ball.position.set(Math.sin(swing) * 0.086, -Math.cos(swing) * 0.086, 0);
+    });
+  }
+
+  // very subtle ember flicker
+  emberA.intensity = 1.0 + Math.sin(t * 6.1) * 0.10 + Math.sin(t * 13.7) * 0.05;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

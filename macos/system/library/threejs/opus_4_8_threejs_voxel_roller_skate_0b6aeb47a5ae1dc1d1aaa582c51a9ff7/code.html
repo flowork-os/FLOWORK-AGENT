@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voxel Roller Skate</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17181c; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1c20);
+scene.fog = new THREE.Fog(0x1b1c20, 30, 70);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(11, 7.5, 13);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 6;
+controls.maxDistance = 40;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 2.1, 0);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambient + key / fill / rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcd4ff, 0x2a2318, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e6, 2.5);
+key.position.set(8, 12, 7);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 45;
+key.shadow.camera.left = -12;
+key.shadow.camera.right = 12;
+key.shadow.camera.top = 12;
+key.shadow.camera.bottom = -12;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fc4ff, 0.7);
+fill.position.set(-9, 5, 6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xff9ad5, 0.9);
+rim.position.set(-5, 6, -10);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Shadow-only ground
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Voxel builder
+// ---------------------------------------------------------------------------
+const V = 0.4;                       // voxel edge length (world units)
+const GAP = 0.012;                   // tiny seam so cubes read as pixels
+const boxGeo = new THREE.BoxGeometry(V - GAP, V - GAP, V - GAP);
+
+const PALETTE = {
+  pink:      0xff3f95,
+  pinkDark:  0xc41f6d,
+  pinkLite:  0xff7ab8,
+  white:     0xf6f7fb,
+  grey:      0xb9bfd0,
+  teal:      0x1fd6c4,
+  tealDark:  0x11998c,
+  yellow:    0xffcc22,
+  yellowDk:  0xd99b00,
+  black:     0x2a2b33,
+  steel:     0x8f97ad,
+  red:       0xff5b3d
+};
+
+const materials = {};
+function mat(colorKey) {
+  if (!materials[colorKey]) {
+    materials[colorKey] = new THREE.MeshLambertMaterial({
+      color: PALETTE[colorKey],
+      flatShading: true
+    });
+  }
+  return materials[colorKey];
+}
+
+// One InstancedMesh per color -> flat-shaded pixel blocks, cheap and crisp.
+const buckets = new Map();   // colorKey -> array of [x,y,z] grid coords
+function vox(x, y, z, colorKey) {
+  if (!buckets.has(colorKey)) buckets.set(colorKey, []);
+  buckets.get(colorKey).push([x, y, z]);
+}
+function voxBox(x0, x1, y0, y1, z0, z1, colorKey) {
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++)
+      for (let z = z0; z <= z1; z++)
+        vox(x, y, z, colorKey);
+}
+
+// ---------------------------------------------------------------------------
+// The skate, laid out on an integer voxel grid.
+//   +X = toe direction (forward), +Y = up, +Z = right side of the boot
+//   Boot is 6 voxels wide in Z (z = -3 .. 2), centered later.
+// ---------------------------------------------------------------------------
+const ZL = -3, ZR = 2;            // full boot width
+const ZLi = ZL + 1, ZRi = ZR - 1; // inset width (one voxel narrower each side)
+
+// ===== CHASSIS / TRUCK PLATE (steel) ======================================
+// thin plate under the sole holding the two axles
+voxBox(-6, 5, 3, 3, ZL + 1, ZR - 1, 'steel');
+// axle blocks: front and rear
+voxBox(2, 4, 2, 2, ZL, ZR, 'steel');
+voxBox(-5, -3, 2, 2, ZL, ZR, 'steel');
+
+// ===== WHEELS (teal, stepped/round-ish voxel discs) ========================
+// A wheel is a 5x5 voxel disc in the X/Y plane with corners removed,
+// two voxels thick in Z, with a lighter hub.
+function wheel(cx, cy, zOuter, zInner) {
+  const R = 2;
+  for (let dx = -R; dx <= R; dx++) {
+    for (let dy = -R; dy <= R; dy++) {
+      const d = Math.abs(dx) + Math.abs(dy);
+      if (d > 3) continue;                       // staircase-rounded silhouette
+      const isHub = (Math.abs(dx) <= 0 && Math.abs(dy) <= 0);
+      const isInnerRing = d <= 1;
+      const color = isHub ? 'white' : (isInnerRing ? 'tealDark' : 'teal');
+      for (let z = Math.min(zOuter, zInner); z <= Math.max(zOuter, zInner); z++) {
+        vox(cx + dx, cy + dy, z, color);
+      }
+    }
+  }
+  // bright hub caps on the outward faces
+  vox(cx, cy, zOuter, 'white');
+}
+
+const WHEEL_Y = 2;                    // wheel centre height (grid units)
+const FRONT_X = 3, REAR_X = -4;
+// left pair (z = -5,-4) and right pair (z = 3,4) sit outside the boot width
+wheel(FRONT_X, WHEEL_Y, -5, -4);
+wheel(FRONT_X, WHEEL_Y,  4,  3);
+wheel(REAR_X,  WHEEL_Y, -5, -4);
+wheel(REAR_X,  WHEEL_Y,  4,  3);
+
+// axle pins poking through the wheel hubs
+voxBox(FRONT_X, FRONT_X, WHEEL_Y, WHEEL_Y, -6, -6, 'grey');
+voxBox(FRONT_X, FRONT_X, WHEEL_Y, WHEEL_Y,  5,  5, 'grey');
+voxBox(REAR_X,  REAR_X,  WHEEL_Y, WHEEL_Y, -6, -6, 'grey');
+voxBox(REAR_X,  REAR_X,  WHEEL_Y, WHEEL_Y,  5,  5, 'grey');
+
+// ===== TOE STOP (blocky, yellow block on a dark stem) ======================
+voxBox(6, 6, 3, 4, ZL + 1, ZR - 1, 'black');      // stem
+voxBox(6, 8, 1, 3, ZL + 1, ZR - 1, 'red');        // chunky stop block
+voxBox(8, 8, 1, 3, ZL + 1, ZR - 1, 'yellowDk');   // front face accent row
+
+// ===== SOLE (yellow) =======================================================
+// main sole slab, two voxels tall, with a stepped toe and heel
+voxBox(-6, 6, 4, 5, ZL, ZR, 'yellow');
+// darker underside stripe for definition
+voxBox(-6, 6, 4, 4, ZL, ZR, 'yellowDk');
+// toe lip steps up one voxel
+voxBox(7, 7, 5, 5, ZL, ZR, 'yellow');
+// heel wedge (raised block at the back)
+voxBox(-7, -5, 5, 6, ZL, ZR, 'yellowDk');
+voxBox(-7, -7, 5, 6, ZL, ZR, 'yellow');
+
+// ===== BOOT: toe box, vamp and quarter panels (pink) =======================
+// Toe box: low at the front, stepping up toward the ankle (staircase edges).
+const toeProfile = [
+  // [x, topY]
+  [7, 6], [6, 7], [5, 8], [4, 9], [3, 9], [2, 10], [1, 10], [0, 10]
+];
+for (const [x, topY] of toeProfile) {
+  voxBox(x, x, 6, topY, ZL, ZR, 'pink');
+  // highlight the very top row lighter for pixel-art shading
+  voxBox(x, x, topY, topY, ZL, ZL, 'pinkDark');
+  voxBox(x, x, topY, topY, ZR, ZR, 'pinkDark');
+}
+
+// Mid-foot / instep block
+voxBox(-4, 0, 6, 10, ZL, ZR, 'pink');
+
+// Heel counter and high-top shaft, stepping upward at the back
+voxBox(-6, -5, 7, 12, ZL, ZR, 'pink');
+voxBox(-4, -5, 11, 15, ZL, ZR, 'pink');
+voxBox(-3, -3, 11, 16, ZL, ZR, 'pink');
+voxBox(-2, -1, 11, 17, ZL, ZR, 'pink');
+voxBox(0, 0, 11, 16, ZL, ZR, 'pink');
+voxBox(1, 1, 11, 14, ZL, ZR, 'pink');
+
+// Ankle collar (lighter pink padding ring around the top opening)
+voxBox(-3, 1, 17, 17, ZL, ZR, 'pinkLite');
+voxBox(-4, -4, 16, 16, ZL, ZR, 'pinkLite');
+voxBox(2, 2, 14, 14, ZL, ZR, 'pinkLite');
+voxBox(-2, 1, 18, 18, ZL, ZL, 'pinkLite');
+voxBox(-2, 1, 18, 18, ZR, ZR, 'pinkLite');
+voxBox(-3, -3, 17, 18, ZL, ZL, 'pinkLite');
+voxBox(-3, -3, 17, 18, ZR, ZR, 'pinkLite');
+
+// Boot opening: hollow out the top so the collar reads as a rim
+for (let x = -2; x <= 1; x++)
+  for (let y = 17; y <= 17; y++)
+    for (let z = ZLi; z <= ZRi; z++)
+      vox(x, y, z, 'black');
+
+// Side panel accents (darker pink) — heel stripe and sole seam
+voxBox(-5, -4, 8, 9, ZL, ZL, 'pinkDark');
+voxBox(-5, -4, 8, 9, ZR, ZR, 'pinkDark');
+voxBox(-6, 6, 6, 6, ZL, ZL, 'pinkDark');
+voxBox(-6, 6, 6, 6, ZR, ZR, 'pinkDark');
+
+// ===== TONGUE (white, sits in the lacing gully) ============================
+const tongue = [
+  [0, 11, 13], [1, 11, 14], [2, 10, 13], [3, 9, 12], [4, 9, 11]
+];
+for (const [x, y0, y1] of tongue) {
+  voxBox(x, x, y0, y1, ZLi, ZRi, 'white');
+}
+
+// ===== LACES (white cross-hatch up the vamp) ===============================
+// Eyelet columns run along both upper edges of the lacing gully.
+const laceRungs = [
+  // [x, y] centre of a lace bar spanning the boot width
+  [1, 15], [2, 14], [3, 13], [4, 12], [5, 10]
+];
+for (const [x, y] of laceRungs) {
+  // horizontal lace bar across the top
+  voxBox(x, x, y, y, ZLi, ZRi, 'white');
+  // eyelet nubs on either side
+  vox(x, y, ZL, 'grey');
+  vox(x, y, ZR, 'grey');
+  // diagonal crossing strand one step forward/down
+  voxBox(x, x, y - 1, y - 1, ZLi + 1, ZRi - 1, 'white');
+}
+// lace bow / knot at the top
+voxBox(0, 1, 16, 16, ZLi, ZRi, 'white');
+vox(0, 17, ZLi, 'white');
+vox(1, 17, ZRi, 'white');
+vox(-1, 16, ZLi, 'white');
+vox(-1, 16, ZRi, 'white');
+
+// ===== BACK PULL-TAB =======================================================
+voxBox(-4, -4, 15, 16, ZLi, ZRi, 'white');
+voxBox(-5, -5, 16, 16, ZLi, ZRi, 'white');
+
+// ---------------------------------------------------------------------------
+// Bake buckets into InstancedMeshes
+// ---------------------------------------------------------------------------
+const skate = new THREE.Group();
+const dummy = new THREE.Object3D();
+
+for (const [colorKey, cells] of buckets) {
+  const inst = new THREE.InstancedMesh(boxGeo, mat(colorKey), cells.length);
+  inst.castShadow = true;
+  inst.receiveShadow = true;
+  cells.forEach((c, i) => {
+    dummy.position.set(c[0] * V, c[1] * V, c[2] * V);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(1, 1, 1);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+  });
+  inst.instanceMatrix.needsUpdate = true;
+  skate.add(inst);
+}
+
+// Centre the whole skate on the origin and rest it on the ground plane.
+const bbox = new THREE.Box3().setFromObject(skate);
+const centre = bbox.getCenter(new THREE.Vector3());
+skate.position.x -= centre.x;
+skate.position.z -= centre.z;
+skate.position.y -= bbox.min.y;
+
+const root = new THREE.Group();
+root.add(skate);
+root.rotation.y = -0.35;
+scene.add(root);
+
+// Frame the camera on the object's real size
+const framed = new THREE.Box3().setFromObject(root);
+const size = framed.getSize(new THREE.Vector3());
+controls.target.set(0, size.y * 0.48, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,648 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Brass Lighthouse Lens Room</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#101b2e}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= CONFIG / PALETTE ================= */
+const SEED   = 20260815;          // deterministic layout seed
+const SEA_Y  = -12;               // stormy sea level below the lamp room
+const TAU    = Math.PI * 2;
+const FOG_COLOR = 0x1d2a3e;
+
+/* ================= PRNG / HELPERS ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rng  = mulberry32(SEED);
+const rand = (a,b)=>a+rng()*(b-a);
+const towerR = y => 3.0 + 0.098*Math.max(0,-y);          // tower shaft taper
+const mesh = (geo,mat)=>new THREE.Mesh(geo,mat);
+const box  = (w,h,d,mat)=>mesh(new THREE.BoxGeometry(w,h,d),mat);
+const cyl  = (rt,rb,h,seg,mat,open=false)=>mesh(new THREE.CylinderGeometry(rt,rb,h,seg,1,open),mat);
+const torus= (r,t,mat,seg=12,tub=48)=>mesh(new THREE.TorusGeometry(r,t,seg,tub),mat);
+function sh(o,cast=true,recv=true){o.traverse(m=>{if(m.isMesh){m.castShadow=cast;m.receiveShadow=recv;}});return o;}
+function ringPlace(obj,a,r,y=0.2){obj.position.set(Math.cos(a)*r,y,Math.sin(a)*r);obj.rotation.y=-Math.PI/2-a;return obj;}
+
+/* ================= RENDERER / SCENE / CAMERA ================= */
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.setSize(innerWidth,innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.28;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(FOG_COLOR, 36, 150);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 400);
+camera.position.set(10.2, 5.4, 13.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.6, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 9;
+controls.maxDistance = 32;
+controls.maxPolarAngle = 1.56;
+controls.minPolarAngle = 0.18;
+
+/* ================= CANVAS TEXTURES ================= */
+function makeSkyTexture(){
+  const c=document.createElement('canvas'); c.width=512; c.height=512; const g=c.getContext('2d');
+  const grad=g.createLinearGradient(0,0,0,512);
+  grad.addColorStop(0,'#0a1424'); grad.addColorStop(0.45,'#1d2f4a');
+  grad.addColorStop(0.75,'#375577'); grad.addColorStop(1,'#42607e');
+  g.fillStyle=grad; g.fillRect(0,0,512,512);
+  for(let i=0;i<46;i++){                                  // ragged storm-cloud bands (kept off the zenith)
+    const x=rng()*512, y=150+rng()*210, w=rand(90,220), h=rand(12,34), a=0.06+rng()*0.09;
+    const cg=g.createRadialGradient(x,y,2,x,y,w);
+    cg.addColorStop(0,`rgba(6,11,20,${a})`); cg.addColorStop(1,'rgba(6,11,20,0)');
+    g.save(); g.translate(x,y); g.scale(1,h/w); g.translate(-x,-y);
+    g.fillStyle=cg; g.beginPath(); g.arc(x,y,w,0,TAU); g.fill(); g.restore();
+  }
+  const dat=g.getImageData(0,0,512,512);                  // fine dither breaks gradient banding
+  for(let i=0;i<dat.data.length;i+=4){ const n=(rng()-0.5)*7; dat.data[i]+=n; dat.data[i+1]+=n; dat.data[i+2]+=n; }
+  g.putImageData(dat,0,0);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function makeGlassStreakTexture(){                        // alpha map: rain streaks on glazing
+  const c=document.createElement('canvas'); c.width=256; c.height=256; const g=c.getContext('2d');
+  g.fillStyle='#2e2e2e'; g.fillRect(0,0,256,256);         // base = faint glass
+  for(let i=0;i<34;i++){
+    const x0=rng()*256, wob=rand(2,7), len=rand(120,256), y0=rng()*80;
+    g.strokeStyle=`rgba(${150+(rng()*60|0)},${150+(rng()*60|0)},${170+(rng()*60|0)},0.55)`;
+    g.lineWidth=rand(1,2.4); g.beginPath(); g.moveTo(x0,y0);
+    for(let y=y0;y<y0+len;y+=14) g.lineTo(x0+Math.sin(y*0.09+i)*wob, y);
+    g.stroke();
+    g.fillStyle='rgba(210,220,235,0.7)';
+    g.beginPath(); g.arc(x0+rand(-2,2), y0+len*rng(), rand(1,2.6), 0, TAU); g.fill();
+  }
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(4,1); return t;
+}
+function makePlankTexture(){
+  const c=document.createElement('canvas'); c.width=256; c.height=256; const g=c.getContext('2d');
+  for(let p=0;p<8;p++){
+    const h=32, y=p*h, base=88+rng()*30;
+    g.fillStyle=`rgb(${base+50|0},${base+18|0},${base-24|0})`; g.fillRect(0,y,256,h);
+    g.strokeStyle='rgba(48,30,16,0.55)';
+    for(let i=0;i<9;i++){ g.lineWidth=rand(0.5,1.4); g.beginPath(); g.moveTo(0,y+rng()*h);
+      g.bezierCurveTo(64,y+rng()*h,170,y+rng()*h,256,y+rng()*h); g.stroke(); }
+    g.fillStyle='rgba(30,18,8,0.8)'; g.fillRect(0,y+h-1,256,2);
+  }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; return t;
+}
+function makeDialTexture(){
+  const c=document.createElement('canvas'); c.width=128; c.height=128; const g=c.getContext('2d');
+  g.fillStyle='#f0e6c8'; g.beginPath(); g.arc(64,64,60,0,TAU); g.fill();
+  g.strokeStyle='#6b4d20'; g.lineWidth=6; g.beginPath(); g.arc(64,64,57,0,TAU); g.stroke();
+  g.strokeStyle='#b23c22'; g.lineWidth=7; g.beginPath(); g.arc(64,64,48,-0.5,0.45); g.stroke();
+  g.strokeStyle='#33291a'; g.lineWidth=3;
+  for(let i=0;i<12;i++){ const a=i/12*TAU, r0=i%3?50:44;
+    g.beginPath(); g.moveTo(64+Math.cos(a)*r0,64+Math.sin(a)*r0);
+    g.lineTo(64+Math.cos(a)*55,64+Math.sin(a)*55); g.stroke(); }
+  g.fillStyle='#33291a'; g.font='bold 15px serif'; g.textAlign='center'; g.fillText('OIL',64,92);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace; return t;
+}
+function makeRainStreakTexture(){                         // soft vertical streak sprite for rain points
+  const c=document.createElement('canvas'); c.width=16; c.height=64; const g=c.getContext('2d');
+  const grad=g.createLinearGradient(0,0,0,64);
+  grad.addColorStop(0,'rgba(200,220,240,0)'); grad.addColorStop(0.45,'rgba(210,228,246,0.9)');
+  grad.addColorStop(1,'rgba(200,220,240,0)');
+  g.fillStyle=grad; g.fillRect(6,0,4,64);
+  return new THREE.CanvasTexture(c);
+}
+const skyTex=makeSkyTexture(), glassTex=makeGlassStreakTexture(), plankTex=makePlankTexture(), dialTex=makeDialTexture(), rainTex=makeRainStreakTexture();
+
+/* ================= MATERIALS (single palette) ================= */
+const MS = o=>new THREE.MeshStandardMaterial(o);
+const MAT = {
+  brass:    MS({color:0xc9a25e, metalness:0.85, roughness:0.32}),
+  brassDark:MS({color:0x8f6f3f, metalness:0.8,  roughness:0.42}),
+  copper:   MS({color:0x9a6a4a, metalness:0.75, roughness:0.4}),
+  steel:    MS({color:0x9aa6b5, metalness:0.9,  roughness:0.3}),
+  iron:     MS({color:0x5d6875, metalness:0.7,  roughness:0.5}),
+  ironDark: MS({color:0x454f5c, metalness:0.65, roughness:0.55}),
+  paint:    MS({color:0xcfd6dd, metalness:0.15, roughness:0.6}),
+  paintRed: MS({color:0xa8503f, metalness:0.2,  roughness:0.55}),
+  wood:     MS({map:plankTex, roughness:0.8, metalness:0.05}),
+  rock:     MS({color:0x74808f, roughness:0.95, flatShading:true}),
+  sea:      MS({color:0x1c3c58, metalness:0.35, roughness:0.42}),
+  glass:    MS({color:0xaecde4, metalness:0.3, roughness:0.12, transparent:true, alphaMap:glassTex, side:THREE.DoubleSide, depthWrite:false}),
+  lensGlass:new THREE.MeshPhysicalMaterial({color:0xffe2a8, transparent:true, opacity:0.55, roughness:0.15, metalness:0.1, emissive:0xff9d3c, emissiveIntensity:0.5, depthWrite:false}),
+  lampCore: MS({color:0xfff6dd, emissive:0xffdf9a, emissiveIntensity:1.9}),
+  flame:    new THREE.MeshBasicMaterial({color:0xffd894}),
+  glow:     new THREE.MeshBasicMaterial({color:0xffca7a}),
+  foam:     new THREE.MeshBasicMaterial({color:0xe8f2f6, transparent:true, opacity:0.42, depthWrite:false}),
+  beam:     new THREE.MeshBasicMaterial({color:0xffd9a0, transparent:true, opacity:0.075, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}),
+  beamCore: new THREE.MeshBasicMaterial({color:0xfff1cc, transparent:true, opacity:0.16, blending:THREE.AdditiveBlending, depthWrite:false, side:THREE.DoubleSide}),
+  dial:     MS({map:dialTex, emissive:0xfff2c0, emissiveMap:dialTex, emissiveIntensity:0.4, roughness:0.5}),
+};
+
+/* ================= BUILDERS ================= */
+function buildSky(){
+  const g=new THREE.Group();
+  g.add(mesh(new THREE.SphereGeometry(155,32,20), new THREE.MeshBasicMaterial({map:skyTex, side:THREE.BackSide, fog:false})));
+  const moon=mesh(new THREE.SphereGeometry(4.6,20,14), new THREE.MeshBasicMaterial({color:0xe9f0ff, fog:false}));
+  moon.position.set(-62,54,-92); g.add(moon);
+  const halo=mesh(new THREE.SphereGeometry(7.6,20,14), new THREE.MeshBasicMaterial({color:0x9fb4de, transparent:true, opacity:0.22, fog:false, blending:THREE.AdditiveBlending, depthWrite:false}));
+  halo.position.copy(moon.position); g.add(halo);
+  return g;
+}
+function buildSea(){
+  const geo=new THREE.PlaneGeometry(240,240,80,80); geo.rotateX(-Math.PI/2);
+  const m=mesh(geo,MAT.sea); m.position.y=SEA_Y; m.receiveShadow=true;
+  m.userData.base=Float32Array.from(geo.attributes.position.array);
+  return m;
+}
+function buildRocks(){
+  const items=[], nBase=15;
+  for(let i=0;i<nBase;i++){ const a=rand(0,TAU), r=rand(4.6,8.2);
+    items.push({x:Math.cos(a)*r, z:Math.sin(a)*r, y:SEA_Y+rand(-0.5,0.1), s:rand(0.9,2.1), sy:rand(0.7,1.6), ry:rand(0,TAU)}); }
+  for(let i=0;i<5;i++){ const a=rand(0,TAU), r=rand(10,16);
+    items.push({x:Math.cos(a)*r, z:Math.sin(a)*r, y:SEA_Y+rand(-0.6,0), s:rand(1.4,2.6), sy:rand(0.6,1.2), ry:rand(0,TAU)}); }
+  const im=new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1,0), MAT.rock, items.length);
+  const d=new THREE.Object3D();
+  items.forEach((it,i)=>{ d.position.set(it.x,it.y,it.z); d.rotation.set(0,it.ry,0);
+    d.scale.set(it.s,it.sy,it.s); d.updateMatrix(); im.setMatrixAt(i,d.matrix); });
+  im.castShadow=im.receiveShadow=true; im.userData.items=items; return im;
+}
+const foamRings=[];
+function buildFoam(rockItems){
+  const g=new THREE.Group();
+  for(let i=0;i<8;i++){ const it=rockItems[(i*2)%rockItems.length];
+    const ring=torus(it.s*1.15,0.16,MAT.foam.clone(),8,40);
+    ring.rotation.x=-Math.PI/2; ring.position.set(it.x,SEA_Y+0.14,it.z);
+    ring.userData={phase:rand(0,TAU), baseS:1}; foamRings.push(ring); g.add(ring); }
+  return g;
+}
+function buildTower(){
+  const g=new THREE.Group();
+  const shaft=cyl(3.0,4.28,12.6,30,MAT.paint); shaft.position.y=-6.3; g.add(shaft);
+  [-2.6,-5.4,-8.4].forEach((y,i)=>{ const band=torus(towerR(y)+0.06,0.12,i===1?MAT.paintRed:MAT.copper,10,44);
+    band.rotation.x=Math.PI/2; band.position.y=y; g.add(band); });
+  const rivets=new THREE.InstancedMesh(new THREE.SphereGeometry(0.055,6,5),MAT.brassDark,60), d=new THREE.Object3D();
+  for(let i=0;i<60;i++){ const y=[-2.6,-5.4,-8.4][i%3], a=(i/20)*TAU+(i%3);
+    d.position.set(Math.cos(a)*(towerR(y)+0.15),y,Math.sin(a)*(towerR(y)+0.15)); d.updateMatrix(); rivets.setMatrixAt(i,d.matrix); }
+  g.add(rivets);
+  for(let i=0;i<4;i++){ const a=i/4*TAU+0.5, y=-3.6, r=towerR(y);   // glowing portholes
+    const rim=torus(0.26,0.06,MAT.brass,8,22); rim.position.set(Math.cos(a)*r,y,Math.sin(a)*r);
+    rim.rotation.y=Math.PI/2-a; g.add(rim);
+    const win=mesh(new THREE.CircleGeometry(0.22,18),MAT.glow.clone());
+    win.position.set(Math.cos(a)*(r+0.02),y,Math.sin(a)*(r+0.02)); win.rotation.y=Math.PI/2-a; g.add(win); }
+  const skirt=cyl(4.35,4.85,1.2,30,MAT.ironDark); skirt.position.y=-12.0; g.add(skirt);
+  return sh(g);
+}
+function buildGallery(){
+  const g=new THREE.Group();
+  const deck=cyl(4.5,4.5,0.22,36,MAT.ironDark); deck.position.y=-0.11; g.add(deck);
+  const lip=torus(4.5,0.09,MAT.brassDark,8,48); lip.rotation.x=Math.PI/2; lip.position.y=0.02; g.add(lip);
+  const posts=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.035,0.035,1.04,6),MAT.brass,26), d=new THREE.Object3D();
+  for(let i=0;i<26;i++){ const a=i/26*TAU;
+    d.position.set(Math.cos(a)*4.3,0.52,Math.sin(a)*4.3); d.updateMatrix(); posts.setMatrixAt(i,d.matrix); }
+  g.add(posts);
+  [1.04,0.62].forEach(y=>{ const rail=torus(4.3,y>1?0.05:0.03,MAT.brass,8,52); rail.rotation.x=Math.PI/2; rail.position.y=y; g.add(rail); });
+  const braces=new THREE.InstancedMesh(new THREE.BoxGeometry(0.1,0.9,0.5),MAT.iron,8);
+  for(let i=0;i<8;i++){ const a=i/8*TAU;
+    d.position.set(Math.cos(a)*3.6,-0.62,Math.sin(a)*3.6); d.rotation.set(0.6,-a+Math.PI/2,0); d.updateMatrix(); braces.setMatrixAt(i,d.matrix); }
+  d.rotation.set(0,0,0); g.add(braces);
+  return sh(g);
+}
+function buildLampRoom(){
+  const g=new THREE.Group();
+  const floor=cyl(3.2,3.3,0.2,32,MAT.wood); floor.position.y=0.1; g.add(floor);
+  const sill=torus(3.08,0.07,MAT.brass,8,48); sill.rotation.x=Math.PI/2; sill.position.y=0.28; g.add(sill);
+  const cornice=torus(3.12,0.09,MAT.brassDark,8,48); cornice.rotation.x=Math.PI/2; cornice.position.y=3.42; g.add(cornice);
+  const mullions=new THREE.InstancedMesh(new THREE.BoxGeometry(0.12,3.2,0.12),MAT.brassDark,10), d=new THREE.Object3D();
+  for(let i=0;i<10;i++){ const a=i/10*TAU;
+    d.position.set(Math.cos(a)*3.02,1.82,Math.sin(a)*3.02); d.rotation.y=-a; d.updateMatrix(); mullions.setMatrixAt(i,d.matrix); }
+  g.add(mullions);
+  const glass=cyl(3.0,3.0,3.0,48,MAT.glass,true); glass.position.y=1.82; glass.castShadow=false; g.add(glass);
+  const roof=cyl(0.28,3.56,2.1,20,MAT.copper); roof.position.y=4.47; g.add(roof);
+  const ribs=new THREE.InstancedMesh(new THREE.BoxGeometry(0.09,3.78,0.07),MAT.brassDark,10);
+  for(let i=0;i<10;i++){ const a=i/10*TAU;
+    d.position.set(Math.cos(a)*1.87,4.52,Math.sin(a)*1.87); d.rotation.set(0,-a,1.0); d.updateMatrix(); ribs.setMatrixAt(i,d.matrix); }
+  g.add(ribs);
+  const gutter=torus(3.58,0.08,MAT.copper,8,48); gutter.rotation.x=Math.PI/2; gutter.position.y=3.52; g.add(gutter);
+  for(let i=0;i<6;i++){ const a=i/6*TAU+0.31;               // interior ring of pilot oil lamps
+    const bkt=box(0.05,0.05,0.3,MAT.brassDark); bkt.position.set(Math.cos(a)*2.82,3.18,Math.sin(a)*2.82); bkt.rotation.y=-a; g.add(bkt);
+    const lampGlobe=mesh(new THREE.SphereGeometry(0.07,8,6),MAT.glow); lampGlobe.position.set(Math.cos(a)*2.68,3.1,Math.sin(a)*2.68); g.add(lampGlobe); }
+  const cap=mesh(new THREE.SphereGeometry(0.3,14,10),MAT.brass); cap.position.y=5.62; g.add(cap);
+  const rod=cyl(0.02,0.035,1.3,6,MAT.steel); rod.position.y=6.3; g.add(rod);
+  const vane=box(0.5,0.05,0.05,MAT.copper); vane.position.y=6.6; g.add(vane);
+  sh(g); glass.castShadow=false;
+  return g;
+}
+function buildLensAssembly(){
+  const rig=new THREE.Group();                            // rotating: turntable + lens + beams
+  const table=cyl(1.5,1.62,0.32,30,MAT.brass); table.position.y=0.56; rig.add(table);
+  const teeth=new THREE.InstancedMesh(new THREE.BoxGeometry(0.22,0.2,0.15),MAT.brassDark,26), d=new THREE.Object3D();
+  for(let i=0;i<26;i++){ const a=i/26*TAU;
+    d.position.set(Math.cos(a)*1.66,0.5,Math.sin(a)*1.66); d.rotation.y=-a; d.updateMatrix(); teeth.setMatrixAt(i,d.matrix); }
+  rig.add(teeth);
+  const drum=cyl(1.02,1.12,0.22,24,MAT.brassDark); drum.position.y=0.84; rig.add(drum);
+  const pedestal=cyl(0.3,0.42,0.5,12,MAT.iron); pedestal.position.y=1.2; rig.add(pedestal);
+  const core=mesh(new THREE.SphereGeometry(0.36,20,16),MAT.lampCore); core.position.y=2.05; rig.add(core);
+  const mantle=cyl(0.1,0.14,0.5,10,MAT.brass); mantle.position.y=1.6; rig.add(mantle);
+  for(let i=0;i<=10;i++){                                  // faceted Fresnel prism rings
+    const h=1.2+i*0.17, r=0.72+0.36*Math.sin(Math.PI*i/10);
+    const ring=torus(r,0.078,MAT.lensGlass,8,26); ring.rotation.x=Math.PI/2; ring.position.y=h;
+    ring.castShadow=false; rig.add(ring);
+  }
+  const cage=new THREE.InstancedMesh(new THREE.BoxGeometry(0.07,1.95,0.11),MAT.brass,8);
+  for(let i=0;i<8;i++){ const a=i/8*TAU;
+    d.position.set(Math.cos(a)*1.06,2.02,Math.sin(a)*1.06); d.rotation.set(0,-a,0); d.updateMatrix(); cage.setMatrixAt(i,d.matrix); }
+  rig.add(cage);
+  [1,-1].forEach(sx=>{                                     // bullseye panels aimed along the beams
+    const eye=mesh(new THREE.CircleGeometry(0.52,26),MAT.lensGlass);
+    eye.position.set(sx*1.09,2.05,0); eye.rotation.y=sx*Math.PI/2; eye.castShadow=false; rig.add(eye);
+    const rim=torus(0.54,0.05,MAT.brass,8,26); rim.position.set(sx*1.09,2.05,0); rim.rotation.y=Math.PI/2; rig.add(rim);
+    const rim2=torus(0.26,0.03,MAT.brassDark,8,18); rim2.position.set(sx*1.12,2.05,0); rim2.rotation.y=Math.PI/2; rig.add(rim2);
+  });
+  const crown=cyl(0.45,0.95,0.3,16,MAT.brass); crown.position.y=3.1; rig.add(crown);
+  const finial=mesh(new THREE.SphereGeometry(0.14,10,8),MAT.copper); finial.position.y=3.32; rig.add(finial);
+  const beams=new THREE.Group(); beams.position.y=2.05;    // twin sweeping light shafts
+  [1,-1].forEach(sx=>{
+    const tilt=sx>0? -Math.PI/2-0.055 : Math.PI/2+0.055;
+    const cone=mesh(new THREE.CylinderGeometry(2.3,0.3,24,20,1,true),MAT.beam);
+    cone.rotation.z=tilt; cone.position.x=sx*12.4; beams.add(cone);
+    const core=mesh(new THREE.CylinderGeometry(0.95,0.22,24,16,1,true),MAT.beamCore);
+    core.rotation.z=tilt; core.position.x=sx*12.4; beams.add(core);
+    const spot=new THREE.SpotLight(0xffd9a0,950,150,0.3,0.65,1.35);
+    spot.position.set(sx*0.5,0,0); beams.add(spot);
+    spot.target.position.set(sx*44,-7.2,0); beams.add(spot.target);
+  });
+  rig.add(beams);
+  sh(rig); rig.traverse(m=>{ if(m.isMesh&&(m.material===MAT.lensGlass||m.material===MAT.beam)) m.castShadow=false; });
+  const drive=new THREE.Group();                           // static drive gear + motor housing
+  const wheel=new THREE.Group(), gw=cyl(0.4,0.4,0.24,18,MAT.brassDark); wheel.add(gw);
+  const dt2=new THREE.InstancedMesh(new THREE.BoxGeometry(0.14,0.2,0.1),MAT.brass,10);
+  for(let i=0;i<10;i++){ const a=i/10*TAU;
+    d.position.set(Math.cos(a)*0.46,0,Math.sin(a)*0.46); d.rotation.set(0,-a,0); d.updateMatrix(); dt2.setMatrixAt(i,d.matrix); }
+  wheel.add(dt2); wheel.position.set(2.14,0.5,0); drive.add(wheel);
+  const housing=box(0.5,0.42,0.6,MAT.iron); housing.position.set(2.6,0.42,0); drive.add(housing);
+  const stack=cyl(0.07,0.09,0.5,8,MAT.copper); stack.position.set(2.7,0.85,0.15); drive.add(stack);
+  sh(drive);
+  return {rig, drive, wheel, core};
+}
+function buildGovernor(scale){
+  const g=new THREE.Group();
+  const column=cyl(0.09,0.14,0.85,10,MAT.iron); column.position.y=0.42; g.add(column);
+  const base=cyl(0.3,0.36,0.09,14,MAT.brassDark); base.position.y=0.05; g.add(base);
+  const spin=new THREE.Group(); spin.position.y=0.9; g.add(spin);
+  const shaft=cyl(0.035,0.035,0.62,8,MAT.steel); shaft.position.y=0.28; spin.add(shaft);
+  const hub=mesh(new THREE.SphereGeometry(0.07,10,8),MAT.brass); hub.position.y=0.58; spin.add(hub);
+  const collar=torus(0.09,0.035,MAT.brass,8,16); collar.rotation.x=Math.PI/2; collar.position.y=0.12; spin.add(collar);
+  const arms=[];
+  [1,-1].forEach(s=>{
+    const arm=new THREE.Group(); arm.position.y=0.56;
+    const rodA=cyl(0.02,0.02,0.5,6,MAT.brass); rodA.position.y=-0.25; arm.add(rodA);
+    const ball=mesh(new THREE.SphereGeometry(0.1,12,10),MAT.brass); ball.position.y=-0.52; arm.add(ball);
+    const link=cyl(0.012,0.012,0.34,6,MAT.steel); link.position.y=-0.62; link.rotation.z=s*0.5; arm.add(link);
+    arm.rotation.z=s*0.55; arm.userData.side=s; spin.add(arm); arms.push(arm);
+  });
+  const gearTop=cyl(0.16,0.16,0.06,12,MAT.brassDark); gearTop.position.y=0.86; g.add(gearTop);
+  g.scale.setScalar(scale); g.userData={spin,arms,rate:rand(3.2,4.6)};
+  return sh(g);
+}
+function buildWindingDrum(scale){
+  const g=new THREE.Group();
+  [-0.32,0.32].forEach(x=>{ const stand=box(0.1,0.55,0.42,MAT.iron); stand.position.set(x,0.28,0); g.add(stand); });
+  const spool=new THREE.Group(); spool.position.y=0.55; g.add(spool);
+  const axle=cyl(0.035,0.035,0.85,8,MAT.steel); axle.rotation.z=Math.PI/2; spool.add(axle);
+  const barrel=cyl(0.2,0.2,0.46,16,MAT.brassDark); barrel.rotation.z=Math.PI/2; spool.add(barrel);
+  for(let i=0;i<6;i++){ const c=torus(0.215,0.022,MAT.ironDark,6,20);
+    c.rotation.y=Math.PI/2; c.position.x=-0.15+i*0.06; spool.add(c); }
+  const gear=cyl(0.3,0.3,0.06,16,MAT.brass); gear.rotation.z=Math.PI/2; gear.position.x=0.36; spool.add(gear);
+  const crankArm=box(0.05,0.22,0.05,MAT.steel); crankArm.position.set(0.46,0.09,0); spool.add(crankArm);
+  const knob=cyl(0.03,0.03,0.14,8,MAT.wood); knob.rotation.z=Math.PI/2; knob.position.set(0.53,0.19,0); spool.add(knob);
+  const cable=cyl(0.02,0.02,0.5,6,MAT.ironDark); cable.position.set(0,0.3,0.21); g.add(cable);
+  g.scale.setScalar(scale); g.userData={spool,rate:rand(0.35,0.6)};
+  return sh(g);
+}
+function buildOilReservoir(){
+  const g=new THREE.Group();
+  const tank=cyl(0.44,0.44,1.0,20,MAT.copper); tank.position.y=0.62; g.add(tank);
+  const dome=mesh(new THREE.SphereGeometry(0.44,20,10,0,TAU,0,Math.PI/2),MAT.copper); dome.position.y=1.12; g.add(dome);
+  [0.35,0.9].forEach(y=>{ const band=torus(0.455,0.03,MAT.brass,8,26); band.rotation.x=Math.PI/2; band.position.y=y; g.add(band); });
+  for(let i=0;i<3;i++){ const a=i/3*TAU, leg=cyl(0.035,0.045,0.16,6,MAT.iron);
+    leg.position.set(Math.cos(a)*0.34,0.06,Math.sin(a)*0.34); g.add(leg); }
+  const cap=cyl(0.09,0.11,0.12,8,MAT.brass); cap.position.y=1.6; g.add(cap);
+  const needles=[];
+  [[-0.24,0.78],[0.24,0.95]].forEach(([x,y],i)=>{         // twin pressure gauges
+    const ga=new THREE.Group(); ga.position.set(x,y,0.44); g.add(ga);
+    const body=cyl(0.14,0.14,0.06,16,MAT.brass); body.rotation.x=Math.PI/2; ga.add(body);
+    const face=mesh(new THREE.CircleGeometry(0.115,20),MAT.dial); face.position.z=0.035; ga.add(face);
+    const needle=box(0.015,0.09,0.008,MAT.paintRed); needle.position.set(0,0.02,0.045);
+    needle.userData={base:rand(-0.6,0.2),phase:i*2.1}; ga.add(needle); needles.push(needle);
+  });
+  const pipeV=cyl(0.045,0.045,0.7,8,MAT.brass); pipeV.position.set(0,1.45,-0.2); pipeV.rotation.x=0.5; g.add(pipeV);
+  const elbow=mesh(new THREE.SphereGeometry(0.06,8,8),MAT.brass); elbow.position.set(0,1.75,-0.37); g.add(elbow);
+  const pipeH=cyl(0.045,0.045,1.1,8,MAT.brass); pipeH.rotation.x=Math.PI/2; pipeH.position.set(0,1.75,-0.92); g.add(pipeH);
+  const valve=torus(0.09,0.02,MAT.paintRed,8,16); valve.position.set(0,1.53,-0.24); valve.rotation.x=1.0; g.add(valve);
+  g.userData={needles};
+  return sh(g);
+}
+function buildWorkbench(){
+  const g=new THREE.Group();
+  const top=box(1.7,0.09,0.62,MAT.wood); top.position.y=0.72; g.add(top);
+  [[-0.78,-0.24],[0.78,-0.24],[-0.78,0.24],[0.78,0.24]].forEach(([x,z])=>{
+    const leg=box(0.08,0.7,0.08,MAT.ironDark); leg.position.set(x,0.35,z); g.add(leg); });
+  const shelf=box(1.55,0.05,0.5,MAT.wood); shelf.position.y=0.26; g.add(shelf);
+  const vise=new THREE.Group(); vise.position.set(-0.62,0.81,0.14);
+  vise.add(box(0.14,0.12,0.2,MAT.ironDark));
+  const jaw=box(0.14,0.12,0.06,MAT.iron); jaw.position.z=0.16; vise.add(jaw);
+  const screw=cyl(0.02,0.02,0.24,6,MAT.steel); screw.rotation.x=Math.PI/2; screw.position.z=0.24; vise.add(screw);
+  g.add(vise);
+  for(let i=0;i<3;i++){                                    // spare lens blanks leaning on rack
+    const blank=cyl(0.14,0.14,0.035,18,MAT.lensGlass); blank.rotation.x=Math.PI/2-0.35;
+    blank.position.set(0.05+i*0.2,0.85,-0.2); blank.castShadow=false; g.add(blank); }
+  const wrench=box(0.3,0.02,0.05,MAT.steel); wrench.position.set(0.35,0.78,0.15); wrench.rotation.y=0.6; g.add(wrench);
+  const wHead=cyl(0.05,0.05,0.025,10,MAT.steel); wHead.position.set(0.48,0.78,0.06); g.add(wHead);
+  const driver=cyl(0.015,0.015,0.2,6,MAT.steel); driver.rotation.z=Math.PI/2; driver.position.set(-0.2,0.78,0.22); g.add(driver);
+  const handle=cyl(0.03,0.03,0.08,8,MAT.paintRed); handle.rotation.z=Math.PI/2; handle.position.set(-0.32,0.78,0.22); g.add(handle);
+  const can=new THREE.Group(); can.position.set(0.68,0.77,-0.15);  // oiler can
+  const canBody=cyl(0.02,0.09,0.14,10,MAT.copper); canBody.position.y=0.07; can.add(canBody);
+  const spout=cyl(0.008,0.02,0.18,6,MAT.copper); spout.rotation.z=-0.9; spout.position.set(0.09,0.13,0); can.add(spout);
+  g.add(can);
+  const lamp=new THREE.Group(); lamp.position.set(-0.25,0.77,-0.18); // hand lantern
+  const lBase=cyl(0.07,0.09,0.05,10,MAT.brass); lBase.position.y=0.02; lamp.add(lBase);
+  const lGlass=cyl(0.06,0.07,0.14,10,MAT.glass); lGlass.position.y=0.12; lGlass.castShadow=false; lamp.add(lGlass);
+  const lTop=cyl(0.03,0.08,0.05,10,MAT.brass); lTop.position.y=0.22; lamp.add(lTop);
+  const flame=mesh(new THREE.ConeGeometry(0.028,0.08,8),MAT.flame); flame.position.y=0.12; lamp.add(flame);
+  g.add(lamp); g.userData={flame};
+  const board=box(1.3,0.55,0.05,MAT.wood); board.position.set(0,1.35,-0.27); g.add(board); // pegboard rack
+  const pegTools=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.016,0.022,0.3,6),MAT.steel,4), pd=new THREE.Object3D();
+  for(let i=0;i<4;i++){ pd.position.set(-0.45+i*0.3,1.3,-0.23); pd.updateMatrix(); pegTools.setMatrixAt(i,pd.matrix); }
+  g.add(pegTools);
+  [-0.06,0.06].forEach(o=>{ const cal=box(0.02,0.24,0.015,MAT.steel);   // calipers hung open
+    cal.position.set(0.62+o,1.28,-0.23); cal.rotation.z=o*4; g.add(cal); });
+  const scroll=cyl(0.035,0.035,0.4,8,new THREE.MeshStandardMaterial({color:0xd8c9a3,roughness:0.85}));
+  scroll.rotation.z=Math.PI/2; scroll.position.set(-0.66,0.79,-0.18); g.add(scroll); // rolled lens diagram
+  const sheet=box(0.34,0.006,0.26,new THREE.MeshStandardMaterial({color:0xcdbf9b,roughness:0.9}));
+  sheet.position.set(0.08,0.775,0.02); sheet.rotation.y=-0.3; g.add(sheet);
+  const cogs=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.05,0.05,0.02,9),MAT.brassDark,5), d=new THREE.Object3D();
+  for(let i=0;i<5;i++){ d.position.set(rand(-0.5,0.5),0.78,rand(-0.22,0.22));
+    d.rotation.y=rand(0,TAU); d.updateMatrix(); cogs.setMatrixAt(i,d.matrix); }
+  g.add(cogs);
+  return sh(g);
+}
+function buildSpiralStair(){
+  const g=new THREE.Group(), a0=4.55, steps=26, dm=new THREE.Object3D();
+  const im=new THREE.InstancedMesh(new THREE.BoxGeometry(1.0,0.06,0.42),MAT.iron,steps);
+  for(let i=0;i<steps;i++){ const y=-0.38-i*0.27, a=a0+i*0.42, r=towerR(y)+0.62;
+    dm.position.set(Math.cos(a)*r,y,Math.sin(a)*r); dm.rotation.set(0,-Math.PI/2-a,0);
+    dm.updateMatrix(); im.setMatrixAt(i,dm.matrix); }
+  im.castShadow=im.receiveShadow=true; g.add(im);
+  [0.14,1.06].forEach(off=>{                               // helical stringers carrying the treads
+    const sp=[];
+    for(let i=0;i<=steps;i++){ const y=-0.38-i*0.27, a=a0+i*0.42, r=towerR(y)+off;
+      sp.push(new THREE.Vector3(Math.cos(a)*r,y-0.06,Math.sin(a)*r)); }
+    g.add(mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(sp),80,0.055,8),MAT.ironDark));
+  });
+  const pts=[];
+  for(let i=0;i<=steps;i+=2){ const y=-0.38-i*0.27, a=a0+i*0.42, r=towerR(y)+0.98;
+    pts.push(new THREE.Vector3(Math.cos(a)*r,y+0.62,Math.sin(a)*r)); }
+  const rail=mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts),64,0.032,6),MAT.brassDark); g.add(rail);
+  const posts=new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022,0.022,0.6,6),MAT.ironDark,13);
+  for(let i=0;i<13;i++){ const k=i*2, y=-0.38-k*0.27, a=a0+k*0.42, r=towerR(y)+0.95;
+    dm.position.set(Math.cos(a)*r,y+0.31,Math.sin(a)*r); dm.rotation.set(0,0,0); dm.updateMatrix(); posts.setMatrixAt(i,dm.matrix); }
+  g.add(posts);
+  const yl=-7.5, al=a0+steps*0.42, rl=towerR(yl)+0.7;      // landing + service door
+  const landing=cyl(0.95,0.95,0.08,16,MAT.iron); landing.position.set(Math.cos(al)*rl,yl,Math.sin(al)*rl); g.add(landing);
+  const door=box(0.8,1.35,0.12,MAT.copper); const rd=towerR(yl+0.8)-0.02;
+  door.position.set(Math.cos(al)*rd,yl+0.75,Math.sin(al)*rd); door.rotation.y=Math.PI/2-al; g.add(door);
+  const dGlow=mesh(new THREE.CircleGeometry(0.1,12),MAT.glow); const rg2=rd+0.08;
+  dGlow.position.set(Math.cos(al)*rg2,yl+1.05,Math.sin(al)*rg2); dGlow.rotation.y=Math.PI/2-al; g.add(dGlow);
+  sh(g,true,true);
+  return g;
+}
+function buildDeckProps(){
+  const g=new THREE.Group();
+  const chest=box(0.6,0.34,0.36,MAT.wood); ringPlace(chest,2.6,3.75,0.17); g.add(chest);
+  const chestLid=box(0.62,0.06,0.38,MAT.brassDark); chestLid.position.copy(chest.position); chestLid.position.y=0.37; chestLid.rotation.copy(chest.rotation); g.add(chestLid);
+  const drumP=cyl(0.2,0.2,0.5,14,MAT.copper); ringPlace(drumP,3.3,3.8,0.25); g.add(drumP);
+  const coil=new THREE.Group();                            // coiled mooring rope
+  for(let i=0;i<3;i++){ const c=torus(0.24-i*0.02,0.045,MAT.wood,8,22); c.rotation.x=Math.PI/2; c.position.y=0.04+i*0.075; coil.add(c); }
+  ringPlace(coil,5.9,3.8,0.02); g.add(coil);
+  const bellPost=cyl(0.035,0.045,1.3,8,MAT.iron); ringPlace(bellPost,0.9,3.95,0.65); g.add(bellPost);
+  const bellArm=box(0.3,0.05,0.05,MAT.iron); ringPlace(bellArm,0.9,3.85,1.28); g.add(bellArm);
+  const bell=cyl(0.09,0.14,0.18,12,MAT.brass); bell.position.copy(bellArm.position); bell.position.y=1.12; g.add(bell);
+  const clapper=cyl(0.012,0.012,0.16,6,MAT.ironDark); clapper.position.copy(bell.position); clapper.position.y=1.0; g.add(clapper);
+  const hatchRing=torus(0.5,0.05,MAT.brass,8,26); hatchRing.rotation.x=Math.PI/2;   // stair hatch in lamp-room floor
+  hatchRing.position.set(Math.cos(4.55)*2.2,0.22,Math.sin(4.55)*2.2); g.add(hatchRing);
+  const hatchHole=mesh(new THREE.CircleGeometry(0.46,22),new THREE.MeshBasicMaterial({color:0x120e08}));
+  hatchHole.rotation.x=-Math.PI/2; hatchHole.position.copy(hatchRing.position); hatchHole.position.y+=0.005; g.add(hatchHole);
+  return sh(g);
+}
+function makeGear(r,depth,mat){
+  const g=new THREE.Group();
+  g.add(cyl(r,r,depth,18,mat));
+  const hub=cyl(r*0.22,r*0.22,depth*1.7,10,MAT.ironDark); g.add(hub);
+  const n=Math.max(8,Math.round(r*46));
+  const im=new THREE.InstancedMesh(new THREE.BoxGeometry(r*0.3,depth,r*0.18),mat,n), d=new THREE.Object3D();
+  for(let i=0;i<n;i++){ const a=i/n*TAU;
+    d.position.set(Math.cos(a)*(r*1.12),0,Math.sin(a)*(r*1.12)); d.rotation.set(0,-a,0); d.updateMatrix(); im.setMatrixAt(i,d.matrix); }
+  g.add(im);
+  for(let i=0;i<3;i++){ const s=box(r*1.6,depth*0.55,r*0.13,mat); s.rotation.y=i*Math.PI/3; g.add(s); }
+  return g;
+}
+function buildGearWall(){                                  // clockwork regulator cabinet
+  const g=new THREE.Group();
+  const base=box(0.62,0.18,0.42,MAT.iron); base.position.y=0.09; g.add(base);
+  const frame=box(1.0,1.5,0.07,MAT.ironDark); frame.position.y=0.95; g.add(frame);
+  const trim=box(1.08,0.07,0.11,MAT.brass); trim.position.y=1.72; g.add(trim);
+  const sill2=box(1.08,0.07,0.11,MAT.brass); sill2.position.y=0.2; g.add(sill2);
+  const gears=[];
+  [[-0.24,1.28,0.23,1.1],[0.2,1.2,0.145,-1.75],[0.03,0.92,0.11,2.3],[0.32,0.84,0.085,-3.0]].forEach(([x,y,r,rate])=>{
+    const w=makeGear(r,0.05,MAT.brass); w.rotation.x=Math.PI/2; w.position.set(x,y,0.09); g.add(w); gears.push({w,rate});
+  });
+  const pend=new THREE.Group(); pend.position.set(-0.3,0.78,0.12); g.add(pend);
+  const rod=cyl(0.014,0.014,0.52,6,MAT.brass); rod.position.y=-0.26; pend.add(rod);
+  const bob=cyl(0.09,0.09,0.03,14,MAT.brass); bob.rotation.x=Math.PI/2; bob.position.y=-0.52; pend.add(bob);
+  g.userData={gears,pend};
+  return sh(g);
+}
+function buildTelescope(){                                 // keeper's spotting scope
+  const g=new THREE.Group(), top=new THREE.Vector3(0,0.8,0), up=new THREE.Vector3(0,1,0);
+  for(let i=0;i<3;i++){ const a=i/3*TAU+0.3, bot=new THREE.Vector3(Math.cos(a)*0.34,0,Math.sin(a)*0.34);
+    const dir=top.clone().sub(bot), leg=cyl(0.018,0.028,dir.length(),6,MAT.wood);
+    leg.position.copy(bot).add(top).multiplyScalar(0.5);
+    leg.quaternion.setFromUnitVectors(up,dir.normalize()); g.add(leg); }
+  const pivot=mesh(new THREE.SphereGeometry(0.05,8,8),MAT.brass); pivot.position.y=0.8; g.add(pivot);
+  const tube=cyl(0.045,0.068,0.64,10,MAT.brass); tube.position.set(0,0.88,0.16); tube.rotation.x=Math.PI/2-0.32; g.add(tube);
+  const lensCap=cyl(0.075,0.075,0.05,10,MAT.brassDark); lensCap.position.set(0,0.97,0.45); lensCap.rotation.x=Math.PI/2-0.32; g.add(lensCap);
+  const eye=cyl(0.028,0.028,0.09,8,MAT.brassDark); eye.position.set(0,0.79,-0.14); eye.rotation.x=Math.PI/2-0.32; g.add(eye);
+  return sh(g);
+}
+function buildCrane(){                                     // supply davit over the rail
+  const g=new THREE.Group();
+  const post=cyl(0.06,0.085,1.5,10,MAT.iron); post.position.y=0.75; g.add(post);
+  const collar=torus(0.09,0.025,MAT.brass,8,14); collar.rotation.x=Math.PI/2; collar.position.y=1.42; g.add(collar);
+  const jib=cyl(0.045,0.055,1.35,8,MAT.iron); jib.position.set(0,1.79,0.607); jib.rotation.x=1.12; g.add(jib);
+  const stay=cyl(0.013,0.013,1.15,6,MAT.ironDark); stay.position.set(0,1.55,0.62); stay.rotation.x=0.62; g.add(stay);
+  const sway=new THREE.Group(); sway.position.set(0,2.08,1.21); g.add(sway);
+  const chain=cyl(0.014,0.014,1.05,6,MAT.ironDark); chain.position.y=-0.52; sway.add(chain);
+  const hook=torus(0.05,0.016,MAT.steel,8,14); hook.position.y=-1.08; sway.add(hook);
+  const crate=box(0.34,0.3,0.34,MAT.wood); crate.position.y=-1.28; sway.add(crate);
+  const strap=box(0.36,0.05,0.36,MAT.brassDark); strap.position.y=-1.28; sway.add(strap);
+  g.userData={sway};
+  return sh(g);
+}
+function buildBuoy(){                                      // harbor bell buoy riding the swell
+  const g=new THREE.Group();
+  const base=cyl(0.55,0.78,0.5,14,MAT.paintRed); base.position.y=0.25; g.add(base);
+  const mid=cyl(0.36,0.55,0.45,14,MAT.paint); mid.position.y=0.72; g.add(mid);
+  const neck=cyl(0.12,0.36,0.42,12,MAT.paintRed); neck.position.y=1.15; g.add(neck);
+  for(let i=0;i<3;i++){ const a=i/3*TAU, p=cyl(0.02,0.02,0.42,6,MAT.iron);
+    p.position.set(Math.cos(a)*0.15,1.55,Math.sin(a)*0.15); g.add(p); }
+  const ring=torus(0.17,0.02,MAT.iron,6,14); ring.rotation.x=Math.PI/2; ring.position.y=1.75; g.add(ring);
+  const lamp=mesh(new THREE.SphereGeometry(0.11,10,8),new THREE.MeshBasicMaterial({color:0x7dff9a})); lamp.position.y=1.62; g.add(lamp);
+  g.position.set(15,SEA_Y+0.05,9); g.userData={lamp};
+  return sh(g);
+}
+function buildShip(){                                      // distant steamer silhouette
+  const g=new THREE.Group();
+  const hull=box(6.4,0.95,1.5,MAT.ironDark); hull.position.y=0.5; g.add(hull);
+  const deckHouse=box(2.0,0.85,1.1,MAT.iron); deckHouse.position.set(-0.5,1.4,0); g.add(deckHouse);
+  const funnel=cyl(0.24,0.3,1.0,10,MAT.copper); funnel.position.set(0.55,1.9,0); funnel.rotation.z=-0.12; g.add(funnel);
+  const mast=cyl(0.035,0.05,1.6,6,MAT.ironDark); mast.position.set(2.3,1.9,0); g.add(mast);
+  const mastLight=mesh(new THREE.SphereGeometry(0.1,8,6),MAT.glow); mastLight.position.set(2.3,2.75,0); g.add(mastLight);
+  const ports=box(1.7,0.14,1.14,new THREE.MeshBasicMaterial({color:0xffca7a})); ports.position.set(-0.5,1.32,0); g.add(ports);
+  g.position.set(-40,SEA_Y+0.15,-34); g.rotation.y=0.55;
+  return g;
+}
+function buildRain(){
+  const N=850, pos=new Float32Array(N*3), speed=new Float32Array(N);
+  for(let i=0;i<N;i++){ const a=rand(0,TAU), r=rand(3.8,26);
+    pos[i*3]=Math.cos(a)*r; pos[i*3+1]=rand(SEA_Y+0.3,9); pos[i*3+2]=Math.sin(a)*r; speed[i]=rand(7,11); }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const p=new THREE.Points(geo,new THREE.PointsMaterial({color:0xbdd2e6,size:0.34,map:rainTex,transparent:true,opacity:0.5,depthWrite:false}));
+  p.rotation.z=0.09; p.userData={speed};
+  return p;
+}
+function buildSpray(rockItems){
+  const N=110, pos=new Float32Array(N*3), base=new Float32Array(N*3), phase=new Float32Array(N), amp=new Float32Array(N);
+  for(let i=0;i<N;i++){ const it=rockItems[(rng()*rockItems.length)|0];
+    base[i*3]=it.x+rand(-1,1); base[i*3+1]=SEA_Y+0.15; base[i*3+2]=it.z+rand(-1,1);
+    phase[i]=rand(0,TAU); amp[i]=rand(0.5,1.7); pos.set(base.subarray(i*3,i*3+3),i*3); }
+  const geo=new THREE.BufferGeometry(); geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const p=new THREE.Points(geo,new THREE.PointsMaterial({color:0xeef6fa,size:0.16,transparent:true,opacity:0.7,depthWrite:false}));
+  p.userData={base,phase,amp};
+  return p;
+}
+
+/* ================= ASSEMBLY / LAYOUT ================= */
+scene.add(buildSky());
+const sea=buildSea(); scene.add(sea);
+const rocks=buildRocks(); scene.add(rocks);
+scene.add(buildFoam(rocks.userData.items));
+scene.add(buildTower());
+scene.add(buildGallery());
+scene.add(buildLampRoom());
+const lens=buildLensAssembly(); scene.add(lens.rig); scene.add(lens.drive);
+const governors=[buildGovernor(1.0),buildGovernor(0.72)];
+ringPlace(governors[0],2.0,2.3); ringPlace(governors[1],1.35,2.5); governors.forEach(gv=>scene.add(gv));
+const drums=[buildWindingDrum(1.0),buildWindingDrum(0.72)];
+ringPlace(drums[0],0.55,2.25); ringPlace(drums[1],2.72,2.55); drums.forEach(dr=>scene.add(dr));
+const oil=buildOilReservoir(); ringPlace(oil,5.35,2.3); scene.add(oil);
+const bench=buildWorkbench(); ringPlace(bench,3.75,2.2); scene.add(bench);
+scene.add(buildSpiralStair());
+scene.add(buildDeckProps());
+const gearWall=buildGearWall(); ringPlace(gearWall,6.05,2.35); scene.add(gearWall);
+const scope=buildTelescope(); ringPlace(scope,5.0,3.85,0.02); scope.rotation.y+=Math.PI; scene.add(scope);
+const crane=buildCrane(); ringPlace(crane,1.85,3.95,0.02); crane.rotation.y+=Math.PI; scene.add(crane);
+const buoy=buildBuoy(); scene.add(buoy);
+const ship=buildShip(); scene.add(ship);
+const rain=buildRain(); scene.add(rain);
+const spray=buildSpray(rocks.userData.items); scene.add(spray);
+
+/* ================= LIGHTING RIG ================= */
+scene.add(new THREE.AmbientLight(0x33415e,0.5));
+const hemi=new THREE.HemisphereLight(0x8fb3d9,0x2c3a4a,0.85); scene.add(hemi);
+const moonDir=new THREE.DirectionalLight(0xbdd2f2,1.6);
+moonDir.position.set(-42,40,-52); moonDir.castShadow=true;
+moonDir.shadow.mapSize.set(2048,2048); moonDir.shadow.bias=-0.0004;
+Object.assign(moonDir.shadow.camera,{left:-20,right:20,top:20,bottom:-22,near:5,far:160});
+moonDir.target.position.set(0,-4,0); scene.add(moonDir,moonDir.target);
+const fillDir=new THREE.DirectionalLight(0x6f86ad,0.6); fillDir.position.set(38,18,44); scene.add(fillDir);
+const lampLight=new THREE.PointLight(0xffc06a,95,70,1.55); lampLight.position.set(0,2.1,0); scene.add(lampLight);
+const benchLight=new THREE.PointLight(0xffb763,9,7,1.8);
+benchLight.position.copy(bench.position); benchLight.position.y=1.3; scene.add(benchLight);
+const seaFill=new THREE.PointLight(0x7fb0dd,30,46,1.5); seaFill.position.set(9,-7,9); scene.add(seaFill);
+
+/* ================= ANIMATION LOOP ================= */
+const clock=new THREE.Clock();
+const seaGeo=sea.geometry, seaPos=seaGeo.attributes.position, seaBase=sea.userData.base;
+function animate(){
+  const dt=Math.min(clock.getDelta(),0.05), t=clock.elapsedTime;
+  controls.update();
+  lens.rig.rotation.y=t*0.28;                              // lens + beams sweep
+  lens.wheel.rotation.y=-t*0.28*(1.66/0.46);               // meshing drive pinion
+  governors.forEach(gv=>{ const u=gv.userData; u.spin.rotation.y=t*u.rate;
+    u.arms.forEach(arm=>{ arm.rotation.z=arm.userData.side*(0.55+0.09*Math.sin(t*0.9)); }); });
+  drums.forEach(dr=>{ dr.userData.spool.rotation.x=t*dr.userData.rate; });
+  for(let i=0;i<seaPos.count;i++){                          // rolling storm swell
+    const x=seaBase[i*3], z=seaBase[i*3+2], d=Math.sqrt(x*x+z*z);
+    seaPos.array[i*3+1]=0.42*Math.sin(0.21*x+t*1.15)+0.3*Math.sin(0.17*z-t*0.85)
+      +0.16*Math.sin(0.33*(x+z)+t*1.7)+0.26*Math.sin(d*0.85-t*2.1)*Math.max(0,1-d/26);
+  }
+  seaPos.needsUpdate=true; seaGeo.computeVertexNormals();
+  foamRings.forEach(f=>{ const u=f.userData, w=Math.sin(t*1.35+u.phase);
+    f.scale.setScalar(1+0.3*w); f.material.opacity=0.18+0.32*Math.max(0,w);
+    f.position.y=SEA_Y+0.22+0.16*w; });
+  const sp=spray.geometry.attributes.position, su=spray.userData;
+  for(let i=0;i<sp.count;i++){ const b=Math.sin(t*1.6+su.phase[i]);
+    sp.array[i*3+1]=su.base[i*3+1]+Math.max(0,b)*su.amp[i]; }
+  sp.needsUpdate=true;
+  const rp=rain.geometry.attributes.position, rs=rain.userData.speed;
+  for(let i=0;i<rp.count;i++){ let y=rp.array[i*3+1]-rs[i]*dt;
+    if(y<SEA_Y+0.2) y+=9-(SEA_Y+0.2)+rand(0,0.5); rp.array[i*3+1]=y; }
+  rp.needsUpdate=true;
+  const fl=0.85+0.13*Math.sin(t*11.3)+0.06*Math.sin(t*23.7);   // lamp flicker
+  lampLight.intensity=95*fl; MAT.lampCore.emissiveIntensity=1.9*fl;
+  MAT.lensGlass.emissiveIntensity=0.5*fl;
+  MAT.beam.opacity=0.055+0.03*fl; MAT.beamCore.opacity=0.12+0.06*fl;
+  oil.userData.needles.forEach(n=>{ n.rotation.z=n.userData.base+0.24*Math.sin(t*0.8+n.userData.phase); });
+  const flame=bench.userData.flame; flame.scale.set(1,0.85+0.3*Math.abs(Math.sin(t*9.1)),1);
+  benchLight.intensity=9*(0.8+0.25*Math.abs(Math.sin(t*9.1)));
+  gearWall.userData.gears.forEach(({w,rate})=>{ w.rotation.y=t*rate; });
+  gearWall.userData.pend.rotation.z=0.3*Math.sin(t*2.2);
+  crane.userData.sway.rotation.z=0.07*Math.sin(t*0.85+1.2);
+  crane.userData.sway.rotation.x=0.05*Math.sin(t*1.1);
+  buoy.position.y=SEA_Y+0.05+0.32*Math.sin(t*1.05+1.7);
+  buoy.rotation.set(0.06*Math.cos(t*0.7),0,0.09*Math.sin(t*0.9));
+  buoy.userData.lamp.visible=Math.sin(t*2.1)>-0.15;
+  ship.rotation.z=0.045*Math.sin(t*0.75);
+  ship.position.y=SEA_Y+0.15+0.12*Math.sin(t*0.9+0.5);
+  const cyc=t%9.4, fA=cyc<0.14?1:(cyc>0.22&&cyc<0.34?0.55:0);   // occasional lightning strobe
+  const flash=fA*(0.55+0.45*Math.sin(cyc*140));
+  hemi.intensity=0.85+2.4*flash; fillDir.intensity=0.6+1.6*flash;
+  renderer.toneMappingExposure=1.28*(1+0.33*flash);
+  renderer.render(scene,camera);
+}
+renderer.setAnimationLoop(animate);
+
+/* ================= RESIZE ================= */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

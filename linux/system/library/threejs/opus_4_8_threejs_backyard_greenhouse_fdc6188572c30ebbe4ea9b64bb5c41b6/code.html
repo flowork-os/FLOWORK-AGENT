@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Backyard Greenhouse — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #16181b; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color: #9aa0a6; letter-spacing: .02em; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Backyard greenhouse · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+/* ---------------------------------------------------------------------------
+   Scene & camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191b1e);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.6, 2.7, 5.6);
+
+/* Environment for realistic metal & glass reflections */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key / fill / rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.6);
+key.position.set(5.5, 7.5, 4.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 5;
+key.shadow.bias = -0.0002;
+const s = key.shadow.camera;
+s.near = 0.5; s.far = 30;
+s.left = -6; s.right = 6; s.top = 6; s.bottom = -6;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd0ff, 0.6);
+fill.position.set(-6, 3.5, 2.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xfff4e8, 1.3);
+rim.position.set(-3.5, 4.5, -6.5);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Ground — shadow catcher only
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   The greenhouse (exactly one centered object)
+--------------------------------------------------------------------------- */
+const gh = new THREE.Group();
+scene.add(gh);
+
+/* dimensions (metres) */
+const halfW = 1.2;                 // half width  (X)
+const halfD = 1.5;                 // half depth  (Z)
+const wallH = 1.8;                 // eave height
+const ridgeH = 2.4;                // ridge height
+const rise = ridgeH - wallH;       // 0.6
+const t = 0.05;                    // frame member thickness
+const slopeLen = Math.hypot(halfW, rise);
+const theta = Math.atan2(rise, halfW);
+
+/* materials */
+const aluMat = new THREE.MeshStandardMaterial({
+  color: 0xb9bec4, metalness: 0.95, roughness: 0.34, envMapIntensity: 1.25
+});
+const boltMat = new THREE.MeshStandardMaterial({
+  color: 0x2c2f33, metalness: 0.85, roughness: 0.4
+});
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xe4f1ec,
+  metalness: 0.0,
+  roughness: 0.06,
+  transmission: 0.92,
+  thickness: 0.6,
+  ior: 1.46,
+  attenuationColor: new THREE.Color(0xbfe2d6),
+  attenuationDistance: 2.4,
+  transparent: true,
+  opacity: 1.0,
+  envMapIntensity: 1.0,
+  clearcoat: 0.25,
+  clearcoatRoughness: 0.2,
+  side: THREE.DoubleSide
+});
+const benchMat = new THREE.MeshStandardMaterial({
+  color: 0x333d36, metalness: 0.05, roughness: 0.88
+});
+const potMat = new THREE.MeshStandardMaterial({
+  color: 0x5a3a2b, metalness: 0.0, roughness: 0.95
+});
+const plantMat = new THREE.MeshStandardMaterial({
+  color: 0x223d27, metalness: 0.0, roughness: 0.9, flatShading: true
+});
+
+/* helper: aluminium frame bar (box), optional Z-rotation */
+function bar(w, h, d, x, y, z, rz = 0, parent = gh, mat = aluMat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  if (rz) m.rotation.z = rz;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* helper: glazing panel from an already-oriented geometry */
+function glass(geom, x, y, z, parent = gh) {
+  const m = new THREE.Mesh(geom, glassMat);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = false;
+  parent.add(m);
+  return m;
+}
+
+/* ----- horizontal rings (base sill, mid rail, eave plate) ----- */
+function ring(y) {
+  bar(t, t, 2 * halfD, -halfW, y, 0);
+  bar(t, t, 2 * halfD,  halfW, y, 0);
+  bar(2 * halfW, t, t, 0, y, -halfD);
+  bar(2 * halfW, t, t, 0, y,  halfD);
+}
+ring(t / 2 + 0.005);   // base
+ring(0.9);             // mid rail
+ring(wallH);           // eave plate
+
+/* ----- corner posts ----- */
+for (const px of [-halfW, halfW]) {
+  for (const pz of [-halfD, halfD]) {
+    bar(t, wallH, t, px, wallH / 2, pz);
+  }
+}
+
+/* ----- side-wall intermediate posts ----- */
+for (const pz of [-0.75, 0, 0.75]) {
+  bar(t, wallH, t, -halfW, wallH / 2, pz);
+  bar(t, wallH, t,  halfW, wallH / 2, pz);
+}
+
+/* ----- front & back mullions / door jambs ----- */
+for (const px of [-0.4, 0.4]) {
+  bar(t, wallH, t, px, wallH / 2,  halfD); // front (door jambs)
+  bar(t, wallH, t, px, wallH / 2, -halfD); // back
+}
+
+/* ----- ridge beam ----- */
+bar(t, t, 2 * halfD, 0, ridgeH, 0);
+
+/* ----- rafters (both slopes) at each bay ----- */
+for (const rz of [-1.5, -0.75, 0, 0.75, 1.5]) {
+  bar(slopeLen, t, t, -halfW / 2, wallH + rise / 2, rz,  theta); // left slope
+  bar(slopeLen, t, t,  halfW / 2, wallH + rise / 2, rz, -theta); // right slope
+}
+
+/* ----- gable framing (king posts + queen posts) ----- */
+for (const gz of [-halfD, halfD]) {
+  bar(t, rise, t, 0, wallH + rise / 2, gz);                 // king post
+  bar(t, 0.3,  t, -0.6, wallH + 0.15, gz);                 // queen posts
+  bar(t, 0.3,  t,  0.6, wallH + 0.15, gz);
+}
+
+/* ---------------------------------------------------------------------------
+   Glazing panels
+--------------------------------------------------------------------------- */
+/* side walls (YZ plane, face ±X) */
+const sideGeo = new THREE.PlaneGeometry(2 * halfD, wallH);
+sideGeo.rotateY(Math.PI / 2);
+glass(sideGeo.clone(), -(halfW - 0.012), wallH / 2, 0);
+glass(sideGeo.clone(),  (halfW - 0.012), wallH / 2, 0);
+
+/* back wall */
+glass(new THREE.PlaneGeometry(2 * halfW, wallH), 0, wallH / 2, -(halfD - 0.012));
+
+/* front wall — two panels flanking the door */
+glass(new THREE.PlaneGeometry(0.8, wallH), -0.8, wallH / 2, halfD - 0.012);
+glass(new THREE.PlaneGeometry(0.8, wallH),  0.8, wallH / 2, halfD - 0.012);
+
+/* gable triangles (front & back) */
+function gableTriangle(zPos) {
+  const shape = new THREE.Shape();
+  shape.moveTo(-halfW, 0);
+  shape.lineTo(halfW, 0);
+  shape.lineTo(0, rise);
+  shape.lineTo(-halfW, 0);
+  const g = new THREE.ShapeGeometry(shape);
+  glass(g, 0, wallH, zPos);
+}
+gableTriangle(halfD - 0.012);
+gableTriangle(-(halfD - 0.012));
+
+/* roof panels (two slopes) */
+function roofPanel(sign) {
+  const g = new THREE.PlaneGeometry(slopeLen, 2 * halfD);
+  g.rotateX(-Math.PI / 2);
+  g.rotateZ(sign * theta);
+  glass(g, sign * (halfW / 2 - 0.02), wallH + rise / 2 - 0.02, 0);
+}
+roofPanel(1);   // left slope (+x side rises to ridge)
+roofPanel(-1);  // right slope
+
+/* ---------------------------------------------------------------------------
+   Hinged door (pivots at left jamb, swung slightly open)
+--------------------------------------------------------------------------- */
+const doorW = 0.8, doorH = wallH;
+const door = new THREE.Group();
+door.position.set(-0.4, 0, halfD);   // hinge at left jamb, on front face
+gh.add(door);
+
+/* frame */
+bar(doorW, 0.06, 0.06, doorW / 2, doorH - 0.03, 0, 0, door);
+bar(doorW, 0.06, 0.06, doorW / 2, 0.03, 0, 0, door);
+bar(0.06, doorH, 0.06, 0.03, doorH / 2, 0, 0, door);
+bar(0.06, doorH, 0.06, doorW - 0.03, doorH / 2, 0, 0, door);
+/* glass panel */
+const dGlass = new THREE.Mesh(new THREE.PlaneGeometry(doorW - 0.14, doorH - 0.16), glassMat);
+dGlass.position.set(doorW / 2, doorH / 2, 0);
+dGlass.castShadow = true;
+door.add(dGlass);
+/* handle (both faces) */
+for (const zoff of [0.045, -0.045]) {
+  const h = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.16, 0.03), boltMat);
+  h.position.set(doorW - 0.1, doorH * 0.5, zoff);
+  h.castShadow = true;
+  door.add(h);
+}
+door.rotation.y = -0.44;  // swing outward
+
+/* ---------------------------------------------------------------------------
+   Interior potting-bench silhouettes + pots
+--------------------------------------------------------------------------- */
+function pottingBench(cx) {
+  const top = bar(0.46, 0.04, 2.4, cx, 0.86, 0, 0, gh, benchMat);
+  bar(0.46, 0.03, 2.4, cx, 0.32, 0, 0, gh, benchMat);   // lower shelf
+  for (const lx of [cx - 0.18, cx + 0.18]) {
+    for (const lz of [-1.08, 1.08]) {
+      bar(0.05, 0.86, 0.05, lx, 0.43, lz, 0, gh, benchMat);
+    }
+  }
+  return top;
+}
+pottingBench(0.72);
+pottingBench(-0.72);
+
+function pottedPlant(x, z, benchTop, scale = 1) {
+  const g = new THREE.Group();
+  const potH = 0.14 * scale, potR = 0.09 * scale;
+  const pot = new THREE.Mesh(
+    new THREE.CylinderGeometry(potR, potR * 0.78, potH, 18), potMat
+  );
+  pot.position.y = potH / 2;
+  pot.castShadow = true; pot.receiveShadow = true;
+  const foliage = new THREE.Mesh(new THREE.IcosahedronGeometry(0.14 * scale, 1), plantMat);
+  foliage.position.y = potH + 0.11 * scale;
+  foliage.scale.set(1.05, 0.85, 1.05);
+  foliage.castShadow = true;
+  g.add(pot, foliage);
+  g.position.set(x, benchTop, z);
+  gh.add(g);
+}
+pottedPlant(0.72, -0.85, 0.88);
+pottedPlant(0.72, 0.15, 0.88, 1.15);
+pottedPlant(0.72, 0.95, 0.88, 0.9);
+pottedPlant(-0.72, -0.55, 0.88, 1.1);
+pottedPlant(-0.72, 0.55, 0.88);
+/* a larger floor pot */
+pottedPlant(0.55, 1.25, 0.0, 2.2);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.target.set(0, 1.05, 0);
+controls.minDistance = 3.2;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

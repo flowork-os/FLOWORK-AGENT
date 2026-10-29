@@ -1,0 +1,1588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Steampunk Orrery Clock</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14131a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 "Georgia", "Times New Roman", serif;
+    color: rgba(226, 204, 160, 0.45);
+    letter-spacing: 0.08em; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">STEAMPUNK ORRERY CLOCK &mdash; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14131a);
+scene.fog = new THREE.Fog(0x14131a, 3.2, 9.5);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(1.35, 0.95, 1.85);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 0.40, 0);
+controls.minDistance = 1.1;
+controls.maxDistance = 5.0;
+controls.maxPolarAngle = Math.PI * 0.495;
+
+/* ============================================================
+   PROCEDURAL TEXTURES  (patina / brass streaking)
+   ============================================================ */
+
+// Deterministic pseudo-random so the look is stable across reloads.
+let _seed = 1337;
+function rnd() {
+  _seed = (_seed * 1664525 + 1013904223) % 4294967296;
+  return _seed / 4294967296;
+}
+
+// value-noise helper on a coarse lattice
+function makeLattice(w, h) {
+  const a = new Float32Array(w * h);
+  for (let i = 0; i < a.length; i++) a[i] = rnd();
+  return a;
+}
+function sampleLattice(a, w, h, x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const sx = xf * xf * (3 - 2 * xf), sy = yf * yf * (3 - 2 * yf);
+  const i0 = ((yi % h) + h) % h, i1 = ((yi + 1) % h + h) % h;
+  const j0 = ((xi % w) + w) % w, j1 = ((xi + 1) % w + w) % w;
+  const v00 = a[i0 * w + j0], v10 = a[i0 * w + j1];
+  const v01 = a[i1 * w + j0], v11 = a[i1 * w + j1];
+  const top = v00 + (v10 - v00) * sx;
+  const bot = v01 + (v11 - v01) * sx;
+  return top + (bot - top) * sy;
+}
+function fbm(latts, sizes, x, y, oct) {
+  let v = 0, amp = 0.5, tot = 0;
+  for (let o = 0; o < oct; o++) {
+    const s = sizes[o];
+    v += amp * sampleLattice(latts[o], s, s, x * s, y * s);
+    tot += amp;
+    amp *= 0.5;
+  }
+  return v / tot;
+}
+
+const SIZES = [4, 8, 16, 32, 64];
+const LATTS = SIZES.map(s => makeLattice(s, s));
+
+/**
+ * Brass with green patina streaks. Returns {map, roughnessMap, metalnessMap, bumpMap}
+ * `streak` biases vertical dripping.
+ */
+function makePatinaTextures(opts = {}) {
+  const S = opts.size || 512;
+  const streak = opts.streak !== undefined ? opts.streak : 1.0;
+  const patinaAmt = opts.patina !== undefined ? opts.patina : 0.5;
+  const base = opts.base || [0.66, 0.46, 0.18];   // brass
+  const polish = opts.polish || [0.86, 0.68, 0.34]; // polished contact edge
+  const verd = opts.verd || [0.22, 0.44, 0.34];   // patina green
+  const grime = opts.grime !== undefined ? opts.grime : 0.35;
+
+  const cAlb = document.createElement('canvas'); cAlb.width = cAlb.height = S;
+  const cRgh = document.createElement('canvas'); cRgh.width = cRgh.height = S;
+  const cMet = document.createElement('canvas'); cMet.width = cMet.height = S;
+  const cBmp = document.createElement('canvas'); cBmp.width = cBmp.height = S;
+
+  const gA = cAlb.getContext('2d'), gR = cRgh.getContext('2d');
+  const gM = cMet.getContext('2d'), gB = cBmp.getContext('2d');
+
+  const iA = gA.createImageData(S, S), iR = gR.createImageData(S, S);
+  const iM = gM.createImageData(S, S), iB = gB.createImageData(S, S);
+
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const u = x / S, v = y / S;
+
+      // vertical-stretched noise => drips / streaks
+      const nStreak = fbm(LATTS, SIZES, u * 1.0, v * 0.18 * (1 / Math.max(0.15, streak)), 5);
+      const nFine = fbm(LATTS, SIZES, u * 3.1 + 0.37, v * 3.1 + 0.11, 5);
+      const nBlotch = fbm(LATTS, SIZES, u * 1.4 + 5.2, v * 1.4 + 2.7, 3);
+
+      // patina mask: streaky + blotchy, thresholded
+      let p = (nStreak * 0.62 + nBlotch * 0.38);
+      p = THREE.MathUtils.smoothstep(p, 0.46 - patinaAmt * 0.22, 0.78 - patinaAmt * 0.10);
+      p *= patinaAmt * (0.55 + 0.65 * nStreak);
+      p = THREE.MathUtils.clamp(p, 0, 1);
+
+      // polish mask: where wear exposes bright metal (inverse-ish of patina, high freq)
+      let pol = THREE.MathUtils.smoothstep(nFine, 0.60, 0.86) * (1.0 - p) * 0.85;
+
+      // grime darkening
+      const g = (1.0 - grime * 0.55 * THREE.MathUtils.smoothstep(nFine, 0.15, 0.62));
+
+      let r = base[0], gg = base[1], b = base[2];
+      // brass tonal variation
+      const tv = 0.85 + 0.30 * nFine;
+      r *= tv; gg *= tv; b *= tv;
+      // mix polish
+      r = r + (polish[0] - r) * pol;
+      gg = gg + (polish[1] - gg) * pol;
+      b = b + (polish[2] - b) * pol;
+      // mix patina (verdigris, slight variation)
+      const vv = 0.80 + 0.42 * nBlotch;
+      r = r + (verd[0] * vv - r) * p;
+      gg = gg + (verd[1] * vv - gg) * p;
+      b = b + (verd[2] * vv - b) * p;
+      // grime
+      r *= g; gg *= g; b *= g;
+
+      const o = (y * S + x) * 4;
+      iA.data[o]     = Math.round(THREE.MathUtils.clamp(r, 0, 1) * 255);
+      iA.data[o + 1] = Math.round(THREE.MathUtils.clamp(gg, 0, 1) * 255);
+      iA.data[o + 2] = Math.round(THREE.MathUtils.clamp(b, 0, 1) * 255);
+      iA.data[o + 3] = 255;
+
+      // roughness: polished low, patina very high
+      let rough = 0.34 + 0.30 * nFine;
+      rough = rough + (0.94 - rough) * p;
+      rough = rough - pol * 0.22;
+      rough = THREE.MathUtils.clamp(rough, 0.05, 1.0);
+      const rv = Math.round(rough * 255);
+      iR.data[o] = iR.data[o + 1] = iR.data[o + 2] = rv; iR.data[o + 3] = 255;
+
+      // metalness: patina is dielectric crust
+      const met = THREE.MathUtils.clamp(1.0 - p * 0.85, 0, 1);
+      const mv = Math.round(met * 255);
+      iM.data[o] = iM.data[o + 1] = iM.data[o + 2] = mv; iM.data[o + 3] = 255;
+
+      // bump: crusty patina raised, fine tooling marks
+      const bmp = THREE.MathUtils.clamp(0.45 + p * 0.35 + (nFine - 0.5) * 0.22, 0, 1);
+      const bv = Math.round(bmp * 255);
+      iB.data[o] = iB.data[o + 1] = iB.data[o + 2] = bv; iB.data[o + 3] = 255;
+    }
+  }
+  gA.putImageData(iA, 0, 0); gR.putImageData(iR, 0, 0);
+  gM.putImageData(iM, 0, 0); gB.putImageData(iB, 0, 0);
+
+  const mk = (c, srgb) => {
+    const t = new THREE.CanvasTexture(c);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return {
+    map: mk(cAlb, true),
+    roughnessMap: mk(cRgh, false),
+    metalnessMap: mk(cMet, false),
+    bumpMap: mk(cBmp, false)
+  };
+}
+
+const texBrass = makePatinaTextures({
+  size: 512, patina: 0.55, streak: 1.0, grime: 0.35,
+  base: [0.70, 0.50, 0.20], polish: [0.92, 0.74, 0.38], verd: [0.20, 0.45, 0.35]
+});
+const texCopper = makePatinaTextures({
+  size: 512, patina: 0.68, streak: 1.25, grime: 0.42,
+  base: [0.62, 0.31, 0.17], polish: [0.88, 0.52, 0.31], verd: [0.17, 0.46, 0.38]
+});
+const texDarkIron = makePatinaTextures({
+  size: 512, patina: 0.14, streak: 0.7, grime: 0.62,
+  base: [0.20, 0.18, 0.17], polish: [0.42, 0.40, 0.39], verd: [0.20, 0.28, 0.24]
+});
+const texSteel = makePatinaTextures({
+  size: 512, patina: 0.10, streak: 0.8, grime: 0.30,
+  base: [0.52, 0.52, 0.55], polish: [0.80, 0.81, 0.84], verd: [0.24, 0.36, 0.32]
+});
+
+function setRepeat(tex, rx, ry) {
+  for (const k in tex) { tex[k].repeat.set(rx, ry); tex[k].needsUpdate = true; }
+}
+setRepeat(texBrass, 2, 2);
+setRepeat(texCopper, 3, 1.4);
+setRepeat(texDarkIron, 2, 2);
+setRepeat(texSteel, 2, 2);
+
+/* ============================================================
+   MATERIALS
+   ============================================================ */
+const matBrass = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: texBrass.map,
+  roughnessMap: texBrass.roughnessMap, metalnessMap: texBrass.metalnessMap,
+  bumpMap: texBrass.bumpMap, bumpScale: 0.0022,
+  metalness: 1.0, roughness: 1.0, envMapIntensity: 1.0
+});
+
+const matBrassPolish = new THREE.MeshStandardMaterial({
+  color: 0xd7a44e, metalness: 1.0, roughness: 0.18, envMapIntensity: 1.25
+});
+
+const matBrassDim = new THREE.MeshStandardMaterial({
+  color: 0xb8873c, metalness: 1.0, roughness: 0.42, envMapIntensity: 0.95
+});
+
+const matCopper = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: texCopper.map,
+  roughnessMap: texCopper.roughnessMap, metalnessMap: texCopper.metalnessMap,
+  bumpMap: texCopper.bumpMap, bumpScale: 0.0026,
+  metalness: 1.0, roughness: 1.0, envMapIntensity: 1.0
+});
+
+const matIron = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: texDarkIron.map,
+  roughnessMap: texDarkIron.roughnessMap, metalnessMap: texDarkIron.metalnessMap,
+  bumpMap: texDarkIron.bumpMap, bumpScale: 0.0030,
+  metalness: 0.92, roughness: 1.0, envMapIntensity: 0.7
+});
+
+const matSteel = new THREE.MeshStandardMaterial({
+  color: 0xffffff, map: texSteel.map,
+  roughnessMap: texSteel.roughnessMap, metalnessMap: texSteel.metalnessMap,
+  bumpMap: texSteel.bumpMap, bumpScale: 0.0016,
+  metalness: 1.0, roughness: 1.0, envMapIntensity: 1.05
+});
+
+const matEnamel = new THREE.MeshStandardMaterial({
+  color: 0xe8dcbe, metalness: 0.05, roughness: 0.55
+});
+
+const matGlass = new THREE.MeshPhysicalMaterial({
+  color: 0xdfe9ea, metalness: 0.0, roughness: 0.06,
+  transmission: 0.94, thickness: 0.01, ior: 1.5,
+  transparent: true, opacity: 0.45, side: THREE.DoubleSide,
+  clearcoat: 1.0, clearcoatRoughness: 0.05
+});
+
+const matCrack = new THREE.MeshBasicMaterial({ color: 0xf2f6f5, transparent: true, opacity: 0.72 });
+
+const matDarkWood = new THREE.MeshStandardMaterial({
+  color: 0x2b1d15, metalness: 0.0, roughness: 0.68
+});
+
+const matEmberGlow = new THREE.MeshStandardMaterial({
+  color: 0xff7a22, emissive: 0xff5a10, emissiveIntensity: 2.2, roughness: 0.8, metalness: 0.0
+});
+
+const matNeedle = new THREE.MeshStandardMaterial({ color: 0x22120c, metalness: 0.4, roughness: 0.5 });
+
+/* ============================================================
+   SMALL GEOMETRY HELPERS
+   ============================================================ */
+
+/** Rivet: tiny domed head. */
+const rivetGeo = new THREE.SphereGeometry(1, 10, 7, 0, Math.PI * 2, 0, Math.PI * 0.55);
+function rivet(r, mat) {
+  const m = new THREE.Mesh(rivetGeo, mat || matBrassPolish);
+  m.scale.set(r, r * 0.72, r);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+/** Ring of rivets on the XZ plane at height y. */
+function rivetRingXZ(parent, count, radius, y, r, mat, phase = 0, tiltOut = false) {
+  for (let i = 0; i < count; i++) {
+    const a = phase + (i / count) * Math.PI * 2;
+    const m = rivet(r, mat);
+    m.position.set(Math.cos(a) * radius, y, Math.sin(a) * radius);
+    if (tiltOut) {
+      m.rotation.z = -Math.PI / 2;
+      m.rotation.y = -a;
+      m.rotation.order = 'YZX';
+      m.rotation.set(0, 0, 0);
+      m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+    }
+    parent.add(m);
+  }
+}
+
+/**
+ * A gear built as an extruded shape: hub + spokes + toothed rim, pierced.
+ */
+function makeGearGeometry(opts) {
+  const teeth = opts.teeth || 24;
+  const rOuter = opts.rOuter || 0.5;
+  const toothH = opts.toothH !== undefined ? opts.toothH : rOuter * 0.10;
+  const rRoot = rOuter - toothH;
+  const rRim = opts.rRim !== undefined ? opts.rRim : rRoot * 0.80;
+  const rHub = opts.rHub !== undefined ? opts.rHub : rOuter * 0.20;
+  const rBore = opts.rBore !== undefined ? opts.rBore : rHub * 0.40;
+  const spokes = opts.spokes !== undefined ? opts.spokes : 5;
+  const spokeW = opts.spokeW !== undefined ? opts.spokeW : 0.030;
+  const thickness = opts.thickness || 0.03;
+
+  const shape = new THREE.Shape();
+  // involute-ish trapezoid teeth
+  const step = (Math.PI * 2) / teeth;
+  const tipHalf = step * 0.20;
+  const rootHalf = step * 0.32;
+  for (let i = 0; i < teeth; i++) {
+    const a = i * step;
+    const p = [
+      [Math.cos(a - rootHalf) * rRoot, Math.sin(a - rootHalf) * rRoot],
+      [Math.cos(a - tipHalf) * rOuter, Math.sin(a - tipHalf) * rOuter],
+      [Math.cos(a + tipHalf) * rOuter, Math.sin(a + tipHalf) * rOuter],
+      [Math.cos(a + rootHalf) * rRoot, Math.sin(a + rootHalf) * rRoot]
+    ];
+    if (i === 0) shape.moveTo(p[0][0], p[0][1]); else shape.lineTo(p[0][0], p[0][1]);
+    shape.lineTo(p[1][0], p[1][1]);
+    shape.lineTo(p[2][0], p[2][1]);
+    shape.lineTo(p[3][0], p[3][1]);
+    // arc along root to next tooth start
+    const aNext = (i + 1) * step - rootHalf;
+    const segs = 3;
+    for (let s = 1; s <= segs; s++) {
+      const t = a + rootHalf + (aNext - (a + rootHalf)) * (s / segs);
+      shape.lineTo(Math.cos(t) * rRoot, Math.sin(t) * rRoot);
+    }
+  }
+  shape.closePath();
+
+  // Pierced web: holes between spokes
+  if (spokes > 0 && rRim > rHub + 0.012) {
+    const halfGapAngle = Math.asin(THREE.MathUtils.clamp(spokeW / (2 * rHub), -0.9, 0.9));
+    for (let i = 0; i < spokes; i++) {
+      const a0 = (i / spokes) * Math.PI * 2;
+      const a1 = ((i + 1) / spokes) * Math.PI * 2;
+      const hole = new THREE.Path();
+      const padOuter = Math.asin(THREE.MathUtils.clamp(spokeW / (2 * rRim), -0.9, 0.9));
+      const s0 = a0 + halfGapAngle, s1 = a1 - halfGapAngle;
+      const o0 = a0 + padOuter, o1 = a1 - padOuter;
+      const N = 14;
+      hole.moveTo(Math.cos(s0) * rHub, Math.sin(s0) * rHub);
+      for (let k = 1; k <= N; k++) {
+        const t = s0 + (s1 - s0) * (k / N);
+        hole.lineTo(Math.cos(t) * rHub, Math.sin(t) * rHub);
+      }
+      hole.lineTo(Math.cos(o1) * rRim, Math.sin(o1) * rRim);
+      for (let k = 1; k <= N; k++) {
+        const t = o1 + (o0 - o1) * (k / N);
+        hole.lineTo(Math.cos(t) * rRim, Math.sin(t) * rRim);
+      }
+      hole.closePath();
+      shape.holes.push(hole);
+    }
+  }
+  // center bore
+  if (rBore > 0.001) {
+    const bore = new THREE.Path();
+    bore.absarc(0, 0, rBore, 0, Math.PI * 2, true);
+    shape.holes.push(bore);
+  }
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness, bevelEnabled: true,
+    bevelThickness: Math.min(0.0045, thickness * 0.22),
+    bevelSize: Math.min(0.0045, thickness * 0.22),
+    bevelSegments: 1, curveSegments: 4, steps: 1
+  });
+  geo.translate(0, 0, -thickness / 2);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function makeGear(opts, mat) {
+  const g = new THREE.Mesh(makeGearGeometry(opts), mat || matBrass);
+  g.castShadow = true; g.receiveShadow = true;
+  return g;
+}
+
+/** Tube along a CatmullRom curve from points. */
+function tubeFrom(points, radius, tubularSegs, radialSegs, mat, closed) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(p[0], p[1], p[2])), !!closed, 'catmullrom', 0.5);
+  const geo = new THREE.TubeGeometry(curve, tubularSegs, radius, radialSegs, !!closed);
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+/** Lathe profile helper: pts is array of [x,y]. */
+function lathe(pts, segments, mat) {
+  const v = pts.map(p => new THREE.Vector2(Math.max(p[0], 0.0001), p[1]));
+  const geo = new THREE.LatheGeometry(v, segments || 48);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+function cyl(rt, rb, h, seg, mat, openEnded) {
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg || 24, 1, !!openEnded), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function box(w, h, d, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function torus(r, tube, rs, ts, mat, arc) {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(r, tube, rs || 12, ts || 48, arc), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function sphere(r, w, h, mat) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(r, w || 24, h || 16), mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================
+   THE ORRERY  (single centered object)
+   ============================================================ */
+const orrery = new THREE.Group();
+scene.add(orrery);
+
+// -------------------------------------------------- BASE PLINTH
+const base = new THREE.Group();
+orrery.add(base);
+
+// wooden foot
+const foot = lathe([
+  [0.000, 0.000],
+  [0.400, 0.000],
+  [0.400, 0.028],
+  [0.386, 0.040],
+  [0.386, 0.052],
+  [0.372, 0.062],
+  [0.372, 0.064],
+  [0.000, 0.064]
+], 72, matDarkWood);
+foot.receiveShadow = true; foot.castShadow = true;
+base.add(foot);
+
+// brass base plate with beveled rim
+const plate = lathe([
+  [0.000, 0.064],
+  [0.366, 0.064],
+  [0.366, 0.086],
+  [0.352, 0.100],
+  [0.344, 0.100],
+  [0.344, 0.108],
+  [0.000, 0.108]
+], 72, matBrass);
+base.add(plate);
+
+// decorative inner ring on plate
+const plateRing = torus(0.300, 0.0075, 10, 84, matBrassPolish);
+plateRing.rotation.x = Math.PI / 2;
+plateRing.position.y = 0.109;
+base.add(plateRing);
+
+const plateRing2 = torus(0.240, 0.005, 10, 72, matBrassDim);
+plateRing2.rotation.x = Math.PI / 2;
+plateRing2.position.y = 0.109;
+base.add(plateRing2);
+
+// rivets around base plate rim
+rivetRingXZ(base, 20, 0.325, 0.104, 0.0110, matBrassPolish);
+// four larger corner bolts
+for (let i = 0; i < 4; i++) {
+  const a = Math.PI / 4 + i * Math.PI / 2;
+  const bolt = cyl(0.017, 0.017, 0.016, 6, matSteel);
+  bolt.position.set(Math.cos(a) * 0.300, 0.114, Math.sin(a) * 0.300);
+  base.add(bolt);
+  const nut = cyl(0.0115, 0.0115, 0.008, 6, matBrassPolish);
+  nut.position.set(Math.cos(a) * 0.300, 0.124, Math.sin(a) * 0.300);
+  base.add(nut);
+}
+
+// small adjustable feet under the wood
+for (let i = 0; i < 3; i++) {
+  const a = -Math.PI / 2 + i * (Math.PI * 2 / 3);
+  const f = lathe([[0, -0.020], [0.030, -0.020], [0.034, -0.008], [0.022, 0.002], [0, 0.002]], 20, matBrassDim);
+  f.position.set(Math.cos(a) * 0.31, 0.0, Math.sin(a) * 0.31);
+  base.add(f);
+}
+
+// -------------------------------------------------- CENTRAL COLUMN
+const column = new THREE.Group();
+column.position.y = 0.108;
+orrery.add(column);
+
+const colBody = lathe([
+  [0.000, 0.000],
+  [0.098, 0.000],
+  [0.098, 0.016],
+  [0.078, 0.030],
+  [0.066, 0.030],
+  [0.066, 0.048],
+  [0.056, 0.058],
+  [0.052, 0.120],
+  [0.058, 0.160],
+  [0.050, 0.176],
+  [0.050, 0.250],
+  [0.062, 0.264],
+  [0.062, 0.276],
+  [0.048, 0.288],
+  [0.036, 0.292],
+  [0.036, 0.330],
+  [0.000, 0.330]
+], 56, matBrass);
+column.add(colBody);
+
+// column collars
+const collarA = torus(0.055, 0.0095, 10, 44, matBrassPolish);
+collarA.rotation.x = Math.PI / 2; collarA.position.y = 0.128;
+column.add(collarA);
+const collarB = torus(0.052, 0.0085, 10, 44, matBrassPolish);
+collarB.rotation.x = Math.PI / 2; collarB.position.y = 0.216;
+column.add(collarB);
+
+rivetRingXZ(column, 8, 0.088, 0.010, 0.0090, matBrassPolish);
+
+/* ============================================================
+   ESCAPEMENT  — exposed toothed cogs on a front plate
+   ============================================================ */
+const escapement = new THREE.Group();
+escapement.position.set(0.0, 0.140, 0.176);
+orrery.add(escapement);
+
+// backing plate (pierced, brass) — vertical, faces +Z
+const plateShape = new THREE.Shape();
+(function () {
+  const w = 0.150, h = 0.190, r = 0.026;
+  plateShape.moveTo(-w + r, -h * 0.5);
+  plateShape.lineTo(w - r, -h * 0.5);
+  plateShape.quadraticCurveTo(w, -h * 0.5, w, -h * 0.5 + r);
+  plateShape.lineTo(w, h * 0.5 - r);
+  plateShape.quadraticCurveTo(w, h * 0.5, w - r, h * 0.5);
+  plateShape.lineTo(-w + r, h * 0.5);
+  plateShape.quadraticCurveTo(-w, h * 0.5, -w, h * 0.5 - r);
+  plateShape.lineTo(-w, -h * 0.5 + r);
+  plateShape.quadraticCurveTo(-w, -h * 0.5, -w + r, -h * 0.5);
+  plateShape.closePath();
+  // piercings
+  const holes = [[-0.100, 0.050, 0.020], [0.100, 0.050, 0.020], [-0.100, -0.052, 0.016], [0.100, -0.052, 0.016], [0.0, -0.070, 0.014]];
+  for (const [hx, hy, hr] of holes) {
+    const p = new THREE.Path();
+    p.absarc(hx, hy, hr, 0, Math.PI * 2, true);
+    plateShape.holes.push(p);
+  }
+})();
+const escPlate = new THREE.Mesh(new THREE.ExtrudeGeometry(plateShape, {
+  depth: 0.012, bevelEnabled: true, bevelThickness: 0.002, bevelSize: 0.002, bevelSegments: 1, curveSegments: 6, steps: 1
+}), matBrass);
+escPlate.castShadow = true; escPlate.receiveShadow = true;
+escPlate.position.z = -0.014;
+escapement.add(escPlate);
+
+// plate rivets
+for (const [rx, ry] of [[-0.132, 0.082], [0.132, 0.082], [-0.132, -0.082], [0.132, -0.082], [0, 0.086]]) {
+  const rv = rivet(0.0085, matBrassPolish);
+  rv.rotation.x = Math.PI / 2;
+  rv.position.set(rx, ry, 0.000);
+  escapement.add(rv);
+}
+
+// --- escape wheel (big, thin, many teeth)
+const escapeWheelPivot = new THREE.Group();
+escapeWheelPivot.position.set(0.0, 0.008, 0.014);
+escapement.add(escapeWheelPivot);
+const escapeWheel = makeGear({
+  teeth: 30, rOuter: 0.092, toothH: 0.013, rRim: 0.062, rHub: 0.024, rBore: 0.008,
+  spokes: 5, spokeW: 0.012, thickness: 0.008
+}, matSteel);
+escapeWheelPivot.add(escapeWheel);
+const ewHub = cyl(0.020, 0.020, 0.018, 20, matBrassPolish);
+ewHub.rotation.x = Math.PI / 2;
+escapeWheelPivot.add(ewHub);
+
+// --- pallet fork / anchor above escape wheel
+const anchorPivot = new THREE.Group();
+anchorPivot.position.set(0.0, 0.120, 0.018);
+escapement.add(anchorPivot);
+(function buildAnchor() {
+  const s = new THREE.Shape();
+  s.moveTo(-0.010, 0.006);
+  s.quadraticCurveTo(-0.060, 0.000, -0.070, -0.036);
+  s.lineTo(-0.056, -0.044);
+  s.quadraticCurveTo(-0.046, -0.014, -0.004, -0.008);
+  s.lineTo(0.004, -0.008);
+  s.quadraticCurveTo(0.046, -0.014, 0.056, -0.044);
+  s.lineTo(0.070, -0.036);
+  s.quadraticCurveTo(0.060, 0.000, 0.010, 0.006);
+  s.quadraticCurveTo(0.014, 0.018, 0.000, 0.020);
+  s.quadraticCurveTo(-0.014, 0.018, -0.010, 0.006);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.007, bevelEnabled: true, bevelThickness: 0.0015, bevelSize: 0.0015, bevelSegments: 1, curveSegments: 8, steps: 1 });
+  g.translate(0, 0, -0.0035);
+  const m = new THREE.Mesh(g, matSteel);
+  m.castShadow = true; m.receiveShadow = true;
+  anchorPivot.add(m);
+  const pin = cyl(0.006, 0.006, 0.020, 14, matBrassPolish);
+  pin.rotation.x = Math.PI / 2;
+  anchorPivot.add(pin);
+  // jewel pallets
+  const jewelMat = new THREE.MeshStandardMaterial({ color: 0x8e1f2a, metalness: 0.1, roughness: 0.15, emissive: 0x2a0407, emissiveIntensity: 0.4 });
+  for (const sx of [-1, 1]) {
+    const j = box(0.010, 0.012, 0.009, jewelMat);
+    j.position.set(sx * 0.063, -0.040, 0);
+    j.rotation.z = sx * 0.35;
+    anchorPivot.add(j);
+  }
+})();
+
+// --- pendulum hanging from anchor
+const pendulumPivot = new THREE.Group();
+pendulumPivot.position.set(0.0, 0.120, 0.030);
+escapement.add(pendulumPivot);
+const pendRod = cyl(0.0035, 0.0035, 0.210, 12, matSteel);
+pendRod.position.y = -0.105;
+pendulumPivot.add(pendRod);
+const pendBob = lathe([
+  [0.000, -0.012], [0.028, -0.010], [0.034, 0.000], [0.028, 0.010], [0.000, 0.012]
+], 36, matBrassPolish);
+pendBob.rotation.x = Math.PI / 2;
+pendBob.position.y = -0.205;
+pendulumPivot.add(pendBob);
+const bobRing = torus(0.030, 0.0035, 8, 36, matBrass);
+bobRing.position.y = -0.205;
+pendulumPivot.add(bobRing);
+
+// --- driver cogs left & right, meshed visually
+const cogA = new THREE.Group();
+cogA.position.set(-0.118, -0.052, 0.010);
+escapement.add(cogA);
+cogA.add(makeGear({ teeth: 18, rOuter: 0.052, toothH: 0.010, rRim: 0.032, rHub: 0.014, rBore: 0.006, spokes: 4, spokeW: 0.010, thickness: 0.010 }, matBrass));
+const cogAHub = cyl(0.013, 0.013, 0.018, 16, matBrassPolish); cogAHub.rotation.x = Math.PI / 2; cogA.add(cogAHub);
+
+const cogB = new THREE.Group();
+cogB.position.set(0.118, -0.052, 0.010);
+escapement.add(cogB);
+cogB.add(makeGear({ teeth: 22, rOuter: 0.060, toothH: 0.011, rRim: 0.038, rHub: 0.016, rBore: 0.006, spokes: 5, spokeW: 0.010, thickness: 0.010 }, matCopper));
+const cogBHub = cyl(0.014, 0.014, 0.018, 16, matBrassPolish); cogBHub.rotation.x = Math.PI / 2; cogB.add(cogBHub);
+
+const cogC = new THREE.Group();
+cogC.position.set(-0.062, -0.086, 0.030);
+escapement.add(cogC);
+cogC.add(makeGear({ teeth: 12, rOuter: 0.030, toothH: 0.008, rRim: 0.016, rHub: 0.009, rBore: 0.004, spokes: 3, spokeW: 0.008, thickness: 0.009 }, matSteel));
+
+const cogD = new THREE.Group();
+cogD.position.set(0.058, -0.088, 0.032);
+escapement.add(cogD);
+cogD.add(makeGear({ teeth: 14, rOuter: 0.034, toothH: 0.008, rRim: 0.019, rHub: 0.010, rBore: 0.004, spokes: 4, spokeW: 0.008, thickness: 0.009 }, matBrassPolish));
+
+// mainspring barrel behind
+const barrel = cyl(0.046, 0.046, 0.022, 32, matBrass);
+barrel.rotation.x = Math.PI / 2;
+barrel.position.set(0.0, 0.078, -0.024);
+escapement.add(barrel);
+const barrelRing = torus(0.046, 0.0035, 8, 40, matBrassPolish);
+barrelRing.position.set(0, 0.078, -0.024);
+escapement.add(barrelRing);
+
+/* ============================================================
+   COPPER PIPING LOOPS BEHIND
+   ============================================================ */
+const piping = new THREE.Group();
+orrery.add(piping);
+
+function pipeUnion(pos, rot, r) {
+  const u = lathe([[0, -0.012], [r * 1.55, -0.012], [r * 1.75, -0.004], [r * 1.75, 0.004], [r * 1.55, 0.012], [0, 0.012]], 20, matBrassPolish);
+  u.position.copy(pos);
+  if (rot) u.rotation.copy(rot);
+  return u;
+}
+
+// Big loop that arcs behind the column and comes forward to the boiler.
+const R = 0.0125;
+const loop1 = tubeFrom([
+  [-0.196, 0.122, -0.052],
+  [-0.238, 0.196, -0.126],
+  [-0.176, 0.318, -0.190],
+  [-0.030, 0.372, -0.212],
+  [0.128, 0.330, -0.196],
+  [0.216, 0.226, -0.140],
+  [0.222, 0.140, -0.062],
+  [0.196, 0.118, -0.010]
+], 120, 16, matCopper);
+piping.add(loop1);
+
+// Second, tighter loop crossing the first
+const loop2 = tubeFrom([
+  [-0.150, 0.124, -0.118],
+  [-0.196, 0.212, -0.176],
+  [-0.100, 0.288, -0.226],
+  [0.036, 0.286, -0.238],
+  [0.146, 0.220, -0.198],
+  [0.164, 0.140, -0.130],
+  [0.130, 0.116, -0.096]
+], 100, 14, matCopper);
+piping.add(loop2);
+
+// Vertical riser from base to the loop on the right
+const riser = tubeFrom([
+  [0.196, 0.112, -0.010],
+  [0.212, 0.150, 0.004],
+  [0.206, 0.190, 0.022],
+  [0.180, 0.212, 0.046]
+], 40, 14, matCopper);
+piping.add(riser);
+
+// short spur to gauge
+const spur = tubeFrom([
+  [-0.196, 0.118, -0.052],
+  [-0.216, 0.116, 0.010],
+  [-0.212, 0.122, 0.062],
+  [-0.196, 0.132, 0.092]
+], 40, 14, matCopper);
+piping.add(spur);
+
+// pipe unions / collars along loops
+const unionSpecs = [
+  [new THREE.Vector3(-0.212, 0.160, -0.096), new THREE.Euler(0.95, 0.4, 0.55)],
+  [new THREE.Vector3(-0.056, 0.368, -0.208), new THREE.Euler(0, 0, Math.PI / 2)],
+  [new THREE.Vector3(0.176, 0.288, -0.176), new THREE.Euler(0.8, -0.5, -0.7)],
+  [new THREE.Vector3(0.220, 0.176, -0.100), new THREE.Euler(0.5, -0.2, 0.15)],
+  [new THREE.Vector3(-0.176, 0.244, -0.204), new THREE.Euler(0.9, 0.35, 0.5)],
+  [new THREE.Vector3(0.086, 0.286, -0.236), new THREE.Euler(Math.PI / 2, 0, 0)]
+];
+for (const [p, r] of unionSpecs) piping.add(pipeUnion(p, r, R));
+
+// Pipe brackets bolting the pipes to the base
+for (const bx of [-0.196, 0.196]) {
+  const brk = box(0.030, 0.040, 0.016, matIron);
+  brk.position.set(bx, 0.126, -0.032);
+  piping.add(brk);
+  const rv = rivet(0.008, matBrassPolish);
+  rv.position.set(bx, 0.148, -0.032);
+  piping.add(rv);
+}
+
+// tiny pressure relief valve on the loop apex
+const valveStack = new THREE.Group();
+valveStack.position.set(-0.030, 0.384, -0.212);
+piping.add(valveStack);
+valveStack.add(cyl(0.014, 0.018, 0.026, 18, matBrassPolish));
+const valveTop = lathe([[0, 0.013], [0.020, 0.013], [0.022, 0.020], [0.014, 0.030], [0.006, 0.038], [0, 0.038]], 20, matBrass);
+valveStack.add(valveTop);
+const valveLever = box(0.052, 0.005, 0.008, matSteel);
+valveLever.position.set(0.020, 0.040, 0);
+valveLever.rotation.z = -0.22;
+valveStack.add(valveLever);
+
+/* ============================================================
+   CENTRAL PIERCED SUN GEAR + SUN
+   ============================================================ */
+const sunAssembly = new THREE.Group();
+sunAssembly.position.y = 0.108 + 0.330;
+orrery.add(sunAssembly);
+
+// The great pierced sun gear, horizontal
+const sunGearSpin = new THREE.Group();
+sunAssembly.add(sunGearSpin);
+
+const sunGear = makeGear({
+  teeth: 48, rOuter: 0.230, toothH: 0.020, rRim: 0.176, rHub: 0.070, rBore: 0.026,
+  spokes: 8, spokeW: 0.020, thickness: 0.016
+}, matBrass);
+sunGear.rotation.x = -Math.PI / 2;
+sunGearSpin.add(sunGear);
+
+// second, smaller pierced gear stacked below (differential look)
+const sunGear2 = makeGear({
+  teeth: 32, rOuter: 0.150, toothH: 0.016, rRim: 0.106, rHub: 0.050, rBore: 0.022,
+  spokes: 6, spokeW: 0.016, thickness: 0.012
+}, matBrassDim);
+sunGear2.rotation.x = -Math.PI / 2;
+sunGear2.position.y = -0.028;
+sunGearSpin.add(sunGear2);
+
+// pierced filigree ring: decorative sunburst piercing between rim and teeth
+(function sunburst() {
+  const grp = new THREE.Group();
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2 + 0.065;
+    const ray = box(0.052, 0.006, 0.010, matBrassPolish);
+    ray.position.set(Math.cos(a) * 0.148, 0.011, Math.sin(a) * 0.148);
+    ray.rotation.y = -a;
+    grp.add(ray);
+  }
+  sunGearSpin.add(grp);
+})();
+
+// polished hub cap on the sun gear
+const sunHubCap = lathe([
+  [0.000, 0.016], [0.048, 0.016], [0.060, 0.024], [0.058, 0.034], [0.040, 0.044], [0.020, 0.050], [0.000, 0.052]
+], 40, matBrassPolish);
+sunGearSpin.add(sunHubCap);
+rivetRingXZ(sunGearSpin, 12, 0.196, 0.010, 0.0085, matBrassPolish);
+rivetRingXZ(sunGearSpin, 8, 0.084, 0.012, 0.0075, matBrassDim);
+
+// The SUN: a glowing pierced brass orb with a filigree cage
+const sun = new THREE.Group();
+sun.position.y = 0.108;
+sunAssembly.add(sun);
+
+const sunCore = sphere(0.049, 28, 20, new THREE.MeshStandardMaterial({
+  color: 0xffb14a, emissive: 0xff9628, emissiveIntensity: 2.4, roughness: 0.5, metalness: 0.0
+}));
+sun.add(sunCore);
+
+// filigree cage: meridians + equator
+for (let i = 0; i < 6; i++) {
+  const t = torus(0.058, 0.0042, 8, 40, matBrassPolish);
+  t.rotation.y = (i / 6) * Math.PI;
+  sun.add(t);
+}
+const eq = torus(0.058, 0.006, 8, 52, matBrass);
+eq.rotation.x = Math.PI / 2;
+sun.add(eq);
+const eq2 = torus(0.050, 0.0035, 8, 44, matBrassDim);
+eq2.rotation.x = Math.PI / 2;
+eq2.position.y = 0.030;
+sun.add(eq2);
+const eq3 = eq2.clone(); eq3.position.y = -0.030; sun.add(eq3);
+
+// sun mounting spindle
+const spindle = cyl(0.011, 0.014, 0.116, 16, matBrassPolish);
+spindle.position.y = 0.050;
+sunAssembly.add(spindle);
+
+// a warm point light inside the sun (no shadows: cheap + soft)
+const sunLight = new THREE.PointLight(0xffa23c, 1.5, 1.5, 2.0);
+sunLight.position.set(0, 0.108, 0);
+sunAssembly.add(sunLight);
+
+/* ============================================================
+   THREE CURVED ARMATURES WITH PLANETS
+   ============================================================ */
+const armatureRoot = new THREE.Group();
+armatureRoot.position.y = 0.108 + 0.330;
+orrery.add(armatureRoot);
+
+const planetMats = [
+  new THREE.MeshStandardMaterial({ color: 0x9a5f34, metalness: 0.85, roughness: 0.36 }),          // rusty copper world
+  new THREE.MeshStandardMaterial({ color: 0x3f6b6a, metalness: 0.65, roughness: 0.42 }),          // verdigris world
+  new THREE.MeshStandardMaterial({ color: 0xc9a24a, metalness: 1.0, roughness: 0.22 })            // polished brass world
+];
+
+/**
+ * Build one armature: a curved brass sweep rising from the hub,
+ * a riveted rod at its tip, and a planet sphere.
+ */
+function buildArmature(index, reach, rise, planetR, planetMat, ringed) {
+  const arm = new THREE.Group();
+
+  // Curved armature: swept tube from hub outward and upward
+  const pts = [];
+  const N = 26;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const ang = t * (Math.PI * 0.36);              // sweeps around slightly
+    const rr = 0.052 + reach * t;
+    const yy = rise * Math.sin(t * Math.PI * 0.72) + 0.004;
+    pts.push([Math.cos(ang) * rr, yy, Math.sin(ang) * rr]);
+  }
+  const armTube = tubeFrom(pts, 0.0092, 90, 12, matBrass);
+  arm.add(armTube);
+
+  // Flat "strap" running alongside for a wrought look
+  const strapPts = pts.map(p => [p[0] * 0.995, p[1] - 0.016, p[2] * 0.995]);
+  const strap = tubeFrom(strapPts, 0.0052, 70, 8, matBrassDim);
+  arm.add(strap);
+
+  // small struts joining tube and strap
+  for (let i = 3; i < N - 2; i += 6) {
+    const p = pts[i];
+    const st = cyl(0.0028, 0.0028, 0.016, 8, matBrassPolish);
+    st.position.set(p[0] * 0.997, p[1] - 0.008, p[2] * 0.997);
+    arm.add(st);
+  }
+
+  // rivets along the armature
+  for (let i = 2; i < N; i += 4) {
+    const p = pts[i];
+    const rv = rivet(0.0062, matBrassPolish);
+    rv.position.set(p[0], p[1] + 0.0088, p[2]);
+    arm.add(rv);
+  }
+
+  // Root shoe bolted to the sun-gear hub
+  const tip0 = pts[0];
+  const shoe = box(0.036, 0.020, 0.028, matBrassDim);
+  shoe.position.set(tip0[0] * 0.9, tip0[1], tip0[2] * 0.9);
+  shoe.lookAt(new THREE.Vector3(0, tip0[1], 0));
+  arm.add(shoe);
+  const shoeRv = rivet(0.0075, matBrassPolish);
+  shoeRv.position.set(tip0[0] * 0.9, tip0[1] + 0.011, tip0[2] * 0.9);
+  arm.add(shoeRv);
+
+  // Tip: vertical riveted rod carrying the planet
+  const tip = pts[N];
+  const tipGrp = new THREE.Group();
+  tipGrp.position.set(tip[0], tip[1], tip[2]);
+  arm.add(tipGrp);
+
+  const rodLen = 0.070 + planetR * 1.5;
+  const rod = cyl(0.0055, 0.0068, rodLen, 14, matBrassPolish);
+  rod.position.y = rodLen * 0.5;
+  tipGrp.add(rod);
+
+  // rod collar + rivets
+  const collar = torus(0.0098, 0.0032, 8, 24, matBrass);
+  collar.rotation.x = Math.PI / 2;
+  collar.position.y = 0.012;
+  tipGrp.add(collar);
+  const collar2 = collar.clone();
+  collar2.position.y = rodLen - 0.014;
+  tipGrp.add(collar2);
+  for (let i = 0; i < 4; i++) {
+    const a = (i / 4) * Math.PI * 2;
+    const rv = rivet(0.0042, matBrassDim);
+    rv.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+    rv.position.set(Math.cos(a) * 0.0062, 0.012, Math.sin(a) * 0.0062);
+    tipGrp.add(rv);
+  }
+
+  // planet spin group
+  const planetSpin = new THREE.Group();
+  planetSpin.position.y = rodLen + planetR * 0.72;
+  planetSpin.rotation.z = 0.28 + index * 0.12;
+  tipGrp.add(planetSpin);
+
+  const planet = sphere(planetR, 32, 22, planetMat);
+  planetSpin.add(planet);
+
+  // engraved equator band on planet
+  const bandT = torus(planetR * 1.005, planetR * 0.055, 8, 40, matBrassDim);
+  bandT.rotation.x = Math.PI / 2;
+  planetSpin.add(bandT);
+
+  // a little moon on the third
+  if (index === 2) {
+    const moonArm = new THREE.Group();
+    planetSpin.add(moonArm);
+    const mrod = cyl(0.0022, 0.0022, planetR * 1.9, 8, matBrassPolish);
+    mrod.rotation.z = Math.PI / 2;
+    mrod.position.x = planetR * 0.95;
+    moonArm.add(mrod);
+    const moon = sphere(planetR * 0.34, 18, 12, new THREE.MeshStandardMaterial({ color: 0x8d8d92, metalness: 0.7, roughness: 0.55 }));
+    moon.position.x = planetR * 1.9;
+    moonArm.add(moon);
+    arm.userData.moonArm = moonArm;
+  }
+
+  // an orbital ring for the second planet (Saturn-ish)
+  if (ringed) {
+    const ringGeo = new THREE.RingGeometry(planetR * 1.45, planetR * 2.15, 64, 1);
+    const ringMat = new THREE.MeshStandardMaterial({
+      color: 0xb9903f, metalness: 1.0, roughness: 0.35, side: THREE.DoubleSide,
+      transparent: true, opacity: 0.92
+    });
+    const ring = new THREE.Mesh(ringGeo, ringMat);
+    ring.rotation.x = Math.PI / 2 - 0.30;
+    ring.castShadow = true;
+    planetSpin.add(ring);
+    const ringEdge = torus(planetR * 2.15, planetR * 0.045, 6, 48, matBrassPolish);
+    ringEdge.rotation.x = Math.PI / 2 - 0.30;
+    planetSpin.add(ringEdge);
+  }
+
+  arm.userData.planetSpin = planetSpin;
+  return arm;
+}
+
+const armSpecs = [
+  { reach: 0.150, rise: 0.100, r: 0.030, ringed: false },
+  { reach: 0.230, rise: 0.150, r: 0.036, ringed: true },
+  { reach: 0.310, rise: 0.196, r: 0.026, ringed: false }
+];
+
+const armPivots = [];
+armSpecs.forEach((s, i) => {
+  const pivot = new THREE.Group();
+  pivot.rotation.y = (i / 3) * Math.PI * 2;
+  const arm = buildArmature(i, s.reach, s.rise, s.r, planetMats[i], s.ringed);
+  pivot.add(arm);
+  armatureRoot.add(pivot);
+  armPivots.push({ pivot, arm, speed: 0.34 / (0.55 + i * 0.55) });
+});
+
+// Thin brass orbit hoops (celestial rings) for the orrery look
+const hoopSpecs = [[0.208, 0.0026, 0.16], [0.290, 0.0028, -0.11], [0.372, 0.0030, 0.07]];
+hoopSpecs.forEach(([hr, ht, tilt], i) => {
+  const h = torus(hr, ht, 8, 120, matBrassDim);
+  h.rotation.x = Math.PI / 2 + tilt;
+  h.rotation.z = i * 0.4;
+  h.position.y = 0.048 + i * 0.030;
+  armatureRoot.add(h);
+});
+
+/* ============================================================
+   PRESSURE GAUGE WITH CRACKED GLASS
+   ============================================================ */
+const gauge = new THREE.Group();
+gauge.position.set(-0.212, 0.108, 0.130);
+gauge.rotation.y = 0.52;
+gauge.rotation.x = -0.30;
+orrery.add(gauge);
+
+// mounting post
+const gPost = cyl(0.010, 0.014, 0.062, 16, matBrass);
+gPost.position.set(0, 0.030, 0);
+gPost.rotation.x = 0.30;      // counteract group tilt so post stands upright-ish
+gauge.add(gPost);
+
+const gaugeHead = new THREE.Group();
+gaugeHead.position.set(0, 0.086, 0.012);
+gaugeHead.rotation.x = -0.62;   // tilt face toward viewer/up
+gauge.add(gaugeHead);
+
+// gauge body (lathe): faces +Z of gaugeHead
+const gBody = lathe([
+  [0.000, -0.020],
+  [0.052, -0.020],
+  [0.062, -0.012],
+  [0.064, 0.006],
+  [0.070, 0.012],
+  [0.070, 0.018],
+  [0.058, 0.020],
+  [0.058, 0.014],
+  [0.000, 0.014]
+], 48, matBrass);
+gBody.rotation.x = -Math.PI / 2;    // lathe Y axis -> +Z
+gaugeHead.add(gBody);
+
+// bezel ring
+const bezel = torus(0.064, 0.0075, 10, 56, matBrassPolish);
+bezel.position.z = 0.019;
+gaugeHead.add(bezel);
+
+// bezel knurl rivets
+for (let i = 0; i < 12; i++) {
+  const a = (i / 12) * Math.PI * 2;
+  const rv = rivet(0.005, matBrassPolish);
+  rv.rotation.x = Math.PI / 2;
+  rv.position.set(Math.cos(a) * 0.064, Math.sin(a) * 0.064, 0.024);
+  gaugeHead.add(rv);
+}
+
+// enamel dial face
+const dial = new THREE.Mesh(new THREE.CircleGeometry(0.058, 56), matEnamel);
+dial.position.z = 0.0125;
+dial.receiveShadow = true;
+gaugeHead.add(dial);
+
+// dial markings (procedural: ticks + red danger arc)
+(function dialMarks() {
+  const tickMat = new THREE.MeshBasicMaterial({ color: 0x241a10 });
+  const majorMat = new THREE.MeshBasicMaterial({ color: 0x1a1109 });
+  const total = 44;
+  for (let i = 0; i <= total; i++) {
+    const t = i / total;
+    const a = Math.PI * 1.30 - t * Math.PI * 1.60;     // sweep
+    const major = (i % 5 === 0);
+    const len = major ? 0.012 : 0.006;
+    const w = major ? 0.0028 : 0.0016;
+    const rM = 0.050 - len * 0.5;
+    const tk = new THREE.Mesh(new THREE.PlaneGeometry(w, len), major ? majorMat : tickMat);
+    tk.position.set(Math.cos(a) * rM, Math.sin(a) * rM, 0.0132);
+    tk.rotation.z = a - Math.PI / 2;
+    gaugeHead.add(tk);
+  }
+  // red danger arc near top-right
+  const arc = new THREE.Mesh(
+    new THREE.RingGeometry(0.0505, 0.0565, 40, 1, Math.PI * 1.30 - Math.PI * 1.60 * 0.78, Math.PI * 1.60 * 0.22),
+    new THREE.MeshBasicMaterial({ color: 0x9d2318, side: THREE.DoubleSide })
+  );
+  arc.position.z = 0.0131;
+  gaugeHead.add(arc);
+  // inner circle detail
+  const inner = new THREE.Mesh(
+    new THREE.RingGeometry(0.0185, 0.0198, 40),
+    new THREE.MeshBasicMaterial({ color: 0x3a2a18 })
+  );
+  inner.position.z = 0.0131;
+  gaugeHead.add(inner);
+})();
+
+// needle
+const needlePivot = new THREE.Group();
+needlePivot.position.z = 0.0140;
+gaugeHead.add(needlePivot);
+(function needle() {
+  const s = new THREE.Shape();
+  s.moveTo(-0.0035, -0.010);
+  s.lineTo(0.0035, -0.010);
+  s.lineTo(0.0012, 0.048);
+  s.lineTo(0.0000, 0.052);
+  s.lineTo(-0.0012, 0.048);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, { depth: 0.0016, bevelEnabled: false, curveSegments: 2, steps: 1 });
+  const m = new THREE.Mesh(g, matNeedle);
+  m.castShadow = true;
+  needlePivot.add(m);
+  const capN = cyl(0.0065, 0.0065, 0.004, 16, matBrassPolish);
+  capN.rotation.x = Math.PI / 2;
+  capN.position.z = 0.002;
+  needlePivot.add(capN);
+})();
+needlePivot.rotation.z = -Math.PI * 0.30;
+
+// CRACKED GLASS: transparent disc + procedural crack lines radiating from an impact point
+const glass = new THREE.Mesh(new THREE.CircleGeometry(0.0585, 48), matGlass);
+glass.position.z = 0.0182;
+gaugeHead.add(glass);
+
+(function cracks() {
+  const grp = new THREE.Group();
+  grp.position.z = 0.0189;
+  gaugeHead.add(grp);
+
+  const impact = new THREE.Vector2(0.021, 0.016);
+  const RMAX = 0.0570;
+
+  // radial fractures with jitter and branches
+  const branches = [];
+  const NB = 9;
+  for (let i = 0; i < NB; i++) {
+    const a0 = (i / NB) * Math.PI * 2 + rnd() * 0.5;
+    let x = impact.x, y = impact.y, a = a0;
+    const seg = [new THREE.Vector2(x, y)];
+    for (let s = 0; s < 9; s++) {
+      a += (rnd() - 0.5) * 0.55;
+      const stepLen = 0.006 + rnd() * 0.010;
+      x += Math.cos(a) * stepLen;
+      y += Math.sin(a) * stepLen;
+      if (Math.hypot(x, y) > RMAX) break;
+      seg.push(new THREE.Vector2(x, y));
+    }
+    if (seg.length > 1) branches.push(seg);
+    // side branch
+    if (seg.length > 4 && rnd() > 0.35) {
+      const startIdx = 2 + Math.floor(rnd() * (seg.length - 3));
+      let bx = seg[startIdx].x, by = seg[startIdx].y, ba = a0 + (rnd() - 0.5) * 1.5;
+      const sb = [new THREE.Vector2(bx, by)];
+      for (let s = 0; s < 5; s++) {
+        ba += (rnd() - 0.5) * 0.6;
+        const sl = 0.005 + rnd() * 0.008;
+        bx += Math.cos(ba) * sl; by += Math.sin(ba) * sl;
+        if (Math.hypot(bx, by) > RMAX) break;
+        sb.push(new THREE.Vector2(bx, by));
+      }
+      if (sb.length > 1) branches.push(sb);
+    }
+  }
+  // concentric ring fractures around impact
+  for (let k = 0; k < 3; k++) {
+    const rr = 0.008 + k * 0.009;
+    const ring = [];
+    const NP = 20;
+    for (let i = 0; i <= NP; i++) {
+      const a = (i / NP) * Math.PI * 2;
+      const jr = rr * (0.86 + rnd() * 0.28);
+      const px = impact.x + Math.cos(a) * jr;
+      const py = impact.y + Math.sin(a) * jr;
+      if (Math.hypot(px, py) > RMAX) continue;
+      ring.push(new THREE.Vector2(px, py));
+    }
+    if (ring.length > 2) branches.push(ring);
+  }
+
+  for (const seg of branches) {
+    const pts3 = seg.map(p => new THREE.Vector3(p.x, p.y, 0));
+    const curve = new THREE.CatmullRomCurve3(pts3, false, 'catmullrom', 0.4);
+    const g = new THREE.TubeGeometry(curve, Math.max(8, seg.length * 4), 0.00042, 4, false);
+    grp.add(new THREE.Mesh(g, matCrack));
+  }
+
+  // impact chip: small bright cone
+  const chip = new THREE.Mesh(new THREE.CircleGeometry(0.0045, 10), matCrack);
+  chip.position.set(impact.x, impact.y, 0.0002);
+  grp.add(chip);
+})();
+
+// gauge bracket bolting to base
+const gBracket = box(0.048, 0.014, 0.030, matIron);
+gBracket.position.set(0, 0.004, 0.002);
+gauge.add(gBracket);
+for (const sx of [-0.016, 0.016]) {
+  const rv = rivet(0.0065, matBrassPolish);
+  rv.position.set(sx, 0.012, 0.010);
+  gauge.add(rv);
+}
+
+/* ============================================================
+   TINY RIVETED BOILER
+   ============================================================ */
+const boiler = new THREE.Group();
+boiler.position.set(0.214, 0.108, 0.126);
+boiler.rotation.y = -0.44;
+orrery.add(boiler);
+
+// vertical drum
+const drum = lathe([
+  [0.000, 0.000],
+  [0.062, 0.000],
+  [0.062, 0.008],
+  [0.056, 0.014],
+  [0.056, 0.126],
+  [0.062, 0.132],
+  [0.062, 0.142],
+  [0.050, 0.150],
+  [0.044, 0.156],
+  [0.030, 0.160],
+  [0.000, 0.160]
+], 44, matCopper);
+boiler.add(drum);
+
+// riveted seam bands
+for (const by of [0.026, 0.070, 0.114]) {
+  const band = torus(0.0575, 0.0055, 10, 44, matBrass);
+  band.rotation.x = Math.PI / 2;
+  band.position.y = by;
+  boiler.add(band);
+  // rivets on band
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2 + by * 7.0;
+    const rv = rivet(0.0048, matBrassPolish);
+    rv.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+    rv.position.set(Math.cos(a) * 0.0605, by, Math.sin(a) * 0.0605);
+    boiler.add(rv);
+  }
+}
+
+// vertical seam strap
+const seam = box(0.010, 0.140, 0.004, matBrassDim);
+seam.position.set(0, 0.075, 0.0575);
+boiler.add(seam);
+for (let i = 0; i < 6; i++) {
+  const rv = rivet(0.0038, matBrassPolish);
+  rv.rotation.x = Math.PI / 2;
+  rv.position.set(0, 0.016 + i * 0.024, 0.0605);
+  boiler.add(rv);
+}
+
+// chimney
+const chim = cyl(0.017, 0.014, 0.052, 20, matIron);
+chim.position.y = 0.184;
+boiler.add(chim);
+const chimLip = lathe([[0.012, 0.000], [0.024, 0.006], [0.024, 0.012], [0.012, 0.010]], 20, matIron);
+chimLip.position.y = 0.206;
+boiler.add(chimLip);
+
+// firebox door with hinge + latch
+const doorFrame = torus(0.020, 0.0045, 8, 28, matBrassPolish);
+doorFrame.position.set(0, 0.040, 0.0565);
+boiler.add(doorFrame);
+const door = new THREE.Mesh(new THREE.CircleGeometry(0.019, 24), matIron);
+door.position.set(0, 0.040, 0.0568);
+door.castShadow = true;
+boiler.add(door);
+const latch = box(0.020, 0.004, 0.005, matBrassPolish);
+latch.position.set(0.006, 0.040, 0.0595);
+latch.rotation.z = 0.5;
+boiler.add(latch);
+
+// glowing ember slit under door
+const ember = new THREE.Mesh(new THREE.PlaneGeometry(0.026, 0.005), matEmberGlow);
+ember.position.set(0, 0.017, 0.0578);
+boiler.add(ember);
+const emberLight = new THREE.PointLight(0xff5a12, 0.55, 0.42, 2.0);
+emberLight.position.set(0, 0.020, 0.075);
+boiler.add(emberLight);
+
+// tiny sight-glass tube on the side
+const sightRail = cyl(0.0035, 0.0035, 0.070, 10, matBrassPolish);
+sightRail.position.set(0.052, 0.070, 0.026);
+boiler.add(sightRail);
+const sightTube = new THREE.Mesh(new THREE.CylinderGeometry(0.0055, 0.0055, 0.058, 14, 1, true),
+  new THREE.MeshPhysicalMaterial({ color: 0xcfe0dd, roughness: 0.08, metalness: 0, transmission: 0.9, transparent: true, opacity: 0.5, side: THREE.DoubleSide }));
+sightTube.position.set(0.052, 0.070, 0.026);
+boiler.add(sightTube);
+const sightWater = cyl(0.0042, 0.0042, 0.026, 12, new THREE.MeshStandardMaterial({ color: 0x2f5c52, roughness: 0.2, metalness: 0.0, transparent: true, opacity: 0.85 }));
+sightWater.position.set(0.052, 0.056, 0.026);
+boiler.add(sightWater);
+
+// boiler feet / plinth
+const bFoot = lathe([[0, 0], [0.066, 0], [0.066, 0.010], [0.056, 0.016], [0, 0.016]], 32, matIron);
+bFoot.position.y = -0.014;
+boiler.add(bFoot);
+
+// pipe from boiler up into the copper loops
+const boilerPipe = tubeFrom([
+  [0.0, 0.150, -0.020],
+  [-0.010, 0.196, -0.060],
+  [-0.030, 0.200, -0.110]
+], 30, 12, matCopper);
+boiler.add(boilerPipe);
+
+// a small pressure dial on the boiler
+const miniDial = new THREE.Group();
+miniDial.position.set(-0.040, 0.118, 0.044);
+miniDial.rotation.y = -0.7;
+boiler.add(miniDial);
+miniDial.add((() => { const m = cyl(0.016, 0.016, 0.010, 20, matBrassPolish); m.rotation.x = Math.PI / 2; return m; })());
+const miniFace = new THREE.Mesh(new THREE.CircleGeometry(0.0125, 20), matEnamel);
+miniFace.position.z = 0.0055;
+miniDial.add(miniFace);
+const miniNeedle = new THREE.Mesh(new THREE.PlaneGeometry(0.0015, 0.010), matNeedle);
+miniNeedle.position.set(0, 0.004, 0.0062);
+miniNeedle.rotation.z = 0.7;
+miniDial.add(miniNeedle);
+
+/* ============================================================
+   ENGRAVED NAME PLATE ON BASE FRONT
+   ============================================================ */
+const nameplate = new THREE.Group();
+nameplate.position.set(0, 0.088, 0.352);
+nameplate.rotation.x = -0.16;
+orrery.add(nameplate);
+const npShape = new THREE.Shape();
+(function () {
+  const w = 0.095, h = 0.019, r = 0.008;
+  npShape.moveTo(-w + r, -h);
+  npShape.lineTo(w - r, -h);
+  npShape.quadraticCurveTo(w, -h, w, -h + r);
+  npShape.lineTo(w, h - r);
+  npShape.quadraticCurveTo(w, h, w - r, h);
+  npShape.lineTo(-w + r, h);
+  npShape.quadraticCurveTo(-w, h, -w, h - r);
+  npShape.lineTo(-w, -h + r);
+  npShape.quadraticCurveTo(-w, -h, -w + r, -h);
+  npShape.closePath();
+})();
+const npMesh = new THREE.Mesh(new THREE.ExtrudeGeometry(npShape, {
+  depth: 0.005, bevelEnabled: true, bevelThickness: 0.0012, bevelSize: 0.0012, bevelSegments: 1, curveSegments: 6, steps: 1
+}), matBrassPolish);
+npMesh.castShadow = true; npMesh.receiveShadow = true;
+nameplate.add(npMesh);
+// faux engraved glyph bars
+for (let i = 0; i < 9; i++) {
+  const bw = 0.004 + rnd() * 0.007;
+  const bar = new THREE.Mesh(new THREE.PlaneGeometry(bw, 0.0055), new THREE.MeshBasicMaterial({ color: 0x3d2a12 }));
+  bar.position.set(-0.070 + i * 0.0165, 0.0, 0.0062);
+  nameplate.add(bar);
+}
+for (const sx of [-0.082, 0.082]) {
+  const rv = rivet(0.0045, matBrassDim);
+  rv.rotation.x = Math.PI / 2;
+  rv.position.set(sx, 0, 0.006);
+  nameplate.add(rv);
+}
+
+/* ============================================================
+   CENTER + SCALE THE SINGLE OBJECT
+   ============================================================ */
+orrery.updateMatrixWorld(true);
+const bbox = new THREE.Box3().setFromObject(orrery);
+const center = bbox.getCenter(new THREE.Vector3());
+// center on X/Z only; keep the base sitting on y = 0
+orrery.position.x -= center.x;
+orrery.position.z -= center.z;
+orrery.updateMatrixWorld(true);
+
+const bbox2 = new THREE.Box3().setFromObject(orrery);
+controls.target.set(0, (bbox2.min.y + bbox2.max.y) * 0.5, 0);
+const objHeight = bbox2.max.y - bbox2.min.y;
+camera.position.set(1.30, objHeight * 0.92, 1.55);
+
+/* ============================================================
+   LIGHTING
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x9fb4c8, 0x1a1410, 0.45);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0d6, 3.0);
+key.position.set(1.5, 2.3, 1.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 8;
+key.shadow.camera.left = -1.1;
+key.shadow.camera.right = 1.1;
+key.shadow.camera.top = 1.1;
+key.shadow.camera.bottom = -1.1;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x87a8c9, 0.85);
+fill.position.set(-2.0, 1.1, 1.4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffc98a, 1.9);
+rim.position.set(-1.2, 1.5, -2.2);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xd8a869, 0.6, 3.0, 2.0);
+bounce.position.set(0.0, 0.05, 0.9);
+scene.add(bounce);
+
+// Procedural environment for metal reflections (studio-ish gradient room)
+(function buildEnv() {
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+
+  const envScene = new THREE.Scene();
+  envScene.background = new THREE.Color(0x1b1a20);
+
+  // gradient dome
+  const domeGeo = new THREE.SphereGeometry(10, 32, 16);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {},
+    vertexShader: `varying vec3 vP; void main(){ vP = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }`,
+    fragmentShader: `
+      varying vec3 vP;
+      void main(){
+        float h = normalize(vP).y * 0.5 + 0.5;
+        vec3 top = vec3(0.30, 0.33, 0.40);
+        vec3 mid = vec3(0.10, 0.10, 0.13);
+        vec3 bot = vec3(0.05, 0.045, 0.04);
+        vec3 c = mix(bot, mid, smoothstep(0.0, 0.48, h));
+        c = mix(c, top, smoothstep(0.48, 1.0, h));
+        gl_FragColor = vec4(c, 1.0);
+      }`
+  });
+  envScene.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // soft area "panels" to give metals highlights
+  const panel = (x, y, z, w, h, color, intensity) => {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity) })
+    );
+    m.position.set(x, y, z);
+    m.lookAt(0, 0, 0);
+    envScene.add(m);
+  };
+  panel(4.5, 5.0, 4.0, 7, 5, 0xfff2dc, 5.0);     // key panel
+  panel(-6.0, 2.5, 3.5, 6, 4, 0x9dc0e8, 1.9);    // cool fill
+  panel(-3.0, 3.5, -6.5, 6, 4, 0xffb367, 3.0);   // warm rim
+  panel(0.0, -5.0, 0.0, 12, 12, 0x2a2018, 0.7);  // floor bounce
+
+  const envRT = pmrem.fromScene(envScene, 0.04);
+  scene.environment = envRT.texture;
+
+  domeGeo.dispose(); domeMat.dispose();
+  pmrem.dispose();
+})();
+
+/* ============================================================
+   GROUND: shadow-only plane
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 14),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.0205;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// a faint radial pool of light on the floor so the object isn't floating in void
+const poolCanvas = document.createElement('canvas');
+poolCanvas.width = poolCanvas.height = 256;
+(function () {
+  const g = poolCanvas.getContext('2d');
+  const grad = g.createRadialGradient(128, 128, 8, 128, 128, 126);
+  grad.addColorStop(0.0, 'rgba(120,104,80,0.55)');
+  grad.addColorStop(0.45, 'rgba(70,60,48,0.26)');
+  grad.addColorStop(1.0, 'rgba(0,0,0,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 256);
+})();
+const poolTex = new THREE.CanvasTexture(poolCanvas);
+poolTex.colorSpace = THREE.SRGBColorSpace;
+const pool = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.6, 2.6),
+  new THREE.MeshBasicMaterial({ map: poolTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending })
+);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = -0.021;
+scene.add(pool);
+
+/* ============================================================
+   ANIMATION
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  // sun gear slowly turns
+  sunGearSpin.rotation.y += dt * 0.12;
+
+  // armatures orbit at different rates; planets spin
+  for (let i = 0; i < armPivots.length; i++) {
+    const a = armPivots[i];
+    a.pivot.rotation.y += dt * a.speed;
+    if (a.arm.userData.planetSpin) a.arm.userData.planetSpin.rotation.y += dt * (0.9 + i * 0.35);
+    if (a.arm.userData.moonArm) a.arm.userData.moonArm.rotation.y += dt * 1.6;
+  }
+
+  // escapement: pendulum swings, anchor rocks, escape wheel ticks
+  const beat = Math.sin(t * 2.6);
+  pendulumPivot.rotation.z = beat * 0.16;
+  anchorPivot.rotation.z = beat * 0.085;
+  escapeWheelPivot.rotation.z -= dt * 0.55 * (0.55 + 0.45 * Math.abs(beat));
+
+  cogA.rotation.z += dt * 0.42;
+  cogB.rotation.z -= dt * 0.34;
+  cogC.rotation.z -= dt * 0.75;
+  cogD.rotation.z += dt * 0.62;
+  barrel.rotation.y += dt * 0.05;
+
+  // gauge needle jitters with pressure
+  const press = 0.34 + 0.14 * Math.sin(t * 0.55) + 0.03 * Math.sin(t * 5.3);
+  needlePivot.rotation.z = Math.PI * (0.62 - press * 1.24);
+  miniNeedle.rotation.z = 0.6 + 0.25 * Math.sin(t * 0.9);
+
+  // ember + sun flicker
+  const flick = 0.85 + 0.25 * Math.sin(t * 7.3) + 0.12 * Math.sin(t * 17.1);
+  emberLight.intensity = 0.5 * flick;
+  matEmberGlow.emissiveIntensity = 1.9 * flick;
+  sunLight.intensity = 1.4 + 0.16 * Math.sin(t * 2.1);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

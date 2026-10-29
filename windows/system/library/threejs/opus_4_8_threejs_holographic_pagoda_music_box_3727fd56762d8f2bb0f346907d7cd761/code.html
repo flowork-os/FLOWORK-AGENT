@@ -1,0 +1,1167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Holographic Music Box</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0b10; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(220,230,255,0.42); letter-spacing: 0.12em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Holographic Music Box &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0b10);
+scene.fog = new THREE.FogExp2(0x0a0b10, 0.035);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.02, 100);
+camera.position.set(0.34, 0.30, 0.46);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 0.22;
+controls.maxDistance = 1.6;
+controls.target.set(0, 0.085, 0);
+controls.maxPolarAngle = Math.PI * 0.495;
+
+/* ============================================================
+   ENVIRONMENT MAP (procedural, for iridescent reflections)
+   ============================================================ */
+function makeEnvTexture() {
+  const size = 512;
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size / 2;
+  const ctx = c.getContext('2d');
+
+  // dark studio gradient
+  const g = ctx.createLinearGradient(0, 0, 0, c.height);
+  g.addColorStop(0.00, '#12141d');
+  g.addColorStop(0.42, '#1b1f2c');
+  g.addColorStop(0.55, '#0d0f16');
+  g.addColorStop(1.00, '#05060a');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  // colored studio "strip lights" -> gives the shell prismatic highlights
+  const lights = [
+    { x: 0.13, y: 0.24, w: 0.16, h: 0.16, col: 'rgba(90,255,235,1)' },
+    { x: 0.40, y: 0.16, w: 0.13, h: 0.20, col: 'rgba(180,120,255,1)' },
+    { x: 0.66, y: 0.28, w: 0.15, h: 0.14, col: 'rgba(255,205,120,1)' },
+    { x: 0.88, y: 0.20, w: 0.12, h: 0.18, col: 'rgba(255,120,190,1)' },
+    { x: 0.26, y: 0.62, w: 0.22, h: 0.10, col: 'rgba(70,150,255,0.8)' },
+    { x: 0.76, y: 0.66, w: 0.20, h: 0.10, col: 'rgba(120,255,190,0.7)' }
+  ];
+  ctx.globalCompositeOperation = 'lighter';
+  for (const L of lights) {
+    const cx = L.x * c.width, cy = L.y * c.height;
+    const rx = L.w * c.width, ry = L.h * c.height;
+    const rg = ctx.createRadialGradient(cx, cy, 0, cx, cy, Math.max(rx, ry));
+    rg.addColorStop(0.0, L.col);
+    rg.addColorStop(0.35, L.col.replace(/,\s*[\d.]+\)$/, ',0.35)'));
+    rg.addColorStop(1.0, 'rgba(0,0,0,0)');
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.scale(1, ry / Math.max(rx, ry));
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.arc(0, 0, Math.max(rx, ry), 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+  // bright overhead band
+  const band = ctx.createLinearGradient(0, 0, 0, c.height * 0.30);
+  band.addColorStop(0, 'rgba(255,255,255,0.55)');
+  band.addColorStop(1, 'rgba(255,255,255,0)');
+  ctx.fillStyle = band;
+  ctx.fillRect(0, 0, c.width, c.height * 0.30);
+  ctx.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envTex = makeEnvTexture();
+const envRT = pmrem.fromEquirectangular(envTex);
+scene.environment = envRT.texture;
+envTex.dispose();
+pmrem.dispose();
+
+/* ============================================================
+   PROCEDURAL TEXTURES
+   ============================================================ */
+
+// Diffraction-film normal map: fine concentric grating + subtle grain
+function makeGratingNormalMap(size = 512, rings = 190, amp = 0.55) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size;
+      const dx = u - 0.5, dy = v - 0.5;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      // radial grating height field
+      const h = Math.sin(r * rings) * 0.5 + Math.sin((u + v) * rings * 0.35) * 0.18;
+      // derivative approximations
+      const nx = Math.cos(r * rings) * rings * (r > 1e-5 ? dx / r : 0) * 0.0012
+               + Math.cos((u + v) * rings * 0.35) * 0.0006 * rings * 0.35;
+      const ny = Math.cos(r * rings) * rings * (r > 1e-5 ? dy / r : 0) * 0.0012
+               + Math.cos((u + v) * rings * 0.35) * 0.0006 * rings * 0.35;
+      const gx = -nx * amp, gy = -ny * amp, gz = 1.0;
+      const len = Math.sqrt(gx * gx + gy * gy + gz * gz);
+      const i = (y * size + x) * 4;
+      d[i]     = Math.max(0, Math.min(255, ((gx / len) * 0.5 + 0.5) * 255));
+      d[i + 1] = Math.max(0, Math.min(255, ((gy / len) * 0.5 + 0.5) * 255));
+      d[i + 2] = Math.max(0, Math.min(255, ((gz / len) * 0.5 + 0.5) * 255));
+      d[i + 3] = 255;
+      void h;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// Soft rainbow gradient strip (used as emissive/edge tint source on sprites)
+function makeRainbowTexture(w = 256, h = 8, alphaFalloff = true) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, w, 0);
+  const stops = [
+    [0.00, '#2fffe0'],
+    [0.16, '#4fd8ff'],
+    [0.32, '#7b7bff'],
+    [0.48, '#c46bff'],
+    [0.62, '#ff6ec7'],
+    [0.76, '#ffb457'],
+    [0.88, '#ffe98a'],
+    [1.00, '#2fffe0']
+  ];
+  for (const [p, col] of stops) g.addColorStop(p, col);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, w, h);
+  if (alphaFalloff) {
+    const fade = ctx.createLinearGradient(0, 0, 0, h);
+    fade.addColorStop(0.0, 'rgba(0,0,0,1)');
+    fade.addColorStop(0.5, 'rgba(0,0,0,0)');
+    fade.addColorStop(1.0, 'rgba(0,0,0,1)');
+    ctx.globalCompositeOperation = 'destination-out';
+    ctx.fillStyle = fade;
+    ctx.fillRect(0, 0, w, h);
+    ctx.globalCompositeOperation = 'source-over';
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Radial glow sprite
+function makeGlowTexture(size = 256, inner = 'rgba(255,255,255,1)') {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(size / 2, size / 2, 0, size / 2, size / 2, size / 2);
+  g.addColorStop(0.0, inner);
+  g.addColorStop(0.22, 'rgba(255,255,255,0.45)');
+  g.addColorStop(0.55, 'rgba(255,255,255,0.10)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const gratingNormal = makeGratingNormalMap(512, 200, 0.6);
+const rainbowTex = makeRainbowTexture();
+const glowTex = makeGlowTexture();
+
+/* ============================================================
+   IRIDESCENT SHELL MATERIAL
+   Physical material + custom onBeforeCompile thin-film tint that
+   shifts teal -> violet -> gold with viewing angle.
+   ============================================================ */
+const iridUniformHolders = [];
+
+function makeIridescentMaterial(opts = {}) {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: opts.color || new THREE.Color(0x0d1420),
+    metalness: opts.metalness !== undefined ? opts.metalness : 0.92,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.16,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.06,
+    envMapIntensity: opts.envMapIntensity !== undefined ? opts.envMapIntensity : 1.5,
+    iridescence: 1.0,
+    iridescenceIOR: 1.8,
+    iridescenceThicknessRange: opts.thicknessRange || [180, 780],
+    normalMap: opts.normalMap !== undefined ? opts.normalMap : gratingNormal,
+    normalScale: new THREE.Vector2(opts.normalScale || 0.16, opts.normalScale || 0.16),
+    side: opts.side || THREE.FrontSide,
+    transparent: !!opts.transparent,
+    opacity: opts.opacity !== undefined ? opts.opacity : 1.0
+  });
+  if (mat.normalMap) {
+    mat.normalMap.repeat.set(opts.repeat || 3, opts.repeat || 3);
+  }
+
+  const uniforms = {
+    uTime: { value: 0 },
+    uFilmStrength: { value: opts.filmStrength !== undefined ? opts.filmStrength : 1.0 },
+    uFilmFreq: { value: opts.filmFreq !== undefined ? opts.filmFreq : 3.4 },
+    uFringe: { value: opts.fringe !== undefined ? opts.fringe : 1.0 }
+  };
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime = uniforms.uTime;
+    shader.uniforms.uFilmStrength = uniforms.uFilmStrength;
+    shader.uniforms.uFilmFreq = uniforms.uFilmFreq;
+    shader.uniforms.uFringe = uniforms.uFringe;
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `
+        #include <common>
+        varying vec3 vHoloPos;
+      `)
+      .replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        vHoloPos = transformed;
+      `);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `
+        #include <common>
+        uniform float uTime;
+        uniform float uFilmStrength;
+        uniform float uFilmFreq;
+        uniform float uFringe;
+        varying vec3 vHoloPos;
+
+        // smooth spectral ramp: teal -> blue -> violet -> magenta -> gold -> teal
+        vec3 spectrum(float t) {
+          t = fract(t);
+          return 0.5 + 0.5 * cos(6.28318 * (vec3(1.0, 1.0, 1.0) * t
+                 + vec3(0.00, 0.33, 0.67)));
+        }
+        vec3 holoRamp(float t) {
+          vec3 s = spectrum(t);
+          // bias toward teal / violet / gold family
+          s = mix(s, s * vec3(0.85, 1.12, 1.06), 0.35);
+          return s;
+        }
+      `)
+      .replace('#include <dithering_fragment>', `
+        #include <dithering_fragment>
+        {
+          vec3 V = normalize( vViewPosition );
+          vec3 N = normalize( normal );
+          float fres = 1.0 - clamp(dot(N, V), 0.0, 1.0);
+
+          // angle-dependent phase + positional grating -> diffraction bands
+          float bands = sin( (vHoloPos.y * 46.0 + vHoloPos.x * 21.0) ) * 0.06;
+          float phase = fres * uFilmFreq + bands + uTime * 0.045;
+          vec3 tint = holoRamp(phase);
+
+          // broad film wash
+          float wash = pow(fres, 1.25) * uFilmStrength;
+          gl_FragColor.rgb += tint * wash * 0.55;
+
+          // sharp rainbow rim fringe along silhouettes/bevels
+          float rim = pow(fres, 6.0);
+          vec3 fringeCol = holoRamp(phase * 1.7 + 0.25);
+          gl_FragColor.rgb += fringeCol * rim * 1.35 * uFringe;
+
+          gl_FragColor.rgb = min(gl_FragColor.rgb, vec3(6.0));
+        }
+      `);
+  };
+  mat.customProgramCacheKey = () => 'holo-irid-' + (opts.key || 'default');
+
+  iridUniformHolders.push(uniforms);
+  return mat;
+}
+
+/* ============================================================
+   HELPER: octagon shape / prism geometry
+   ============================================================ */
+const OCT_SIDES = 8;
+
+function octagonShape(radius, cornerRadius = 0) {
+  const shape = new THREE.Shape();
+  const pts = [];
+  for (let i = 0; i < OCT_SIDES; i++) {
+    const a = (i / OCT_SIDES) * Math.PI * 2 + Math.PI / OCT_SIDES;
+    pts.push(new THREE.Vector2(Math.cos(a) * radius, Math.sin(a) * radius));
+  }
+  if (cornerRadius <= 0) {
+    shape.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) shape.lineTo(pts[i].x, pts[i].y);
+    shape.closePath();
+    return shape;
+  }
+  // rounded corners
+  for (let i = 0; i < pts.length; i++) {
+    const prev = pts[(i - 1 + pts.length) % pts.length];
+    const cur = pts[i];
+    const next = pts[(i + 1) % pts.length];
+    const v1 = new THREE.Vector2().subVectors(prev, cur).normalize();
+    const v2 = new THREE.Vector2().subVectors(next, cur).normalize();
+    const p1 = new THREE.Vector2().copy(cur).addScaledVector(v1, cornerRadius);
+    const p2 = new THREE.Vector2().copy(cur).addScaledVector(v2, cornerRadius);
+    if (i === 0) shape.moveTo(p1.x, p1.y);
+    else shape.lineTo(p1.x, p1.y);
+    shape.quadraticCurveTo(cur.x, cur.y, p2.x, p2.y);
+  }
+  shape.closePath();
+  return shape;
+}
+
+function beveledOctPrism(radius, height, bevel, curveSegments = 4) {
+  const shape = octagonShape(radius - bevel, radius * 0.055);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.0001, height - bevel * 2),
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelOffset: 0,
+    bevelSegments: 3,
+    curveSegments: curveSegments,
+    steps: 1
+  });
+  geo.rotateX(-Math.PI / 2);          // extrude along +Y
+  geo.translate(0, bevel, 0);          // base sits at y=0
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ============================================================
+   DIMENSIONS (metres) — realistic small music box
+   ============================================================ */
+const R_BODY   = 0.062;   // octagon circumradius ~6.2cm
+const H_BODY   = 0.052;   // body height
+const H_PLINTH = 0.012;   // base plinth
+const H_LID    = 0.020;   // lid slab thickness
+const BEVEL    = 0.0035;
+
+const musicBox = new THREE.Group();
+scene.add(musicBox);
+
+/* ---------- shared materials ---------- */
+const shellMat = makeIridescentMaterial({
+  key: 'shell',
+  color: new THREE.Color(0x0b1018),
+  metalness: 0.95, roughness: 0.14,
+  thicknessRange: [200, 820],
+  filmStrength: 1.15, filmFreq: 3.2, fringe: 1.0,
+  repeat: 3.2, normalScale: 0.18, envMapIntensity: 1.7
+});
+
+const plinthMat = makeIridescentMaterial({
+  key: 'plinth',
+  color: new THREE.Color(0x080b12),
+  metalness: 0.98, roughness: 0.22,
+  thicknessRange: [300, 640],
+  filmStrength: 0.8, filmFreq: 2.4, fringe: 0.85,
+  repeat: 2.2, normalScale: 0.12, envMapIntensity: 1.3
+});
+
+const lidMat = makeIridescentMaterial({
+  key: 'lid',
+  color: new THREE.Color(0x0c1220),
+  metalness: 0.94, roughness: 0.12,
+  thicknessRange: [160, 900],
+  filmStrength: 1.3, filmFreq: 3.9, fringe: 1.15,
+  repeat: 3.6, normalScale: 0.2, envMapIntensity: 1.8
+});
+
+const hardwareMat = makeIridescentMaterial({
+  key: 'hw',
+  color: new THREE.Color(0x1a1410),
+  metalness: 1.0, roughness: 0.06,
+  thicknessRange: [120, 560],
+  filmStrength: 1.5, filmFreq: 5.0, fringe: 1.6,
+  normalMap: null, envMapIntensity: 2.4
+});
+
+const interiorMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0a1a22,
+  metalness: 0.35,
+  roughness: 0.55,
+  clearcoat: 0.6,
+  clearcoatRoughness: 0.35,
+  envMapIntensity: 0.7,
+  side: THREE.DoubleSide
+});
+
+const brassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xd8a24a,
+  metalness: 1.0,
+  roughness: 0.18,
+  clearcoat: 0.8,
+  clearcoatRoughness: 0.15,
+  iridescence: 0.85,
+  iridescenceIOR: 1.6,
+  iridescenceThicknessRange: [140, 500],
+  envMapIntensity: 2.0
+});
+
+/* ============================================================
+   PLINTH (base) + FEET
+   ============================================================ */
+const plinth = new THREE.Mesh(beveledOctPrism(R_BODY * 1.09, H_PLINTH, BEVEL, 5), plinthMat);
+plinth.castShadow = true;
+plinth.receiveShadow = true;
+musicBox.add(plinth);
+
+// thin rainbow reveal line between plinth and body
+function edgeRingMesh(radius, y, tubeR, colorScale = 1) {
+  const geo = new THREE.TorusGeometry(radius, tubeR, 8, OCT_SIDES * 6);
+  geo.rotateX(-Math.PI / 2);
+  const mat = new THREE.MeshBasicMaterial({
+    map: rainbowTex,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    opacity: 0.85 * colorScale,
+    toneMapped: false
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.position.y = y;
+  return m;
+}
+
+// small feet
+const footGeo = new THREE.SphereGeometry(0.0042, 16, 12);
+for (let i = 0; i < 4; i++) {
+  const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+  const foot = new THREE.Mesh(footGeo, hardwareMat);
+  foot.position.set(Math.cos(a) * R_BODY * 0.72, 0.0012, Math.sin(a) * R_BODY * 0.72);
+  foot.scale.set(1, 0.55, 1);
+  foot.castShadow = true;
+  musicBox.add(foot);
+}
+plinth.position.y = 0.003;
+
+const BODY_Y = plinth.position.y + H_PLINTH;
+
+/* ============================================================
+   BODY SHELL (octagonal, hollow-looking with interior)
+   ============================================================ */
+const body = new THREE.Mesh(beveledOctPrism(R_BODY, H_BODY, BEVEL, 5), shellMat);
+body.position.y = BODY_Y;
+body.castShadow = true;
+body.receiveShadow = true;
+musicBox.add(body);
+
+// interior cavity: a slightly smaller inverted octagon well
+const WELL_R = R_BODY * 0.80;
+const WELL_D = H_BODY * 0.62;
+const wellGeo = new THREE.CylinderGeometry(WELL_R, WELL_R * 0.94, WELL_D, OCT_SIDES, 1, true);
+const well = new THREE.Mesh(wellGeo, interiorMat);
+well.position.y = BODY_Y + H_BODY - WELL_D / 2 + 0.0005;
+well.rotation.y = Math.PI / OCT_SIDES;
+well.receiveShadow = true;
+musicBox.add(well);
+
+const wellFloorGeo = new THREE.CircleGeometry(WELL_R * 0.95, OCT_SIDES);
+wellFloorGeo.rotateX(-Math.PI / 2);
+const wellFloor = new THREE.Mesh(wellFloorGeo, interiorMat);
+wellFloor.position.y = BODY_Y + H_BODY - WELL_D;
+wellFloor.rotation.y = Math.PI / OCT_SIDES;
+wellFloor.receiveShadow = true;
+musicBox.add(wellFloor);
+
+// inner rim lip (top face ring), sits flush with body top
+const lipGeo = new THREE.RingGeometry(WELL_R, R_BODY * 0.985, OCT_SIDES, 1);
+lipGeo.rotateX(-Math.PI / 2);
+const lip = new THREE.Mesh(lipGeo, shellMat);
+lip.position.y = BODY_Y + H_BODY + 0.0002;
+lip.rotation.y = Math.PI / OCT_SIDES;
+musicBox.add(lip);
+
+/* ---------- vertical rainbow fringe strips on each body facet ---------- */
+const facetFringeMat = new THREE.MeshBasicMaterial({
+  map: rainbowTex,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  opacity: 0.55,
+  toneMapped: false,
+  side: THREE.DoubleSide
+});
+for (let i = 0; i < OCT_SIDES; i++) {
+  const a = (i / OCT_SIDES) * Math.PI * 2;
+  const r = R_BODY * Math.cos(Math.PI / OCT_SIDES) + 0.0009;
+  const strip = new THREE.Mesh(new THREE.PlaneGeometry(0.0022, H_BODY * 0.82), facetFringeMat);
+  // place at the shared vertical corner between facets
+  const ca = a + Math.PI / OCT_SIDES;
+  const cr = R_BODY + 0.0006;
+  strip.position.set(Math.cos(ca) * cr, BODY_Y + H_BODY * 0.5, Math.sin(ca) * cr);
+  strip.lookAt(new THREE.Vector3(Math.cos(ca) * cr * 3, BODY_Y + H_BODY * 0.5, Math.sin(ca) * cr * 3));
+  musicBox.add(strip);
+  void r;
+}
+
+// horizontal rainbow reveal lines
+const revealTop = edgeRingMesh(R_BODY * 0.999, BODY_Y + H_BODY - 0.0012, 0.00075, 1.0);
+const revealBot = edgeRingMesh(R_BODY * 1.0, BODY_Y + 0.0016, 0.00065, 0.8);
+const revealPlinth = edgeRingMesh(R_BODY * 1.089, plinth.position.y + H_PLINTH - 0.0012, 0.0007, 0.7);
+musicBox.add(revealTop, revealBot, revealPlinth);
+
+/* ============================================================
+   HINGE HARDWARE (prismatic glint)
+   ============================================================ */
+const HINGE_ANGLE = Math.PI * 0.75;           // hinge sits at back-left-ish facet
+const hingeDir = new THREE.Vector3(Math.cos(HINGE_ANGLE), 0, Math.sin(HINGE_ANGLE));
+const HINGE_R = R_BODY * Math.cos(Math.PI / OCT_SIDES);
+const hingeX = hingeDir.x * HINGE_R;
+const hingeZ = hingeDir.z * HINGE_R;
+const HINGE_Y = BODY_Y + H_BODY + 0.0015;
+
+const hingeGroup = new THREE.Group();
+hingeGroup.position.set(hingeX, HINGE_Y, hingeZ);
+hingeGroup.rotation.y = -HINGE_ANGLE;   // local +X runs along the facet tangent
+musicBox.add(hingeGroup);
+
+// hinge barrel (knuckles)
+const barrelLen = R_BODY * 0.66;
+const knuckleCount = 5;
+for (let i = 0; i < knuckleCount; i++) {
+  const t = (i + 0.5) / knuckleCount;
+  const g = new THREE.CylinderGeometry(0.0032, 0.0032, barrelLen / knuckleCount * 0.86, 20, 1);
+  g.rotateZ(Math.PI / 2);
+  const k = new THREE.Mesh(g, i % 2 === 0 ? hardwareMat : brassMat);
+  k.position.set((t - 0.5) * barrelLen, 0, 0);
+  k.castShadow = true;
+  hingeGroup.add(k);
+}
+// hinge pin ends
+const pinGeo = new THREE.SphereGeometry(0.0026, 16, 12);
+[-1, 1].forEach(s => {
+  const p = new THREE.Mesh(pinGeo, brassMat);
+  p.position.set(s * (barrelLen / 2 + 0.0012), 0, 0);
+  p.castShadow = true;
+  hingeGroup.add(p);
+});
+// hinge leaf plate on body side
+const leafGeo = new THREE.BoxGeometry(barrelLen * 0.92, 0.0018, 0.010);
+const leaf = new THREE.Mesh(leafGeo, hardwareMat);
+leaf.position.set(0, -0.0016, -0.006);
+leaf.castShadow = true;
+hingeGroup.add(leaf);
+
+// prismatic glint sprite on the hinge
+const hingeGlint = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0xfff0d0, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.7, toneMapped: false
+}));
+hingeGlint.scale.set(0.05, 0.05, 1);
+hingeGroup.add(hingeGlint);
+
+/* ============================================================
+   CLASP (front hardware)
+   ============================================================ */
+const claspGroup = new THREE.Group();
+const claspAngle = HINGE_ANGLE + Math.PI;
+claspGroup.position.set(
+  Math.cos(claspAngle) * (HINGE_R + 0.0016),
+  BODY_Y + H_BODY - 0.006,
+  Math.sin(claspAngle) * (HINGE_R + 0.0016)
+);
+claspGroup.rotation.y = -claspAngle;
+musicBox.add(claspGroup);
+
+const claspPlate = new THREE.Mesh(new THREE.BoxGeometry(0.016, 0.010, 0.0022), brassMat);
+claspPlate.castShadow = true;
+claspGroup.add(claspPlate);
+const claspHook = new THREE.Mesh(new THREE.TorusGeometry(0.0042, 0.0011, 12, 28, Math.PI * 1.35), brassMat);
+claspHook.position.set(0, 0.0055, 0.0012);
+claspHook.rotation.set(Math.PI / 2, 0, 0);
+claspHook.castShadow = true;
+claspGroup.add(claspHook);
+
+/* ============================================================
+   WIND-UP KEY (side of body)
+   ============================================================ */
+const keyGroup = new THREE.Group();
+const keyAngle = HINGE_ANGLE - Math.PI / 2;
+keyGroup.position.set(
+  Math.cos(keyAngle) * (HINGE_R + 0.001),
+  BODY_Y + H_BODY * 0.34,
+  Math.sin(keyAngle) * (HINGE_R + 0.001)
+);
+keyGroup.rotation.y = -keyAngle;
+musicBox.add(keyGroup);
+
+const keyShaftGeo = new THREE.CylinderGeometry(0.0018, 0.0018, 0.011, 16);
+keyShaftGeo.rotateX(Math.PI / 2);
+const keyShaft = new THREE.Mesh(keyShaftGeo, brassMat);
+keyShaft.position.z = 0.0055;
+keyShaft.castShadow = true;
+keyGroup.add(keyShaft);
+
+const keyWing = new THREE.Group();
+keyWing.position.z = 0.0112;
+keyGroup.add(keyWing);
+const wingGeo = new THREE.TorusGeometry(0.0052, 0.0013, 10, 26, Math.PI);
+const wingA = new THREE.Mesh(wingGeo, brassMat);
+wingA.rotation.set(0, Math.PI / 2, 0);
+wingA.castShadow = true;
+keyWing.add(wingA);
+const wingB = new THREE.Mesh(wingGeo, brassMat);
+wingB.rotation.set(0, Math.PI / 2, Math.PI);
+wingB.castShadow = true;
+keyWing.add(wingB);
+const keyCollar = new THREE.Mesh(new THREE.CylinderGeometry(0.0032, 0.0032, 0.0016, 16), brassMat);
+keyCollar.rotation.x = Math.PI / 2;
+keyWing.add(keyCollar);
+
+/* ============================================================
+   LID (hinged, opened)
+   Pivot group at the hinge axis; lid slab offset so its rear edge
+   aligns with the pivot.
+   ============================================================ */
+const lidPivot = new THREE.Group();
+lidPivot.position.set(hingeX, HINGE_Y - 0.0005, hingeZ);
+lidPivot.rotation.y = -HINGE_ANGLE;   // local +X = hinge axis, local -Z points inward toward box centre
+musicBox.add(lidPivot);
+
+const lidBody = new THREE.Group();
+lidPivot.add(lidBody);
+
+// lid slab: octagon prism centred at the box centre, moved so hinge edge is at pivot
+const lidGeo = beveledOctPrism(R_BODY, H_LID, BEVEL, 5);
+const lidMesh = new THREE.Mesh(lidGeo, lidMat);
+lidMesh.castShadow = true;
+lidMesh.receiveShadow = true;
+// in lidPivot local space, box centre lies at -Z by HINGE_R
+lidMesh.position.set(0, 0, -HINGE_R);
+lidBody.add(lidMesh);
+
+// lid crown: a shallow faceted dome on top for silhouette interest
+const crownGeo = new THREE.CylinderGeometry(R_BODY * 0.42, R_BODY * 0.74, 0.011, OCT_SIDES, 1);
+const crown = new THREE.Mesh(crownGeo, lidMat);
+crown.position.set(0, H_LID + 0.0052, -HINGE_R);
+crown.rotation.y = Math.PI / OCT_SIDES;
+crown.castShadow = true;
+lidBody.add(crown);
+
+const finial = new THREE.Mesh(new THREE.OctahedronGeometry(0.0072, 0), hardwareMat);
+finial.position.set(0, H_LID + 0.0155, -HINGE_R);
+finial.castShadow = true;
+lidBody.add(finial);
+
+// underside mirror disc (holo interior of lid)
+const mirrorMat = new THREE.MeshPhysicalMaterial({
+  color: 0x102030,
+  metalness: 1.0,
+  roughness: 0.05,
+  iridescence: 1.0,
+  iridescenceIOR: 2.0,
+  iridescenceThicknessRange: [200, 700],
+  envMapIntensity: 2.2,
+  side: THREE.DoubleSide
+});
+const mirrorGeo = new THREE.CircleGeometry(R_BODY * 0.72, OCT_SIDES);
+mirrorGeo.rotateX(Math.PI / 2);
+const mirror = new THREE.Mesh(mirrorGeo, mirrorMat);
+mirror.position.set(0, -0.0004, -HINGE_R);
+mirror.rotation.y = Math.PI / OCT_SIDES;
+lidBody.add(mirror);
+
+// rainbow fringe ring around lid perimeter (top + bottom bevel)
+const lidRingTop = edgeRingMesh(R_BODY * 0.995, H_LID - 0.0012, 0.00075, 1.0);
+lidRingTop.position.set(0, H_LID - 0.0012, -HINGE_R);
+lidBody.add(lidRingTop);
+const lidRingBot = edgeRingMesh(R_BODY * 0.995, 0.0014, 0.0007, 0.9);
+lidRingBot.position.set(0, 0.0014, -HINGE_R);
+lidBody.add(lidRingBot);
+const crownRing = edgeRingMesh(R_BODY * 0.42, H_LID + 0.0105, 0.0006, 0.8);
+crownRing.position.set(0, H_LID + 0.0105, -HINGE_R);
+lidBody.add(crownRing);
+
+// lid hinge knuckles (interleave with the body barrel)
+for (let i = 0; i < knuckleCount - 1; i++) {
+  const t = (i + 1) / knuckleCount;
+  const g = new THREE.CylinderGeometry(0.0030, 0.0030, barrelLen / knuckleCount * 0.8, 18, 1);
+  g.rotateZ(Math.PI / 2);
+  const k = new THREE.Mesh(g, brassMat);
+  k.position.set((t - 0.5) * barrelLen, 0.0006, -0.0004);
+  k.castShadow = true;
+  lidBody.add(k);
+}
+const lidLeaf = new THREE.Mesh(new THREE.BoxGeometry(barrelLen * 0.9, 0.0016, 0.009), hardwareMat);
+lidLeaf.position.set(0, 0.0016, -0.0062);
+lidLeaf.castShadow = true;
+lidBody.add(lidLeaf);
+
+// open the lid (rotate about local X, tipping the far edge upward/back)
+const LID_OPEN = THREE.MathUtils.degToRad(-108);
+lidPivot.rotation.x = LID_OPEN;
+
+/* ============================================================
+   SPINDLE + TRANSLUCENT SPINNING DANCER
+   Rises from the open lid area on a spindle above the box.
+   ============================================================ */
+const stageY = BODY_Y + H_BODY - WELL_D + 0.0005;
+
+// brass mechanism plate + cylinder inside the well
+const mechPlate = new THREE.Mesh(new THREE.CylinderGeometry(WELL_R * 0.86, WELL_R * 0.86, 0.0026, OCT_SIDES * 3), brassMat);
+mechPlate.position.y = stageY + 0.0013;
+mechPlate.receiveShadow = true;
+musicBox.add(mechPlate);
+
+const combGeo = new THREE.BoxGeometry(WELL_R * 0.9, 0.0016, 0.0032);
+const comb = new THREE.Mesh(combGeo, brassMat);
+comb.position.set(0, stageY + 0.0035, WELL_R * 0.42);
+musicBox.add(comb);
+
+// cylinder (the pinned drum)
+const drumGroup = new THREE.Group();
+drumGroup.position.set(0, stageY + 0.0055, WELL_R * 0.16);
+musicBox.add(drumGroup);
+const drumGeo = new THREE.CylinderGeometry(0.0058, 0.0058, WELL_R * 0.95, 24, 1);
+drumGeo.rotateZ(Math.PI / 2);
+const drum = new THREE.Mesh(drumGeo, brassMat);
+drum.castShadow = true;
+drumGroup.add(drum);
+// pins
+const pinSmall = new THREE.SphereGeometry(0.00055, 6, 5);
+const pinMat = new THREE.MeshStandardMaterial({ color: 0xffe6a8, metalness: 1, roughness: 0.25 });
+const pinInst = new THREE.InstancedMesh(pinSmall, pinMat, 90);
+const tmpObj = new THREE.Object3D();
+for (let i = 0; i < 90; i++) {
+  const u = (i * 7919 % 97) / 97;
+  const ang = (i * 2.399963) % (Math.PI * 2);
+  tmpObj.position.set((u - 0.5) * WELL_R * 0.9, Math.sin(ang) * 0.0061, Math.cos(ang) * 0.0061);
+  tmpObj.rotation.set(0, 0, 0);
+  tmpObj.scale.setScalar(1);
+  tmpObj.updateMatrix();
+  pinInst.setMatrixAt(i, tmpObj.matrix);
+}
+pinInst.instanceMatrix.needsUpdate = true;
+drumGroup.add(pinInst);
+
+// spindle rising from the mechanism up through the open lid line
+const spindleGroup = new THREE.Group();
+spindleGroup.position.set(0, stageY + 0.0026, -WELL_R * 0.30);
+musicBox.add(spindleGroup);
+
+const SPINDLE_H = 0.052;
+const spindleGeo = new THREE.CylinderGeometry(0.0013, 0.0018, SPINDLE_H, 16, 1);
+const spindle = new THREE.Mesh(spindleGeo, brassMat);
+spindle.position.y = SPINDLE_H / 2;
+spindle.castShadow = true;
+spindleGroup.add(spindle);
+
+const spindleBase = new THREE.Mesh(new THREE.CylinderGeometry(0.0062, 0.0078, 0.0032, 24), brassMat);
+spindleBase.position.y = 0.0016;
+spindleBase.castShadow = true;
+spindleGroup.add(spindleBase);
+
+/* ---------- dancer: translucent holographic figure ---------- */
+const dancerMat = new THREE.MeshPhysicalMaterial({
+  color: 0x9fe8ff,
+  emissive: 0x2a6f8a,
+  emissiveIntensity: 0.65,
+  metalness: 0.0,
+  roughness: 0.12,
+  transmission: 0.86,
+  thickness: 0.012,
+  ior: 1.42,
+  iridescence: 1.0,
+  iridescenceIOR: 1.9,
+  iridescenceThicknessRange: [180, 720],
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.08,
+  transparent: true,
+  opacity: 0.72,
+  envMapIntensity: 2.0,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+const dancer = new THREE.Group();
+dancer.position.y = SPINDLE_H - 0.0015;
+spindleGroup.add(dancer);
+
+const S = 0.052;  // dancer overall height scale (~5.2 cm figure)
+
+function addPart(mesh, castShadow = false) {
+  mesh.castShadow = castShadow;
+  dancer.add(mesh);
+  return mesh;
+}
+
+// pedestal disc the dancer stands on
+const pedestal = new THREE.Mesh(new THREE.CylinderGeometry(0.0075, 0.0060, 0.0022, 28), brassMat);
+pedestal.position.y = 0.0011;
+pedestal.castShadow = true;
+dancer.add(pedestal);
+
+// --- skirt (tutu): lathe profile, flared ---
+const skirtPts = [];
+for (let i = 0; i <= 14; i++) {
+  const t = i / 14;
+  const y = 0.30 * S + t * 0.16 * S;
+  const r = (0.055 + Math.pow(t, 0.55) * 0.24) * S * 1.5;
+  skirtPts.push(new THREE.Vector2(r, y));
+}
+// return underside slightly to give thickness
+for (let i = 14; i >= 0; i--) {
+  const t = i / 14;
+  const y = 0.30 * S + t * 0.16 * S - 0.012 * S;
+  const r = (0.05 + Math.pow(t, 0.55) * 0.235) * S * 1.5;
+  skirtPts.push(new THREE.Vector2(Math.max(0.001, r), y));
+}
+const skirtGeo = new THREE.LatheGeometry(skirtPts, 48);
+const skirt = addPart(new THREE.Mesh(skirtGeo, dancerMat));
+skirt.castShadow = false;
+
+// second, upper skirt layer
+const skirt2Pts = [];
+for (let i = 0; i <= 10; i++) {
+  const t = i / 10;
+  skirt2Pts.push(new THREE.Vector2((0.05 + Math.pow(t, 0.7) * 0.16) * S * 1.5, 0.36 * S + t * 0.10 * S));
+}
+const skirt2 = addPart(new THREE.Mesh(new THREE.LatheGeometry(skirt2Pts, 40), dancerMat));
+skirt2.scale.setScalar(1.0);
+
+// --- legs: one straight support leg, one lifted back (arabesque-ish) ---
+function limbGeom(len, rTop, rBot, seg = 12) {
+  const g = new THREE.CylinderGeometry(rTop, rBot, len, seg, 1);
+  g.translate(0, -len / 2, 0);  // pivot at top
+  return g;
+}
+
+const hipY = 0.36 * S;
+
+// support leg (vertical)
+const legA = addPart(new THREE.Mesh(limbGeom(0.34 * S, 0.030 * S, 0.018 * S), dancerMat));
+legA.position.set(0.012 * S, hipY, 0);
+legA.rotation.z = 0.02;
+const footA = addPart(new THREE.Mesh(new THREE.ConeGeometry(0.022 * S, 0.05 * S, 12), dancerMat));
+footA.position.set(0.012 * S, 0.015 * S, 0.004 * S);
+footA.rotation.x = -0.25;
+
+// lifted leg (extended back and up)
+const legB = new THREE.Group();
+legB.position.set(-0.012 * S, hipY, 0);
+legB.rotation.set(THREE.MathUtils.degToRad(115), 0, THREE.MathUtils.degToRad(-6));
+dancer.add(legB);
+const thighB = new THREE.Mesh(limbGeom(0.20 * S, 0.032 * S, 0.024 * S), dancerMat);
+legB.add(thighB);
+const shinB = new THREE.Group();
+shinB.position.y = -0.20 * S;
+shinB.rotation.x = THREE.MathUtils.degToRad(-18);
+legB.add(shinB);
+const shinMesh = new THREE.Mesh(limbGeom(0.18 * S, 0.024 * S, 0.013 * S), dancerMat);
+shinB.add(shinMesh);
+const footB = new THREE.Mesh(new THREE.ConeGeometry(0.017 * S, 0.045 * S, 12), dancerMat);
+footB.position.y = -0.20 * S;
+footB.rotation.x = Math.PI * 0.06;
+shinB.add(footB);
+
+// --- torso ---
+const torsoPts = [];
+for (let i = 0; i <= 16; i++) {
+  const t = i / 16;
+  const y = hipY + t * 0.30 * S;
+  // waist pinch then chest
+  const r = (0.075 - 0.028 * Math.sin(t * Math.PI * 0.9) + 0.030 * Math.pow(t, 2.4)) * S * 1.35;
+  torsoPts.push(new THREE.Vector2(Math.max(0.0008, r), y));
+}
+const torso = addPart(new THREE.Mesh(new THREE.LatheGeometry(torsoPts, 36), dancerMat));
+
+// bodice sheen ring
+const bodiceRing = new THREE.Mesh(new THREE.TorusGeometry(0.062 * S * 1.35, 0.008 * S, 8, 40), dancerMat);
+bodiceRing.rotation.x = Math.PI / 2;
+bodiceRing.position.y = hipY + 0.055 * S;
+dancer.add(bodiceRing);
+
+// --- neck + head ---
+const neck = addPart(new THREE.Mesh(new THREE.CylinderGeometry(0.026 * S, 0.032 * S, 0.05 * S, 14), dancerMat));
+neck.position.y = hipY + 0.315 * S;
+
+const head = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.062 * S, 24, 18), dancerMat));
+head.position.y = hipY + 0.395 * S;
+head.scale.set(0.92, 1.12, 0.95);
+
+// hair bun
+const bun = addPart(new THREE.Mesh(new THREE.SphereGeometry(0.040 * S, 18, 14), dancerMat));
+bun.position.set(0, hipY + 0.425 * S, -0.052 * S);
+bun.scale.set(1, 0.9, 1);
+
+// --- arms: one raised overhead, one extended out (fifth position-ish) ---
+function makeArm(sign, shoulderRotZ, shoulderRotX, elbowRotZ) {
+  const g = new THREE.Group();
+  g.position.set(sign * 0.085 * S, hipY + 0.28 * S, 0);
+  g.rotation.set(shoulderRotX, 0, shoulderRotZ);
+  dancer.add(g);
+  const upper = new THREE.Mesh(limbGeom(0.19 * S, 0.026 * S, 0.020 * S, 10), dancerMat);
+  g.add(upper);
+  const fore = new THREE.Group();
+  fore.position.y = -0.19 * S;
+  fore.rotation.z = elbowRotZ;
+  g.add(fore);
+  const foreMesh = new THREE.Mesh(limbGeom(0.17 * S, 0.019 * S, 0.012 * S, 10), dancerMat);
+  fore.add(foreMesh);
+  const hand = new THREE.Mesh(new THREE.SphereGeometry(0.020 * S, 12, 10), dancerMat);
+  hand.position.y = -0.175 * S;
+  hand.scale.set(0.8, 1.25, 0.55);
+  fore.add(hand);
+  return g;
+}
+// right arm raised high overhead
+makeArm(1, THREE.MathUtils.degToRad(168), THREE.MathUtils.degToRad(6), THREE.MathUtils.degToRad(-14));
+// left arm extended out to the side, softly curved
+makeArm(-1, THREE.MathUtils.degToRad(-104), THREE.MathUtils.degToRad(10), THREE.MathUtils.degToRad(18));
+
+// slight artistic tilt of the whole figure
+dancer.rotation.z = THREE.MathUtils.degToRad(3);
+
+// dancer inner core glow
+const coreGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+  map: glowTex, color: 0x7fe6ff, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.42, toneMapped: false
+}));
+coreGlow.scale.set(0.085, 0.11, 1);
+coreGlow.position.y = hipY + 0.10 * S;
+dancer.add(coreGlow);
+
+// rainbow halo rings orbiting the dancer
+const haloGroup = new THREE.Group();
+haloGroup.position.y = SPINDLE_H * 0.62;
+spindleGroup.add(haloGroup);
+const halos = [];
+for (let i = 0; i < 3; i++) {
+  const rr = 0.030 + i * 0.010;
+  const g = new THREE.TorusGeometry(rr, 0.00055, 6, 96);
+  const m = new THREE.MeshBasicMaterial({
+    map: rainbowTex, transparent: true, blending: THREE.AdditiveBlending,
+    depthWrite: false, opacity: 0.36 - i * 0.07, toneMapped: false
+  });
+  const t = new THREE.Mesh(g, m);
+  t.rotation.x = Math.PI / 2 + (i - 1) * 0.22;
+  t.position.y = (i - 1) * 0.012;
+  haloGroup.add(t);
+  halos.push(t);
+}
+
+// floating holographic motes
+const MOTES = 160;
+const motePos = new Float32Array(MOTES * 3);
+const moteCol = new Float32Array(MOTES * 3);
+const moteSeed = new Float32Array(MOTES);
+const tmpCol = new THREE.Color();
+for (let i = 0; i < MOTES; i++) {
+  const a = (i / MOTES) * Math.PI * 2 * 7.3;
+  const rad = 0.030 + ((i * 37) % 100) / 100 * 0.075;
+  const h = ((i * 53) % 100) / 100 * 0.13 + 0.005;
+  motePos[i * 3] = Math.cos(a) * rad;
+  motePos[i * 3 + 1] = h;
+  motePos[i * 3 + 2] = Math.sin(a) * rad;
+  tmpCol.setHSL(((i * 13) % 100) / 100, 0.85, 0.65);
+  moteCol[i * 3] = tmpCol.r; moteCol[i * 3 + 1] = tmpCol.g; moteCol[i * 3 + 2] = tmpCol.b;
+  moteSeed[i] = ((i * 91) % 100) / 100;
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+moteGeo.setAttribute('color', new THREE.BufferAttribute(moteCol, 3));
+const moteMat = new THREE.PointsMaterial({
+  size: 0.0022,
+  vertexColors: true,
+  transparent: true,
+  opacity: 0.85,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  sizeAttenuation: true,
+  map: glowTex,
+  toneMapped: false
+});
+const motes = new THREE.Points(moteGeo, moteMat);
+motes.position.y = BODY_Y + H_BODY * 0.5;
+musicBox.add(motes);
+
+/* ============================================================
+   LIGHTING
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x5f7fb0, 0x100c18, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.6);
+key.position.set(0.28, 0.42, 0.26);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 1.6;
+key.shadow.camera.left = -0.18;
+key.shadow.camera.right = 0.18;
+key.shadow.camera.top = 0.18;
+key.shadow.camera.bottom = -0.18;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.002;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x6fd8ff, 0.9);
+fill.position.set(-0.36, 0.18, 0.30);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xc07bff, 1.5);
+rim.position.set(-0.18, 0.30, -0.40);
+scene.add(rim);
+
+const goldKick = new THREE.PointLight(0xffc266, 0.55, 0.9, 2.0);
+goldKick.position.set(0.16, 0.05, -0.16);
+scene.add(goldKick);
+
+const dancerLight = new THREE.PointLight(0x8ff0ff, 0.85, 0.42, 2.0);
+dancerLight.position.set(0, BODY_Y + H_BODY + 0.06, 0);
+scene.add(dancerLight);
+
+/* ============================================================
+   GROUND (shadow only) + faint reflection glow
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(4, 4),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// soft pool of colored light under the box (purely decorative)
+const poolMat = new THREE.MeshBasicMaterial({
+  map: glowTex, color: 0x3ba8c8, transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.20, toneMapped: false
+});
+const pool = new THREE.Mesh(new THREE.PlaneGeometry(0.42, 0.42), poolMat);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = 0.0006;
+scene.add(pool);
+
+/* ============================================================
+   ANIMATION
+   ============================================================ */
+const clock = new THREE.Clock();
+const motePosAttr = moteGeo.getAttribute('position');
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = Math.min(clock.getDelta(), 0.05);
+
+  // iridescence phase drift
+  for (const u of iridUniformHolders) u.uTime.value = t;
+
+  // dancer pirouette + gentle bob
+  dancer.rotation.y += dt * 1.35;
+  dancer.position.y = SPINDLE_H - 0.0015 + Math.sin(t * 1.6) * 0.0016;
+  dancer.rotation.z = THREE.MathUtils.degToRad(3) + Math.sin(t * 1.3) * 0.02;
+
+  // music drum turns
+  drumGroup.rotation.x += dt * 0.9;
+
+  // wind-up key slowly unwinds
+  keyWing.rotation.z -= dt * 0.55;
+
+  // halos counter-rotate
+  halos.forEach((h, i) => {
+    h.rotation.z += dt * (0.4 + i * 0.25) * (i % 2 ? -1 : 1);
+    h.rotation.y = Math.sin(t * (0.3 + i * 0.12)) * 0.25;
+  });
+  haloGroup.rotation.y += dt * 0.22;
+
+  // rainbow texture scroll on fringe elements = shifting spectral edges
+  rainbowTex.offset.x = (t * 0.045) % 1;
+
+  // hinge glint pulse
+  hingeGlint.material.opacity = 0.45 + 0.35 * Math.pow(Math.abs(Math.sin(t * 0.9)), 3);
+
+  // lid breathes very slightly (as if resonating with the music)
+  lidPivot.rotation.x = LID_OPEN + Math.sin(t * 0.7) * 0.012;
+
+  // motes rise and recycle
+  for (let i = 0; i < MOTES; i++) {
+    let y = motePosAttr.getY(i);
+    y += dt * (0.006 + moteSeed[i] * 0.014);
+    if (y > 0.14) y = 0.004;
+    motePosAttr.setY(i, y);
+    const x = motePosAttr.getX(i), z = motePosAttr.getZ(i);
+    const ang = dt * 0.18 * (0.5 + moteSeed[i]);
+    const ca = Math.cos(ang), sa = Math.sin(ang);
+    motePosAttr.setX(i, x * ca - z * sa);
+    motePosAttr.setZ(i, x * sa + z * ca);
+  }
+  motePosAttr.needsUpdate = true;
+
+  // subtle light shimmer
+  dancerLight.intensity = 0.75 + Math.sin(t * 2.1) * 0.12;
+  rim.intensity = 1.35 + Math.sin(t * 0.6) * 0.2;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

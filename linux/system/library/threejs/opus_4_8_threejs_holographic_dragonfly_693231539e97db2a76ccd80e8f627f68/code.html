@@ -1,0 +1,571 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Holographic Dragonfly</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05060a; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 system-ui, sans-serif; color: rgba(200,210,230,0.45);
+    letter-spacing: 0.14em; text-transform: uppercase; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Holographic Dragonfly · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ *  Scene + camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+
+// Neutral dark studio backdrop (subtle radial vignette)
+function backdropTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(512, 430, 60, 512, 512, 720);
+  grad.addColorStop(0.0, '#1a1f2c');
+  grad.addColorStop(0.45, '#0c0f17');
+  grad.addColorStop(1.0, '#04050a');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 1024, 1024);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = backdropTexture();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0.5, 4.6, 12.5);
+
+// Image-based lighting for the oil-slick / iridescent metals
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (hemisphere fill + key + cool fill + coloured rims)
+ * ------------------------------------------------------------------ */
+scene.add(new THREE.HemisphereLight(0x556680, 0x0a0a12, 0.55));
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(6, 11, 7);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 44;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -8;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.025;
+key.shadow.radius = 6;
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x88aaff, 0.5);
+fill.position.set(-7, 3, 5);
+scene.add(fill);
+
+const rimMagenta = new THREE.DirectionalLight(0xff3ea5, 1.35);
+rimMagenta.position.set(-5, 5, -8);
+scene.add(rimMagenta);
+
+const rimCyan = new THREE.DirectionalLight(0x35e0ff, 1.15);
+rimCyan.position.set(6, 4, -7);
+scene.add(rimCyan);
+
+/* ------------------------------------------------------------------ *
+ *  Shared holographic spectrum + wing shaders
+ * ------------------------------------------------------------------ */
+const SPECTRAL = `
+vec3 spectral(float t){
+  t = fract(t);
+  return 0.5 + 0.5 * cos(6.28318530718 * (t + vec3(0.0, 0.33, 0.67)));
+}`;
+
+const commonUniforms = {
+  uTime: { value: 0 },
+  uCamPos: { value: new THREE.Vector3() }
+};
+
+// Iridescent wing membrane (thin-film style interference)
+const wingMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: commonUniforms.uTime,
+    uCamPos: commonUniforms.uCamPos
+  },
+  transparent: true,
+  side: THREE.DoubleSide,
+  depthWrite: false,
+  blending: THREE.NormalBlending,
+  vertexShader: /* glsl */`
+    varying vec3 vWNormal;
+    varying vec3 vWPos;
+    varying vec2 vUv;
+    void main(){
+      vUv = uv;
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vWPos = wp.xyz;
+      vWNormal = normalize(mat3(modelMatrix) * normal);
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform float uTime;
+    uniform vec3 uCamPos;
+    varying vec3 vWNormal;
+    varying vec3 vWPos;
+    varying vec2 vUv;
+    ${SPECTRAL}
+    void main(){
+      vec3 N = normalize(vWNormal);
+      vec3 V = normalize(uCamPos - vWPos);
+      if (dot(N, V) < 0.0) N = -N;
+      float ndv = clamp(dot(N, V), 0.0, 1.0);
+      float fres = pow(1.0 - ndv, 3.0);
+
+      float phase = fres * 3.0 + vUv.x * 3.2 + vUv.y * 2.2 + uTime * 0.15;
+      vec3 irid = spectral(phase);
+      irid = mix(irid, spectral(phase * 1.7 + 0.25), 0.35);
+
+      vec3 col = irid * (0.5 + 0.9 * fres);
+      col += vec3(0.03, 0.045, 0.065);
+      float alpha = 0.10 + 0.6 * fres + 0.06 * sin(phase * 6.2831);
+      alpha = clamp(alpha, 0.06, 0.9);
+      gl_FragColor = vec4(col, alpha);
+    }
+  `
+});
+
+// Glowing chromatic wing veins
+const veinMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: commonUniforms.uTime,
+    uCamPos: commonUniforms.uCamPos
+  },
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  vertexShader: /* glsl */`
+    attribute vec2 aParam;
+    varying vec2 vP;
+    void main(){
+      vP = aParam;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform float uTime;
+    varying vec2 vP;
+    ${SPECTRAL}
+    void main(){
+      float phase = vP.x * 2.2 + vP.y * 1.3 + uTime * 0.2;
+      vec3 col = spectral(phase) * 1.15 + 0.06;
+      gl_FragColor = vec4(col, 0.82);
+    }
+  `
+});
+
+/* ------------------------------------------------------------------ *
+ *  Oil-slick holographic body materials (physical iridescence)
+ * ------------------------------------------------------------------ */
+const bodyMat = new THREE.MeshPhysicalMaterial({
+  color: 0x14121a,
+  metalness: 1.0,
+  roughness: 0.28,
+  iridescence: 1.0,
+  iridescenceIOR: 1.5,
+  iridescenceThicknessRange: [120, 520],
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.18,
+  envMapIntensity: 1.3,
+  emissive: 0x0a0812,
+  emissiveIntensity: 0.3
+});
+
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x08060e,
+  metalness: 1.0,
+  roughness: 0.12,
+  iridescence: 1.0,
+  iridescenceIOR: 2.0,
+  iridescenceThicknessRange: [220, 820],
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  envMapIntensity: 1.7,
+  emissive: 0x120a20,
+  emissiveIntensity: 0.4,
+  flatShading: true
+});
+
+const legMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0a0910,
+  metalness: 1.0,
+  roughness: 0.4,
+  iridescence: 0.6,
+  iridescenceIOR: 1.4,
+  iridescenceThicknessRange: [100, 400],
+  clearcoat: 0.6,
+  envMapIntensity: 0.9
+});
+
+/* ------------------------------------------------------------------ *
+ *  Procedural wing geometry
+ * ------------------------------------------------------------------ */
+const clamp01 = (x) => Math.min(Math.max(x, 0), 1);
+
+function envF(t, cfg) {
+  t = clamp01(t);
+  let e = Math.pow(Math.sin(Math.PI * Math.pow(t, cfg.tipBias)), cfg.round);
+  e += cfg.baseFull * Math.pow(1 - t, 3.0) * Math.sin(Math.PI * Math.min(t * 3, 1));
+  return e;
+}
+
+// local frame: X = span (root->tip), Y = camber (up), Z = chord (leading/trailing)
+function wingPoint(t, s, cfg) {
+  const half = envF(t, cfg) * cfg.WW;
+  const chord = (s >= 0 ? s * half : s * half * cfg.botScale);
+  const x = t * cfg.WL;
+  const camber = cfg.camberA * Math.sin(Math.PI * t) * (1 - 0.2 * s) + 0.04 * s * Math.sin(Math.PI * t);
+  return [x, camber, chord];
+}
+
+function membraneGeometry(cfg) {
+  const NT = 62, NS = 22;
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= NT; i++) {
+    const t = i / NT;
+    for (let j = 0; j <= NS; j++) {
+      const s = -1 + 2 * j / NS;
+      const p = wingPoint(t, s, cfg);
+      pos.push(p[0], p[1], p[2]);
+      uv.push(t, (s + 1) / 2);
+    }
+  }
+  const row = NS + 1;
+  for (let i = 0; i < NT; i++) {
+    for (let j = 0; j < NS; j++) {
+      const a = i * row + j, b = a + 1, c = a + row, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+function veinGeometry(cfg) {
+  const pos = [], par = [];
+  const fracs = [1.0, 0.66, 0.36, 0.10, -0.18, -0.46, -0.74, -1.0];
+
+  // longitudinal veins
+  for (const f of fracs) {
+    let prev = null, prevT = 0;
+    for (let i = 0; i <= 52; i++) {
+      const t = 0.02 + (1.0 - 0.02) * (i / 52);
+      const p = wingPoint(t, f, cfg);
+      if (prev) {
+        pos.push(prev[0], prev[1], prev[2], p[0], p[1], p[2]);
+        par.push(prevT, f, t, f);
+      }
+      prev = p; prevT = t;
+    }
+  }
+
+  // cross veins (dense near base, brick-staggered outward)
+  const tStart = 0.07, tEnd = 0.98, steps = 24;
+  for (let m = 0; m <= steps; m++) {
+    const t = tStart + (tEnd - tStart) * (m / steps);
+    for (let k = 0; k < fracs.length - 1; k++) {
+      if ((m + k) % 2 === 1 && t > 0.2) continue;
+      const p1 = wingPoint(t, fracs[k], cfg);
+      const p2 = wingPoint(t, fracs[k + 1], cfg);
+      pos.push(p1[0], p1[1], p1[2], p2[0], p2[1], p2[2]);
+      par.push(t, fracs[k], t, fracs[k + 1]);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('aParam', new THREE.Float32BufferAttribute(par, 2));
+  return g;
+}
+
+function makeWing(cfg, side) {
+  const g = new THREE.Group();
+  const mem = new THREE.Mesh(membraneGeometry(cfg), wingMat);
+  mem.renderOrder = 2;
+  mem.castShadow = true;               // solid silhouette on the floor
+  const veins = new THREE.LineSegments(veinGeometry(cfg), veinMat);
+  veins.renderOrder = 3;
+  g.add(mem, veins);
+  if (side < 0) g.scale.x = -1;
+  return g;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Assemble the dragonfly
+ * ------------------------------------------------------------------ */
+const dragon = new THREE.Group();
+
+// Thorax
+const thorax = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), bodyMat);
+thorax.scale.set(0.62, 0.66, 0.92);
+thorax.position.set(0, 0, 0.05);
+thorax.castShadow = true;
+dragon.add(thorax);
+
+// Head
+const head = new THREE.Mesh(new THREE.SphereGeometry(0.42, 40, 28), bodyMat);
+head.scale.set(0.92, 0.86, 0.8);
+head.position.set(0, 0.02, 1.02);
+head.castShadow = true;
+dragon.add(head);
+
+// Bulbous prismatic compound eyes (faceted)
+const eyeGeo = new THREE.IcosahedronGeometry(0.36, 4);
+for (const side of [1, -1]) {
+  const eye = new THREE.Mesh(eyeGeo, eyeMat);
+  eye.scale.set(1.05, 1.0, 0.95);
+  eye.position.set(side * 0.24, 0.15, 1.12);
+  eye.castShadow = true;
+  dragon.add(eye);
+}
+
+// Segmented, tapering abdomen (oil-slick plated)
+const nSeg = 12;
+let segLen = 0.5, zc = -0.5;
+const segGeo = new THREE.SphereGeometry(1, 28, 20);
+for (let i = 0; i < nSeg; i++) {
+  const t = i / (nSeg - 1);
+  let r = 0.33 * (1 - Math.pow(t, 0.7)) + 0.10;
+  r += 0.045 * Math.exp(-Math.pow((t - 0.88) / 0.07, 2)); // subtle terminal club
+  const seg = new THREE.Mesh(segGeo, bodyMat);
+  seg.scale.set(r, r * 1.02, segLen * 0.6);
+  seg.position.set(0, 0, zc);
+  seg.castShadow = true;
+  dragon.add(seg);
+  zc -= segLen * 0.86;
+  segLen *= 0.985;
+}
+// Tail claspers
+for (const side of [1, -1]) {
+  const cerc = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.28, 10), bodyMat);
+  cerc.position.set(side * 0.05, 0.02, zc + 0.34);
+  cerc.rotation.x = -Math.PI / 2;
+  cerc.castShadow = true;
+  dragon.add(cerc);
+}
+
+// Legs
+function bone(len, rTop, rBot, mat) {
+  const geo = new THREE.CylinderGeometry(rTop, rBot, len, 10);
+  geo.translate(0, -len / 2, 0);
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  return m;
+}
+function makeLeg(side, zoff, splay, ftilt) {
+  const root = new THREE.Group();
+  root.position.set(side * 0.22, -0.26, zoff);
+  const hip = new THREE.Group();
+  hip.rotation.z = side * splay;
+  hip.rotation.x = ftilt;
+  root.add(hip);
+  hip.add(bone(0.5, 0.045, 0.03, legMat));
+  const knee = new THREE.Group();
+  knee.position.y = -0.5;
+  knee.rotation.z = side * 0.5;
+  knee.rotation.x = -0.9;
+  hip.add(knee);
+  knee.add(bone(0.55, 0.03, 0.02, legMat));
+  return root;
+}
+for (const side of [1, -1]) {
+  dragon.add(makeLeg(side, 0.5, 0.6, 0.55));
+  dragon.add(makeLeg(side, 0.12, 0.8, 0.0));
+  dragon.add(makeLeg(side, -0.3, 0.7, -0.5));
+}
+
+// Four iridescent wings
+const foreCfg = { WL: 4.4, WW: 1.05, botScale: 0.85, camberA: 0.16, tipBias: 0.9, round: 0.7, baseFull: 0.0 };
+const hindCfg = { WL: 4.2, WW: 1.28, botScale: 0.82, camberA: 0.16, tipBias: 0.95, round: 0.62, baseFull: 0.45 };
+
+const wings = [];
+function addWingPair(cfg, rootZ, rootY, sweep, dihedral, phaseBase) {
+  for (const side of [1, -1]) {
+    const holder = new THREE.Group();
+    holder.position.set(side * 0.32, rootY, rootZ);
+    holder.rotation.y = side * sweep;
+    holder.rotation.z = side * dihedral;
+    holder.add(makeWing(cfg, side));
+    holder.userData = { side, ph: phaseBase + (side < 0 ? Math.PI / 6 : 0), baseZ: side * dihedral };
+    dragon.add(holder);
+    wings.push(holder);
+  }
+}
+addWingPair(foreCfg, 0.5, 0.30, -0.14, 0.07, 0.0);        // forewings, swept slightly forward
+addWingPair(hindCfg, -0.42, 0.20, 0.12, 0.06, Math.PI * 0.6); // hindwings, swept slightly back
+
+scene.add(dragon);
+
+// Center the single object on the origin
+{
+  const box = new THREE.Box3().setFromObject(dragon);
+  const c = box.getCenter(new THREE.Vector3());
+  dragon.position.x = -c.x;
+  dragon.position.z = -c.z;
+  dragon.updateMatrixWorld(true);
+}
+dragon.userData.baseY = dragon.position.y;
+
+/* ------------------------------------------------------------------ *
+ *  Ground: soft light pool + shadow-only receiver
+ * ------------------------------------------------------------------ */
+let groundY;
+{
+  const box2 = new THREE.Box3().setFromObject(dragon);
+  groundY = box2.min.y - 0.5;
+}
+
+function poolTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(256, 256, 10, 256, 256, 256);
+  grad.addColorStop(0.0, 'rgba(120,140,180,0.55)');
+  grad.addColorStop(0.5, 'rgba(70,90,130,0.22)');
+  grad.addColorStop(1.0, 'rgba(0,0,0,0)');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const pool = new THREE.Mesh(
+  new THREE.PlaneGeometry(22, 22),
+  new THREE.MeshBasicMaterial({ map: poolTexture(), transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })
+);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = groundY - 0.01;
+scene.add(pool);
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.5 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.1, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.enablePan = false;
+controls.minDistance = 5;
+controls.maxDistance = 34;
+controls.maxPolarAngle = Math.PI * 0.86;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Post-processing (bloom for the holographic glow)
+ * ------------------------------------------------------------------ */
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.6, 0.55, 0.62
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+/* ------------------------------------------------------------------ *
+ *  Resize
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  composer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  composer.setSize(w, h);
+});
+
+/* ------------------------------------------------------------------ *
+ *  Animate
+ * ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  commonUniforms.uTime.value = t;
+  commonUniforms.uCamPos.value.copy(camera.position);
+
+  // gentle hover + subtle shimmering wing flutter
+  dragon.position.y = dragon.userData.baseY + Math.sin(t * 0.8) * 0.05;
+  for (const h of wings) {
+    const d = h.userData;
+    const s = Math.sin(t * 1.8 + d.ph);
+    h.rotation.z = d.baseZ + d.side * s * 0.05;
+    h.rotation.x = Math.sin(t * 1.8 + d.ph + 0.6) * 0.03;
+  }
+
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Coral Reef Garden</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#06344f}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   1. CONFIG & PALETTE — every colour the reef uses lives here
+================================================================ */
+const SEED = 20260815;
+const PAL = {
+  fogWater:    0x0d5578,
+  sandHex:     '#d3ba85',
+  coralPink:   0xff6fa5,
+  coralOrange: 0xff8748,
+  coralViolet: 0x9c6cf5,
+  coralRose:   0xf74f78,
+  anemoneBase: 0x2aa198,
+  tentacle:    0x49d8c8,
+  turtleSkin:  0x6a9c5c,
+  turtleBelly: 0xcfc9a0,
+  fanViolet:   '#c76be0',
+  fanRose:     '#f0608a',
+  starOrange:  0xff5a36,
+  starViolet:  0x8f5bd9,
+  ironDark:    0x4d4438,
+  rockWarm:    0x77675a,
+  fishSilver:  0xb9d4e0,
+  fishYellow:  0xffd94a,
+  bubbleBlue:  0xbfeaff
+};
+
+/* ================================================================
+   2. SEEDED PRNG & SMALL HELPERS — all randomness flows through R()
+================================================================ */
+function mulberry32(seed){
+  return function(){
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const R = mulberry32(SEED);
+const TAU = Math.PI * 2;
+const rand = (a, b) => a + R() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = arr => arr[Math.floor(R() * arr.length)];
+function makeCanvas(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+// create a shadow-casting mesh, position it and attach it in one call
+function addMesh(parent, geo, mat, x = 0, y = 0, z = 0){
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.castShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* ================================================================
+   3. RENDERER / SCENE / CAMERA / CONTROLS
+================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fogWater, 0.0135);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(26, 13, 26);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 5.5, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 14;
+controls.maxDistance = 46;
+controls.maxPolarAngle = 1.42;
+
+/* ================================================================
+   4. PROCEDURAL CANVAS TEXTURES
+================================================================ */
+function waterGradientTexture(){                       // backdrop dome: sunlit top -> abyssal floor
+  const [c, ctx] = makeCanvas(64, 512);
+  const g = ctx.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0, '#7fd4ee'); g.addColorStop(0.35, '#1e7fa8');
+  g.addColorStop(0.7, '#0a4a6e'); g.addColorStop(1, '#03202f');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 512);
+  return new THREE.CanvasTexture(c);
+}
+
+function sandTexture(){                                // rippled speckled seabed
+  const [c, ctx] = makeCanvas(512, 512);
+  ctx.fillStyle = PAL.sandHex; ctx.fillRect(0, 0, 512, 512);
+  for(let y = 0; y < 512; y += 26){
+    for(const [col, w, off] of [['rgba(140,115,70,0.35)', 7, 0], ['rgba(255,240,200,0.28)', 3, -6]]){
+      ctx.strokeStyle = col; ctx.lineWidth = w; ctx.beginPath();
+      for(let x = 0; x <= 512; x += 16){
+        const yy = y + off + Math.sin(x * 0.028 + y * 0.6) * 7;
+        x === 0 ? ctx.moveTo(x, yy) : ctx.lineTo(x, yy);
+      }
+      ctx.stroke();
+    }
+  }
+  for(let i = 0; i < 1400; i++){
+    ctx.fillStyle = R() < 0.5 ? 'rgba(120,95,55,0.45)' : 'rgba(255,245,215,0.4)';
+    ctx.fillRect(rand(0, 511), rand(0, 511), 2, 2);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping; tex.repeat.set(7, 7);
+  return tex;
+}
+
+function brainTexture(base, groove){                   // meandering grooves of a brain coral
+  const [c, ctx] = makeCanvas(256, 256);
+  ctx.fillStyle = base; ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = groove; ctx.lineWidth = 4; ctx.lineCap = 'round';
+  for(let i = 0; i < 70; i++){
+    let x = rand(0, 256), y = rand(0, 256), a = rand(0, TAU);
+    ctx.beginPath(); ctx.moveTo(x, y);
+    for(let s = 0; s < 14; s++){
+      a += rand(-0.9, 0.9);
+      x += Math.cos(a) * 7; y += Math.sin(a) * 7;
+      ctx.lineTo(x, y);
+    }
+    ctx.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+function clownTexture(){                               // orange body, three white bars edged in black
+  const [c, ctx] = makeCanvas(128, 256);
+  ctx.fillStyle = '#ff7a1a'; ctx.fillRect(0, 0, 128, 256);
+  for(const [cy, hw] of [[46, 15], [116, 18], [196, 13]]){
+    ctx.fillStyle = '#101010'; ctx.fillRect(0, cy - hw - 5, 128, hw * 2 + 10);
+    ctx.fillStyle = '#f7f4ee'; ctx.fillRect(0, cy - hw, 128, hw * 2);
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+function shellTexture(){                               // hexagonal scutes for the turtle carapace
+  const [c, ctx] = makeCanvas(256, 256);
+  ctx.fillStyle = '#4f7a42'; ctx.fillRect(0, 0, 256, 256);
+  ctx.strokeStyle = '#2c4a26'; ctx.lineWidth = 6;
+  for(let ry = 0; ry < 4; ry++) for(let rx = 0; rx < 4; rx++){
+    const cx = 34 + rx * 66 + (ry % 2) * 33, cy = 32 + ry * 60, rad = 34;
+    ctx.fillStyle = ry % 2 ? 'rgba(120,160,95,0.5)' : 'rgba(70,105,60,0.5)';
+    ctx.beginPath();
+    for(let k = 0; k < 6; k++){
+      const a = k / 6 * TAU + Math.PI / 6;
+      const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad;
+      k === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+    }
+    ctx.closePath(); ctx.fill(); ctx.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+function fanTexture(hex){                              // recursive lattice of a gorgonian sea fan
+  const [c, ctx] = makeCanvas(256, 256);
+  ctx.strokeStyle = hex; ctx.lineCap = 'round';
+  function vein(x, y, ang, len, w, depth){
+    const nx = x + Math.cos(ang) * len, ny = y - Math.sin(ang) * len;
+    ctx.lineWidth = w;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(nx, ny); ctx.stroke();
+    if(depth === 0) return;
+    for(let i = 0, forks = R() < 0.4 ? 3 : 2; i < forks; i++)
+      vein(nx, ny, ang + rand(-0.55, 0.55), len * rand(0.6, 0.8), w * 0.75, depth - 1);
+  }
+  for(let i = -2; i <= 2; i++) vein(128, 252, Math.PI / 2 + i * 0.32, 50, 5, 5);
+  ctx.globalAlpha = 0.55; ctx.lineWidth = 1.5;
+  for(let r = 42; r < 240; r += 24){
+    ctx.beginPath(); ctx.arc(128, 252, r, Math.PI * 1.12, Math.PI * 1.88); ctx.stroke();
+  }
+  return new THREE.CanvasTexture(c);
+}
+
+function kelpTexture(){                                // blade gradient with a dark midrib
+  const [c, ctx] = makeCanvas(64, 256);
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0, '#63b877'); g.addColorStop(1, '#1e5c38');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 256);
+  ctx.strokeStyle = 'rgba(10,50,25,0.6)'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(32, 0); ctx.lineTo(32, 256); ctx.stroke();
+  ctx.strokeStyle = 'rgba(15,60,30,0.35)'; ctx.lineWidth = 4;
+  for(const x of [5, 59]){ ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, 256); ctx.stroke(); }
+  return new THREE.CanvasTexture(c);
+}
+
+function rayTexture(){                                 // soft vertical beam, feathered edges
+  const [c, ctx] = makeCanvas(128, 256);
+  const v = ctx.createLinearGradient(0, 0, 0, 256);
+  v.addColorStop(0, 'rgba(215,242,255,0.9)'); v.addColorStop(0.7, 'rgba(160,220,250,0.28)');
+  v.addColorStop(1, 'rgba(140,210,250,0)');
+  ctx.fillStyle = v; ctx.fillRect(0, 0, 128, 256);
+  const h = ctx.createLinearGradient(0, 0, 128, 0);
+  h.addColorStop(0, 'rgba(0,0,0,0)'); h.addColorStop(0.25, 'rgba(0,0,0,1)');
+  h.addColorStop(0.75, 'rgba(0,0,0,1)'); h.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.globalCompositeOperation = 'destination-in';
+  ctx.fillStyle = h; ctx.fillRect(0, 0, 128, 256);
+  return new THREE.CanvasTexture(c);
+}
+
+/* ================================================================
+   5. MATERIALS — one shared set, defined once
+================================================================ */
+const sandMap = sandTexture();
+const MAT = {
+  sand:      new THREE.MeshStandardMaterial({ map: sandMap, bumpMap: sandMap, bumpScale: 0.4, roughness: 1 }),
+  rock:      new THREE.MeshStandardMaterial({ color: PAL.rockWarm, roughness: 0.95, flatShading: true }),
+  staghorn:  [PAL.coralPink, PAL.coralOrange, PAL.coralViolet, PAL.coralRose].map(
+               c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 })),
+  brains:    [['#f27fae', '#b03c6e'], ['#f79a52', '#b55a1e'], ['#a97fe8', '#6a3fb0']].map(([b, g]) => {
+               const tex = brainTexture(b, g);
+               return new THREE.MeshStandardMaterial({ map: tex, bumpMap: tex, bumpScale: 0.25, roughness: 0.85 });
+             }),
+  anemone:   new THREE.MeshStandardMaterial({ color: PAL.anemoneBase, roughness: 0.7 }),
+  tentacle:  new THREE.MeshStandardMaterial({ color: PAL.tentacle, emissive: 0x0e4a44, roughness: 0.55 }),
+  clown:     new THREE.MeshStandardMaterial({ map: clownTexture(), roughness: 0.5 }),
+  clownFin:  new THREE.MeshStandardMaterial({ color: 0xff8a2a, roughness: 0.6, side: THREE.DoubleSide }),
+  eye:       new THREE.MeshStandardMaterial({ color: 0x0a0a0a, roughness: 0.3 }),
+  shell:     new THREE.MeshStandardMaterial({ map: shellTexture(), roughness: 0.8 }),
+  turtleSkin:new THREE.MeshStandardMaterial({ color: PAL.turtleSkin, roughness: 0.85 }),
+  belly:     new THREE.MeshStandardMaterial({ color: PAL.turtleBelly, roughness: 0.9 }),
+  kelp:      new THREE.MeshStandardMaterial({ map: kelpTexture(), side: THREE.DoubleSide, roughness: 0.8 }),
+  fans:      [PAL.fanViolet, PAL.fanRose].map(hex => new THREE.MeshStandardMaterial({
+               map: fanTexture(hex), transparent: true, alphaTest: 0.25, side: THREE.DoubleSide, roughness: 0.85 })),
+  stars:     [PAL.starOrange, PAL.starViolet].map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.9 })),
+  iron:      new THREE.MeshStandardMaterial({ color: PAL.ironDark, roughness: 0.85, metalness: 0.55 }),
+  bubble:    new THREE.MeshStandardMaterial({ color: PAL.bubbleBlue, transparent: true, opacity: 0.45,
+               roughness: 0.15, emissive: 0x2a5a70 }),
+  fishA:     new THREE.MeshStandardMaterial({ color: PAL.fishSilver, metalness: 0.45, roughness: 0.4 }),
+  fishB:     new THREE.MeshStandardMaterial({ color: PAL.fishYellow, metalness: 0.2, roughness: 0.5 })
+};
+
+/* ================================================================
+   6. ENVIRONMENT — water dome, seabed, light shafts, bubbles, snow
+================================================================ */
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(110, 32, 24),
+  new THREE.MeshBasicMaterial({ map: waterGradientTexture(), side: THREE.BackSide, fog: false })));
+
+const floorGeo = new THREE.PlaneGeometry(190, 190, 64, 64);
+floorGeo.rotateX(-Math.PI / 2);
+{ // gentle deterministic dunes
+  const pos = floorGeo.attributes.position;
+  for(let i = 0; i < pos.count; i++){
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, Math.sin(x * 0.14) * Math.cos(z * 0.11) * 0.45 + Math.sin(x * 0.05 + z * 0.07) * 0.6 - 0.05);
+  }
+  floorGeo.computeVertexNormals();
+}
+const seabed = new THREE.Mesh(floorGeo, MAT.sand);
+seabed.receiveShadow = true;
+scene.add(seabed);
+
+// --- god-ray light shafts -------------------------------------------------
+const rayTex = rayTexture();
+const raysGroup = new THREE.Group();
+const rays = [];
+for(let i = 0; i < 9; i++){
+  const mat = new THREE.MeshBasicMaterial({ map: rayTex, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, side: THREE.DoubleSide, fog: false, opacity: 0.22 });
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(rand(3, 6.5), 36), mat);
+  const a = rand(0, TAU), r = rand(2, 13);
+  mesh.position.set(Math.cos(a) * r, 19.5, Math.sin(a) * r);
+  mesh.rotation.set(rand(-0.05, 0.05), rand(0, TAU), rand(-0.08, 0.02));
+  rays.push({ mesh, base: rand(0.16, 0.3), phase: rand(0, TAU) });
+  raysGroup.add(mesh);
+}
+scene.add(raysGroup);
+
+// --- rising bubble streams ------------------------------------------------
+const BUBBLE_N = 96;
+const bubbleEmitters = [[4.5, 0.8, -2.5], [-6.5, 0.8, 3.5], [1.5, 0.6, 7.5]];
+const bubbles = new THREE.InstancedMesh(new THREE.SphereGeometry(0.09, 8, 8), MAT.bubble, BUBBLE_N);
+bubbles.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+const bubbleData = [];
+for(let i = 0; i < BUBBLE_N; i++){
+  const e = pick(bubbleEmitters);
+  bubbleData.push({ ex: e[0] + rand(-0.4, 0.4), ez: e[2] + rand(-0.4, 0.4), y0: e[1],
+    phase: rand(0, 24), speed: rand(1.6, 2.6), amp: rand(0.15, 0.45), s: rand(0.6, 1.4) });
+}
+scene.add(bubbles);
+
+// --- drifting marine snow -------------------------------------------------
+const snowGeo = new THREE.BufferGeometry();
+{
+  const p = new Float32Array(300 * 3);
+  for(let i = 0; i < 300; i++){
+    p[i * 3] = rand(-30, 30); p[i * 3 + 1] = rand(0.5, 26); p[i * 3 + 2] = rand(-30, 30);
+  }
+  snowGeo.setAttribute('position', new THREE.BufferAttribute(p, 3));
+}
+const snow = new THREE.Points(snowGeo, new THREE.PointsMaterial({ color: 0xcfeaf5, size: 0.09,
+  transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false }));
+scene.add(snow);
+
+/* ================================================================
+   7. BUILDER FUNCTIONS — each focal structure returns a Group
+================================================================ */
+function buildStaghorn(mat){                           // branching antler coral
+  const g = new THREE.Group();
+  function branch(parent, len, thick, depth){
+    const geo = new THREE.CylinderGeometry(thick * 0.55, thick, len, 7);
+    geo.translate(0, len / 2, 0);
+    const m = addMesh(parent, geo, mat);
+    if(depth > 0){
+      for(let i = 0, n = randInt(2, 2 + (depth > 1 ? 1 : 0)); i < n; i++){
+        const sub = branch(m, len * rand(0.6, 0.8), thick * 0.7, depth - 1);
+        sub.position.y = len * rand(0.5, 0.95);
+        sub.rotation.set(rand(-0.7, 0.7), rand(0, TAU), rand(0.35, 0.95));
+      }
+    }
+    return m;
+  }
+  for(let i = 0, n = randInt(1, 2); i < n; i++){
+    const t = branch(g, rand(1.7, 2.5), rand(0.22, 0.3), 2);
+    t.rotation.set(rand(-0.3, 0.3), rand(0, TAU), rand(-0.3, 0.3));
+    t.position.set(rand(-0.5, 0.5), 0, rand(-0.5, 0.5));
+  }
+  return g;
+}
+
+function buildBrainCoral(mat, size){                   // grooved hemispherical dome
+  const g = new THREE.Group();
+  const m = addMesh(g, new THREE.SphereGeometry(size, 26, 18), mat, 0, size * 0.42, 0);
+  m.scale.set(1, 0.72, rand(0.9, 1.1)); m.rotation.y = rand(0, TAU);
+  return g;
+}
+
+const tentacleGeo = new THREE.CapsuleGeometry(0.055, 1.0, 3, 6);
+tentacleGeo.translate(0, 0.55, 0);
+function buildAnemone(){                               // waving tentacle crown on a stout column
+  const g = new THREE.Group();
+  addMesh(g, new THREE.CylinderGeometry(0.85, 1.1, 0.9, 12), MAT.anemone, 0, 0.45, 0);
+  const count = 44;
+  const inst = new THREE.InstancedMesh(tentacleGeo, MAT.tentacle, count);
+  inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  inst.position.y = 0.88; inst.castShadow = true;
+  const data = [];
+  for(let i = 0; i < count; i++){
+    const ring = Math.floor(i / 15);
+    data.push({ a: rand(0, TAU), r: 0.14 + ring * 0.27 + rand(-0.05, 0.05),
+      lean: 0.22 + ring * 0.4 + rand(-0.1, 0.1), phase: rand(0, TAU), s: rand(0.8, 1.3) });
+  }
+  g.add(inst);
+  g.userData = { inst, data };
+  return g;
+}
+
+function buildClownfish(){                             // striped body, faces +Z
+  const g = new THREE.Group();
+  const body = addMesh(g, new THREE.SphereGeometry(0.5, 20, 16), MAT.clown);
+  body.scale.set(0.55, 1.0, 0.6);
+  body.rotation.x = Math.PI / 2;                       // stripes ring the body along its length
+  const tail = addMesh(g, new THREE.ConeGeometry(0.24, 0.42, 10), MAT.clownFin, 0, 0, -0.6);
+  tail.rotation.x = Math.PI / 2; tail.scale.x = 0.25;
+  const dorsal = addMesh(g, new THREE.ConeGeometry(0.16, 0.3, 8), MAT.clownFin, 0, 0.34, 0);
+  dorsal.scale.x = 0.25;
+  for(const sx of [-1, 1]) addMesh(g, new THREE.SphereGeometry(0.05, 8, 8), MAT.eye, sx * 0.16, 0.08, 0.4);
+  return g;
+}
+
+function buildTurtle(){                                // sea turtle, faces +Z, flippers stored for flapping
+  const g = new THREE.Group();
+  const shell = addMesh(g, new THREE.SphereGeometry(1.5, 24, 16), MAT.shell, 0, 0.35, 0);
+  shell.scale.set(1.05, 0.52, 1.35);
+  const belly = addMesh(g, new THREE.SphereGeometry(1.38, 18, 12), MAT.belly, 0, 0.02, 0);
+  belly.scale.set(0.95, 0.3, 1.25);
+  const head = addMesh(g, new THREE.SphereGeometry(0.5, 14, 12), MAT.turtleSkin, 0, 0.32, 2.0);
+  head.scale.set(0.78, 0.7, 1.05);
+  for(const sx of [-1, 1]) addMesh(g, new THREE.SphereGeometry(0.07, 8, 8), MAT.eye, sx * 0.28, 0.48, 2.32);
+  const flippers = [];
+  for(const [sx, z, len, rear] of [[-1, 0.85, 1.5, 0], [1, 0.85, 1.5, 0], [-1, -1.0, 0.95, 1], [1, -1.0, 0.95, 1]]){
+    const f = addMesh(g, new THREE.SphereGeometry(len, 12, 8), MAT.turtleSkin, sx * (0.85 + len * 0.55), 0.12, z);
+    f.scale.set(1, 0.14, 0.4); f.rotation.z = -sx * 0.18;
+    f.userData = { sx, rear, base: -sx * 0.18 };
+    flippers.push(f);
+  }
+  const tailFin = addMesh(g, new THREE.ConeGeometry(0.16, 0.55, 8), MAT.turtleSkin, 0, 0.15, -1.95);
+  tailFin.rotation.x = -Math.PI / 2;
+  g.userData = { flippers };
+  return g;
+}
+
+const kelpBladeGeo = new THREE.PlaneGeometry(0.9, 1);
+kelpBladeGeo.translate(0, 0.5, 0);
+function buildKelp(height){                            // chain of hinged blade segments
+  const g = new THREE.Group();
+  const segs = [], n = 7, segLen = height / n;
+  let parent = g;
+  for(let i = 0; i < n; i++){
+    const seg = new THREE.Group();
+    seg.position.y = i === 0 ? 0 : segLen;
+    const blade = addMesh(seg, kelpBladeGeo, MAT.kelp);
+    blade.scale.set(1 - i * 0.09, segLen * 1.04, 1);
+    blade.rotation.y = rand(-0.25, 0.25);
+    parent.add(seg);
+    parent = seg;
+    segs.push(seg);
+  }
+  g.userData = { segs, phase: rand(0, TAU) };
+  return g;
+}
+
+const fanGeo = new THREE.PlaneGeometry(3.4, 3.4);
+fanGeo.translate(0, 1.7, 0);
+function buildSeaFan(mat){                             // flat gorgonian fan on a short stalk
+  const g = new THREE.Group();
+  addMesh(g, new THREE.CylinderGeometry(0.07, 0.11, 0.5, 8), MAT.rock, 0, 0.25, 0);
+  const fan = addMesh(g, fanGeo, mat, 0, 0.4, 0);
+  g.userData = { fan, phase: rand(0, TAU) };
+  return g;
+}
+
+const starGeo = (() => {                               // shared five-armed star extrusion
+  const shape = new THREE.Shape();
+  for(let i = 0; i < 10; i++){
+    const r = i % 2 === 0 ? 0.62 : 0.26, a = i / 10 * TAU;
+    i === 0 ? shape.moveTo(Math.cos(a) * r, Math.sin(a) * r) : shape.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+  }
+  shape.closePath();
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: 0.1, bevelEnabled: true,
+    bevelThickness: 0.06, bevelSize: 0.07, bevelSegments: 2 });
+  geo.rotateX(-Math.PI / 2);
+  return geo;
+})();
+function buildStarfish(mat){
+  const m = new THREE.Mesh(starGeo, mat);
+  m.castShadow = true;
+  return m;
+}
+
+function buildAnchor(){                                // classic stocked anchor
+  const g = new THREE.Group();
+  addMesh(g, new THREE.CylinderGeometry(0.13, 0.17, 4.4, 10), MAT.iron, 0, 2.6, 0);
+  addMesh(g, new THREE.TorusGeometry(0.4, 0.09, 8, 18), MAT.iron, 0, 5.1, 0);
+  const stock = addMesh(g, new THREE.CylinderGeometry(0.1, 0.1, 2.7, 8), MAT.iron, 0, 4.35, 0);
+  stock.rotation.x = Math.PI / 2;
+  for(const sz of [-1, 1]) addMesh(g, new THREE.SphereGeometry(0.16, 8, 8), MAT.iron, 0, 4.35, sz * 1.38);
+  const arms = addMesh(g, new THREE.TorusGeometry(1.6, 0.15, 10, 26, Math.PI), MAT.iron, 0, 1.55, 0);
+  arms.rotation.z = Math.PI;
+  for(const sx of [-1, 1]){
+    const fluke = addMesh(g, new THREE.ConeGeometry(0.34, 0.85, 4), MAT.iron, sx * 1.6, 1.85, 0);
+    fluke.scale.z = 0.4; fluke.rotation.z = -sx * 0.22;
+  }
+  return g;
+}
+
+function buildRockMound(count, spread){                // rubble base the corals colonise
+  const g = new THREE.Group();
+  for(let i = 0; i < count; i++){
+    const m = addMesh(g, new THREE.DodecahedronGeometry(rand(0.7, 1.6), 0), MAT.rock,
+      rand(-spread, spread), rand(-0.3, 0.15), rand(-spread, spread));
+    m.rotation.set(rand(0, TAU), rand(0, TAU), rand(0, TAU));
+    m.scale.y = rand(0.55, 0.8);
+    m.receiveShadow = true;
+  }
+  return g;
+}
+
+const fishGeo = new THREE.ConeGeometry(0.16, 0.55, 6);
+fishGeo.rotateX(Math.PI / 2);                          // tip forward along +Z
+function buildSchool(n, mat, radius, height, speed){   // instanced shoal in a drifting blob
+  const inst = new THREE.InstancedMesh(fishGeo, mat, n);
+  inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const offs = [];
+  for(let i = 0; i < n; i++)
+    offs.push({ ox: rand(-2.4, 2.4), oy: rand(-0.9, 0.9), oz: rand(-3.2, 3.2),
+      phase: rand(0, TAU), s: rand(0.7, 1.3) });
+  inst.userData = { offs, radius, height, speed, angle0: rand(0, TAU) };
+  scene.add(inst);
+  return inst;
+}
+
+/* ================================================================
+   8. ASSEMBLY & LAYOUT — populate the reef
+================================================================ */
+const placeOnSand = (obj, x, z, ry = rand(0, TAU), sink = 0.12) => {
+  obj.position.set(x, -sink, z);
+  obj.rotation.y = ry;
+  scene.add(obj);
+  return obj;
+};
+
+// rubble mounds
+placeOnSand(buildRockMound(4, 1.6), 4.5, -2.5);
+placeOnSand(buildRockMound(3, 1.3), -6.5, 3.5);
+placeOnSand(buildRockMound(3, 1.4), 1.5, 7.5);
+placeOnSand(buildRockMound(2, 1.0), -3, -7.5);
+
+// staghorn corals in pink / orange / violet / rose
+[[4.5, -3.5], [-7.5, 2.5], [2.5, 8.5], [-3.5, -8], [9, 3.5]].forEach(([x, z], i) => {
+  const coral = buildStaghorn(MAT.staghorn[i % MAT.staghorn.length]);
+  coral.scale.setScalar(rand(1.0, 1.5));
+  placeOnSand(coral, x, z, rand(0, TAU), 0.05);
+});
+
+// brain corals
+[[6.8, 0.5, 1.5], [-4.5, 6.2, 1.9], [-1.5, -5, 1.2], [3.5, 4.8, 1.0]].forEach(([x, z, s], i) =>
+  placeOnSand(buildBrainCoral(MAT.brains[i % 3], s), x, z, rand(0, TAU), 0.1));
+
+// anemones + resident clownfish
+const anemones = [];
+[[2.2, -6.2], [-5.2, -3.2], [6.2, 6.2]].forEach(([x, z]) => anemones.push(placeOnSand(buildAnemone(), x, z, 0, 0.05)));
+const clownfishes = [];
+[[0, 0], [0, Math.PI], [1, 1.2], [2, 2.6]].forEach(([ai, ph]) => {
+  const fish = buildClownfish();
+  fish.scale.setScalar(0.55);
+  scene.add(fish);
+  clownfishes.push({ fish, anchor: anemones[ai].position, phase: ph, r: rand(1.3, 1.9), h: rand(1.7, 2.4) });
+});
+
+// kelp forest ring
+const kelpStrands = [];
+for(let i = 0; i < 8; i++){
+  const a = rand(0, TAU), r = rand(13.5, 18);
+  const strand = buildKelp(rand(7, 11));
+  placeOnSand(strand, Math.cos(a) * r, Math.sin(a) * r, rand(0, TAU), 0.05);
+  kelpStrands.push(strand);
+}
+
+// sea fans
+const seaFans = [];
+[[8.5, -6, 0], [-9.5, -1.5, 1], [-2.5, 10.5, 0], [11, 6.5, 1]].forEach(([x, z, mi]) => {
+  const fan = buildSeaFan(MAT.fans[mi]);
+  fan.scale.setScalar(rand(0.85, 1.25));
+  seaFans.push(placeOnSand(fan, x, z, rand(0, TAU), 0.04));
+});
+
+// starfish scattered on the sand
+for(let i = 0; i < 6; i++){
+  const a = rand(0, TAU), r = rand(4, 19);
+  const star = buildStarfish(MAT.stars[i % 2]);
+  star.scale.setScalar(rand(0.8, 1.5));
+  star.position.set(Math.cos(a) * r, 0.02, Math.sin(a) * r);
+  star.rotation.y = rand(0, TAU);
+  scene.add(star);
+}
+
+// half-buried anchor with a sand drift over one fluke
+const anchor = buildAnchor();
+anchor.position.set(-12.5, -0.7, 6.5);
+anchor.rotation.set(0.12, 0.7, 0.5);
+scene.add(anchor);
+const driftMound = new THREE.Mesh(new THREE.SphereGeometry(1.9, 16, 10), MAT.sand);
+driftMound.scale.set(1.25, 0.28, 1);
+driftMound.position.set(-13.6, 0.05, 7.1);
+driftMound.receiveShadow = true;
+scene.add(driftMound);
+
+// sea turtle + two drifting schools
+const turtle = buildTurtle();
+scene.add(turtle);
+const schoolA = buildSchool(26, MAT.fishA, 9.5, 10.5, 0.28);
+const schoolB = buildSchool(20, MAT.fishB, 15.5, 6.8, -0.21);
+
+/* ================================================================
+   9. LIGHTING RIG — filtered sun key, watery fill, coral accents
+================================================================ */
+const sun = new THREE.DirectionalLight(0xcfeeff, 2.6);
+sun.position.set(12, 38, 8);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -30;
+sun.shadow.camera.right = sun.shadow.camera.top = 30;
+sun.shadow.camera.near = 5;
+sun.shadow.camera.far = 90;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+
+scene.add(new THREE.HemisphereLight(0x7fd2f0, 0x0b2a3d, 0.85));
+scene.add(new THREE.AmbientLight(0x18506e, 0.55));
+
+const accentPink = new THREE.PointLight(0xff8fc0, 55, 20, 2);
+accentPink.position.set(4.5, 3.5, -3);
+scene.add(accentPink);
+const accentCyan = new THREE.PointLight(0x7fe0ff, 45, 22, 2);
+accentCyan.position.set(-6, 4, 4);
+scene.add(accentCyan);
+
+/* ================================================================
+   10. ANIMATION LOOP — gentle looping motion everywhere
+================================================================ */
+const clock = new THREE.Clock();
+const dummy = new THREE.Object3D();
+const qYaw = new THREE.Quaternion(), qTilt = new THREE.Quaternion();
+const Y_UP = new THREE.Vector3(0, 1, 0), Z_AX = new THREE.Vector3(0, 0, 1);
+const look = new THREE.Vector3();
+
+function animateSchool(inst, t){
+  const { offs, radius, height, speed, angle0 } = inst.userData;
+  const a = angle0 + t * speed, sw = Math.sign(speed);
+  const cx = Math.cos(a) * radius, cz = Math.sin(a) * radius;
+  const cy = height + Math.sin(t * 0.5 + angle0) * 1.1;
+  const cosH = Math.cos(-a), sinH = Math.sin(-a);      // yaw blob offsets with the heading
+  const tx = -Math.sin(a) * sw, tz = Math.cos(a) * sw;
+  for(let i = 0; i < offs.length; i++){
+    const o = offs[i];
+    const wob = Math.sin(t * 2.6 + o.phase) * 0.22;
+    const px = o.ox * cosH + o.oz * sinH + Math.cos(a) * wob;
+    const pz = -o.ox * sinH + o.oz * cosH + Math.sin(a) * wob;
+    dummy.position.set(cx + px, cy + o.oy + Math.sin(t * 1.7 + o.phase) * 0.18, cz + pz);
+    look.set(dummy.position.x + tx, dummy.position.y, dummy.position.z + tz);
+    dummy.lookAt(look);
+    dummy.scale.setScalar(o.s);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+  }
+  inst.instanceMatrix.needsUpdate = true;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // light shafts: slow sweep + brightness shimmer
+  raysGroup.rotation.y = t * 0.02;
+  for(const r of rays) r.mesh.material.opacity = r.base * (0.7 + 0.3 * Math.sin(t * 0.55 + r.phase));
+
+  // bubbles rise, wobble and pop back to their vent
+  for(let i = 0; i < BUBBLE_N; i++){
+    const b = bubbleData[i];
+    const life = (t * b.speed + b.phase) % 24;
+    dummy.position.set(b.ex + Math.sin(t * 2.2 + b.phase) * b.amp, b.y0 + life, b.ez);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(b.s * (0.55 + life * 0.02));
+    dummy.updateMatrix();
+    bubbles.setMatrixAt(i, dummy.matrix);
+  }
+  bubbles.instanceMatrix.needsUpdate = true;
+
+  // marine snow drifts in a slow gyre
+  snow.rotation.y = t * 0.012;
+  snow.position.y = Math.sin(t * 0.3) * 0.5;
+
+  // anemone tentacles sway
+  for(const an of anemones){
+    const { inst, data } = an.userData;
+    for(let i = 0; i < data.length; i++){
+      const d = data[i];
+      const sway = Math.sin(t * 1.8 + d.phase) * 0.15 + Math.sin(t * 0.6 + d.a) * 0.05;
+      dummy.position.set(Math.cos(d.a) * d.r, 0, Math.sin(d.a) * d.r);
+      qYaw.setFromAxisAngle(Y_UP, -d.a);
+      qTilt.setFromAxisAngle(Z_AX, -(d.lean + sway));
+      dummy.quaternion.copy(qYaw).multiply(qTilt);
+      dummy.scale.set(1, d.s, 1);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+  }
+
+  // clownfish circle their anemones
+  for(const c of clownfishes){
+    const a = t * 0.75 + c.phase;
+    c.fish.position.set(c.anchor.x + Math.cos(a) * c.r,
+      c.h + Math.sin(t * 1.4 + c.phase) * 0.35, c.anchor.z + Math.sin(a) * c.r);
+    look.set(c.anchor.x + Math.cos(a + 0.25) * c.r, c.fish.position.y, c.anchor.z + Math.sin(a + 0.25) * c.r);
+    c.fish.lookAt(look);
+  }
+
+  // kelp sways segment by segment
+  for(const k of kelpStrands){
+    const { segs, phase } = k.userData;
+    for(let i = 0; i < segs.length; i++){
+      segs[i].rotation.z = Math.sin(t * 0.85 + phase + i * 0.55) * 0.075;
+      segs[i].rotation.x = Math.cos(t * 0.65 + phase + i * 0.4) * 0.05;
+    }
+  }
+
+  // sea fans flex in the current
+  for(const f of seaFans) f.userData.fan.rotation.z = Math.sin(t * 0.7 + f.userData.phase) * 0.055;
+
+  // sea turtle cruises a wide circle, flippers beating
+  const ta = t * 0.16;
+  turtle.position.set(Math.cos(ta) * 13.5, 8.6 + Math.sin(t * 0.6) * 0.9, Math.sin(ta) * 13.5);
+  look.set(Math.cos(ta + 0.1) * 13.5, turtle.position.y + Math.sin(t * 0.6 + 0.2) * 0.9, Math.sin(ta + 0.1) * 13.5);
+  turtle.lookAt(look);
+  for(const f of turtle.userData.flippers){
+    const beat = Math.sin(t * 2.1 + f.userData.rear * 1.1) * (f.userData.rear ? 0.18 : 0.38);
+    f.rotation.z = f.userData.base + f.userData.sx * beat;
+  }
+
+  // shoals hold formation while drifting
+  animateSchool(schoolA, t);
+  animateSchool(schoolB, t);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   11. RESIZE
+================================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

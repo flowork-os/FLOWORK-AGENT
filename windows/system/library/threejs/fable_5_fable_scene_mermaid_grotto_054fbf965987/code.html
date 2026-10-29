@@ -1,0 +1,687 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Mermaid Grotto</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#062a30}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ============================================================
+   CONFIG & PALETTE
+   ============================================================ */
+const CONFIG = {
+  seed: 54178,
+  caveRadius: 24,          // radius of the grotto dome
+  caveCenterY: 4,          // dome centre height
+  holeAngle: 0.34,         // polar angle of the ceiling opening
+  waterLevel: 2.05,        // turquoise water surface height
+  fogColor: 0x06262e
+};
+const PALETTE = {
+  rock: 0x7d99a1, sand: 0xc9b68a,
+  water: 0x27c8bf, waterDeep: 0x0e7f86,
+  shell: 0xf6dde6, pearl: 0xfdf6ee, glowPearl: 0xffe9f2,
+  gold: 0xd9a63b, kelp: 0x2f8f5b,
+  coralPink: 0xff6f91, coralOrange: 0xff9a6b, coralViolet: 0xb46ad4, coralMint: 0x63d8c2,
+  beam: 0xbdf3ff, skyHole: 0xe4fbff
+};
+
+/* ============================================================
+   SEEDED PRNG & SMALL HELPERS
+   ============================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CONFIG.seed);
+const rand = (a, b) => a + (b - a) * rng();
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+
+/* Mesh factory: geometry + material + {p:position, r:rotation, s:scale, cast, recv}. */
+function mesh(geo, mat, o = {}) {
+  const m = new THREE.Mesh(geo, mat);
+  if (o.p) m.position.set(o.p[0], o.p[1], o.p[2]);
+  if (o.r) m.rotation.set(o.r[0], o.r[1], o.r[2]);
+  if (o.s !== undefined) { typeof o.s === 'number' ? m.scale.setScalar(o.s) : m.scale.set(o.s[0], o.s[1], o.s[2]); }
+  m.castShadow = !!o.cast; m.receiveShadow = !!o.recv;
+  return m;
+}
+/* Radial flute/ridge displacement (scallop shells, clam shells). */
+function radialRidge(geometry, freq, amp) {
+  const pos = geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const a = Math.atan2(z, x), f = 1 + amp * Math.sin(a * freq);
+    pos.setX(i, x * f); pos.setZ(i, z * f);
+    pos.setY(i, y * (1 + amp * 0.4 * Math.cos(a * freq)));
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+/* Rocky vertex jitter for organic stone. */
+function roughen(geometry, amp, freq = 0.55) {
+  const pos = geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n = Math.sin(x * freq + 3.1) * Math.sin(y * freq * 1.3 + 1.7) * Math.sin(z * freq * 0.8 + 5.2);
+    const s = 1 + n * amp;
+    pos.setXYZ(i, x * s, y * s, z * s);
+  }
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.fogColor);
+scene.fog = new THREE.Fog(CONFIG.fogColor, 16, 62);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 140);
+camera.position.set(13.5, 9.2, 13.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, 3.0, 0);
+controls.minDistance = 9;
+controls.maxDistance = 20;
+controls.maxPolarAngle = 1.42;
+
+/* ============================================================
+   CANVAS TEXTURES (all procedural)
+   ============================================================ */
+function makeCausticTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 150; i++) {                      // soft outer web
+    const r = rand(14, 60);
+    g.strokeStyle = `rgba(180,240,255,${rand(0.05, 0.16).toFixed(3)})`;
+    g.lineWidth = rand(1.6, 4.2);
+    g.beginPath();
+    g.ellipse(rand(0, 512), rand(0, 512), r, r * rand(0.55, 1), rand(0, 6.28), rand(0, 3), rand(3.5, 6.28));
+    g.stroke();
+  }
+  for (let i = 0; i < 60; i++) {                       // bright filaments
+    const r = rand(8, 30);
+    g.strokeStyle = `rgba(235,255,255,${rand(0.18, 0.34).toFixed(3)})`;
+    g.lineWidth = rand(1, 2.2);
+    g.beginPath();
+    g.ellipse(rand(0, 512), rand(0, 512), r, r * rand(0.6, 1), rand(0, 6.28), rand(0, 3), rand(4, 6.28));
+    g.stroke();
+  }
+  return c;
+}
+function makeRockTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#41585f'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 480; i++) {
+    const v = randInt(-24, 26);
+    g.fillStyle = `rgba(${86 + v},${110 + v},${118 + v},${rand(0.12, 0.4).toFixed(2)})`;
+    g.beginPath();
+    g.ellipse(rand(0, 256), rand(0, 256), rand(3, 26), rand(2, 14), rand(0, 3.1), 0, 6.3);
+    g.fill();
+  }
+  for (let i = 0; i < 60; i++) {                       // mossy teal streaks
+    g.fillStyle = `rgba(52,${randInt(120, 160)},${randInt(120, 150)},${rand(0.05, 0.16).toFixed(2)})`;
+    g.fillRect(rand(0, 256), rand(0, 256), rand(4, 22), rand(10, 44));
+  }
+  return c;
+}
+function makeSandTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#cdb98e'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 1400; i++) {
+    const v = randInt(-30, 26);
+    g.fillStyle = `rgba(${205 + v},${185 + v},${140 + v},0.5)`;
+    g.fillRect(rand(0, 256), rand(0, 256), rand(1, 2.4), rand(1, 2.4));
+  }
+  g.strokeStyle = 'rgba(150,128,88,0.25)'; g.lineWidth = 3;
+  for (let i = 0; i < 12; i++) {                       // gentle ripple lines
+    const y0 = rand(0, 256);
+    g.beginPath(); g.moveTo(0, y0);
+    for (let x = 0; x <= 256; x += 32) g.lineTo(x, y0 + Math.sin(x * 0.05 + i) * 6);
+    g.stroke();
+  }
+  return c;
+}
+function canvasTex(cnv, rx, ry) {
+  const t = new THREE.CanvasTexture(cnv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const causticCanvas = makeCausticTexture();
+const wallCausticTex = canvasTex(causticCanvas, 5, 3);
+const spotCausticTex = canvasTex(causticCanvas, 2, 2);
+const rockTex = canvasTex(makeRockTexture(), 6, 4);
+const sandTex = canvasTex(makeSandTexture(), 7, 7);
+
+/* ============================================================
+   MATERIALS (single palette pass)
+   ============================================================ */
+const MAT = {
+  rock: new THREE.MeshStandardMaterial({ map: rockTex, color: PALETTE.rock, roughness: 0.95, side: THREE.DoubleSide, envMapIntensity: 0.25 }),
+  sand: new THREE.MeshStandardMaterial({ map: sandTex, color: PALETTE.sand, roughness: 1, envMapIntensity: 0.2 }),
+  water: new THREE.MeshPhysicalMaterial({ color: PALETTE.water, roughness: 0.12, transparent: true, opacity: 0.55, emissive: PALETTE.waterDeep, emissiveIntensity: 0.4, side: THREE.DoubleSide, envMapIntensity: 0.9 }),
+  shell: new THREE.MeshPhysicalMaterial({ color: PALETTE.shell, roughness: 0.22, metalness: 0.05, iridescence: 0.85, iridescenceIOR: 1.3, clearcoat: 0.6, envMapIntensity: 0.8 }),
+  pearl: new THREE.MeshPhysicalMaterial({ color: PALETTE.pearl, roughness: 0.12, metalness: 0.05, iridescence: 1, iridescenceIOR: 1.35, clearcoat: 0.9, envMapIntensity: 1 }),
+  glowPearl: new THREE.MeshStandardMaterial({ color: 0xffd9ec, emissive: 0xffc3e2, emissiveIntensity: 3.0, roughness: 0.25 }),
+  gold: new THREE.MeshStandardMaterial({ color: PALETTE.gold, metalness: 0.92, roughness: 0.28, envMapIntensity: 1 }),
+  wood: new THREE.MeshStandardMaterial({ map: rockTex, color: 0x6e4a30, roughness: 0.85 }),
+  kelp: new THREE.MeshStandardMaterial({ color: PALETTE.kelp, roughness: 0.75, side: THREE.DoubleSide, envMapIntensity: 0.3 }),
+  clamInner: new THREE.MeshPhysicalMaterial({ color: 0xffc9d8, roughness: 0.3, iridescence: 0.7, clearcoat: 0.5, side: THREE.DoubleSide, envMapIntensity: 0.7 }),
+  gem: new THREE.MeshPhysicalMaterial({ color: 0xffffff, roughness: 0.1, metalness: 0.1, clearcoat: 1, emissive: 0xffffff, emissiveIntensity: 0.35, envMapIntensity: 1 }),
+  beam: new THREE.MeshBasicMaterial({ color: PALETTE.beam, transparent: true, opacity: 0.06, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }),
+  bubble: new THREE.MeshPhysicalMaterial({ color: 0xdffaff, roughness: 0.05, transparent: true, opacity: 0.4, envMapIntensity: 1.2 }),
+  causticShell: new THREE.MeshBasicMaterial({ map: wallCausticTex, color: 0x9fe8ef, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.BackSide })
+};
+const coralMats = [PALETTE.coralPink, PALETTE.coralOrange, PALETTE.coralViolet, PALETTE.coralMint]
+  .map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.7, envMapIntensity: 0.4 }));
+
+/* ============================================================
+   BUILDER FUNCTIONS (each returns a THREE.Group)
+   ============================================================ */
+
+/* --- grotto dome, sandy floor, ceiling-hole sky cap ---------- */
+function buildCave() {
+  const grp = new THREE.Group();
+  const R = CONFIG.caveRadius, cy = CONFIG.caveCenterY;
+  const domeGeo = roughen(new THREE.SphereGeometry(R, 56, 36, 0, Math.PI * 2, CONFIG.holeAngle, 2.62), 0.045, 0.5);
+  grp.add(mesh(domeGeo, MAT.rock, { p: [0, cy, 0], recv: true }));
+
+  // shimmering caustic layer hugging the inside of the walls
+  const shimmer = mesh(new THREE.SphereGeometry(R - 0.9, 40, 26, 0, Math.PI * 2, CONFIG.holeAngle, 2.62), MAT.causticShell, { p: [0, cy, 0] });
+  grp.add(shimmer);
+
+  const floorGeo = new THREE.CircleGeometry(R + 2, 64);
+  floorGeo.rotateX(-Math.PI / 2);
+  grp.add(mesh(floorGeo, MAT.sand, { recv: true }));
+
+  // bright disc of daylight seen through the ceiling opening
+  const capMat = new THREE.MeshBasicMaterial({ color: PALETTE.skyHole, fog: false });
+  grp.add(mesh(new THREE.CircleGeometry(Math.sin(CONFIG.holeAngle) * R + 2.5, 40), capMat,
+    { p: [0, cy + Math.cos(CONFIG.holeAngle) * R + 1.2, 0], r: [Math.PI / 2, 0, 0] }));
+
+  // rubble ring at the base of the walls
+  const rubble = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), MAT.rock, 26);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 26; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(R - 5.5, R - 2.5);
+    dummy.position.set(Math.cos(a) * r, rand(-0.2, 0.35), Math.sin(a) * r);
+    dummy.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3));
+    dummy.scale.setScalar(rand(0.5, 1.7));
+    dummy.updateMatrix();
+    rubble.setMatrixAt(i, dummy.matrix);
+  }
+  rubble.castShadow = rubble.receiveShadow = true;
+  grp.add(rubble);
+  return grp;
+}
+
+/* --- animated turquoise water sheet -------------------------- */
+function buildWater() {
+  const grp = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(46, 46, 34, 34);
+  geo.rotateX(-Math.PI / 2);
+  const m = mesh(geo, MAT.water, { p: [0, CONFIG.waterLevel, 0] });
+  grp.add(m);
+  grp.userData = { base: geo.attributes.position.array.slice(), mesh: m };
+  return grp;
+}
+
+/* --- stepped rock dais under the throne ---------------------- */
+function buildDais() {
+  const grp = new THREE.Group();
+  for (const [r, h, y] of [[5.4, 1.6, 0], [4.3, 1.5, 1.5], [3.2, 1.6, 2.9]]) {
+    const g = roughen(new THREE.CylinderGeometry(r * 0.92, r, h, 26, 2), 0.05, 0.9);
+    grp.add(mesh(g, MAT.rock, { p: [0, y + h / 2, 0], cast: true, recv: true }));
+  }
+  for (let i = 0; i < 3; i++)                          // stair blocks toward the water
+    grp.add(mesh(new THREE.BoxGeometry(2.4 - i * 0.3, 1.1, 1.4), MAT.rock,
+      { p: [0, 0.9 + i * 1.15, 4.9 - i * 1.15], cast: true, recv: true }));
+  return grp;
+}
+
+/* --- iridescent scallop-shell throne ------------------------- */
+function buildShellThrone() {
+  const grp = new THREE.Group();
+  const backGeo = radialRidge(new THREE.SphereGeometry(1, 48, 24), 9, 0.09);
+  grp.add(mesh(backGeo, MAT.shell, { p: [0, 2.3, -0.9], r: [-0.14, 0, 0], s: [2.5, 2.7, 0.5], cast: true }));
+  grp.add(mesh(new THREE.SphereGeometry(1, 28, 18), MAT.shell, { p: [0, 1.0, 0], s: [1.6, 0.6, 1.4], cast: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(1.35, 1.7, 0.9, 20), MAT.rock, { p: [0, 0.4, 0], cast: true, recv: true }));
+  for (const sgn of [-1, 1]) {                         // conch armrests with pearl swirls
+    grp.add(mesh(new THREE.ConeGeometry(0.3, 1.6, 14), MAT.shell, { p: [sgn * 1.45, 1.35, 0.15], r: [Math.PI / 2.15, 0, 0], cast: true }));
+    grp.add(mesh(new THREE.TorusGeometry(0.22, 0.1, 10, 18), MAT.pearl, { p: [sgn * 1.45, 1.12, 1.02], r: [0.5, 0, 0] }));
+  }
+  const rimGeo = new THREE.SphereGeometry(0.13, 12, 10);
+  for (let i = 0; i < 9; i++) {                        // pearl trim along the fan
+    const a = Math.PI * (0.12 + 0.76 * (i / 8));
+    grp.add(mesh(rimGeo, MAT.pearl, { p: [Math.cos(a) * 2.45, 2.3 + Math.sin(a) * 2.6, -0.78] }));
+  }
+  return grp;
+}
+
+/* --- opened giant clam cradling a glowing pearl -------------- */
+function buildGiantClam() {
+  const grp = new THREE.Group();
+  const shellGeo = radialRidge(new THREE.SphereGeometry(1.7, 40, 14, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2), 11, 0.07);
+  const linerGeo = new THREE.SphereGeometry(1.55, 30, 12, 0, Math.PI * 2, Math.PI / 2, Math.PI / 2);
+  grp.add(mesh(shellGeo, MAT.shell, { p: [0, 1.05, 0], s: [1, 0.62, 1], cast: true }));
+  grp.add(mesh(linerGeo, MAT.clamInner, { p: [0, 1.12, 0], s: [1, 0.6, 1] }));
+
+  const hinge = new THREE.Group();                     // top shell pivots open at the back
+  hinge.position.set(0, 1.1, -1.55);
+  hinge.rotation.x = -1.05;
+  hinge.add(mesh(shellGeo.clone(), MAT.shell, { p: [0, 0.1, 1.55], r: [Math.PI, 0, 0], s: [1, 0.62, 1], cast: true }));
+  hinge.add(mesh(linerGeo.clone(), MAT.clamInner, { p: [0, 0.04, 1.55], r: [Math.PI, 0, 0], s: [1, 0.58, 1] }));
+  grp.add(hinge);
+
+  const pearl = mesh(new THREE.SphereGeometry(0.62, 26, 20), MAT.glowPearl, { p: [0, 1.6, 0] });
+  grp.add(pearl);
+  const glow = new THREE.PointLight(PALETTE.glowPearl, 26, 14, 1.8);
+  glow.position.y = 2.0;
+  grp.add(glow);
+  grp.userData = { pearl, glow };
+
+  grp.add(mesh(roughen(new THREE.SphereGeometry(2.3, 18, 12), 0.1, 0.8), MAT.rock,
+    { p: [0, 0.1, 0], s: [1.15, 0.42, 1.15], cast: true, recv: true }));
+  return grp;
+}
+
+/* --- spilled treasure: chest, coin drifts, goblets, gems, trident */
+function buildTreasure() {
+  const grp = new THREE.Group();
+  const dummy = new THREE.Object3D();
+  const coins = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.26, 0.26, 0.07, 14), MAT.gold, 170);
+  const mounds = [[-5.6, 5.2, 2.6], [4.9, -5.6, 2.2], [-3.4, -6.4, 1.8], [7.6, 3.2, 1.6]];
+  let ci = 0;
+  for (const [mx, mz, mr] of mounds) {
+    for (let i = 0; i < 45 && ci < 170; i++, ci++) {
+      const a = rand(0, Math.PI * 2), r = Math.sqrt(rng()) * mr;
+      dummy.position.set(mx + Math.cos(a) * r, 0.05 + Math.max(0, mr - r) * rand(0.05, 0.32), mz + Math.sin(a) * r);
+      dummy.rotation.set(rand(-0.5, 0.5), rand(0, Math.PI), rand(-0.5, 0.5));
+      dummy.scale.setScalar(rand(0.8, 1.25));
+      dummy.updateMatrix();
+      coins.setMatrixAt(ci, dummy.matrix);
+    }
+  }
+  coins.castShadow = coins.receiveShadow = true;
+  grp.add(coins);
+
+  const chest = new THREE.Group();                     // open treasure chest
+  chest.add(mesh(new THREE.BoxGeometry(1.9, 1.0, 1.2), MAT.wood, { p: [0, 0.5, 0], cast: true }));
+  chest.add(mesh(new THREE.BoxGeometry(1.9, 0.28, 1.2), MAT.wood, { p: [0, 1.06, -0.68], r: [-2.0, 0, 0], cast: true }));
+  chest.add(mesh(new THREE.BoxGeometry(1.7, 0.3, 1.0), MAT.gold, { p: [0, 1.02, 0] }));
+  for (let i = 0; i < 5; i++)
+    chest.add(mesh(new THREE.SphereGeometry(0.12, 10, 8), MAT.pearl, { p: [rand(-0.7, 0.7), 1.22, rand(-0.35, 0.35)] }));
+  chest.position.set(-6.2, 0, 4.6);
+  chest.rotation.y = 0.7;
+  grp.add(chest);
+
+  const gobletPts = [[0.02, 0], [0.34, 0.02], [0.12, 0.1], [0.09, 0.42], [0.28, 0.6], [0.34, 0.74]]
+    .map(([x, y]) => new THREE.Vector2(x, y));
+  const gobletGeo = new THREE.LatheGeometry(gobletPts, 18);
+  for (let i = 0; i < 4; i++) {                        // scattered goblets, some tipped over
+    const a = rand(0, Math.PI * 2), r = rand(4, 8.5), tipped = i % 2 === 0;
+    grp.add(mesh(gobletGeo, MAT.gold, {
+      p: [Math.cos(a) * r, tipped ? 0.3 : 0.05, Math.sin(a) * r],
+      r: [0, 0, tipped ? Math.PI / 2.1 : 0], cast: true
+    }));
+  }
+
+  const gems = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.2), MAT.gem, 16);
+  const gemColors = [0x53e0ff, 0xff5fa2, 0x9dff70, 0xc38bff];
+  for (let i = 0; i < 16; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(2.5, 9.5);
+    dummy.position.set(Math.cos(a) * r, 0.18, Math.sin(a) * r);
+    dummy.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3));
+    dummy.scale.setScalar(rand(0.7, 1.5));
+    dummy.updateMatrix();
+    gems.setMatrixAt(i, dummy.matrix);
+    gems.setColorAt(i, new THREE.Color(pick(gemColors)));
+  }
+  gems.instanceColor.needsUpdate = true;
+  grp.add(gems);
+
+  const trident = new THREE.Group();                   // golden trident against the dais
+  trident.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 6.4, 10), MAT.gold, { cast: true }));
+  trident.add(mesh(new THREE.BoxGeometry(1.15, 0.14, 0.14), MAT.gold, { p: [0, 3.0, 0], cast: true }));
+  for (const dx of [-0.5, 0, 0.5])
+    trident.add(mesh(new THREE.ConeGeometry(0.09, dx === 0 ? 1.15 : 0.85, 10), MAT.gold,
+      { p: [dx, dx === 0 ? 3.68 : 3.5, 0], cast: true }));
+  trident.position.set(4.2, 3.1, 3.6);
+  trident.rotation.z = -0.42;
+  grp.add(trident);
+  return grp;
+}
+
+/* --- coral colony helpers ------------------------------------ */
+function branchCoral(mat, len, radius, depth) {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.CylinderGeometry(radius * 0.62, radius, len, 7), mat, { p: [0, len / 2, 0], cast: true }));
+  if (depth > 0) {
+    for (let i = 0, kids = randInt(2, 3); i < kids; i++) {
+      const child = branchCoral(mat, len * 0.72, radius * 0.66, depth - 1);
+      child.position.y = len * rand(0.82, 1);
+      child.rotation.set(rand(0.3, 0.7), rand(0, Math.PI * 2), 0);
+      g.add(child);
+    }
+  }
+  return g;
+}
+function buildCoralCluster(scaleBase) {
+  const grp = new THREE.Group();
+  grp.add(branchCoral(pick(coralMats), rand(0.7, 1.1), rand(0.1, 0.16), 2));
+  const tubeMat = pick(coralMats);
+  for (let i = 0; i < randInt(3, 5); i++) {            // tube coral pipes
+    const h = rand(0.4, 1.1);
+    grp.add(mesh(new THREE.CylinderGeometry(rand(0.08, 0.14), rand(0.12, 0.18), h, 8), tubeMat,
+      { p: [rand(-0.7, 0.7), h / 2, rand(-0.7, 0.7)], r: [0, 0, rand(-0.2, 0.2)], cast: true }));
+  }
+  grp.add(mesh(new THREE.CircleGeometry(rand(0.6, 0.95), 18, 0, Math.PI), pick(coralMats),
+    { p: [rand(-0.6, 0.6), 0.1, rand(-0.6, 0.6)], r: [0, rand(0, Math.PI * 2), 0] }));
+  grp.add(mesh(new THREE.SphereGeometry(rand(0.35, 0.55), 14, 10), pick(coralMats),
+    { p: [rand(-0.8, 0.8), 0.16, rand(-0.8, 0.8)], s: [1, 0.66, 1], cast: true }));
+  for (let i = 0; i < 6; i++)                          // anemone tendrils
+    grp.add(mesh(new THREE.ConeGeometry(0.05, rand(0.3, 0.5), 6), MAT.pearl,
+      { p: [rand(-0.4, 0.4), 0.2, rand(-0.4, 0.4)], r: [rand(-0.5, 0.5), 0, rand(-0.5, 0.5)] }));
+  grp.scale.setScalar(scaleBase);
+  return grp;
+}
+/* --- rocky wall shelf topped with a coral garden ------------- */
+function buildCoralShelf() {
+  const grp = new THREE.Group();
+  grp.add(mesh(roughen(new THREE.DodecahedronGeometry(1.6, 0), 0.12, 0.9), MAT.rock,
+    { s: [1.7, 0.5, 1.3], cast: true, recv: true }));
+  const coral = buildCoralCluster(rand(1.1, 1.5));
+  coral.position.y = 0.55;
+  grp.add(coral);
+  return grp;
+}
+
+/* --- swaying kelp plant (chained joints) --------------------- */
+const kelpJoints = [];
+function buildKelp(height) {
+  const grp = new THREE.Group();
+  const segs = 7, segLen = height / segs, phase = rand(0, Math.PI * 2);
+  let parent = grp;
+  for (let i = 0; i < segs; i++) {
+    const joint = new THREE.Group();
+    joint.position.y = i === 0 ? 0 : segLen;
+    joint.add(mesh(new THREE.BoxGeometry(0.4 * (1 - i * 0.09), segLen * 1.06, 0.05), MAT.kelp,
+      { p: [0, segLen / 2, 0], cast: true }));
+    parent.add(joint);
+    kelpJoints.push({ joint, idx: i, phase });
+    parent = joint;
+  }
+  return grp;
+}
+
+/* --- curious fish on looping orbits -------------------------- */
+const fishes = [];
+function buildFish(color, size) {
+  const grp = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.15, envMapIntensity: 0.6 });
+  grp.add(mesh(new THREE.ConeGeometry(0.16 * size, 0.62 * size, 12), mat, { r: [Math.PI / 2, 0, 0], cast: true }));
+  const tail = mesh(new THREE.ConeGeometry(0.14 * size, 0.3 * size, 3), mat, { p: [0, 0, -0.42 * size], r: [-Math.PI / 2, 0, 0], s: [1, 1, 0.3] });
+  grp.add(tail);
+  grp.add(mesh(new THREE.ConeGeometry(0.1 * size, 0.22 * size, 3), mat, { p: [0, 0.16 * size, 0], s: [1, 1, 0.3] }));
+  grp.userData.tail = tail;
+  return grp;
+}
+
+/* --- drifting strands of pearls from the ceiling ------------- */
+const pearlStrands = [];
+function buildPearlStrand(length, count) {
+  const grp = new THREE.Group();
+  const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.16, 12, 10), MAT.pearl, count);
+  const dummy = new THREE.Object3D();
+  const twist = rand(0.5, 1.6);
+  for (let i = 0; i < count; i++) {
+    const t = i / (count - 1);
+    dummy.position.set(Math.sin(t * twist * 6.28) * 0.35, -t * length, Math.cos(t * twist * 6.28) * 0.35);
+    dummy.scale.setScalar(rand(0.75, 1.25));
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+  }
+  grp.add(inst);
+  pearlStrands.push({ grp, phase: rand(0, Math.PI * 2), speed: rand(0.3, 0.55) });
+  return grp;
+}
+
+/* --- rising bubble columns (instanced) ----------------------- */
+const bubbleData = [];
+function buildBubbles(count, vents) {
+  const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 8), MAT.bubble, count);
+  for (let i = 0; i < count; i++) {
+    const v = pick(vents);
+    bubbleData.push({
+      x: v[0] + rand(-0.7, 0.7), z: v[1] + rand(-0.7, 0.7),
+      y: rand(0.2, 9), speed: rand(0.5, 1.3), r: rand(0.05, 0.15),
+      wob: rand(0, Math.PI * 2), top: rand(8, 12)
+    });
+  }
+  inst.frustumCulled = false;
+  return inst;
+}
+
+/* --- volumetric light shafts from the opening ---------------- */
+function buildLightShafts() {
+  const grp = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const cone = mesh(new THREE.CylinderGeometry(rand(1.6, 2.4), rand(4.4, 5.6), 25, 20, 1, true), MAT.beam.clone(),
+      { p: [rand(-1.5, 1.5), 14.5, rand(-1.5, 1.5)], r: [0, 0, rand(-0.06, 0.06)] });
+    cone.material.opacity = 0.045 + i * 0.02;
+    grp.add(cone);
+  }
+  return grp;
+}
+
+/* ============================================================
+   ASSEMBLY / LAYOUT
+   ============================================================ */
+const cave = buildCave();
+scene.add(cave);
+const water = buildWater();
+scene.add(water);
+const centrepiece = new THREE.Group();                  // dais + throne turned toward the opening view
+const throne = buildShellThrone();
+throne.position.y = 4.7;
+centrepiece.add(buildDais(), throne);
+centrepiece.rotation.y = 0.8;
+scene.add(centrepiece);
+const clam = buildGiantClam();
+clam.position.set(8.6, 0, -1.2);
+clam.scale.setScalar(0.85);
+clam.rotation.y = -1.9;
+scene.add(clam);
+scene.add(buildTreasure());
+
+for (const [x, y, z] of [[-14.5, 1.2, -9], [12.5, 3.4, -11.5], [-10.5, 4.6, 13.2], [15.5, 0.4, 6.5]]) {
+  const shelf = buildCoralShelf();
+  shelf.position.set(x, y, z);
+  shelf.rotation.y = rand(0, Math.PI * 2);
+  scene.add(shelf);
+}
+for (let i = 0; i < 3; i++) {                           // low coral patches on the seabed
+  const patch = buildCoralCluster(rand(0.9, 1.3));
+  const a = rand(0, Math.PI * 2), r = rand(10, 14);
+  patch.position.set(Math.cos(a) * r, 0.05, Math.sin(a) * r);
+  scene.add(patch);
+}
+for (let i = 0; i < 10; i++) {                          // kelp forest ring
+  const a = (i / 10) * Math.PI * 2 + rand(-0.2, 0.2), r = rand(11.5, 16.5);
+  const kelp = buildKelp(rand(4.5, 7.5));
+  kelp.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  kelp.rotation.y = rand(0, Math.PI * 2);
+  scene.add(kelp);
+}
+const fishColors = [0x53d6ff, 0xffb84d, 0xff7d9c, 0x8ef2c5, 0xd6a4ff, 0x7fd1ff, 0xffd166, 0x66ffe3];
+for (let i = 0; i < 8; i++) {
+  const f = buildFish(fishColors[i], rand(0.8, 1.5));
+  fishes.push({
+    grp: f, radius: rand(6.5, 12.5), height: rand(0.7, 1.7),
+    speed: rand(0.14, 0.3) * (i % 2 ? 1 : -1), phase: rand(0, Math.PI * 2), bob: rand(0.5, 1.2)
+  });
+  scene.add(f);
+}
+for (let i = 0; i < 5; i++) {
+  const a = rand(0, Math.PI * 2), r = rand(7.5, 11);
+  const strand = buildPearlStrand(rand(7, 11), randInt(12, 16));
+  strand.position.set(Math.cos(a) * r, 21.5 - r * 0.35, Math.sin(a) * r);
+  scene.add(strand);
+}
+const bubbles = buildBubbles(70, [[7.8, 4.6], [-5.6, 5.2], [4.9, -5.6], [-12, -7]]);
+scene.add(bubbles);
+const shafts = buildLightShafts();
+scene.add(shafts);
+
+/* ============================================================
+   LIGHTING RIG
+   ============================================================ */
+scene.add(new THREE.HemisphereLight(0x9fdfe8, 0x0d3a45, 0.65));
+scene.add(new THREE.AmbientLight(0x1c4d59, 0.55));
+
+// key: sun spot through the ceiling hole, projecting rippling caustics
+const sun = new THREE.SpotLight(0xeaffff, 2600, 0, 0.72, 0.45, 1.35);
+sun.position.set(2.5, 27, 1.5);
+sun.target.position.set(0, 0, 0);
+sun.castShadow = true;
+sun.map = spotCausticTex;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 6;
+sun.shadow.camera.far = 45;
+sun.shadow.bias = -0.0006;
+scene.add(sun, sun.target);
+
+const throneAccent = new THREE.PointLight(0x9fe8ff, 20, 12, 1.8);
+throneAccent.position.set(0, 8.2, 2.5);
+scene.add(throneAccent);
+const treasureGlow = new THREE.PointLight(0xffc266, 16, 10, 1.8);
+treasureGlow.position.set(-5.4, 1.6, 4.8);
+scene.add(treasureGlow);
+const backFill = new THREE.PointLight(0x3e8fa8, 14, 30, 1.6);
+backFill.position.set(-9, 6, -9);
+scene.add(backFill);
+
+/* ============================================================
+   ANIMATION LOOP
+   ============================================================ */
+const clock = new THREE.Clock();
+const animDummy = new THREE.Object3D();
+const waterPos = water.userData.mesh.geometry.attributes.position;
+const waterBase = water.userData.base;
+
+function tick() {
+  requestAnimationFrame(tick);
+  const t = clock.getElapsedTime();
+
+  // 1) rolling water surface
+  for (let i = 0; i < waterPos.count; i++) {
+    const x = waterBase[i * 3], z = waterBase[i * 3 + 2];
+    waterPos.setY(i, Math.sin(x * 0.42 + t * 1.1) * 0.1 + Math.cos(z * 0.38 + t * 0.8) * 0.09);
+  }
+  waterPos.needsUpdate = true;
+  water.userData.mesh.geometry.computeVertexNormals();
+
+  // 2) caustic ripples: wall shimmer + projected spot texture drift
+  wallCausticTex.offset.set(t * 0.012, Math.sin(t * 0.28) * 0.05);
+  spotCausticTex.offset.set(Math.sin(t * 0.22) * 0.07, t * 0.02);
+
+  // 3) kelp sway
+  for (const k of kelpJoints) {
+    k.joint.rotation.z = Math.sin(t * 0.9 + k.phase + k.idx * 0.55) * 0.075;
+    k.joint.rotation.x = Math.cos(t * 0.7 + k.phase + k.idx * 0.4) * 0.045;
+  }
+
+  // 4) curious fish cruising with tail flicks
+  for (const f of fishes) {
+    const a = t * f.speed + f.phase;
+    const y = f.height + Math.sin(t * f.bob + f.phase) * 0.25;
+    f.grp.position.set(Math.cos(a) * f.radius, y, Math.sin(a) * f.radius);
+    const ahead = a + 0.08 * Math.sign(f.speed);
+    f.grp.lookAt(Math.cos(ahead) * f.radius, y, Math.sin(ahead) * f.radius);
+    f.grp.userData.tail.rotation.y = Math.sin(t * 7 + f.phase) * 0.5;
+  }
+
+  // 5) bubbles rising and recycling
+  for (let i = 0; i < bubbleData.length; i++) {
+    const b = bubbleData[i];
+    b.y += b.speed * 0.016;
+    if (b.y > b.top) b.y = 0.2;
+    animDummy.position.set(b.x + Math.sin(t * 1.6 + b.wob) * 0.14, b.y, b.z + Math.cos(t * 1.4 + b.wob) * 0.14);
+    animDummy.scale.setScalar(b.r * (1 + b.y * 0.03));
+    animDummy.updateMatrix();
+    bubbles.setMatrixAt(i, animDummy.matrix);
+  }
+  bubbles.instanceMatrix.needsUpdate = true;
+
+  // 6) pearl strands drifting
+  for (const s of pearlStrands) {
+    s.grp.rotation.x = Math.sin(t * s.speed + s.phase) * 0.09;
+    s.grp.rotation.z = Math.cos(t * s.speed * 0.8 + s.phase) * 0.09;
+    s.grp.rotation.y = t * 0.12 + s.phase;
+  }
+
+  // 7) light shafts slowly wheeling, pearl and gems pulsing
+  shafts.rotation.y = t * 0.05;
+  shafts.children.forEach((c, i) => { c.material.opacity = 0.05 + 0.02 * Math.sin(t * 0.6 + i * 2.1); });
+  clam.userData.pearl.scale.setScalar(1 + Math.sin(t * 1.7) * 0.06);
+  clam.userData.glow.intensity = 24 + Math.sin(t * 1.7) * 7;
+  MAT.gem.emissiveIntensity = 0.3 + 0.18 * Math.sin(t * 2.3);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

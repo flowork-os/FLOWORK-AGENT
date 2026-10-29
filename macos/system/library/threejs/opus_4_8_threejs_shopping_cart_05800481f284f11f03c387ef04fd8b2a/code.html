@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Shopping Cart — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #131418; }
+  #app { position: fixed; inset: 0; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #8b909c; letter-spacing: .3px; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="hint">drag to orbit · scroll to zoom · auto-rotating</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ------------------------------------------------------------------ *
+ * Renderer
+ * ------------------------------------------------------------------ */
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ * Scene + camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15161a);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(1.5, 0.95, 1.9);
+
+// Procedural environment for believable chrome reflections (no external assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+/* ------------------------------------------------------------------ *
+ * Lighting: hemisphere fill + directional key/fill/rim, soft shadows
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xa6bcd4, 0x2a2a30, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(2.6, 4.2, 3.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 14;
+key.shadow.camera.left = -1.4;
+key.shadow.camera.right = 1.4;
+key.shadow.camera.top = 1.4;
+key.shadow.camera.bottom = -1.4;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.55);
+fill.position.set(-3.2, 2.0, 1.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.1);
+rim.position.set(-1.6, 2.6, -3.2);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ * Ground plane that only receives shadows
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ * Materials
+ * ------------------------------------------------------------------ */
+const matChrome = new THREE.MeshStandardMaterial({
+  color: 0xeef1f6, metalness: 1.0, roughness: 0.17, envMapIntensity: 1.35
+});
+const matTire = new THREE.MeshStandardMaterial({
+  color: 0x161619, metalness: 0.15, roughness: 0.82
+});
+const matGrip = new THREE.MeshStandardMaterial({
+  color: 0xc42a26, metalness: 0.0, roughness: 0.45, envMapIntensity: 0.6
+});
+
+/* ------------------------------------------------------------------ *
+ * Geometry helpers (collect thin cylinders, then merge)
+ * ------------------------------------------------------------------ */
+const chrome = [];
+const tire = [];
+const grip = [];
+
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const _up = new THREE.Vector3(0, 1, 0);
+
+// A capsule-less "wire" (thin cylinder) between two points.
+function tube(a, b, r, seg = 8) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const h = dir.length();
+  if (h < 1e-6) return null;
+  const g = new THREE.CylinderGeometry(r, r, h, seg, 1, false);
+  const q = new THREE.Quaternion().setFromUnitVectors(_up, dir.normalize());
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+  g.applyMatrix4(new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)));
+  return g;
+}
+const pushTube = (bucket, a, b, r, seg) => { const g = tube(a, b, r, seg); if (g) bucket.push(g); };
+
+// Bilinear point on a quad panel: p00(u0,v0) p10(u1,v0) p11(u1,v1) p01(u0,v1)
+function bilerp(p00, p10, p11, p01, u, v) {
+  const top = p00.clone().lerp(p10, u);
+  const bot = p01.clone().lerp(p11, u);
+  return top.lerp(bot, v);
+}
+
+// Wire-mesh grid across a (possibly non-planar) quad — simplified density.
+function addGrid(p00, p10, p11, p01, nu, nv, r, bucket) {
+  for (let j = 0; j <= nv; j++) {
+    const v = j / nv;
+    for (let i = 0; i < nu; i++) {
+      pushTube(bucket, bilerp(p00, p10, p11, p01, i / nu, v),
+                       bilerp(p00, p10, p11, p01, (i + 1) / nu, v), r, 6);
+    }
+  }
+  for (let i = 0; i <= nu; i++) {
+    const u = i / nu;
+    for (let j = 0; j < nv; j++) {
+      pushTube(bucket, bilerp(p00, p10, p11, p01, u, j / nv),
+                       bilerp(p00, p10, p11, p01, u, (j + 1) / nv), r, 6);
+    }
+  }
+}
+
+/* ------------------------------------------------------------------ *
+ * BASKET — sloped, tapered wire-mesh box (wider/taller at back)
+ *   +Z = back (handle),  -Z = front,  +X = right
+ * ------------------------------------------------------------------ */
+// Top rim corners
+const TBL = V(-0.27, 0.90, 0.42), TBR = V(0.27, 0.90, 0.42);   // back top
+const TFL = V(-0.22, 0.80, -0.44), TFR = V(0.22, 0.80, -0.44); // front top (overhangs)
+// Bottom corners
+const BBL = V(-0.24, 0.50, 0.42), BBR = V(0.24, 0.50, 0.42);   // back bottom
+const BFL = V(-0.18, 0.58, -0.30), BFR = V(0.18, 0.58, -0.30); // front bottom (higher & narrower)
+
+const WIRE = 0.0045;
+addGrid(TBL, TFL, BFL, BBL, 9, 5, WIRE, chrome); // left side
+addGrid(TFR, TBR, BBR, BFR, 9, 5, WIRE, chrome); // right side
+addGrid(TFL, TFR, BFR, BFL, 6, 5, WIRE, chrome); // front (tapered)
+addGrid(TBR, TBL, BBL, BBR, 6, 5, WIRE, chrome); // back
+addGrid(BBL, BBR, BFR, BFL, 9, 6, WIRE, chrome); // bottom (sloped)
+
+// Heavier frame: top rim loop, bottom rim loop, corner posts
+const RIM = 0.010, POST = 0.008;
+[[TBL, TBR], [TBR, TFR], [TFR, TFL], [TFL, TBL]].forEach(e => pushTube(chrome, e[0], e[1], RIM));
+[[BBL, BBR], [BBR, BFR], [BFR, BFL], [BFL, BBL]].forEach(e => pushTube(chrome, e[0], e[1], RIM * 0.85));
+[[TBL, BBL], [TBR, BBR], [TFL, BFL], [TFR, BFR]].forEach(e => pushTube(chrome, e[0], e[1], POST));
+
+/* ------------------------------------------------------------------ *
+ * CHILD SEAT FLAP (folded down at the back: backrest + seat + leg holes)
+ * ------------------------------------------------------------------ */
+const S = 0.004;
+// backrest flap (hinged just under back rim, folding forward/down)
+const Rb00 = V(-0.15, 0.87, 0.37), Rb10 = V(0.15, 0.87, 0.37);
+const Rb11 = V(0.15, 0.665, 0.28), Rb01 = V(-0.15, 0.665, 0.28);
+addGrid(Rb00, Rb10, Rb11, Rb01, 5, 4, S, chrome);
+// seat (horizontal panel forward from backrest base)
+const Se00 = V(-0.15, 0.665, 0.28), Se10 = V(0.15, 0.665, 0.28);
+const Se11 = V(0.15, 0.658, 0.12), Se01 = V(-0.15, 0.658, 0.12);
+addGrid(Se00, Se10, Se11, Se01, 5, 5, S, chrome);
+// framing tubes around the seat + backrest edges
+[[Rb00, Rb10], [Rb00, Rb01], [Rb10, Rb11], [Se01, Se11], [Se00, Se01], [Se10, Se11]]
+  .forEach(e => pushTube(chrome, e[0], e[1], 0.006));
+// two leg holes at the seat divider
+[-0.075, 0.075].forEach(x => {
+  const ring = new THREE.TorusGeometry(0.032, 0.006, 8, 18);
+  ring.translate(x, 0.638, 0.125);
+  chrome.push(ring);
+});
+
+/* ------------------------------------------------------------------ *
+ * PUSH HANDLE (horizontal bar behind the basket, red plastic grip)
+ * ------------------------------------------------------------------ */
+const HL = V(-0.27, 0.965, 0.52), HR = V(0.27, 0.965, 0.52);
+pushTube(chrome, HL, HR, 0.012);                       // handle bar
+pushTube(chrome, TBL, HL, 0.011);                      // left riser
+pushTube(chrome, TBR, HR, 0.011);                      // right riser
+pushTube(grip, V(-0.225, 0.965, 0.52), V(0.225, 0.965, 0.52), 0.020, 20); // grip sleeve
+
+/* ------------------------------------------------------------------ *
+ * UNDERFRAME + LOWER RACK
+ * ------------------------------------------------------------------ */
+// caster mounting positions (x,z)
+const cFL = { x: -0.20, z: -0.28 }, cFR = { x: 0.20, z: -0.28 };
+const cBL = { x: -0.23, z: 0.34 },  cBR = { x: 0.23, z: 0.34 };
+const FY = 0.15; // lower frame height
+
+const lFL = V(cFL.x, FY, cFL.z), lFR = V(cFR.x, FY, cFR.z);
+const lBL = V(cBL.x, FY, cBL.z), lBR = V(cBR.x, FY, cBR.z);
+
+// lower frame rectangle
+[[lFL, lFR], [lBL, lBR], [lFL, lBL], [lFR, lBR]].forEach(e => pushTube(chrome, e[0], e[1], 0.011));
+
+// uprights connecting frame to basket bottom
+pushTube(chrome, lBL, BBL, 0.011); pushTube(chrome, lBR, BBR, 0.011);
+pushTube(chrome, lFL, BFL, 0.011); pushTube(chrome, lFR, BFR, 0.011);
+
+// lower rack: sloped wire shelf sitting on the frame
+const rky = 0.175;
+const R00 = V(-0.185, rky, -0.255), R10 = V(0.185, rky, -0.255);
+const R11 = V(0.215, rky, 0.315),  R01 = V(-0.215, rky, 0.315);
+addGrid(R00, R10, R11, R01, 8, 5, WIRE, chrome);
+[[R00, R10], [R01, R11], [R00, R01], [R10, R11]].forEach(e => pushTube(chrome, e[0], e[1], 0.007));
+
+/* ------------------------------------------------------------------ *
+ * SWIVEL CASTER WHEELS (x4) — offset trail + independent swivel angles
+ * ------------------------------------------------------------------ */
+function addCaster(x, z, yaw) {
+  const M = new THREE.Matrix4().makeTranslation(x, 0, z)
+              .multiply(new THREE.Matrix4().makeRotationY(yaw));
+  const P = (px, py, pz) => new THREE.Vector3(px, py, pz).applyMatrix4(M);
+
+  pushTube(chrome, P(0, FY, 0), P(0, 0.104, 0), 0.016, 12);      // king-pin post
+  pushTube(chrome, P(0, 0.11, 0), P(0, 0.086, 0), 0.028, 14);    // swivel housing
+  pushTube(chrome, P(0.024, 0.092, 0), P(0.024, 0.055, -0.03), 0.007); // fork L
+  pushTube(chrome, P(-0.024, 0.092, 0), P(-0.024, 0.055, -0.03), 0.007);// fork R
+  pushTube(chrome, P(-0.026, 0.055, -0.03), P(0.026, 0.055, -0.03), 0.006); // axle
+
+  const wheel = new THREE.CylinderGeometry(0.05, 0.05, 0.03, 22, 1);
+  wheel.rotateZ(Math.PI / 2); wheel.translate(0, 0.055, -0.03); wheel.applyMatrix4(M);
+  tire.push(wheel);
+
+  const hub = new THREE.CylinderGeometry(0.021, 0.021, 0.033, 16, 1);
+  hub.rotateZ(Math.PI / 2); hub.translate(0, 0.055, -0.03); hub.applyMatrix4(M);
+  chrome.push(hub);
+}
+addCaster(cFL.x, cFL.z, 0.55);
+addCaster(cFR.x, cFR.z, -0.32);
+addCaster(cBL.x, cBL.z, 0.14);
+addCaster(cBR.x, cBR.z, -0.10);
+
+/* ------------------------------------------------------------------ *
+ * Merge buckets into one centered object
+ * ------------------------------------------------------------------ */
+const cart = new THREE.Group();
+function addMerged(bucket, material) {
+  const list = bucket.filter(Boolean);
+  if (!list.length) return;
+  const merged = mergeGeometries(list, false);
+  const mesh = new THREE.Mesh(merged, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  cart.add(mesh);
+}
+addMerged(chrome, matChrome);
+addMerged(tire, matTire);
+addMerged(grip, matGrip);
+
+cart.position.z = -0.05; // center the footprint over the shadow
+scene.add(cart);
+
+/* ------------------------------------------------------------------ *
+ * Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 1.1;
+controls.maxDistance = 6;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 0.5, 0);
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ * Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

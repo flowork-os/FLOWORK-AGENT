@@ -1,0 +1,807 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Low Poly Scorpion</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14120f; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    color: rgba(235, 205, 170, 0.45); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ */
+/* Renderer / Scene / Camera                                           */
+/* ------------------------------------------------------------------ */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191713);
+scene.fog = new THREE.Fog(0x191713, 22, 60);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(7.2, 5.0, 8.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 1.5, 0);
+controls.minDistance = 5;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ------------------------------------------------------------------ */
+/* Lighting                                                            */
+/* ------------------------------------------------------------------ */
+
+const hemi = new THREE.HemisphereLight(0xffd9a8, 0x231a12, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0d8, 2.5);
+key.position.set(6.5, 9.5, 5.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -9;
+key.shadow.camera.right = 9;
+key.shadow.camera.top = 9;
+key.shadow.camera.bottom = -9;
+key.shadow.bias = -0.0008;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 2.4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8fb4d8, 0.55);
+fill.position.set(-7.0, 3.5, 4.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffb066, 1.15);
+rim.position.set(-3.5, 4.0, -8.0);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xff9a4a, 0.35, 18, 2.0);
+bounce.position.set(0, 0.6, 2.2);
+scene.add(bounce);
+
+/* ------------------------------------------------------------------ */
+/* Ground (shadow only)                                                */
+/* ------------------------------------------------------------------ */
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ */
+/* Materials — flat shaded, faceted                                    */
+/* ------------------------------------------------------------------ */
+
+function mat(hex, rough = 0.62, metal = 0.12) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(hex),
+    roughness: rough,
+    metalness: metal,
+    flatShading: true
+  });
+}
+
+const M = {
+  shellA: mat(0xc1541c, 0.55, 0.16),   // burnt orange
+  shellB: mat(0xd8752a, 0.58, 0.14),   // lighter burnt orange
+  sand:   mat(0xd9a86a, 0.68, 0.08),   // sand tan
+  sandLt: mat(0xe8c390, 0.72, 0.06),   // pale sand
+  deep:   mat(0x8e3711, 0.52, 0.20),   // deep rust
+  limb:   mat(0xb1481a, 0.60, 0.16),
+  limbLt: mat(0xcf8a45, 0.66, 0.10),
+  chitin: mat(0x6d2a0d, 0.50, 0.25),
+  sting:  mat(0x3a2114, 0.38, 0.35),
+  eye:    new THREE.MeshStandardMaterial({
+            color: 0x120a06, roughness: 0.18, metalness: 0.5,
+            emissive: 0x3d0f00, emissiveIntensity: 0.6, flatShading: true
+          })
+};
+
+const SHELL_SET = [M.shellA, M.shellB, M.sand, M.sandLt, M.deep];
+
+/* ------------------------------------------------------------------ */
+/* Geometry helpers                                                    */
+/* ------------------------------------------------------------------ */
+
+// Give each triangle of a geometry an independent, slightly varied shade so
+// every flat plane "catches a different shade".
+function shadeFacets(geo, baseHex, spread = 0.16, hueJitter = 0.02) {
+  const g = geo.index ? geo.toNonIndexed() : geo;
+  g.deleteAttribute('uv');
+  const pos = g.attributes.position;
+  const count = pos.count;
+  const colors = new Float32Array(count * 3);
+  const base = new THREE.Color(baseHex);
+  const hsl = { h: 0, s: 0, l: 0 };
+  base.getHSL(hsl);
+  const c = new THREE.Color();
+  const triCount = count / 3;
+  for (let t = 0; t < triCount; t++) {
+    // deterministic pseudo-random per triangle
+    const s = Math.sin(t * 12.9898 + 4.1414) * 43758.5453;
+    const r = s - Math.floor(s);
+    const s2 = Math.sin(t * 78.233 + 1.7) * 12345.6789;
+    const r2 = s2 - Math.floor(s2);
+    const l = THREE.MathUtils.clamp(hsl.l + (r - 0.5) * spread, 0.06, 0.92);
+    const h = (hsl.h + (r2 - 0.5) * hueJitter + 1) % 1;
+    const sat = THREE.MathUtils.clamp(hsl.s + (r2 - 0.5) * 0.10, 0, 1);
+    c.setHSL(h, sat, l);
+    for (let k = 0; k < 3; k++) {
+      const i = (t * 3 + k) * 3;
+      colors[i] = c.r; colors[i + 1] = c.g; colors[i + 2] = c.b;
+    }
+  }
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Vertex-colored flat material (shared shape, color comes from geometry)
+function facetMaterial(rough = 0.6, metal = 0.14) {
+  return new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: rough,
+    metalness: metal,
+    flatShading: true
+  });
+}
+
+const FACET_MAT = facetMaterial(0.58, 0.16);
+const FACET_MAT_LIMB = facetMaterial(0.64, 0.12);
+const FACET_MAT_DARK = facetMaterial(0.44, 0.28);
+
+function addMesh(parent, geo, material) {
+  const m = new THREE.Mesh(geo, material);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/**
+ * Build a faceted convex-ish hull from an ordered list of cross-sections.
+ * sections: [{ y:  offsetAlongAxis, pts: [[x,z], ...] }]  — all sections must
+ * share the same point count. Produces a closed, triangulated, flat shell
+ * running along +Z (we build in local space then let callers rotate).
+ */
+function loftGeometry(sections) {
+  const n = sections[0].pts.length;
+  const verts = [];
+
+  const push = (a, b, c) => { verts.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]); };
+
+  const P = sections.map(sec => sec.pts.map(p => [p[0], p[1], sec.z]));
+
+  // side quads
+  for (let s = 0; s < sections.length - 1; s++) {
+    for (let i = 0; i < n; i++) {
+      const j = (i + 1) % n;
+      const a = P[s][i], b = P[s][j], c = P[s + 1][j], d = P[s + 1][i];
+      push(a, b, c);
+      push(a, c, d);
+    }
+  }
+
+  // caps (fan from centroid)
+  const capFan = (ring, z, flip) => {
+    let cx = 0, cy = 0;
+    for (const p of ring) { cx += p[0]; cy += p[1]; }
+    cx /= ring.length; cy /= ring.length;
+    const center = [cx, cy, z];
+    for (let i = 0; i < ring.length; i++) {
+      const j = (i + 1) % ring.length;
+      if (flip) push(center, ring[j], ring[i]);
+      else push(center, ring[i], ring[j]);
+    }
+  };
+  capFan(P[0], sections[0].z, true);
+  capFan(P[P.length - 1], sections[sections.length - 1].z, false);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Regular n-gon ring scaled to (rx, ry), optionally rotated & offset.
+function ring(sides, rx, ry, rot = 0, offX = 0, offY = 0) {
+  const pts = [];
+  for (let i = 0; i < sides; i++) {
+    const a = rot + (i / sides) * Math.PI * 2;
+    pts.push([offX + Math.cos(a) * rx, offY + Math.sin(a) * ry]);
+  }
+  return pts;
+}
+
+/* ------------------------------------------------------------------ */
+/* The Scorpion                                                        */
+/* ------------------------------------------------------------------ */
+
+const scorpion = new THREE.Group();
+scene.add(scorpion);
+
+const BODY_Y = 1.05;           // ground clearance of the underbelly
+const SIDES = 6;               // hexagonal cross sections → chunky facets
+
+/* ---------- Cephalothorax (carapace) + Mesosoma -------------------- */
+
+const body = new THREE.Group();
+body.position.set(0, BODY_Y, 0);
+scorpion.add(body);
+
+// Broad angular carapace: built as a loft along -Z (head) to +Z (abdomen).
+// Cross-sections use flattened hexagons for a wide, plated look.
+const carapaceSections = [
+  { z: -1.62, pts: ring(SIDES, 0.30, 0.13, Math.PI / SIDES, 0, 0.02) },
+  { z: -1.25, pts: ring(SIDES, 0.62, 0.24, Math.PI / SIDES, 0, 0.03) },
+  { z: -0.80, pts: ring(SIDES, 0.95, 0.34, Math.PI / SIDES, 0, 0.04) },
+  { z: -0.28, pts: ring(SIDES, 1.10, 0.38, Math.PI / SIDES, 0, 0.02) },
+  { z:  0.18, pts: ring(SIDES, 1.00, 0.34, Math.PI / SIDES, 0, 0.00) }
+];
+const carapaceGeo = shadeFacets(loftGeometry(carapaceSections), 0xc1541c, 0.22, 0.030);
+addMesh(body, carapaceGeo, FACET_MAT);
+
+// Raised angular crest plate on top of the carapace (sand tan, catches light)
+const crestSections = [
+  { z: -1.30, pts: ring(4, 0.16, 0.05, Math.PI / 4, 0, 0.20) },
+  { z: -0.85, pts: ring(4, 0.52, 0.14, Math.PI / 4, 0, 0.30) },
+  { z: -0.35, pts: ring(4, 0.60, 0.16, Math.PI / 4, 0, 0.30) },
+  { z:  0.10, pts: ring(4, 0.42, 0.10, Math.PI / 4, 0, 0.24) }
+];
+const crestGeo = shadeFacets(loftGeometry(crestSections), 0xd9a86a, 0.24, 0.026);
+addMesh(body, crestGeo, FACET_MAT);
+
+// Head front wedge / clypeus
+const headGeo = shadeFacets(
+  loftGeometry([
+    { z: -1.98, pts: ring(4, 0.10, 0.06, Math.PI / 4, 0, 0.05) },
+    { z: -1.74, pts: ring(4, 0.30, 0.15, Math.PI / 4, 0, 0.06) },
+    { z: -1.50, pts: ring(4, 0.36, 0.17, Math.PI / 4, 0, 0.05) }
+  ]),
+  0x8e3711, 0.20, 0.024
+);
+addMesh(body, headGeo, FACET_MAT_DARK);
+
+// Chelicerae (tiny mouth pincers)
+for (const sx of [-1, 1]) {
+  const ch = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.30, 4), M.chitin);
+  ch.castShadow = true;
+  ch.position.set(sx * 0.11, 0.07, -1.95);
+  ch.rotation.set(-Math.PI / 2 + 0.16, 0, sx * 0.20);
+  body.add(ch);
+}
+
+// Median eyes on the crest + lateral eyes
+const eyeGeo = new THREE.OctahedronGeometry(0.062, 0);
+for (const sx of [-1, 1]) {
+  const e = new THREE.Mesh(eyeGeo, M.eye);
+  e.castShadow = true;
+  e.position.set(sx * 0.15, 0.36, -0.72);
+  e.scale.set(1, 0.85, 1.1);
+  body.add(e);
+}
+const lateralEyeGeo = new THREE.OctahedronGeometry(0.042, 0);
+for (const sx of [-1, 1]) {
+  for (let i = 0; i < 3; i++) {
+    const e = new THREE.Mesh(lateralEyeGeo, M.eye);
+    e.castShadow = true;
+    e.position.set(sx * (0.60 + i * 0.055), 0.20 - i * 0.02, -1.16 - i * 0.11);
+    body.add(e);
+  }
+}
+
+/* ---------- Mesosoma: seven tapering plated segments --------------- */
+
+const meso = new THREE.Group();
+meso.position.set(0, 0, 0.10);
+body.add(meso);
+
+const MESO_N = 7;
+let mesoZ = 0.06;
+const mesoRingsForTail = [];
+for (let i = 0; i < MESO_N; i++) {
+  const t = i / (MESO_N - 1);
+  const w0 = THREE.MathUtils.lerp(0.98, 0.50, t);
+  const w1 = THREE.MathUtils.lerp(0.94, 0.42, t + 0.14 / (MESO_N - 1));
+  const h0 = THREE.MathUtils.lerp(0.34, 0.24, t);
+  const h1 = THREE.MathUtils.lerp(0.32, 0.22, t + 0.14 / (MESO_N - 1));
+  const len = THREE.MathUtils.lerp(0.34, 0.26, t);
+  const yLift = THREE.MathUtils.lerp(0.02, 0.10, t);
+
+  const segGeo = shadeFacets(
+    loftGeometry([
+      { z: 0,          pts: ring(SIDES, w0, h0, Math.PI / SIDES, 0, 0) },
+      { z: len * 0.55, pts: ring(SIDES, (w0 + w1) * 0.52, (h0 + h1) * 0.54, Math.PI / SIDES, 0, 0.015) },
+      { z: len,        pts: ring(SIDES, w1, h1, Math.PI / SIDES, 0, 0) }
+    ]),
+    i % 2 === 0 ? 0xc1541c : 0xb1481a, 0.24, 0.030
+  );
+  const seg = new THREE.Mesh(segGeo, FACET_MAT);
+  seg.castShadow = true; seg.receiveShadow = true;
+  seg.position.set(0, yLift * 0.5, mesoZ);
+  meso.add(seg);
+
+  // sand-tan tergite plate riding on the segment's back
+  const plateGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.02,      pts: ring(4, w0 * 0.62, h0 * 0.26, Math.PI / 4, 0, h0 * 0.72) },
+      { z: len * 0.6, pts: ring(4, w0 * 0.58, h0 * 0.24, Math.PI / 4, 0, h0 * 0.76) },
+      { z: len - 0.02,pts: ring(4, w1 * 0.52, h1 * 0.20, Math.PI / 4, 0, h1 * 0.70) }
+    ]),
+    0xd9a86a, 0.26, 0.024
+  );
+  const plate = new THREE.Mesh(plateGeo, FACET_MAT);
+  plate.castShadow = true; plate.receiveShadow = true;
+  plate.position.copy(seg.position);
+  meso.add(plate);
+
+  mesoRingsForTail.push({ z: mesoZ + len, w: w1, h: h1, y: yLift * 0.5 });
+  mesoZ += len - 0.035;
+}
+
+const tailBase = mesoRingsForTail[mesoRingsForTail.length - 1];
+
+/* ---------- Metasoma: EIGHT tapering blocks + cone stinger --------- */
+/* Chain of nested groups, each rotated up, so the tail arcs overhead. */
+
+const tail = new THREE.Group();
+tail.position.set(0, tailBase.y + 0.04, tailBase.z - 0.03);
+meso.add(tail);
+
+const TAIL_N = 8;
+// Per-joint upward pitch (radians). Sum ≈ 235° so the tail sweeps up, over,
+// and forward above the carapace.
+const jointPitch = [-0.42, -0.50, -0.56, -0.60, -0.62, -0.58, -0.50, -0.36];
+const tailBlocks = [];
+let node = tail;
+
+for (let i = 0; i < TAIL_N; i++) {
+  const t = i / (TAIL_N - 1);
+  const joint = new THREE.Group();
+  joint.rotation.x = jointPitch[i];
+  // a subtle lateral sway so the arc isn't perfectly planar
+  joint.rotation.y = Math.sin(i * 0.9) * 0.035;
+  node.add(joint);
+
+  const w0 = THREE.MathUtils.lerp(0.30, 0.145, t);
+  const w1 = THREE.MathUtils.lerp(0.285, 0.135, t + 1 / (TAIL_N - 1) * 0.9);
+  const h0 = THREE.MathUtils.lerp(0.29, 0.150, t);
+  const h1 = THREE.MathUtils.lerp(0.275, 0.140, t + 1 / (TAIL_N - 1) * 0.9);
+  const len = THREE.MathUtils.lerp(0.50, 0.36, t);
+
+  const blockGeo = shadeFacets(
+    loftGeometry([
+      { z: 0,          pts: ring(SIDES, w0, h0, Math.PI / SIDES) },
+      { z: len * 0.30, pts: ring(SIDES, w0 * 1.06, h0 * 1.06, Math.PI / SIDES) },
+      { z: len * 0.80, pts: ring(SIDES, w1 * 1.02, h1 * 1.02, Math.PI / SIDES) },
+      { z: len,        pts: ring(SIDES, w1 * 0.92, h1 * 0.92, Math.PI / SIDES) }
+    ]),
+    i % 2 === 0 ? 0xc85c20 : 0xa8471a, 0.26, 0.032
+  );
+  const block = new THREE.Mesh(blockGeo, FACET_MAT);
+  block.castShadow = true; block.receiveShadow = true;
+  joint.add(block);
+
+  // dorsal keel ridge — a sand-tan wedge along the top of each block
+  const keelGeo = shadeFacets(
+    loftGeometry([
+      { z: len * 0.10, pts: ring(3, w0 * 0.34, h0 * 0.26, Math.PI / 2, 0, h0 * 0.86) },
+      { z: len * 0.90, pts: ring(3, w1 * 0.30, h1 * 0.24, Math.PI / 2, 0, h1 * 0.88) }
+    ]),
+    0xdcae74, 0.28, 0.026
+  );
+  const keel = new THREE.Mesh(keelGeo, FACET_MAT);
+  keel.castShadow = true;
+  joint.add(keel);
+
+  tailBlocks.push(joint);
+
+  // next joint sits at the far end of this block
+  const next = new THREE.Group();
+  next.position.set(0, 0, len - 0.03);
+  joint.add(next);
+  node = next;
+}
+
+/* ---------- Telson (bulb) + single sharp cone stinger -------------- */
+
+const telsonGroup = new THREE.Group();
+telsonGroup.rotation.x = -0.30;
+node.add(telsonGroup);
+
+const telsonGeo = shadeFacets(
+  loftGeometry([
+    { z: -0.03, pts: ring(SIDES, 0.135, 0.135, Math.PI / SIDES) },
+    { z:  0.16, pts: ring(SIDES, 0.215, 0.225, Math.PI / SIDES) },
+    { z:  0.38, pts: ring(SIDES, 0.190, 0.205, Math.PI / SIDES) },
+    { z:  0.52, pts: ring(SIDES, 0.105, 0.115, Math.PI / SIDES) }
+  ]),
+  0xd8752a, 0.24, 0.030
+);
+addMesh(telsonGroup, telsonGeo, FACET_MAT);
+
+// The stinger: one sharp cone, curving forward/down off the telson.
+const stingerPivot = new THREE.Group();
+stingerPivot.position.set(0, 0, 0.50);
+stingerPivot.rotation.x = -1.02;
+telsonGroup.add(stingerPivot);
+
+const stingerGeo = new THREE.ConeGeometry(0.115, 0.62, 5, 1);
+stingerGeo.rotateX(Math.PI / 2);      // point along +Z
+stingerGeo.translate(0, 0, 0.31);
+const stinger = new THREE.Mesh(stingerGeo, M.sting);
+stinger.castShadow = true;
+stinger.receiveShadow = true;
+stingerPivot.add(stinger);
+
+/* ---------- Pedipalps: angular arms + chunky pincers --------------- */
+
+function buildPincerArm(side) {
+  const arm = new THREE.Group();
+  // shoulder at the front corner of the carapace
+  arm.position.set(side * 0.78, 0.02, -1.02);
+  arm.rotation.y = side * 0.46;
+  arm.rotation.x = 0.10;
+
+  // Coxa / femur — blocky forward-angled upper arm
+  const femurGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(SIDES, 0.20, 0.19, Math.PI / SIDES) },
+      { z: 0.34, pts: ring(SIDES, 0.235, 0.215, Math.PI / SIDES) },
+      { z: 0.72, pts: ring(SIDES, 0.195, 0.180, Math.PI / SIDES) }
+    ]),
+    0xb1481a, 0.24, 0.030
+  );
+  const femur = new THREE.Mesh(femurGeo, FACET_MAT_LIMB);
+  femur.castShadow = true; femur.receiveShadow = true;
+  femur.rotation.x = -0.16;
+  arm.add(femur);
+
+  // elbow joint, angled outward-forward
+  const elbow = new THREE.Group();
+  elbow.position.set(side * 0.06, 0.10, 0.68);
+  elbow.rotation.y = -side * 0.72;
+  elbow.rotation.x = 0.06;
+  arm.add(elbow);
+
+  const patellaGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(SIDES, 0.205, 0.195, Math.PI / SIDES) },
+      { z: 0.30, pts: ring(SIDES, 0.245, 0.225, Math.PI / SIDES) },
+      { z: 0.62, pts: ring(SIDES, 0.215, 0.200, Math.PI / SIDES) }
+    ]),
+    0xc1541c, 0.24, 0.030
+  );
+  const patella = new THREE.Mesh(patellaGeo, FACET_MAT_LIMB);
+  patella.castShadow = true; patella.receiveShadow = true;
+  elbow.add(patella);
+
+  // Wrist: the chunky claw body (manus / chela hand)
+  const hand = new THREE.Group();
+  hand.position.set(0, 0.0, 0.58);
+  hand.rotation.y = side * 0.60;
+  hand.rotation.z = side * 0.10;
+  elbow.add(hand);
+
+  const manusGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(SIDES, 0.20, 0.17, Math.PI / SIDES) },
+      { z: 0.22, pts: ring(SIDES, 0.36, 0.27, Math.PI / SIDES, side * 0.03, 0.01) },
+      { z: 0.52, pts: ring(SIDES, 0.40, 0.29, Math.PI / SIDES, side * 0.04, 0.01) },
+      { z: 0.82, pts: ring(SIDES, 0.30, 0.22, Math.PI / SIDES, side * 0.02, 0.00) }
+    ]),
+    0xc1541c, 0.22, 0.032
+  );
+  const manus = new THREE.Mesh(manusGeo, FACET_MAT_LIMB);
+  manus.castShadow = true; manus.receiveShadow = true;
+  hand.add(manus);
+
+  // sand-tan top plate on the claw hand
+  const manusPlateGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.18, pts: ring(4, 0.20, 0.055, Math.PI / 4, 0, 0.22) },
+      { z: 0.52, pts: ring(4, 0.22, 0.060, Math.PI / 4, 0, 0.24) },
+      { z: 0.80, pts: ring(4, 0.14, 0.045, Math.PI / 4, 0, 0.18) }
+    ]),
+    0xdcae74, 0.26, 0.024
+  );
+  const manusPlate = new THREE.Mesh(manusPlateGeo, FACET_MAT_LIMB);
+  manusPlate.castShadow = true;
+  hand.add(manusPlate);
+
+  // ---- Fixed finger (outer, lower) ----
+  const fixedPivot = new THREE.Group();
+  fixedPivot.position.set(side * 0.16, -0.06, 0.74);
+  fixedPivot.rotation.y = -side * 0.20;
+  fixedPivot.rotation.x = -0.05;
+  hand.add(fixedPivot);
+
+  const fixedGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(5, 0.145, 0.125, 0) },
+      { z: 0.30, pts: ring(5, 0.115, 0.100, 0, -side * 0.02, 0.00) },
+      { z: 0.60, pts: ring(5, 0.075, 0.068, 0, -side * 0.05, 0.01) },
+      { z: 0.84, pts: ring(5, 0.028, 0.026, 0, -side * 0.09, 0.02) }
+    ]),
+    0xa8471a, 0.24, 0.030
+  );
+  const fixedFinger = new THREE.Mesh(fixedGeo, FACET_MAT_LIMB);
+  fixedFinger.castShadow = true; fixedFinger.receiveShadow = true;
+  fixedPivot.add(fixedFinger);
+
+  const fixedTip = new THREE.Mesh(new THREE.ConeGeometry(0.032, 0.20, 4), M.chitin);
+  fixedTip.castShadow = true;
+  fixedTip.position.set(-side * 0.115, 0.02, 0.92);
+  fixedTip.rotation.set(-Math.PI / 2, 0, side * 0.28);
+  fixedPivot.add(fixedTip);
+
+  // ---- Movable finger (inner, upper) ----
+  const movPivot = new THREE.Group();
+  movPivot.position.set(-side * 0.11, 0.09, 0.72);
+  movPivot.rotation.y = side * 0.26;
+  movPivot.rotation.x = 0.07;
+  hand.add(movPivot);
+
+  const movGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(5, 0.130, 0.115, 0) },
+      { z: 0.28, pts: ring(5, 0.100, 0.092, 0, side * 0.02, 0.00) },
+      { z: 0.56, pts: ring(5, 0.066, 0.060, 0, side * 0.05, -0.01) },
+      { z: 0.78, pts: ring(5, 0.026, 0.024, 0, side * 0.085, -0.02) }
+    ]),
+    0xd8752a, 0.24, 0.030
+  );
+  const movFinger = new THREE.Mesh(movGeo, FACET_MAT_LIMB);
+  movFinger.castShadow = true; movFinger.receiveShadow = true;
+  movPivot.add(movFinger);
+
+  const movTip = new THREE.Mesh(new THREE.ConeGeometry(0.030, 0.19, 4), M.chitin);
+  movTip.castShadow = true;
+  movTip.position.set(side * 0.105, -0.02, 0.86);
+  movTip.rotation.set(-Math.PI / 2, 0, -side * 0.28);
+  movPivot.add(movTip);
+
+  return { arm, hand, movPivot, fixedPivot };
+}
+
+const pincers = [];
+for (const side of [-1, 1]) {
+  const p = buildPincerArm(side);
+  body.add(p.arm);
+  pincers.push(p);
+}
+
+/* ---------- Eight straight-edged legs, wide stance ----------------- */
+
+/**
+ * Legs are built from three straight loft segments (coxa/femur, tibia,
+ * tarsus) chained through pivots, so every edge stays straight and the
+ * foot plants flat on the ground.
+ */
+function buildLeg(side, index) {
+  // index 0 (front) .. 3 (rear)
+  const t = index / 3;
+
+  const rootZ = THREE.MathUtils.lerp(-0.72, 0.62, t);
+  const rootX = side * THREE.MathUtils.lerp(0.80, 0.72, Math.abs(t - 0.5) * 2 * 0.4);
+  const spread = THREE.MathUtils.lerp(0.62, 1.02, t);   // yaw: front legs forward, rear legs back
+  const yaw = side * (0.10) + (index < 2 ? -1 : 1) * side * 0.0;
+
+  const root = new THREE.Group();
+  root.position.set(rootX, -0.06, rootZ);
+  // point the leg outward (+/-X) and fan front→back
+  root.rotation.y = side * (Math.PI / 2) + (index < 2
+      ? -side * THREE.MathUtils.lerp(0.62, 0.20, index / 1)
+      :  side * THREE.MathUtils.lerp(0.20, 0.66, (index - 2) / 1));
+  root.rotation.z = side * 0.0;
+
+  // upper leg: angles slightly upward and outward
+  const upper = new THREE.Group();
+  upper.rotation.x = -0.34;
+  root.add(upper);
+
+  const femurGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(5, 0.115, 0.105, 0) },
+      { z: 0.30, pts: ring(5, 0.100, 0.092, 0) },
+      { z: 0.62, pts: ring(5, 0.082, 0.076, 0) }
+    ]),
+    0xb1481a, 0.22, 0.028
+  );
+  const femur = new THREE.Mesh(femurGeo, FACET_MAT_LIMB);
+  femur.castShadow = true; femur.receiveShadow = true;
+  upper.add(femur);
+
+  // knee — the high point of the leg
+  const knee = new THREE.Group();
+  knee.position.set(0, 0, 0.60);
+  knee.rotation.x = 1.32;   // sharp bend downward
+  upper.add(knee);
+
+  const kneeCapGeo = shadeFacets(
+    loftGeometry([
+      { z: -0.06, pts: ring(5, 0.098, 0.092, 0) },
+      { z:  0.06, pts: ring(5, 0.112, 0.104, 0) },
+      { z:  0.18, pts: ring(5, 0.090, 0.084, 0) }
+    ]),
+    0xd9a86a, 0.24, 0.024
+  );
+  const kneeCap = new THREE.Mesh(kneeCapGeo, FACET_MAT_LIMB);
+  kneeCap.castShadow = true;
+  knee.add(kneeCap);
+
+  const tibiaGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.05, pts: ring(5, 0.086, 0.080, 0) },
+      { z: 0.40, pts: ring(5, 0.070, 0.066, 0) },
+      { z: 0.78, pts: ring(5, 0.056, 0.052, 0) }
+    ]),
+    0xc1541c, 0.22, 0.028
+  );
+  const tibia = new THREE.Mesh(tibiaGeo, FACET_MAT_LIMB);
+  tibia.castShadow = true; tibia.receiveShadow = true;
+  knee.add(tibia);
+
+  // ankle → tarsus reaching the ground
+  const ankle = new THREE.Group();
+  ankle.position.set(0, 0, 0.76);
+  ankle.rotation.x = 0.42;
+  knee.add(ankle);
+
+  const tarsusGeo = shadeFacets(
+    loftGeometry([
+      { z: 0.00, pts: ring(5, 0.058, 0.054, 0) },
+      { z: 0.26, pts: ring(5, 0.044, 0.041, 0) },
+      { z: 0.48, pts: ring(5, 0.030, 0.028, 0) }
+    ]),
+    0x8e3711, 0.20, 0.026
+  );
+  const tarsus = new THREE.Mesh(tarsusGeo, FACET_MAT_LIMB);
+  tarsus.castShadow = true; tarsus.receiveShadow = true;
+  ankle.add(tarsus);
+
+  // claw tip / foot
+  const foot = new THREE.Mesh(new THREE.ConeGeometry(0.042, 0.16, 4), M.chitin);
+  foot.castShadow = true;
+  foot.position.set(0, -0.02, 0.54);
+  foot.rotation.set(-Math.PI / 2 + 0.55, 0, Math.PI / 4);
+  ankle.add(foot);
+
+  return { root, knee, ankle, spread, yaw };
+}
+
+const legs = [];
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 4; i++) {
+    const leg = buildLeg(side, i);
+    body.add(leg.root);
+    legs.push(leg);
+  }
+}
+
+/* ---------- Pectines (small sensory combs under the body) ---------- */
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 5; i++) {
+    const tooth = new THREE.Mesh(new THREE.ConeGeometry(0.026, 0.20, 3), M.sand);
+    tooth.castShadow = true;
+    tooth.position.set(side * (0.10 + i * 0.075), -0.24, 0.30 + i * 0.055);
+    tooth.rotation.set(Math.PI, 0, side * 0.22);
+    body.add(tooth);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/* Ground the model: drop the whole scorpion so feet touch y = 0        */
+/* ------------------------------------------------------------------ */
+
+scorpion.updateMatrixWorld(true);
+const bbox = new THREE.Box3().setFromObject(scorpion);
+scorpion.position.y -= bbox.min.y;
+
+// Re-center horizontally on the origin
+scorpion.updateMatrixWorld(true);
+const bbox2 = new THREE.Box3().setFromObject(scorpion);
+const center = bbox2.getCenter(new THREE.Vector3());
+scorpion.position.x -= center.x;
+scorpion.position.z -= center.z;
+
+scorpion.updateMatrixWorld(true);
+const bbox3 = new THREE.Box3().setFromObject(scorpion);
+const size = bbox3.getSize(new THREE.Vector3());
+controls.target.set(0, size.y * 0.48, 0);
+controls.update();
+
+// Tighten the shadow camera around the actual model
+const radius = Math.max(size.x, size.z) * 0.75 + 1.0;
+key.shadow.camera.left = -radius;
+key.shadow.camera.right = radius;
+key.shadow.camera.top = radius;
+key.shadow.camera.bottom = -radius;
+key.shadow.camera.updateProjectionMatrix();
+
+/* ------------------------------------------------------------------ */
+/* Animation                                                           */
+/* ------------------------------------------------------------------ */
+
+const clock = new THREE.Clock();
+const baseTailPitch = tailBlocks.map(j => j.rotation.x);
+const basePincerYaw = pincers.map(p => p.movPivot.rotation.y);
+
+function animate() {
+  const t = clock.getElapsedTime();
+
+  // gentle tail breathing — the arc flexes very slightly
+  for (let i = 0; i < tailBlocks.length; i++) {
+    tailBlocks[i].rotation.x = baseTailPitch[i] + Math.sin(t * 0.7 + i * 0.42) * 0.014;
+  }
+
+  // pincers slowly open and close
+  for (let i = 0; i < pincers.length; i++) {
+    const side = i === 0 ? -1 : 1;
+    pincers[i].movPivot.rotation.y = basePincerYaw[i] + side * (Math.sin(t * 0.55 + i) * 0.5 + 0.5) * 0.22;
+  }
+
+  // subtle body bob
+  body.position.y = BODY_Y + Math.sin(t * 0.9) * 0.012;
+
+  controls.update();
+  renderer.render(scene, camera);
+  requestAnimationFrame(animate);
+}
+animate();
+
+/* ------------------------------------------------------------------ */
+/* Resize                                                              */
+/* ------------------------------------------------------------------ */
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

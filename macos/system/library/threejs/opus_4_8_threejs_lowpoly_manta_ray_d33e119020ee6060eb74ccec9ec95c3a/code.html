@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Low-Poly Manta Ray</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0d1014; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(200, 214, 232, 0.42); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Low-Poly Manta Ray &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d1014);
+scene.fog = new THREE.Fog(0x0d1014, 12, 34);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(5.4, 3.1, 6.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 0.05, 0);
+controls.minDistance = 3.2;
+controls.maxDistance = 20;
+controls.maxPolarAngle = Math.PI * 0.94;
+
+/* ============================================================
+   Lighting: hemisphere ambience + key + fill + rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x8fb4d8, 0x14181f, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xdfe9ff, 2.35);
+key.position.set(5.2, 8.4, 4.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -8;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.022;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x5f7fb0, 0.75);
+fill.position.set(-6.0, 2.2, 3.6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0x9fd6ff, 1.25);
+rim.position.set(-2.6, 3.0, -6.8);
+scene.add(rim);
+
+const under = new THREE.DirectionalLight(0x2c3a52, 0.45);
+under.position.set(0.5, -5.0, 1.2);
+scene.add(under);
+
+/* Shadow-only ground plane */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(70, 70),
+  new THREE.ShadowMaterial({ opacity: 0.36 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.35;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   Materials — flat shaded, three dorsal tones + bone underside
+   ============================================================ */
+function mat(hex, rough, metal) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(hex),
+    roughness: rough,
+    metalness: metal === undefined ? 0.06 : metal,
+    flatShading: true,
+    side: THREE.FrontSide
+  });
+}
+
+const M = {
+  dorsalDark:  mat(0x1b2246, 0.62, 0.10),  // deep indigo
+  dorsalMid:   mat(0x2c3a6b, 0.60, 0.08),  // indigo / slate
+  dorsalLight: mat(0x46618f, 0.58, 0.07),  // slate blue
+  belly:       mat(0xe4e0d2, 0.78, 0.02),  // pale bone white
+  bellyShade:  mat(0xcbc6b6, 0.80, 0.02),
+  gill:        mat(0x6f6a62, 0.85, 0.03),
+  mouth:       mat(0x120f14, 0.95, 0.0),
+  eye:         mat(0x08090c, 0.28, 0.30),
+  tail:        mat(0x232a4e, 0.66, 0.10)
+};
+
+/* ============================================================
+   Geometry helpers
+   ============================================================ */
+
+// Build a non-indexed BufferGeometry from an explicit triangle list.
+function triGeom(tris) {
+  const pos = new Float32Array(tris.length * 9);
+  let o = 0;
+  for (let i = 0; i < tris.length; i++) {
+    const t = tris[i];
+    for (let k = 0; k < 3; k++) {
+      pos[o++] = t[k][0];
+      pos[o++] = t[k][1];
+      pos[o++] = t[k][2];
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Quad -> two triangles (a,b,c,d wound in order)
+function quad(a, b, c, d) {
+  return [[a, b, c], [a, c, d]];
+}
+
+function V(x, y, z) { return [x, y, z]; }
+
+// mirror a vertex across X (x -> -x)
+function mx(v) { return [-v[0], v[1], v[2]]; }
+
+// mirror a triangle list across X and flip winding to keep outward normals
+function mirrorTris(tris) {
+  const out = [];
+  for (const t of tris) out.push([mx(t[0]), mx(t[2]), mx(t[1])]);
+  return out;
+}
+
+/* ============================================================
+   MANTA RAY
+   Coordinate frame (model space, before the group tilt):
+     +X = right wing, -X = left wing
+     +Y = up (dorsal)
+     +Z = forward (head / mouth), -Z = back (tail)
+   Disc: ~4.4 units wingspan (half-span 2.2), body length ~2.9.
+   ============================================================ */
+
+const manta = new THREE.Group();
+
+/* ---- Planform control points (right half of the disc) -------
+   The manta disc: broad at the "shoulders" just behind the head,
+   sweeping back into a sharp, scythe-like wingtip.
+   Each station: [x (outboard), z (fore/aft), y (base height)]
+------------------------------------------------------------- */
+
+// Leading-edge chain: from nose-side shoulder out to wingtip.
+const LE = [
+  V(0.34,  1.16, 0.03),  // 0 head shoulder (beside cephalic fins)
+  V(0.74,  1.06, 0.05),  // 1
+  V(1.16,  0.86, 0.05),  // 2
+  V(1.58,  0.55, 0.03),  // 3
+  V(1.94,  0.12, 0.00),  // 4
+  V(2.20, -0.42, -0.02)  // 5 wingtip (swept back, sharp)
+];
+
+// Trailing-edge chain: mirrors back from the tip toward the tail root.
+const TE = [
+  V(0.40, -0.98, 0.02),  // 0 near tail root
+  V(0.74, -0.92, 0.03),  // 1
+  V(1.10, -0.86, 0.02),  // 2
+  V(1.46, -0.78, 0.00),  // 3
+  V(1.84, -0.66, -0.02), // 4
+  V(2.20, -0.42, -0.02)  // 5 == wingtip
+];
+
+// Wing dihedral / camber profile: how much the wing rises with |x|
+// (a graceful glide arc, highest at the tips).
+function wingLift(x) {
+  const t = Math.min(Math.abs(x) / 2.2, 1);
+  return 0.62 * Math.pow(t, 1.85) - 0.05 * t;
+}
+
+// Body thickness taper across span: thick core, razor-thin tips.
+function thickness(x) {
+  const t = Math.min(Math.abs(x) / 2.2, 1);
+  return Math.max(0.0, Math.pow(1.0 - t, 1.6));
+}
+
+/* ---------- Central body (thick, faceted core) -------------
+   Cross-sections along Z with a ridge (top) and a flat-ish belly.
+   Each section: z, half-width, top height, bottom depth
+------------------------------------------------------------ */
+const BODY = [
+  // z,     halfW,  topY,   botY
+  [ 1.30,   0.30,   0.14,  -0.10],  // head front edge
+  [ 1.02,   0.38,   0.26,  -0.19],  // brow / shoulders
+  [ 0.62,   0.44,   0.34,  -0.25],  // thickest
+  [ 0.16,   0.44,   0.33,  -0.25],
+  [-0.32,   0.40,   0.26,  -0.20],
+  [-0.74,   0.32,   0.16,  -0.13],
+  [-1.02,   0.20,   0.08,  -0.06],  // tail root
+];
+
+/* Build a solid faceted core from those sections. */
+function buildCore() {
+  const tris = [];
+  const sec = BODY;
+
+  for (let i = 0; i < sec.length - 1; i++) {
+    const [z0, w0, t0, b0] = sec[i];
+    const [z1, w1, t1, b1] = sec[i + 1];
+
+    // ridge points (centre-top), keel points (centre-bottom)
+    const rid0 = V(0, t0, z0), rid1 = V(0, t1, z1);
+    const kee0 = V(0, b0, z0), kee1 = V(0, b1, z1);
+
+    // shoulder points (outer edge, mid height)
+    const shoR0 = V(w0, t0 * 0.30, z0), shoR1 = V(w1, t1 * 0.30, z1);
+    const shoL0 = mx(shoR0), shoL1 = mx(shoR1);
+
+    // top-right facet
+    tris.push(...quad(rid0, rid1, shoR1, shoR0));
+    // bottom-right facet
+    tris.push(...quad(shoR0, shoR1, kee1, kee0));
+    // top-left facet
+    tris.push(...quad(shoL0, shoL1, rid1, rid0));
+    // bottom-left facet
+    tris.push(...quad(kee0, kee1, shoL1, shoL0));
+  }
+
+  // Cap the tail-root end
+  const last = sec[sec.length - 1];
+  const [zL, wL, tL, bL] = last;
+  const rL = V(0, tL, zL), kL = V(0, bL, zL);
+  const sR = V(wL, tL * 0.30, zL), sL = mx(sR);
+  tris.push([rL, sR, sL]);
+  tris.push([kL, sL, sR]);
+
+  return tris;
+}
+
+/* ---------- Wing membrane (dorsal + ventral skins) ---------
+   The wing is built as a lofted set of chordwise strips from the
+   body edge out to the wingtip; each strip is split into a few
+   large flat triangles for a chunky low-poly read.
+------------------------------------------------------------ */
+
+// Interpolate along a polyline chain by parameter t in [0,1]
+function chainPoint(chain, t) {
+  const n = chain.length - 1;
+  const f = Math.max(0, Math.min(0.999999, t)) * n;
+  const i = Math.floor(f);
+  const u = f - i;
+  const a = chain[i], b = chain[i + 1];
+  return V(
+    a[0] + (b[0] - a[0]) * u,
+    a[1] + (b[1] - a[1]) * u,
+    a[2] + (b[2] - a[2]) * u
+  );
+}
+
+// Body edge (inboard root) as a function of span parameter: sits on the
+// core's shoulder line so the wing grows out of the body.
+function rootPoint(t) {
+  // t: 0 at leading edge of root, 1 at trailing edge of root
+  const zF = 1.14, zB = -1.00;
+  const z = zF + (zB - zF) * t;
+  // half-width of the core at that z (approx lookup)
+  let w = 0.30;
+  for (let i = 0; i < BODY.length - 1; i++) {
+    const a = BODY[i], b = BODY[i + 1];
+    if ((z <= a[0] && z >= b[0])) {
+      const u = (a[0] - z) / (a[0] - b[0]);
+      w = a[1] + (b[1] - a[1]) * u;
+      break;
+    }
+  }
+  return V(w, 0.06, z);
+}
+
+const SPAN_STEPS = 7;    // outboard subdivisions (chunky facets)
+const CHORD_STEPS = 5;   // fore/aft subdivisions
+
+// Grid of wing surface points for the right wing.
+// grid[i][j]: i = span (0 root -> SPAN_STEPS tip), j = chord (0 LE -> CHORD_STEPS TE)
+function buildWingGrid(surfaceSign) {
+  const grid = [];
+  for (let i = 0; i <= SPAN_STEPS; i++) {
+    const s = i / SPAN_STEPS;
+    const se = Math.pow(s, 0.92);
+    const row = [];
+
+    const leOut = chainPoint(LE, se);
+    const teOut = chainPoint(TE, se);
+    const leIn = rootPoint(0);
+    const teIn = rootPoint(1);
+
+    // blend from root chord to outboard chord
+    const leP = V(
+      leIn[0] + (leOut[0] - leIn[0]) * se,
+      0,
+      leIn[2] + (leOut[2] - leIn[2]) * se
+    );
+    const teP = V(
+      teIn[0] + (teOut[0] - teIn[0]) * se,
+      0,
+      teIn[2] + (teOut[2] - teIn[2]) * se
+    );
+
+    for (let j = 0; j <= CHORD_STEPS; j++) {
+      const c = j / CHORD_STEPS;
+      const x = leP[0] + (teP[0] - leP[0]) * c;
+      const z = leP[2] + (teP[2] - leP[2]) * c;
+
+      // thickness bulge: fat near root/mid-chord, knife-edge at borders
+      const chordBulge = Math.sin(Math.PI * Math.min(1, Math.max(0, c))) ;
+      const th = thickness(x) * chordBulge;
+
+      const yBase = wingLift(x);
+      const y = yBase + surfaceSign * (surfaceSign > 0 ? th * 0.20 : th * 0.13);
+
+      row.push(V(x, y, z));
+    }
+    grid.push(row);
+  }
+  return grid;
+}
+
+function gridTris(grid, flip) {
+  const tris = [];
+  for (let i = 0; i < grid.length - 1; i++) {
+    for (let j = 0; j < grid[i].length - 1; j++) {
+      const a = grid[i][j], b = grid[i + 1][j], c = grid[i + 1][j + 1], d = grid[i][j + 1];
+      if (!flip) {
+        tris.push([a, b, c], [a, c, d]);
+      } else {
+        tris.push([a, c, b], [a, d, c]);
+      }
+    }
+  }
+  return tris;
+}
+
+// Seal the wing's outer border (leading edge, trailing edge, tip)
+function wingEdgeTris(top, bot) {
+  const tris = [];
+  const N = top.length - 1, Cn = top[0].length - 1;
+
+  // leading edge (j = 0)
+  for (let i = 0; i < N; i++) {
+    tris.push(...quad(top[i][0], bot[i][0], bot[i + 1][0], top[i + 1][0]));
+  }
+  // trailing edge (j = Cn)
+  for (let i = 0; i < N; i++) {
+    tris.push(...quad(top[i + 1][Cn], bot[i + 1][Cn], bot[i][Cn], top[i][Cn]));
+  }
+  // tip cap (i = N)
+  for (let j = 0; j < Cn; j++) {
+    tris.push(...quad(top[N][j], top[N][j + 1], bot[N][j + 1], bot[N][j]));
+  }
+  return tris;
+}
+
+/* ---------- Assemble the wings ---------- */
+const topGridR = buildWingGrid(+1);
+const botGridR = buildWingGrid(-1);
+
+const dorsalTrisR = gridTris(topGridR, false);
+const ventralTrisR = gridTris(botGridR, true);
+const edgeTrisR = wingEdgeTris(topGridR, botGridR);
+
+// Split dorsal facets into three tonal bands (inboard / mid / outboard)
+// by using span index ranges so the tri-tone reads as faceted panels.
+function splitDorsalBands(grid) {
+  const bands = [[], [], []];
+  for (let i = 0; i < grid.length - 1; i++) {
+    for (let j = 0; j < grid[i].length - 1; j++) {
+      const a = grid[i][j], b = grid[i + 1][j], c = grid[i + 1][j + 1], d = grid[i][j + 1];
+      const t1 = [a, b, c], t2 = [a, c, d];
+      // deterministic but varied banding: alternating checker + span zone
+      const zone = i < 2 ? 0 : (i < 5 ? 1 : 2);
+      const alt = ((i + j) % 3);
+      const bA = (alt === 0) ? zone : (alt === 1 ? Math.min(2, zone + 1) : Math.max(0, zone - 1));
+      const bB = (alt === 2) ? zone : (alt === 0 ? Math.max(0, zone - 1) : Math.min(2, zone + 1));
+      bands[bA].push(t1);
+      bands[bB].push(t2);
+    }
+  }
+  return bands;
+}
+
+const dorsalBandsR = splitDorsalBands(topGridR);
+
+const dorsalMats = [M.dorsalDark, M.dorsalMid, M.dorsalLight];
+for (let b = 0; b < 3; b++) {
+  const trisR = dorsalBandsR[b];
+  if (!trisR.length) continue;
+  const all = trisR.concat(mirrorTris(trisR));
+  const m = new THREE.Mesh(triGeom(all), dorsalMats[b]);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+// Ventral skin (bone white) — both wings
+{
+  const all = ventralTrisR.concat(mirrorTris(ventralTrisR));
+  const m = new THREE.Mesh(triGeom(all), M.belly);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+// Wing borders (dark, gives the knife-edge silhouette)
+{
+  const all = edgeTrisR.concat(mirrorTris(edgeTrisR));
+  const m = new THREE.Mesh(triGeom(all), M.dorsalDark);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* ---------- Core body ---------- */
+{
+  const coreTris = buildCore();
+  const m = new THREE.Mesh(triGeom(coreTris), M.dorsalMid);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* Dorsal ridge highlight strip along the spine (lighter slate) */
+{
+  const tris = [];
+  for (let i = 0; i < BODY.length - 1; i++) {
+    const [z0, w0, t0] = BODY[i];
+    const [z1, w1, t1] = BODY[i + 1];
+    const r0 = V(0, t0 + 0.012, z0), r1 = V(0, t1 + 0.012, z1);
+    const a0 = V(w0 * 0.42, t0 * 0.80, z0), a1 = V(w1 * 0.42, t1 * 0.80, z1);
+    tris.push(...quad(r0, r1, a1, a0));
+    tris.push(...quad(mx(a0), mx(a1), r1, r0));
+  }
+  const m = new THREE.Mesh(triGeom(tris), M.dorsalLight);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* Belly panel under the core (bone white, slightly inset) */
+{
+  const tris = [];
+  for (let i = 0; i < BODY.length - 1; i++) {
+    const [z0, w0, , b0] = BODY[i];
+    const [z1, w1, , b1] = BODY[i + 1];
+    const k0 = V(0, b0 - 0.006, z0), k1 = V(0, b1 - 0.006, z1);
+    const a0 = V(w0 * 0.86, b0 * 0.42 - 0.006, z0), a1 = V(w1 * 0.86, b1 * 0.42 - 0.006, z1);
+    tris.push(...quad(a0, a1, k1, k0));
+    tris.push(...quad(k0, k1, mx(a1), mx(a0)));
+  }
+  const m = new THREE.Mesh(triGeom(tris), M.belly);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* ============================================================
+   Head: wide rectangular mouth + cephalic horns + eyes
+   ============================================================ */
+
+/* --- Mouth: a wide rectangular slot across the front --- */
+{
+  const mw = 0.30;    // half width of the mouth
+  const zF = 1.30;    // front plane
+  const zB = 1.16;    // recessed back plane
+  const yT = 0.055;   // top lip
+  const yB = -0.075;  // bottom lip
+
+  const tris = [];
+  // back wall (dark interior)
+  tris.push(...quad(
+    V(-mw, yT, zB), V(mw, yT, zB), V(mw, yB, zB), V(-mw, yB, zB)
+  ));
+  // top interior
+  tris.push(...quad(
+    V(-mw, yT, zF), V(mw, yT, zF), V(mw, yT, zB), V(-mw, yT, zB)
+  ));
+  // bottom interior
+  tris.push(...quad(
+    V(-mw, yB, zB), V(mw, yB, zB), V(mw, yB, zF), V(-mw, yB, zF)
+  ));
+  // side interiors
+  tris.push(...quad(V(mw, yT, zF), V(mw, yB, zF), V(mw, yB, zB), V(mw, yT, zB)));
+  tris.push(...quad(V(-mw, yT, zB), V(-mw, yB, zB), V(-mw, yB, zF), V(-mw, yT, zF)));
+
+  const m = new THREE.Mesh(triGeom(tris), M.mouth);
+  m.castShadow = false; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* --- Head faceplate framing the mouth (bone-white lower lip band) --- */
+{
+  const tris = [];
+  const zF = 1.305;
+  const mw = 0.30, hw = 0.44;
+  // lower lip plate
+  tris.push(...quad(
+    V(-hw, -0.075, zF - 0.02), V(hw, -0.075, zF - 0.02),
+    V(hw * 0.9, -0.155, zF - 0.16), V(-hw * 0.9, -0.155, zF - 0.16)
+  ));
+  // side cheek plates
+  tris.push([V(mw, 0.055, zF - 0.02), V(hw, -0.075, zF - 0.02), V(0.40, 0.14, 1.10)]);
+  tris.push([V(-0.40, 0.14, 1.10), V(-hw, -0.075, zF - 0.02), V(-mw, 0.055, zF - 0.02)]);
+  const m = new THREE.Mesh(triGeom(tris), M.bellyShade);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* --- Brow plate above the mouth (dark indigo, faceted) --- */
+{
+  const tris = [];
+  tris.push(...quad(
+    V(-0.30, 0.055, 1.30), V(0.30, 0.055, 1.30),
+    V(0.38, 0.24, 1.06), V(-0.38, 0.24, 1.06)
+  ));
+  const m = new THREE.Mesh(triGeom(tris), M.dorsalDark);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* --- Cephalic fins: blunt faceted horns folded forward --- */
+function cephalicHorn(sign) {
+  const g = new THREE.Group();
+
+  // A tapered, slightly curled 4-sided horn built from explicit sections.
+  const sections = [
+    // [z,     y,     halfW, halfH]
+    [ 1.18,  0.10,  0.105, 0.095],
+    [ 1.36,  0.13,  0.092, 0.084],
+    [ 1.54,  0.145, 0.074, 0.068],
+    [ 1.70,  0.135, 0.055, 0.052],
+    [ 1.83,  0.105, 0.038, 0.038],
+    [ 1.92,  0.062, 0.024, 0.026]   // blunt tip, curling down/inward
+  ];
+
+  const xBase = 0.235;
+  const tris = [];
+
+  function ring(s) {
+    const [z, y, hw, hh] = s;
+    // inward lean as the horn extends forward
+    const lean = (z - 1.18) * 0.10;
+    const cx = xBase - lean;
+    return [
+      V(cx - hw, y + hh, z), // 0 top-inner
+      V(cx + hw, y + hh * 0.75, z), // 1 top-outer
+      V(cx + hw * 0.9, y - hh, z),  // 2 bot-outer
+      V(cx - hw * 0.9, y - hh * 0.9, z) // 3 bot-inner
+    ];
+  }
+
+  for (let i = 0; i < sections.length - 1; i++) {
+    const A = ring(sections[i]);
+    const B = ring(sections[i + 1]);
+    for (let k = 0; k < 4; k++) {
+      const k2 = (k + 1) % 4;
+      tris.push(...quad(A[k], B[k], B[k2], A[k2]));
+    }
+  }
+
+  // blunt tip cap
+  const T = ring(sections[sections.length - 1]);
+  tris.push([T[0], T[2], T[1]]);
+  tris.push([T[0], T[3], T[2]]);
+  // base cap
+  const B0 = ring(sections[0]);
+  tris.push([B0[0], B0[1], B0[2]]);
+  tris.push([B0[0], B0[2], B0[3]]);
+
+  const finalTris = (sign > 0) ? tris : mirrorTris(tris);
+  const m = new THREE.Mesh(triGeom(finalTris), M.dorsalMid);
+  m.castShadow = true; m.receiveShadow = true;
+  g.add(m);
+
+  // pale underside stripe on the horn
+  const stripe = [];
+  for (let i = 0; i < sections.length - 1; i++) {
+    const A = ring(sections[i]);
+    const B = ring(sections[i + 1]);
+    stripe.push(...quad(
+      V(A[3][0], A[3][1] - 0.004, A[3][2]),
+      V(A[2][0], A[2][1] - 0.004, A[2][2]),
+      V(B[2][0], B[2][1] - 0.004, B[2][2]),
+      V(B[3][0], B[3][1] - 0.004, B[3][2])
+    ));
+  }
+  const sTris = (sign > 0) ? mirrorTris(mirrorTris(stripe)) : mirrorTris(stripe);
+  const sm = new THREE.Mesh(triGeom(sTris), M.belly);
+  sm.castShadow = false; sm.receiveShadow = true;
+  g.add(sm);
+
+  return g;
+}
+manta.add(cephalicHorn(+1));
+manta.add(cephalicHorn(-1));
+
+/* --- Eyes: small dark faceted gems on the sides of the head --- */
+function eye(sign) {
+  const g = new THREE.IcosahedronGeometry(0.062, 0);
+  const m = new THREE.Mesh(g, M.eye);
+  m.position.set(sign * 0.395, 0.10, 1.055);
+  m.scale.set(1.0, 0.86, 1.05);
+  m.castShadow = true;
+  return m;
+}
+manta.add(eye(+1));
+manta.add(eye(-1));
+
+/* ============================================================
+   Ventral gill slashes — five angular pale/dark slits per side
+   ============================================================ */
+{
+  const tris = [];
+  const rows = 5;
+  for (let i = 0; i < rows; i++) {
+    const t = i / (rows - 1);
+    const z = 0.44 - t * 0.72;               // marching aft
+    const x0 = 0.16 + t * 0.045;             // inner end
+    const len = 0.30 - t * 0.055;            // slash length
+    const halfH = 0.028;
+    const yBase = -0.20 + t * 0.055;
+
+    // an angular parallelogram slash, swept outward-aft
+    const a = V(x0,              yBase - 0.004, z + halfH);
+    const b = V(x0 + len * 0.55, yBase - 0.010, z + halfH * 0.55);
+    const c = V(x0 + len,        yBase - 0.006, z - halfH * 0.9);
+    const d = V(x0 + len * 0.5,  yBase - 0.002, z - halfH * 1.25);
+
+    // wound so the normal points DOWN (-Y), i.e. visible from below
+    tris.push([a, d, c], [a, c, b]);
+  }
+  const all = tris.concat(mirrorTris(tris));
+  const m = new THREE.Mesh(triGeom(all), M.gill);
+  m.castShadow = false; m.receiveShadow = false;
+  m.renderOrder = 2;
+  m.material.polygonOffset = true;
+  m.material.polygonOffsetFactor = -2;
+  m.material.polygonOffsetUnits = -2;
+  manta.add(m);
+}
+
+/* ============================================================
+   Dorsal fin (small, just behind the body) + tail
+   ============================================================ */
+{
+  const tris = [];
+  const base0 = V(0, 0.16, -0.62), base1 = V(0, 0.10, -0.95);
+  const tip = V(0, 0.40, -0.80);
+  const sR = V(0.075, 0.20, -0.76), sL = mx(sR);
+  tris.push([base0, sR, tip], [sR, base1, tip]);
+  tris.push([tip, sL, base0], [tip, base1, sL]);
+  tris.push([base0, base1, sR], [base0, sL, base1]);
+  const m = new THREE.Mesh(triGeom(tris), M.dorsalDark);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* --- Needle-thin whip tail --- */
+{
+  const tris = [];
+  const SEG = 20;
+  const zStart = -1.00, len = 3.15;
+
+  function tailPoint(t) {
+    const z = zStart - len * t;
+    // gentle downward droop plus a lazy S curve
+    const y = -0.02 - 0.30 * Math.pow(t, 1.9) + 0.05 * Math.sin(t * Math.PI * 1.15);
+    const x = 0.055 * Math.sin(t * Math.PI * 1.6) * (1 - t * 0.35);
+    return V(x, y, z);
+  }
+  function tailRadius(t) {
+    // thick at the root, needle-thin at the very end
+    return 0.075 * Math.pow(1 - t, 1.35) + 0.0045;
+  }
+
+  // triangular cross-section for a crisp low-poly needle
+  function tailRing(t) {
+    const p = tailPoint(t);
+    const r = tailRadius(t);
+    const ring = [];
+    for (let k = 0; k < 3; k++) {
+      const a = (k / 3) * Math.PI * 2 + Math.PI / 2;
+      ring.push(V(p[0] + Math.cos(a) * r, p[1] + Math.sin(a) * r * 0.9, p[2]));
+    }
+    return ring;
+  }
+
+  for (let i = 0; i < SEG; i++) {
+    const A = tailRing(i / SEG);
+    const B = tailRing((i + 1) / SEG);
+    for (let k = 0; k < 3; k++) {
+      const k2 = (k + 1) % 3;
+      tris.push(...quad(A[k], B[k], B[k2], A[k2]));
+    }
+  }
+  // root cap
+  const R0 = tailRing(0);
+  tris.push([R0[0], R0[1], R0[2]]);
+  // tip cap
+  const RN = tailRing(1);
+  tris.push([RN[2], RN[1], RN[0]]);
+
+  const m = new THREE.Mesh(triGeom(tris), M.tail);
+  m.castShadow = true; m.receiveShadow = true;
+  manta.add(m);
+}
+
+/* --- Small pelvic fins beneath the tail root --- */
+function pelvic(sign) {
+  const tris = [];
+  const a = V(0.12, -0.10, -0.86);
+  const b = V(0.34, -0.14, -1.02);
+  const c = V(0.16, -0.09, -1.14);
+  const d = V(0.10, -0.16, -0.98);
+  tris.push([a, b, d], [b, c, d]);
+  tris.push([a, d, b], [b, d, c]); // double sided (thin fin)
+  const t = sign > 0 ? tris : mirrorTris(tris);
+  const m = new THREE.Mesh(triGeom(t), M.bellyShade);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+manta.add(pelvic(+1));
+manta.add(pelvic(-1));
+
+/* ============================================================
+   Final placement — a gliding pose, centered
+   ============================================================ */
+manta.rotation.x = -0.10;   // nose slightly up, gliding
+manta.rotation.z = 0.07;    // subtle bank
+manta.position.y = 0.10;
+scene.add(manta);
+
+// Center the whole rig on the origin based on its bounds
+{
+  const box = new THREE.Box3().setFromObject(manta);
+  const c = new THREE.Vector3();
+  box.getCenter(c);
+  manta.position.x -= c.x;
+  manta.position.z -= c.z;
+  manta.position.y -= c.y * 0.55;
+}
+
+/* ============================================================
+   Animation
+   ============================================================ */
+const clock = new THREE.Clock();
+
+// Cache original wing-band meshes for a subtle flap: we animate the
+// whole group instead (keeps geometry static / cheap and stable).
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  manta.rotation.z = 0.07 + Math.sin(t * 0.55) * 0.055;
+  manta.rotation.x = -0.10 + Math.sin(t * 0.42 + 1.1) * 0.045;
+  manta.position.y = 0.10 + Math.sin(t * 0.6) * 0.07;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

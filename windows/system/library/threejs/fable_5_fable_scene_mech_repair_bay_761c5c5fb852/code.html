@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Mech Repair Bay</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0e12}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ================================================================ config / palette
+const BAY_W = 56, BAY_D = 56, BAY_H = 18;          // repair-bay interior dimensions
+const FOG_COLOR = 0x0b0e12;
+const SODIUM = 0xffa445;                            // warm sodium work-light color
+const PAL = {
+  concrete: '#34373a', hazardY: '#d9a527', hazardK: '#17150f',
+  hull: 0x8b917a, hullDark: 0x2f3328, accent: 0xb04a12,
+  steel: 0x4a5058, steelDark: 0x23272c, gantry: 0xa07f22,
+  screenGlow: 0x3fe8c8, amber: 0xffb545
+};
+
+// ================================================================ prng / helpers
+function mulberry32(seed){ let a = seed >>> 0; return function(){
+  a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rng = mulberry32(761052);
+const rand = (a, b) => a + rng() * (b - a);
+const pick = arr => arr[Math.floor(rng() * arr.length)];
+const UP = new THREE.Vector3(0, 1, 0);
+
+// Oriented box spanning two points (mecha limbs, braces, crane parts)
+function boxBetween(a, b, w, d, mat){
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, len, d), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(UP, dir.normalize());
+  return m;
+}
+function shadowify(root){ root.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); return root; }
+
+// ================================================================ canvas textures
+function canvasTex(size, draw, repX, repY){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  if (repX){ t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY); }
+  return t;
+}
+function stripeRect(g, x, y, w, h){ // diagonal hazard band inside a clipped rect
+  g.save(); g.beginPath(); g.rect(x, y, w, h); g.clip();
+  g.fillStyle = PAL.hazardK; g.fillRect(x, y, w, h); g.fillStyle = PAL.hazardY;
+  for (let s = -h; s < w + h; s += 26){
+    g.beginPath(); g.moveTo(x + s, y + h); g.lineTo(x + s + h, y);
+    g.lineTo(x + s + h + 13, y); g.lineTo(x + s + 13, y + h); g.closePath(); g.fill();
+  }
+  g.restore();
+}
+const floorTex = canvasTex(1024, (g, s) => {
+  g.fillStyle = PAL.concrete; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 520; i++){ // mottled wear
+    g.fillStyle = `rgba(${rng() < 0.5 ? '12,13,14' : '92,96,99'},${rand(0.03, 0.09)})`;
+    g.fillRect(rand(0, s), rand(0, s), rand(6, 60), rand(4, 40));
+  }
+  for (let i = 0; i < 9; i++){ // oil stains near the mech cradle
+    const x = rand(320, 704), y = rand(340, 700), r = rand(26, 88);
+    const gr = g.createRadialGradient(x, y, 2, x, y, r);
+    gr.addColorStop(0, 'rgba(8,9,10,0.55)'); gr.addColorStop(1, 'rgba(8,9,10,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 6.3); g.fill();
+  }
+  g.strokeStyle = 'rgba(15,16,17,0.5)'; g.lineWidth = 3; // expansion seams
+  for (const p of [256, 512, 768]){ g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke(); }
+  stripeRect(g, 313, 350, 398, 16); stripeRect(g, 313, 658, 398, 16); // hazard frame
+  stripeRect(g, 313, 366, 16, 292); stripeRect(g, 695, 366, 16, 292);
+  g.strokeStyle = 'rgba(185,148,39,0.55)'; g.lineWidth = 6; g.setLineDash([26, 18]);
+  for (const lx of [452, 572]){ g.beginPath(); g.moveTo(lx, 690); g.lineTo(lx, 1000); g.stroke(); }
+  g.setLineDash([]); g.fillStyle = 'rgba(185,148,39,0.6)';
+  g.font = 'bold 118px monospace'; g.fillText('07', 342, 806);
+  g.font = 'bold 34px monospace'; g.fillText('MECH BAY', 430, 862);
+  for (let i = 0; i < 26; i++){ // fine scratches
+    g.strokeStyle = `rgba(150,152,150,${rand(0.05, 0.14)})`; g.lineWidth = 1;
+    const x = rand(0, s), y = rand(0, s); g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-90, 90), y + rand(-90, 90)); g.stroke();
+  }
+});
+const wallTex = canvasTex(512, (g, s) => {
+  g.fillStyle = '#2c3033'; g.fillRect(0, 0, s, s);
+  for (let x = 0; x < s; x += 16){ // corrugation ribs
+    const gr = g.createLinearGradient(x, 0, x + 16, 0);
+    gr.addColorStop(0, '#22262a'); gr.addColorStop(0.45, '#3a3f44'); gr.addColorStop(1, '#1d2124');
+    g.fillStyle = gr; g.fillRect(x, 0, 16, s);
+  }
+  for (let i = 0; i < 30; i++){ // rust streaks bleeding down
+    const x = rand(0, s), y = rand(0, s * 0.5);
+    const gr = g.createLinearGradient(0, y, 0, y + rand(60, 200));
+    gr.addColorStop(0, 'rgba(122,66,26,0.35)'); gr.addColorStop(1, 'rgba(122,66,26,0)');
+    g.fillStyle = gr; g.fillRect(x, y, rand(3, 9), 200);
+  }
+  g.fillStyle = 'rgba(10,10,10,0.35)'; g.fillRect(0, s - 70, s, 70); // floor grime
+  g.strokeStyle = 'rgba(12,13,14,0.6)'; g.lineWidth = 3;
+  for (const y of [128, 256, 384]){ g.beginPath(); g.moveTo(0, y); g.lineTo(s, y); g.stroke(); }
+}, 7, 2);
+const hazardTex = canvasTex(256, (g, s) => {
+  stripeRect(g, 0, 0, s, s);
+  for (let i = 0; i < 120; i++){ g.fillStyle = `rgba(20,18,12,${rand(0.05, 0.2)})`; g.fillRect(rand(0, s), rand(0, s), rand(2, 10), rand(2, 10)); }
+}, 2, 0.5);
+const hullTex = canvasTex(256, (g, s) => {
+  g.fillStyle = '#575c47'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 320; i++){
+    g.fillStyle = `rgba(${rng() < 0.55 ? '34,37,26' : '118,122,100'},${rand(0.04, 0.1)})`;
+    g.beginPath(); g.arc(rand(0, s), rand(0, s), rand(3, 16), 0, 6.3); g.fill();
+  }
+  g.strokeStyle = 'rgba(28,30,22,0.6)'; g.lineWidth = 2; // panel seams
+  for (const p of [64, 150, 210]){ g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke(); }
+  for (let i = 0; i < 18; i++){ g.strokeStyle = `rgba(160,162,140,${rand(0.1, 0.25)})`; g.lineWidth = 1;
+    const x = rand(0, s), y = rand(0, s); g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-40, 40), y + rand(-40, 40)); g.stroke(); }
+}, 1.6, 1.6);
+const grateTex = canvasTex(256, (g, s) => {
+  g.fillStyle = '#191c1f'; g.fillRect(0, 0, s, s); g.fillStyle = '#3d4349';
+  for (let x = 0; x < s; x += 16) g.fillRect(x, 0, 5, s);
+  for (let y = 0; y < s; y += 32) g.fillRect(0, y, s, 4);
+}, 3, 3);
+function screenDraw(color){ return (g, s) => {
+  g.fillStyle = '#061210'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(40,90,80,0.5)'; g.lineWidth = 1;
+  for (let p = 0; p <= s; p += 32){ g.beginPath(); g.moveTo(p, 0); g.lineTo(p, s); g.moveTo(0, p); g.lineTo(s, p); g.stroke(); }
+  g.fillStyle = color; g.fillRect(0, 0, s, 26); g.fillStyle = '#061210';
+  g.font = 'bold 20px monospace'; g.fillText('DIAG // UNIT-07', 8, 20);
+  g.strokeStyle = color; g.lineWidth = 3; g.beginPath(); // telemetry waveform
+  for (let x = 0; x <= s; x += 4){
+    const y = 84 + Math.sin(x * 0.12) * 16 + Math.sin(x * 0.043 + 2) * 12 + rand(-3, 3);
+    x === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.stroke(); g.lineWidth = 2;
+  g.strokeRect(20, 128, 84, 104); // mech schematic block
+  g.beginPath(); g.moveTo(40, 150); g.lineTo(84, 150); g.lineTo(84, 190); g.lineTo(96, 226);
+  g.moveTo(40, 150); g.lineTo(40, 190); g.lineTo(28, 226); g.moveTo(52, 150); g.lineTo(52, 132); g.stroke();
+  for (let r = 0; r < 8; r++){ g.fillStyle = `rgba(63,232,200,${rand(0.35, 0.9)})`; g.fillRect(124, 132 + r * 13, rand(30, 110), 7); }
+  g.fillStyle = '#c94a2a'; g.fillRect(124, 240, 60, 10); g.fillStyle = color; g.fillRect(190, 240, 40, 10);
+}; }
+const screenTexA = canvasTex(256, screenDraw('#3fe8c8'));
+const screenTexB = canvasTex(256, screenDraw('#ffb545'));
+const spriteTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); const gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.5)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+})();
+
+// ================================================================ materials
+const MAT = {
+  floor: new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.93, metalness: 0.06 }),
+  wall: new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.9, metalness: 0.2 }),
+  ceiling: new THREE.MeshStandardMaterial({ color: 0x14171b, roughness: 0.95 }),
+  steel: new THREE.MeshStandardMaterial({ color: PAL.steel, roughness: 0.55, metalness: 0.75 }),
+  steelDark: new THREE.MeshStandardMaterial({ color: PAL.steelDark, roughness: 0.7, metalness: 0.6 }),
+  gantry: new THREE.MeshStandardMaterial({ color: PAL.gantry, roughness: 0.6, metalness: 0.45 }),
+  hull: new THREE.MeshStandardMaterial({ map: hullTex, color: PAL.hull, roughness: 0.62, metalness: 0.38 }),
+  hullDark: new THREE.MeshStandardMaterial({ color: PAL.hullDark, roughness: 0.68, metalness: 0.35 }),
+  accent: new THREE.MeshStandardMaterial({ color: PAL.accent, roughness: 0.55, metalness: 0.3 }),
+  hazard: new THREE.MeshStandardMaterial({ map: hazardTex, roughness: 0.8, metalness: 0.15 }),
+  grate: new THREE.MeshStandardMaterial({ map: grateTex, roughness: 0.85, metalness: 0.55 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x101114, roughness: 0.95, metalness: 0.05 }),
+  chain: new THREE.MeshStandardMaterial({ color: 0x666c74, roughness: 0.42, metalness: 0.9 }),
+  red: new THREE.MeshStandardMaterial({ color: 0x7e2014, roughness: 0.6, metalness: 0.25 }),
+  blue: new THREE.MeshStandardMaterial({ color: 0x1f3f66, roughness: 0.6, metalness: 0.25 }),
+  visor: new THREE.MeshStandardMaterial({ color: 0x081414, emissive: PAL.screenGlow, emissiveIntensity: 2.2 }),
+  bulb: new THREE.MeshStandardMaterial({ color: 0x2a1a08, emissive: SODIUM, emissiveIntensity: 4.5 }),
+  screenA: new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: screenTexA, emissiveIntensity: 1.15, roughness: 0.4 }),
+  screenB: new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: screenTexB, emissiveIntensity: 0.9, roughness: 0.4 }),
+  weldCore: new THREE.MeshBasicMaterial({ color: 0xd9f2ff }),
+  beacon: new THREE.MeshStandardMaterial({ color: 0x552200, emissive: 0xff7818, emissiveIntensity: 3, transparent: true, opacity: 0.85 })
+};
+
+// ================================================================ renderer / scene / camera
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 16, 60);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 160);
+camera.position.set(14, 9.5, 18.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4.6, -0.5);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.85;
+controls.minDistance = 10; controls.maxDistance = 25;
+controls.maxPolarAngle = 1.42;
+
+// ================================================================ builder: bay shell
+function buildBayShell(){
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(BAY_W, BAY_D), MAT.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const wallGeo = new THREE.PlaneGeometry(BAY_W, BAY_H);
+  const wallDefs = [[0, -BAY_D / 2, 0], [0, BAY_D / 2, Math.PI], [-BAY_W / 2, 0, Math.PI / 2], [BAY_W / 2, 0, -Math.PI / 2]];
+  for (const [x, z, ry] of wallDefs){
+    const w = new THREE.Mesh(wallGeo, MAT.wall);
+    w.position.set(x, BAY_H / 2, z); w.rotation.y = ry; w.receiveShadow = true; g.add(w);
+  }
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(BAY_W, BAY_D), MAT.ceiling);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = BAY_H; g.add(ceil);
+  for (const z of [-24, -12, 0, 12, 24]){
+    const beam = new THREE.Mesh(new THREE.BoxGeometry(BAY_W, 0.9, 0.6), MAT.steelDark);
+    beam.position.set(0, BAY_H - 0.6, z); g.add(beam);
+  }
+  for (const x of [-18, 0, 18]){
+    const purlin = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.7, BAY_D), MAT.steelDark);
+    purlin.position.set(x, BAY_H - 1.2, 0); g.add(purlin);
+  }
+  for (let i = 0; i < 2; i++){ // wall pipe runs with valve wheels
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 50, 10), MAT.steel);
+    pipe.rotation.z = Math.PI / 2; pipe.position.set(0, 3.1 + i * 0.55, -BAY_D / 2 + 0.4); g.add(pipe);
+  }
+  for (const x of [-9, 2, 14]){ const v = new THREE.Mesh(new THREE.TorusGeometry(0.35, 0.07, 8, 14), MAT.red); v.position.set(x, 3.1, -BAY_D / 2 + 0.75); v.rotation.x = Math.PI / 2; g.add(v); }
+  return shadowify(g);
+}
+
+// ================================================================ builder: kneeling battle mech
+function buildMech(){
+  const g = new THREE.Group();
+  const box = (w, h, d, mat, x, y, z, rx = 0, rz = 0) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z); m.rotation.x = rx; m.rotation.z = rz; g.add(m); return m;
+  };
+  const joint = (r, x, y, z) => { const m = new THREE.Mesh(new THREE.SphereGeometry(r, 14, 10), MAT.steelDark); m.position.set(x, y, z); g.add(m); return m; };
+  // pelvis + armor skirt
+  box(2.6, 1.15, 1.7, MAT.hullDark, 0, 3.5, 0);
+  box(2.9, 0.7, 0.25, MAT.hull, 0, 3.2, 0.95, -0.35); box(2.9, 0.7, 0.25, MAT.hull, 0, 3.2, -0.95, 0.35);
+  // torso, vents, cockpit hatch, collar
+  box(3.5, 2.15, 2.15, MAT.hull, 0, 5.45, 0.12, -0.08);
+  box(1.25, 0.85, 0.2, MAT.steelDark, 0, 5.6, 1.22, -0.08);
+  for (let i = 0; i < 3; i++) box(0.55, 0.1, 0.22, MAT.steel, -1.15, 5.05 + i * 0.4, 1.22, -0.08);
+  box(0.8, 0.5, 0.24, MAT.accent, 1.15, 6.1, 1.18, -0.08);
+  box(2.2, 0.45, 1.6, MAT.hullDark, 0, 6.66, 0.05, -0.08);
+  // backpack + exhaust stacks + antenna
+  box(2.4, 1.75, 0.95, MAT.hullDark, 0, 5.6, -1.35);
+  for (const sx of [-0.62, 0.62]){ const ex = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, 1.0, 10), MAT.steelDark); ex.position.set(sx, 6.85, -1.4); g.add(ex); }
+  const ant = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.05, 1.7, 6), MAT.steel);
+  ant.position.set(-1.05, 7.6, -1.3); g.add(ant);
+  // head with glowing visor + sensor
+  box(1.0, 0.8, 1.05, MAT.hull, 0, 7.28, 0.32);
+  box(0.72, 0.16, 0.08, MAT.visor, 0, 7.32, 0.88);
+  box(0.5, 0.22, 0.6, MAT.hullDark, 0, 7.76, 0.2);
+  const sensor = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.3, 8), MAT.accent);
+  sensor.rotation.z = Math.PI / 2; sensor.position.set(0.62, 7.5, 0.3); g.add(sensor);
+  // shoulder pauldrons (right one carries hazard plate being welded)
+  box(1.55, 1.25, 1.75, MAT.hull, -2.35, 6.35, 0.1);
+  box(1.55, 1.25, 1.75, MAT.hull, 2.35, 6.35, 0.1);
+  box(0.1, 0.9, 1.4, MAT.hazard, 3.16, 6.35, 0.1);
+  box(0.12, 0.9, 1.4, MAT.accent, -3.14, 6.35, 0.1);
+  // arms — left rests on raised knee, right hangs to the ground
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  g.add(boxBetween(V(-2.5, 6.05, 0.1), V(-2.78, 4.55, 0.5), 0.78, 0.78, MAT.hull));
+  joint(0.44, -2.78, 4.5, 0.52);
+  g.add(boxBetween(V(-2.78, 4.5, 0.55), V(-2.62, 3.3, 1.8), 0.62, 0.62, MAT.hullDark));
+  box(0.6, 0.55, 0.72, MAT.steelDark, -2.6, 3.05, 1.95);
+  g.add(boxBetween(V(2.5, 6.05, 0.1), V(2.9, 4.5, -0.2), 0.78, 0.78, MAT.hull));
+  joint(0.44, 2.9, 4.45, -0.18);
+  g.add(boxBetween(V(2.9, 4.45, -0.15), V(2.98, 2.3, 0.42), 0.62, 0.62, MAT.hullDark));
+  box(0.62, 0.7, 0.6, MAT.steelDark, 2.98, 1.85, 0.5);
+  // left leg planted (knee raised), right leg kneeling on the deck
+  joint(0.52, -1.18, 3.3, 0);
+  g.add(boxBetween(V(-1.18, 3.3, 0), V(-1.38, 2.1, 1.55), 0.9, 0.95, MAT.hull));
+  joint(0.5, -1.38, 2.05, 1.6);
+  box(0.85, 0.5, 0.3, MAT.accent, -1.38, 2.1, 2.0);
+  g.add(boxBetween(V(-1.38, 2.05, 1.6), V(-1.38, 0.5, 1.28), 0.72, 0.72, MAT.hullDark));
+  box(1.05, 0.5, 2.0, MAT.hullDark, -1.38, 0.26, 1.62);
+  box(0.9, 0.3, 0.5, MAT.steelDark, -1.38, 0.16, 2.7);
+  joint(0.52, 1.18, 3.3, 0);
+  g.add(boxBetween(V(1.18, 3.3, 0), V(1.32, 0.72, -0.85), 0.9, 0.95, MAT.hull));
+  joint(0.5, 1.32, 0.66, -0.95);
+  box(0.85, 0.45, 0.32, MAT.accent, 1.32, 0.62, -0.52);
+  g.add(boxBetween(V(1.32, 0.62, -1.0), V(1.32, 0.5, -2.75), 0.72, 0.66, MAT.hullDark));
+  box(0.95, 1.05, 0.55, MAT.steelDark, 1.32, 0.62, -3.05);
+  // hip actuator cylinders
+  for (const sx of [-1, 1]){ const act = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 1.1, 8), MAT.steel); act.position.set(sx * 1.7, 3.95, 0.55); act.rotation.z = sx * 0.5; g.add(act); }
+  return shadowify(g);
+}
+
+// ================================================================ builder: scaffold tower
+function buildScaffold(mirror){
+  const g = new THREE.Group();
+  const w = 3.4, d = 4.8, levels = [4.1, 7.6];
+  const post = new THREE.CylinderGeometry(0.09, 0.09, 8.4, 8);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]){
+    const p = new THREE.Mesh(post, MAT.steel); p.position.set(sx * w / 2, 4.2, sz * d / 2); g.add(p);
+  }
+  const V = (x, y, z) => new THREE.Vector3(x, y, z);
+  for (const y of levels){
+    for (const sz of [-1, 1]){
+      g.add(boxBetween(V(-w / 2, y, sz * d / 2), V(w / 2, y, sz * d / 2), 0.07, 0.07, MAT.steel));
+      g.add(boxBetween(V(-w / 2, y - 3.4, -sz * d / 2), V(w / 2, y, sz * d / 2), 0.06, 0.06, MAT.steel)); // cross braces
+    }
+    for (const sx of [-1, 1]) g.add(boxBetween(V(sx * w / 2, y, -d / 2), V(sx * w / 2, y, d / 2), 0.07, 0.07, MAT.steel));
+    const deck = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, 0.12, d + 0.3), MAT.grate);
+    deck.position.y = y + 0.07; g.add(deck);
+    const kick = new THREE.Mesh(new THREE.BoxGeometry(w + 0.3, 0.22, 0.05), MAT.hazard);
+    kick.position.set(0, y + 0.25, (d + 0.3) / 2 * (mirror ? -1 : 1) * -1); g.add(kick);
+  }
+  for (const sx of [-1, 1]){ // top railing on the outer face
+    g.add(boxBetween(V(sx * w / 2, 7.7, mirror ? -d / 2 : d / 2), V(sx * w / 2, 8.7, mirror ? -d / 2 : d / 2), 0.06, 0.06, MAT.steel));
+  }
+  g.add(boxBetween(V(-w / 2, 8.7, mirror ? -d / 2 : d / 2), V(w / 2, 8.7, mirror ? -d / 2 : d / 2), 0.07, 0.07, MAT.accent));
+  const plank = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.1, 1.4), MAT.grate); // cantilever toward the shoulder
+  plank.position.set((mirror ? 1 : -1) * (w / 2 + 0.75), levels[1] + 0.07, 0.4); g.add(plank);
+  for (let i = 0; i < 7; i++){ const r = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.05, 0.05), MAT.steel); r.position.set((mirror ? -1 : 1) * (w / 2 + 0.02), 0.9 + i * 1.05, d / 2 - 0.6); g.add(r); } // ladder
+  return shadowify(g);
+}
+
+// ================================================================ builder: chain / hoist / crane
+const linkGeo = new THREE.TorusGeometry(0.085, 0.026, 6, 10);
+function buildChain(len){
+  const n = Math.max(2, Math.round(len / 0.135));
+  const inst = new THREE.InstancedMesh(linkGeo, MAT.chain, n);
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (let i = 0; i < n; i++){
+    e.set(0, (i % 2) * Math.PI / 2, 0); q.setFromEuler(e);
+    m4.compose(new THREE.Vector3(0, -i * 0.135, 0), q, new THREE.Vector3(1, 1, 1));
+    inst.setMatrixAt(i, m4);
+  }
+  inst.castShadow = true; return inst;
+}
+function buildHook(){
+  const g = new THREE.Group();
+  const shank = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.3, 8), MAT.chain);
+  shank.position.y = -0.15; g.add(shank);
+  const curve = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.05, 8, 14, Math.PI * 1.45), MAT.chain);
+  curve.position.y = -0.42; curve.rotation.z = Math.PI * 0.75; g.add(curve);
+  return g;
+}
+function buildHoist(len, load){
+  const g = new THREE.Group();
+  const housing = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.7, 0.4), MAT.steelDark);
+  housing.position.y = -0.35; housing.castShadow = true; g.add(housing);
+  const chain = buildChain(len); chain.position.y = -0.7; g.add(chain);
+  const block = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.5, 0.3), MAT.hazard);
+  block.position.y = -0.7 - len; block.castShadow = true; g.add(block);
+  const hook = buildHook(); hook.position.y = -0.95 - len; g.add(hook);
+  if (load){ load.position.y = -1.5 - len; g.add(shadowify(load)); }
+  return g;
+}
+function buildGantry(){
+  const g = new THREE.Group();
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]){ // columns + base plates
+    const c = new THREE.Mesh(new THREE.BoxGeometry(0.9, 13.2, 0.9), MAT.gantry);
+    c.position.set(sx * 13.5, 6.6, sz * 11); g.add(c);
+    const b = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.25, 1.6), MAT.steelDark);
+    b.position.set(sx * 13.5, 0.12, sz * 11); g.add(b);
+    const hz = new THREE.Mesh(new THREE.BoxGeometry(0.95, 1.5, 0.95), MAT.hazard);
+    hz.position.set(sx * 13.5, 1.55, sz * 11); g.add(hz);
+  }
+  for (const sx of [-1, 1]){ // runway rails
+    const r = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.9, 25), MAT.gantry);
+    r.position.set(sx * 13.5, 13.5, 0); g.add(r);
+  }
+  const bridge = new THREE.Group(); bridge.position.y = 14.35;
+  for (const sz of [-0.85, 0.85]){
+    const girder = new THREE.Mesh(new THREE.BoxGeometry(28.6, 1.0, 0.6), MAT.gantry);
+    girder.position.z = sz; bridge.add(girder);
+  }
+  for (const sx of [-1, 1]){
+    const truck = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.8, 3.0), MAT.steelDark);
+    truck.position.set(sx * 13.6, -0.15, 0); bridge.add(truck);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.5, 1.05, 2.4), MAT.hazard);
+    cap.position.set(sx * 14.0, 0, 0); bridge.add(cap);
+  }
+  const trolley = new THREE.Group(); trolley.position.y = 0.75;
+  const tb = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.7, 2.6), MAT.steelDark); trolley.add(tb);
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 1.3, 12), MAT.steel);
+  drum.rotation.z = Math.PI / 2; drum.position.y = 0.55; trolley.add(drum);
+  const craneHoist = buildHoist(3.6, null); craneHoist.position.y = -0.3; trolley.add(craneHoist);
+  bridge.add(trolley); g.add(bridge);
+  shadowify(g); return { g, bridge, trolley };
+}
+
+// ================================================================ builder: work props
+function buildToolCart(bodyMat){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.5, 1.05, 0.85), bodyMat); body.position.y = 0.75; g.add(body);
+  for (let i = 0; i < 3; i++){
+    const drawer = new THREE.Mesh(new THREE.BoxGeometry(1.34, 0.24, 0.05), MAT.steelDark);
+    drawer.position.set(0, 0.4 + i * 0.31, 0.45); g.add(drawer);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.04), MAT.steel);
+    handle.position.set(0, 0.4 + i * 0.31, 0.49); g.add(handle);
+  }
+  const top = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.08, 0.95), MAT.rubber); top.position.y = 1.32; g.add(top);
+  for (let i = 0; i < 4; i++){ // scattered tools
+    const tool = new THREE.Mesh(new THREE.BoxGeometry(rand(0.12, 0.4), 0.07, rand(0.08, 0.16)), pick([MAT.steel, MAT.accent, MAT.rubber]));
+    tool.position.set(rand(-0.55, 0.55), 1.4, rand(-0.3, 0.3)); tool.rotation.y = rand(0, 3.1); g.add(tool);
+  }
+  const wheelGeo = new THREE.CylinderGeometry(0.14, 0.14, 0.09, 10);
+  for (const sx of [-0.6, 0.6]) for (const sz of [-0.3, 0.3]){ const wh = new THREE.Mesh(wheelGeo, MAT.rubber); wh.rotation.x = Math.PI / 2; wh.position.set(sx, 0.14, sz); g.add(wh); }
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.9, 8), MAT.steel);
+  bar.rotation.x = Math.PI / 2; bar.position.set(0.85, 1.15, 0); g.add(bar);
+  return shadowify(g);
+}
+function buildConsole(){
+  const g = new THREE.Group();
+  const ped = new THREE.Mesh(new THREE.BoxGeometry(1.0, 1.05, 0.75), MAT.steelDark); ped.position.y = 0.52; g.add(ped);
+  const desk = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.1, 0.9), MAT.steel); desk.position.y = 1.08; g.add(desk);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.85, 0.14), MAT.steelDark);
+  head.position.set(0, 1.62, -0.18); head.rotation.x = -0.28; g.add(head);
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(1.0, 0.7), MAT.screenA);
+  scr.position.set(0, 1.62, -0.1); scr.rotation.x = -0.28; g.add(scr);
+  for (let i = 0; i < 3; i++){
+    const led = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.06, 0.02), i === 1 ? MAT.beacon : MAT.visor);
+    led.position.set(-0.4 + i * 0.2, 1.16, 0.44); g.add(led);
+  }
+  return shadowify(g);
+}
+function buildBarrel(mat){
+  const g = new THREE.Group();
+  const b = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.15, 14), mat); b.position.y = 0.57; g.add(b);
+  for (const y of [0.25, 0.57, 0.9]){
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(0.43, 0.025, 6, 16), MAT.steelDark);
+    rim.rotation.x = Math.PI / 2; rim.position.y = y; g.add(rim);
+  }
+  return shadowify(g);
+}
+function buildGasRig(){
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.12, 0.6), MAT.steelDark); frame.position.y = 0.06; g.add(frame);
+  let i = 0;
+  for (const col of [MAT.accent, MAT.blue]){
+    const cyl = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.21, 1.6, 12), col);
+    cyl.position.set(-0.28 + i * 0.56, 0.9, 0); g.add(cyl);
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.21, 12, 8), col); cap.position.set(-0.28 + i * 0.56, 1.7, 0); g.add(cap);
+    const valve = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.2, 8), MAT.steel);
+    valve.position.set(-0.28 + i * 0.56, 1.95, 0); g.add(valve); i++;
+  }
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.08, 0.08), MAT.steel); rail.position.set(0, 1.35, 0.3); g.add(rail);
+  return shadowify(g);
+}
+function buildCableReel(){
+  const g = new THREE.Group();
+  for (const sx of [-0.45, 0.45]){
+    const disc = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.1, 18), MAT.accent);
+    disc.rotation.z = Math.PI / 2; disc.position.set(sx, 0.85, 0); g.add(disc);
+  }
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.85, 14), MAT.rubber);
+  core.rotation.z = Math.PI / 2; core.position.y = 0.85; g.add(core);
+  return shadowify(g);
+}
+function buildHangingLamp(){
+  const g = new THREE.Group();
+  const cord = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 4.4, 6), MAT.rubber); cord.position.y = -2.2; g.add(cord);
+  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.62, 0.5, 12, 1, true), MAT.steelDark);
+  shade.position.y = -4.5; g.add(shade);
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), MAT.bulb); bulb.position.y = -4.68; g.add(bulb);
+  shadowify(g); bulb.castShadow = false; return g;
+}
+function buildTripodLight(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 2.1, 6), MAT.steelDark);
+    const a = i * Math.PI * 2 / 3; leg.position.set(Math.cos(a) * 0.45, 1.0, Math.sin(a) * 0.45);
+    leg.rotation.z = Math.cos(a) * 0.42; leg.rotation.x = -Math.sin(a) * 0.42; g.add(leg);
+  }
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.6, 0.3), MAT.steelDark); head.position.y = 2.25; g.add(head);
+  const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 0.48), MAT.bulb); panel.position.set(0, 2.25, 0.16); g.add(panel);
+  shadowify(g); return g;
+}
+function buildPumpUnit(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.3, 1.1), MAT.blue); body.position.y = 0.75; g.add(body);
+  const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.1, 12), MAT.steel);
+  tank.rotation.z = Math.PI / 2; tank.position.y = 1.62; g.add(tank);
+  const gauge = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.06, 12), MAT.bulb);
+  gauge.rotation.x = Math.PI / 2; gauge.position.set(-0.5, 1.1, 0.58); g.add(gauge);
+  const hz = new THREE.Mesh(new THREE.BoxGeometry(1.74, 0.22, 1.14), MAT.hazard); hz.position.y = 0.2; g.add(hz);
+  return shadowify(g);
+}
+function buildHose(a, b, sag, r, mat){
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5); mid.y = Math.min(a.y, b.y) * 0.5 + sag;
+  const curve = new THREE.CatmullRomCurve3([a, mid, b]);
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 26, r, 7), mat); tube.castShadow = true;
+  const g = new THREE.Group(); g.add(tube);
+  for (const p of [a, b]){
+    const c = new THREE.Mesh(new THREE.CylinderGeometry(r * 1.7, r * 1.7, 0.22, 8), MAT.steel);
+    c.position.copy(p); g.add(c);
+  }
+  return g;
+}
+
+// ================================================================ assembly / layout
+scene.add(buildBayShell());
+const mech = buildMech(); mech.scale.setScalar(1.25); mech.position.set(0, 0, -1);
+mech.updateMatrixWorld(true); scene.add(mech);
+const L = p => mech.localToWorld(p.clone()); // mech-local -> world
+const WELD_POINT = L(new THREE.Vector3(2.62, 6.95, 0.12));
+const STEAM_POINTS = [L(new THREE.Vector3(1.32, 0.9, -0.95)), L(new THREE.Vector3(-2.35, 6.6, 0.1)), L(new THREE.Vector3(0.62, 7.45, -1.4))];
+
+const scafL = buildScaffold(false); scafL.position.set(-5.55, 0, -0.6); scene.add(scafL);
+const scafR = buildScaffold(true); scafR.position.set(5.55, 0, -0.6); scene.add(scafR);
+
+// articulated welding arm on the right scaffold, torch at the weld point
+const welder = new THREE.Group();
+const wBase = new THREE.Vector3(4.9, 7.75, 1.3);
+const wPed = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.42, 0.5, 10), MAT.accent);
+wPed.position.copy(wBase).add(new THREE.Vector3(0, 0.25, 0)); welder.add(wPed);
+const wElbow = new THREE.Vector3(4.2, 9.4, 0.4), wWrist = new THREE.Vector3(3.25, 8.6, 0.05);
+welder.add(boxBetween(wBase.clone().add(new THREE.Vector3(0, 0.4, 0)), wElbow, 0.22, 0.22, MAT.steel));
+welder.add(boxBetween(wElbow, wWrist, 0.18, 0.18, MAT.steel));
+welder.add(boxBetween(wWrist, WELD_POINT, 0.09, 0.09, MAT.steelDark));
+const wJoint = new THREE.Mesh(new THREE.SphereGeometry(0.2, 10, 8), MAT.accent); wJoint.position.copy(wElbow); welder.add(wJoint);
+const weldCore = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), MAT.weldCore);
+weldCore.position.copy(WELD_POINT); welder.add(weldCore);
+shadowify(welder); scene.add(welder);
+
+const { g: gantry, bridge, trolley } = buildGantry(); scene.add(gantry);
+
+// hanging chain hoists (one carries a spare forearm, one an actuator block, crane hoist rides the trolley)
+const spareArm = new THREE.Group();
+spareArm.add(new THREE.Mesh(new THREE.BoxGeometry(0.75, 2.1, 0.75), MAT.hull));
+const wrist = new THREE.Mesh(new THREE.CylinderGeometry(0.28, 0.28, 0.5, 10), MAT.steelDark); wrist.position.y = -1.25; spareArm.add(wrist);
+const hoistA = buildHoist(5.6, spareArm); hoistA.position.set(-8.6, 16.9, 0.4); scene.add(hoistA);
+const engBlock = new THREE.Group();
+engBlock.add(new THREE.Mesh(new THREE.BoxGeometry(1.0, 0.8, 0.8), MAT.steelDark));
+const engCyl = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 1.1, 10), MAT.steel); engCyl.rotation.z = Math.PI / 2; engCyl.position.y = 0.5; engBlock.add(engCyl);
+const hoistB = buildHoist(7.4, engBlock); hoistB.position.set(7.6, 16.9, 6.4); scene.add(hoistB);
+const hoistC = buildHoist(4.8, null); hoistC.position.set(-3.4, 16.9, 8.2); scene.add(hoistC);
+
+// diagnostic consoles, tool carts, pump + hydraulic lines to the mech
+const conA = buildConsole(); conA.position.set(-8.6, 0, 3.6); conA.rotation.y = 0.6; scene.add(conA);
+const conB = buildConsole(); conB.position.set(-10.0, 0, 0.6); conB.rotation.y = 0.95; scene.add(conB);
+const cartA = buildToolCart(MAT.red); cartA.position.set(-4.8, 0, 6.4); cartA.rotation.y = 0.45; scene.add(cartA);
+const cartB = buildToolCart(MAT.blue); cartB.position.set(6.6, 0, 5.1); cartB.rotation.y = -0.6; scene.add(cartB);
+const pump = buildPumpUnit(); pump.position.set(8.6, 0, 1.6); pump.rotation.y = -0.4; scene.add(pump);
+scene.add(buildHose(new THREE.Vector3(8.2, 1.35, 1.4), L(new THREE.Vector3(1.5, 3.6, 0.2)), 0.5, 0.07, MAT.rubber));
+scene.add(buildHose(new THREE.Vector3(8.5, 1.35, 2.2), L(new THREE.Vector3(1.35, 0.9, -1.0)), 0.3, 0.055, MAT.accent));
+scene.add(buildHose(new THREE.Vector3(-8.3, 1.0, 3.2), L(new THREE.Vector3(-1.4, 2.2, 1.7)), 0.4, 0.05, MAT.rubber));
+scene.add(buildHose(new THREE.Vector3(-9.6, 1.0, 0.9), L(new THREE.Vector3(-0.5, 3.6, -1.3)), 0.6, 0.05, MAT.rubber));
+
+// clutter: barrels, crates, gas rig, cable reel, pallet of armor plates
+const barrels = new THREE.Group();
+for (let i = 0; i < 4; i++){
+  const b = buildBarrel(pick([MAT.accent, MAT.steelDark, MAT.red]));
+  b.position.set(-12.5 + rand(-0.8, 0.9), 0, -5.4 + rand(-1.0, 1.2)); b.rotation.y = rand(0, 3.1); barrels.add(b);
+}
+const bTop = buildBarrel(MAT.accent); bTop.position.set(-12.4, 1.15, -5.3); barrels.add(bTop); scene.add(barrels);
+const crates = new THREE.Group();
+for (const [x, y, z, s] of [[11.4, 0.55, -6.4, 1.1], [11.5, 1.55, -6.2, 0.9], [9.9, 0.45, -5.6, 0.9]]){
+  const c = new THREE.Mesh(new THREE.BoxGeometry(s * 1.3, s, s * 1.2), MAT.hullDark);
+  c.position.set(x, y, z); c.rotation.y = rand(-0.3, 0.3); crates.add(c);
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(s * 1.34, 0.08, s * 1.24), MAT.hazard);
+  lid.position.set(x, y + s / 2, z); lid.rotation.y = c.rotation.y; crates.add(lid);
+}
+shadowify(crates); scene.add(crates);
+const gas = buildGasRig(); gas.position.set(9.8, 0, 7.4); gas.rotation.y = 0.7; scene.add(gas);
+const reel = buildCableReel(); reel.position.set(-12.4, 0, 7.8); reel.rotation.y = 0.4; scene.add(reel);
+const pallet = new THREE.Group();
+for (let i = 0; i < 3; i++){ const pb = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.12, 0.5), MAT.hullDark); pb.position.set(0, 0.1, -0.7 + i * 0.7); pallet.add(pb); }
+for (let i = 0; i < 3; i++){ const plate = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.14, 1.5), MAT.hull); plate.position.set(rand(-0.1, 0.1), 0.3 + i * 0.16, rand(-0.1, 0.1)); plate.rotation.y = rand(-0.12, 0.12); pallet.add(plate); }
+shadowify(pallet); pallet.position.set(12.4, 0, 0.9); pallet.rotation.y = -0.5; scene.add(pallet);
+
+// sodium lamps, tripod floods, rotating beacon, wall signage + big status screen
+const lampPositions = [[-4.2, 4.2], [4.6, -3.6], [0.2, 9.2]];
+const lamps = lampPositions.map(([x, z]) => { const l = buildHangingLamp(); l.position.set(x, 17.2, z); scene.add(l); return l; });
+const tripodA = buildTripodLight(); tripodA.position.set(-6.8, 0, 8.8); tripodA.rotation.y = 2.6; scene.add(tripodA);
+const tripodB = buildTripodLight(); tripodB.position.set(9.4, 0, -6.6); tripodB.rotation.y = -0.5; scene.add(tripodB);
+const beacon = new THREE.Group();
+const bBase = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.16, 10), MAT.steelDark); beacon.add(bBase);
+const beaconBar = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.16, 0.08), MAT.beacon); beaconBar.position.y = 0.2; beacon.add(beaconBar);
+beacon.position.set(-5.55, 8.85, 1.8); scene.add(beacon);
+const bigScreen = new THREE.Group();
+const bsFrame = new THREE.Mesh(new THREE.BoxGeometry(6.4, 3.8, 0.3), MAT.steelDark); bigScreen.add(bsFrame);
+const bsScr = new THREE.Mesh(new THREE.PlaneGeometry(5.9, 3.3), MAT.screenB); bsScr.position.z = 0.18; bigScreen.add(bsScr);
+bigScreen.position.set(-1.5, 8.2, -27.6); scene.add(bigScreen);
+const signTex = canvasTex(256, (g, s) => {
+  g.fillStyle = '#1c1e20'; g.fillRect(0, 0, s, s); stripeRect(g, 0, s - 46, s, 46);
+  g.fillStyle = PAL.hazardY; g.font = 'bold 64px monospace'; g.textAlign = 'center';
+  g.fillText('BAY 07', s / 2, 96); g.font = 'bold 30px monospace'; g.fillText('HEAVY MECH', s / 2, 150);
+});
+const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 3.4), new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.8 }));
+sign.position.set(9.5, 9.5, -27.7); scene.add(sign);
+
+// ================================================================ lighting rig
+scene.add(new THREE.HemisphereLight(0x39465a, 0x0d0b08, 0.62));
+const keySpot = new THREE.SpotLight(SODIUM, 2600, 0, 0.62, 0.45, 1.8);
+keySpot.position.set(9, 16.5, 11); keySpot.target.position.set(0, 4, -1);
+keySpot.castShadow = true; keySpot.shadow.mapSize.set(2048, 2048);
+keySpot.shadow.bias = -0.0004; keySpot.shadow.camera.near = 4; keySpot.shadow.camera.far = 45;
+scene.add(keySpot, keySpot.target);
+const fillSpot = new THREE.SpotLight(0x8fa8c8, 750, 0, 0.7, 0.6, 1.8);
+fillSpot.position.set(-13, 14, -9); fillSpot.target.position.set(0, 3, 0);
+scene.add(fillSpot, fillSpot.target);
+const lampLightA = new THREE.PointLight(SODIUM, 300, 26, 1.9); lampLightA.position.set(-4.2, 12.3, 4.2); scene.add(lampLightA);
+const lampLightB = new THREE.PointLight(SODIUM, 300, 26, 1.9); lampLightB.position.set(4.6, 12.3, -3.6); scene.add(lampLightB);
+const tripodGlow = new THREE.PointLight(SODIUM, 90, 14, 1.9); tripodGlow.position.set(-6.8, 2.4, 8.6); scene.add(tripodGlow);
+const screenGlow = new THREE.PointLight(PAL.screenGlow, 40, 9, 1.9); screenGlow.position.set(-9.0, 2.2, 2.4); scene.add(screenGlow);
+const weldLight = new THREE.PointLight(0xbfe4ff, 0, 16, 1.7); weldLight.position.copy(WELD_POINT); scene.add(weldLight);
+
+// ================================================================ particles: sparks + steam
+const SPARK_N = 120;
+const sparkPos = new Float32Array(SPARK_N * 3), sparkVel = [], sparkLife = [];
+for (let i = 0; i < SPARK_N; i++){ sparkVel.push(new THREE.Vector3()); sparkLife.push(rand(0, 1)); sparkPos.set([WELD_POINT.x, WELD_POINT.y, WELD_POINT.z], i * 3); }
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3).setUsage(THREE.DynamicDrawUsage));
+const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({
+  color: 0xffc07a, size: 0.19, map: spriteTex, transparent: true, depthWrite: false,
+  blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+scene.add(sparks);
+function respawnSpark(i){
+  sparkPos.set([WELD_POINT.x, WELD_POINT.y, WELD_POINT.z], i * 3);
+  sparkVel[i].set(rand(-1.8, 1.8), rand(-4.2, 0.6), rand(-1.8, 1.8));
+  sparkLife[i] = rand(0.5, 1.4);
+}
+function updateSparks(dt){
+  for (let i = 0; i < SPARK_N; i++){
+    sparkLife[i] -= dt;
+    const j = i * 3;
+    sparkVel[i].y -= 9.0 * dt;
+    sparkPos[j] += sparkVel[i].x * dt; sparkPos[j + 1] += sparkVel[i].y * dt; sparkPos[j + 2] += sparkVel[i].z * dt;
+    if (sparkLife[i] <= 0 || sparkPos[j + 1] < 0.04) respawnSpark(i);
+  }
+  sparkGeo.attributes.position.needsUpdate = true;
+}
+const steamSystems = STEAM_POINTS.map(origin => {
+  const n = 42, pos = new Float32Array(n * 3), phase = [], spd = [], ang = [], spread = [];
+  for (let i = 0; i < n; i++){ phase.push(rand(0, 1)); spd.push(rand(0.14, 0.3)); ang.push(rand(0, 6.28)); spread.push(rand(0.25, 0.9)); }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({
+    color: 0xaebac0, size: 0.75, map: spriteTex, transparent: true, opacity: 0.22, depthWrite: false, sizeAttenuation: true }));
+  scene.add(pts);
+  return { origin, n, pos, phase, spd, ang, geo };
+});
+function updateSteam(t){
+  for (const s of steamSystems){
+    for (let i = 0; i < s.n; i++){
+      const age = (t * s.spd[i] + s.phase[i]) % 1;
+      const r = age * 0.55, j = i * 3;
+      s.pos[j] = s.origin.x + Math.cos(s.ang[i] + t * 0.35) * r;
+      s.pos[j + 1] = s.origin.y + age * 2.4;
+      s.pos[j + 2] = s.origin.z + Math.sin(s.ang[i] + t * 0.35) * r;
+    }
+    s.geo.attributes.position.needsUpdate = true;
+  }
+}
+
+// ================================================================ animation loop
+const swayers = [
+  { obj: hoistA, axis: 'z', amp: 0.028, spd: 0.55, ph: 0.4 },
+  { obj: hoistB, axis: 'x', amp: 0.034, spd: 0.42, ph: 2.1 },
+  { obj: hoistC, axis: 'z', amp: 0.04, spd: 0.5, ph: 4.0 },
+  { obj: lamps[2], axis: 'x', amp: 0.045, spd: 0.6, ph: 1.2 }
+];
+const flickers = [
+  { mat: MAT.screenA, base: 1.15, amp: 0.2, spd: 6.3, ph: 0 },
+  { mat: MAT.screenB, base: 0.9, amp: 0.14, spd: 4.1, ph: 1.5 },
+  { mat: MAT.bulb, base: 4.5, amp: 0.5, spd: 8.7, ph: 0.7 }
+];
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  for (const s of swayers) s.obj.rotation[s.axis] = Math.sin(t * s.spd + s.ph) * s.amp;
+  for (const f of flickers) f.mat.emissiveIntensity = f.base + Math.sin(t * f.spd + f.ph) * f.amp;
+  bridge.position.z = Math.sin(t * 0.07) * 4.5 - 1.2;          // gantry bridge creeping along the bay
+  trolley.position.x = Math.sin(t * 0.11 + 2.0) * 4.0;         // trolley drifting across the bridge
+  beaconBar.rotation.y = t * 3.2;                              // rotating warning beacon
+  const arc = Math.max(0, Math.sin(t * 23) + Math.sin(t * 41 + 1.3) + Math.sin(t * 9.7 + 0.5) - 0.2);
+  weldLight.intensity = arc * 230;                             // stuttering welding arc
+  weldCore.scale.setScalar(0.6 + arc * 0.55);
+  sparks.material.opacity = 0.55 + Math.min(arc, 1) * 0.45;
+  updateSparks(dt);
+  updateSteam(t);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ================================================================ resize
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

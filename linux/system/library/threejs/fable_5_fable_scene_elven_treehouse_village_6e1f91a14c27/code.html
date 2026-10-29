@@ -1,0 +1,755 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Elven Treehouse Village</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b1f1a}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   1. CONFIG & PALETTE — every colour and tuning constant in one place
+   ================================================================ */
+const CFG = { seed: 20260815, fogNear: 52, fogFar: 150, camPos: [33, 26, 37], camTarget: [0, 10.5, 0] };
+const PAL = {
+  fog: '#2e5342', foliage: '#2d5c34', roof: '#3c7a44',
+  leafGreenA: '#2e6a2f', leafGreenB: '#7cb457',
+  leafBlue: '#7fc8f2', leafBlueEm: '#2fa0e8',
+  rope: '#cbb68b', darkWood: '#33261a',
+  glowWarm: '#ffe7b0', glowWarmEm: '#ffb85f',
+  mushStem: '#e6dcc4', mushCap: '#5ecfe8', mushCapEm: '#2ba8cf',
+  stone: '#7b857b', fern: '#3c7034', vine: '#4c7d3e',
+  ray: '#eaffd0', firefly: '#d9ffa0',
+};
+
+/* ================================================================
+   2. SEEDED PRNG & SMALL HELPERS — all randomness flows through rng
+   ================================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CFG.seed);
+const R  = (a, b) => a + (b - a) * rng();
+const RI = (a, b) => Math.floor(R(a, b + 1));
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+const UP = new THREE.Vector3(0, 1, 0);
+const sh = (m) => { m.castShadow = true; m.receiveShadow = true; return m; };
+/* gentle analytic terrain height, flat near the village clearing */
+const groundH = (x, z) => {
+  const f = Math.min(1, Math.hypot(x, z) / 18);
+  return f * (0.5 * Math.sin(x * 0.13 + 1.7) * Math.cos(z * 0.15 - 0.6) + 0.3 * Math.sin((x - z) * 0.21));
+};
+/* cylinder beam from a to b — struts, posts, roots, strings */
+function beamBetween(a, b, r, mat, seg = 6){
+  const d = new THREE.Vector3().subVectors(b, a), len = d.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
+  m.position.copy(a).addScaledVector(d, 0.5);
+  m.quaternion.setFromUnitVectors(UP, d.normalize());
+  return m;
+}
+
+/* ================================================================
+   3. RENDERER / SCENE / CAMERA / CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.24;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(new THREE.Color(PAL.fog), CFG.fogNear, CFG.fogFar);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(...CFG.camPos);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(...CFG.camTarget);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.9;
+controls.minDistance = 20; controls.maxDistance = 58;
+controls.maxPolarAngle = 1.42;
+
+/* ================================================================
+   4. PROCEDURAL CANVAS TEXTURES
+   ================================================================ */
+function makeTex(size, painter, rx = 1, ry = 1){
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  painter(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+/* streaked bark with pale lichen flecks */
+const barkTex = makeTex(256, (g, s) => {
+  g.fillStyle = '#4c3a29'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 130; i++){
+    const x = rng() * s, y = rng() * s, l = 18 + rng() * 70;
+    g.strokeStyle = `rgba(${20 + rng() * 40 | 0},${14 + rng() * 26 | 0},${8 + rng() * 16 | 0},${0.25 + rng() * 0.3})`;
+    g.lineWidth = 1 + rng() * 4;
+    g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(x + (rng() - 0.5) * 10, y + l * 0.5, x + (rng() - 0.5) * 6, y + l);
+    g.stroke();
+  }
+  for (let i = 0; i < 40; i++){
+    g.fillStyle = `rgba(${90 + rng() * 40 | 0},${110 + rng() * 50 | 0},${70 + rng() * 30 | 0},${0.12 + rng() * 0.15})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s, 1 + rng() * 5, 0, 7); g.fill();
+  }
+}, 2, 3);
+/* worn plank boards with wavy grain and dark seams */
+const plankTex = makeTex(256, (g, s) => {
+  g.fillStyle = '#7b5a39'; g.fillRect(0, 0, s, s);
+  for (let row = 0; row < 4; row++){
+    const y0 = row * s / 4;
+    g.fillStyle = `rgb(${115 + rng() * 24 | 0},${86 + rng() * 18 | 0},${52 + rng() * 14 | 0})`;
+    g.fillRect(0, y0 + 1, s, s / 4 - 2);
+    for (let i = 0; i < 9; i++){
+      const gy = y0 + rng() * s / 4;
+      g.strokeStyle = `rgba(70,48,26,${0.18 + rng() * 0.25})`;
+      g.lineWidth = 1 + rng() * 1.4;
+      g.beginPath(); g.moveTo(0, gy);
+      g.bezierCurveTo(s * 0.3, gy + (rng() - 0.5) * 8, s * 0.7, gy + (rng() - 0.5) * 8, s, gy);
+      g.stroke();
+    }
+    g.fillStyle = 'rgba(30,20,10,0.85)'; g.fillRect(0, y0, s, 2);
+  }
+});
+/* mossy forest floor with faint luminous speckles */
+const mossTex = makeTex(512, (g, s) => {
+  g.fillStyle = '#2c4a27'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 900; i++){
+    const sd = rng();
+    g.fillStyle = `rgba(${30 + sd * 50 | 0},${70 + sd * 60 | 0},${28 + sd * 34 | 0},${0.25 + rng() * 0.4})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s, 1 + rng() * 7, 0, 7); g.fill();
+  }
+  for (let i = 0; i < 26; i++){
+    g.fillStyle = `rgba(120,210,255,${0.10 + rng() * 0.2})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s, 1 + rng() * 2.4, 0, 7); g.fill();
+  }
+}, 9, 9);
+/* deep-forest gradient sky: canopy shade above, warm glints below */
+const skyTex = makeTex(512, (g, s) => {
+  const gr = g.createLinearGradient(0, 0, 0, s);
+  gr.addColorStop(0, '#0a1d18'); gr.addColorStop(0.38, '#1c463a');
+  gr.addColorStop(0.7, '#3d7457'); gr.addColorStop(1, '#b9d69a');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 70; i++){
+    g.fillStyle = `rgba(8,26,20,${0.05 + rng() * 0.12})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s * 0.4, 6 + rng() * 26, 0, 7); g.fill();
+  }
+  for (let i = 0; i < 24; i++){
+    g.fillStyle = `rgba(255,235,180,${0.03 + rng() * 0.06})`;
+    g.beginPath(); g.arc(rng() * s, s * 0.3 + rng() * s * 0.35, 4 + rng() * 14, 0, 7); g.fill();
+  }
+});
+/* soft round sprite so fireflies glow instead of rendering square */
+const glowSpriteTex = makeTex(64, (g, s) => {
+  const gr = g.createRadialGradient(s / 2, s / 2, 2, s / 2, s / 2, s / 2);
+  gr.addColorStop(0, 'rgba(255,255,220,1)');
+  gr.addColorStop(0.4, 'rgba(220,255,170,0.55)');
+  gr.addColorStop(1, 'rgba(200,255,150,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s);
+});
+const deckTex = plankTex.clone();
+deckTex.repeat.set(0.16, 0.16);
+deckTex.needsUpdate = true;
+
+/* ================================================================
+   5. MATERIALS — the shared palette of surfaces
+   ================================================================ */
+const MAT = {
+  bark:      new THREE.MeshStandardMaterial({ map: barkTex, roughness: 1.0 }),
+  plank:     new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.85 }),
+  deck:      new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.85 }),
+  moss:      new THREE.MeshStandardMaterial({ map: mossTex, roughness: 1.0 }),
+  foliage:   new THREE.MeshStandardMaterial({ color: PAL.foliage, roughness: 0.95, flatShading: true }),
+  roof:      new THREE.MeshStandardMaterial({ color: PAL.roof, roughness: 0.9, flatShading: true }),
+  leafGreen: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85, side: THREE.DoubleSide }),
+  leafBlue:  new THREE.MeshStandardMaterial({ color: PAL.leafBlue, emissive: PAL.leafBlueEm,
+               emissiveIntensity: 1.35, roughness: 0.5, side: THREE.DoubleSide }),
+  rope:      new THREE.MeshStandardMaterial({ color: PAL.rope, roughness: 0.95 }),
+  dark:      new THREE.MeshStandardMaterial({ color: PAL.darkWood, roughness: 0.9 }),
+  glowWarm:  new THREE.MeshStandardMaterial({ color: PAL.glowWarm, emissive: PAL.glowWarmEm, emissiveIntensity: 2.2 }),
+  mushStem:  new THREE.MeshStandardMaterial({ color: PAL.mushStem, roughness: 0.9 }),
+  mushCap:   new THREE.MeshStandardMaterial({ color: PAL.mushCap, emissive: PAL.mushCapEm, emissiveIntensity: 1.3 }),
+  stone:     new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 1.0, flatShading: true }),
+  fern:      new THREE.MeshStandardMaterial({ color: PAL.fern, roughness: 0.9 }),
+  vine:      new THREE.MeshStandardMaterial({ color: PAL.vine, roughness: 0.95 }),
+  firefly:   new THREE.PointsMaterial({ color: PAL.firefly, size: 0.6, map: glowSpriteTex, transparent: true,
+               opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true }),
+};
+/* registries the animation loop reads from */
+const lanternPivots = [], vineGroups = [], bridgeMids = [];
+
+/* ================================================================
+   6. BUILDERS — each focal structure is its own named group factory
+   ================================================================ */
+/* Colossal elven tree: flared lathe trunk, root buttresses, lantern
+   branches, and foliage blobs whose centres feed the leaf scatter. */
+function buildColossalTree(cfg){
+  const g = new THREE.Group(), data = { branchTips: [], canopyCenters: [] };
+  const { h, tr } = cfg, prof = [];
+  for (let i = 0; i <= 7; i++){
+    const v = i / 7;
+    let r = tr * (1.18 - 0.5 * v);
+    if (v < 0.14) r *= 1 + (0.14 - v) * 4.5;
+    prof.push(new THREE.Vector2(r, v * h));
+  }
+  g.add(sh(new THREE.Mesh(new THREE.LatheGeometry(prof, 12), MAT.bark)));
+  const nRoots = RI(5, 7);
+  for (let i = 0; i < nRoots; i++){
+    const a = i / nRoots * Math.PI * 2 + R(-0.2, 0.2);
+    const dir = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+    const base = dir.clone().multiplyScalar(tr * 0.9).setY(1.0);
+    const tip  = dir.clone().multiplyScalar(tr * 1.9 + R(0, 1.2)).setY(-0.5);
+    g.add(sh(beamBetween(base, tip, R(0.28, 0.5), MAT.bark, 7)));
+  }
+  const nBranch = RI(5, 6);
+  for (let i = 0; i < nBranch; i++){
+    const a = R(0, Math.PI * 2), v = R(0.58, 0.9), len = R(3.2, 5.8) * (1.15 - v * 0.3);
+    const rv = tr * (1.18 - 0.5 * v);
+    const dir = new THREE.Vector3(Math.cos(a), R(0.35, 0.75), Math.sin(a)).normalize();
+    const base = new THREE.Vector3(Math.cos(a) * rv * 0.7, v * h, Math.sin(a) * rv * 0.7);
+    const tip = base.clone().addScaledVector(dir, len);
+    const br = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.38, len, 7), MAT.bark);
+    br.position.copy(base).addScaledVector(dir, len * 0.5);
+    br.quaternion.setFromUnitVectors(UP, dir);
+    g.add(sh(br));
+    data.branchTips.push(tip.clone());
+    data.canopyCenters.push(tip.clone().addScaledVector(dir, 0.6).add(new THREE.Vector3(0, R(0.3, 1.0), 0)));
+  }
+  data.canopyCenters.push(new THREE.Vector3(0, h, 0), new THREE.Vector3(R(-2, 2), h * 0.96, R(-2, 2)));
+  for (const c of data.canopyCenters){
+    const blob = new THREE.Mesh(new THREE.IcosahedronGeometry(R(2.1, 3.2), 1), MAT.foliage);
+    blob.position.copy(c);
+    blob.scale.set(R(1.0, 1.3), R(0.55, 0.7), R(1.0, 1.3));
+    blob.rotation.set(R(0, 3), R(0, 3), R(0, 3));
+    g.add(sh(blob));
+  }
+  return { group: g, data };
+}
+
+/* Curved plank platform hugging a trunk: extruded ring-sector deck,
+   railing arcs (gapped where rope bridges dock) and angled struts. */
+function buildTrunkPlatform(trunkR, arcHalf, bridgeGaps){
+  const g = new THREE.Group(), inner = trunkR * 0.55, outer = trunkR + 3.6;
+  const shape = new THREE.Shape();
+  shape.absarc(0, 0, outer, -arcHalf, arcHalf, false);
+  shape.absarc(0, 0, inner, arcHalf, -arcHalf, true);
+  const deckGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.38, bevelEnabled: false });
+  deckGeo.rotateX(-Math.PI / 2);
+  g.add(sh(new THREE.Mesh(deckGeo, MAT.deck)));
+  const rimGeo = new THREE.TorusGeometry(outer, 0.09, 5, 40, arcHalf * 2);
+  rimGeo.rotateZ(-arcHalf); rimGeo.rotateX(-Math.PI / 2);
+  const rim = new THREE.Mesh(rimGeo, MAT.dark);
+  rim.position.y = 0.38; g.add(rim);
+  const segs = bridgeGaps ? [[-arcHalf, -0.82], [-0.28, 0.28], [0.82, arcHalf]] : [[-arcHalf, arcHalf]];
+  const postGeo = new THREE.CylinderGeometry(0.05, 0.05, 0.95, 6);
+  for (const [s0, s1] of segs){
+    const railGeo = new THREE.TorusGeometry(outer - 0.15, 0.05, 5, 24, s1 - s0);
+    railGeo.rotateZ(s0); railGeo.rotateX(-Math.PI / 2);
+    const rail = new THREE.Mesh(railGeo, MAT.rope);
+    rail.position.y = 1.33; g.add(rail);
+    const n = Math.max(2, Math.round((s1 - s0) / 0.36));
+    for (let i = 0; i <= n; i++){
+      const a = s0 + (s1 - s0) * i / n, p = new THREE.Mesh(postGeo, MAT.dark);
+      p.position.set(Math.cos(a) * (outer - 0.15), 0.86, -Math.sin(a) * (outer - 0.15));
+      g.add(p);
+    }
+  }
+  for (const a of [-0.8, -0.4, 0, 0.4, 0.8].map(x => x * arcHalf)){
+    const top = new THREE.Vector3(Math.cos(a) * (outer - 0.6), -0.02, -Math.sin(a) * (outer - 0.6));
+    const bot = new THREE.Vector3(Math.cos(a) * trunkR * 0.7, -2.5, -Math.sin(a) * trunkR * 0.7);
+    g.add(sh(beamBetween(top, bot, 0.09, MAT.dark, 5)));
+  }
+  return g;
+}
+
+/* Spiral staircase winding up the bark: instanced treads plus a
+   catmull-rom rope handrail on slender posts. */
+function buildSpiralStair(trunkR, y0, y1, a0, turns, center){
+  const g = new THREE.Group(), steps = Math.max(8, Math.round((y1 - y0) / 0.26));
+  const inst = new THREE.InstancedMesh(new THREE.BoxGeometry(1.7, 0.09, 0.5), MAT.plank, steps);
+  const dummy = new THREE.Object3D(), railPts = [], rad = trunkR + 0.95;
+  for (let i = 0; i < steps; i++){
+    const v = i / (steps - 1), a = a0 + v * turns * Math.PI * 2, y = y0 + v * (y1 - y0);
+    dummy.position.set(Math.cos(a) * rad, y, -Math.sin(a) * rad);
+    dummy.rotation.set(0, a, 0);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    railPts.push(new THREE.Vector3(Math.cos(a) * (rad + 0.75), y + 1.0, -Math.sin(a) * (rad + 0.75)));
+  }
+  inst.castShadow = true;
+  g.add(inst);
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(railPts), steps * 2, 0.05, 5), MAT.rope));
+  for (let i = 0; i < steps; i += 5){
+    const p = railPts[i];
+    g.add(beamBetween(new THREE.Vector3(p.x, p.y - 1.0, p.z), p, 0.035, MAT.dark, 5));
+  }
+  g.position.set(center.x, 0, center.z);
+  return g;
+}
+
+/* Arched rope bridge: instanced planks along a bezier, twin rope
+   rails, vertical ties, end posts and a lantern under the middle. */
+function buildRopeBridge(a, b){
+  const g = new THREE.Group();
+  const mid = a.clone().lerp(b, 0.5);
+  mid.y = Math.max(a.y, b.y) + a.distanceTo(b) * 0.10;
+  const curve = new THREE.QuadraticBezierCurve3(a, mid, b);
+  const n = Math.max(12, Math.round(curve.getLength() * 1.6));
+  const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(1.18, 0.06, 0.4), MAT.plank, n);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < n; i++){
+    const u = (i + 0.5) / n, p = curve.getPoint(u);
+    dummy.position.copy(p);
+    dummy.lookAt(p.clone().add(curve.getTangent(u)));
+    dummy.updateMatrix();
+    planks.setMatrixAt(i, dummy.matrix);
+  }
+  planks.castShadow = true;
+  g.add(planks);
+  const lp = [], rp = [], tiePos = [];
+  for (let i = 0; i <= 24; i++){
+    const u = i / 24, p = curve.getPoint(u);
+    const side = new THREE.Vector3().crossVectors(curve.getTangent(u), UP).normalize();
+    lp.push(p.clone().addScaledVector(side,  0.62).add(new THREE.Vector3(0, 0.55, 0)));
+    rp.push(p.clone().addScaledVector(side, -0.62).add(new THREE.Vector3(0, 0.55, 0)));
+    if (i % 3 === 1 && i > 1 && i < 23){
+      tiePos.push(p.clone().addScaledVector(side,  0.6).add(new THREE.Vector3(0, 0.28, 0)));
+      tiePos.push(p.clone().addScaledVector(side, -0.6).add(new THREE.Vector3(0, 0.28, 0)));
+    }
+  }
+  for (const pts of [lp, rp]){
+    const rope = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 48, 0.045, 5), MAT.rope);
+    rope.castShadow = true;
+    g.add(rope);
+  }
+  const ties = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.018, 0.018, 0.55, 4), MAT.rope, tiePos.length);
+  tiePos.forEach((p, i) => {
+    dummy.position.copy(p); dummy.rotation.set(0, 0, 0); dummy.updateMatrix();
+    ties.setMatrixAt(i, dummy.matrix);
+  });
+  g.add(ties);
+  for (const [e, other] of [[a, b], [b, a]]){
+    const tan = new THREE.Vector3().subVectors(other, e).setY(0).normalize();
+    const side = new THREE.Vector3().crossVectors(tan, UP).normalize();
+    for (const s of [1, -1]){
+      const base = e.clone().addScaledVector(side, 0.62 * s);
+      g.add(beamBetween(base.clone().add(new THREE.Vector3(0, -0.35, 0)),
+                        base.clone().add(new THREE.Vector3(0, 0.75, 0)), 0.06, MAT.dark, 5));
+    }
+  }
+  const ln = buildLantern(0.55);
+  ln.position.copy(curve.getPoint(0.5)).add(new THREE.Vector3(0, -0.06, 0));
+  g.add(ln);
+  bridgeMids.push(curve.getPoint(0.5));
+  return g;
+}
+
+/* Leaf-roofed hut: plank drum, three thatch cone tiers, a glowing
+   finial, a round elven door and two round glowing windows. */
+function buildLeafHut(r){
+  const g = new THREE.Group(), wallH = 2.25;
+  const wall = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.9, r, wallH, 12), MAT.plank);
+  wall.position.y = wallH * 0.5;
+  g.add(sh(wall));
+  for (const [rr, hh, yy] of [[r * 1.9, 1.2, wallH - 0.15], [r * 1.35, 1.05, wallH + 0.5], [r * 0.8, 0.95, wallH + 1.12]]){
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(rr, hh, 11), MAT.roof);
+    cone.position.y = yy + hh * 0.5;
+    g.add(sh(cone));
+  }
+  const finial = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 7), MAT.glowWarm);
+  finial.position.y = wallH + 2.15;
+  g.add(finial);
+  const door = new THREE.Group(), doorR = Math.min(0.62, r * 0.42);
+  door.add(new THREE.Mesh(new THREE.CircleGeometry(doorR, 20), MAT.dark));
+  door.add(new THREE.Mesh(new THREE.TorusGeometry(doorR, 0.055, 6, 20), MAT.deck));
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.05, 6, 6), MAT.glowWarm);
+  knob.position.set(doorR * 0.55, 0, 0.03);
+  door.add(knob);
+  door.position.set(r * 0.99, doorR + 0.12, 0);
+  door.rotation.y = Math.PI / 2;
+  g.add(door);
+  for (const wa of [Math.PI * 0.55, -Math.PI * 0.6]){
+    const win = new THREE.Group();
+    win.add(new THREE.Mesh(new THREE.CircleGeometry(0.24, 16), MAT.glowWarm));
+    win.add(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.045, 6, 18), MAT.dark));
+    win.position.set(Math.cos(wa) * r * 0.96, 1.35, Math.sin(wa) * r * 0.96);
+    win.rotation.y = Math.PI / 2 - wa;
+    g.add(win);
+  }
+  return g;
+}
+
+/* Hanging lantern on a swaying pivot: cap, glowing glass, finial. */
+function buildLantern(stringLen){
+  const pivot = new THREE.Group();
+  pivot.userData.ph = R(0, Math.PI * 2);
+  const str = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, stringLen, 4), MAT.dark);
+  str.position.y = -stringLen * 0.5;
+  const body = new THREE.Group();
+  body.position.y = -stringLen;
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.16, 7), MAT.dark);
+  cap.position.y = 0.08;
+  const glass = new THREE.Mesh(new THREE.SphereGeometry(0.15, 10, 8), MAT.glowWarm);
+  glass.position.y = -0.06; glass.scale.y = 1.25;
+  const fin = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.1, 6), MAT.dark);
+  fin.position.y = -0.31; fin.rotation.x = Math.PI;
+  body.add(cap, glass, fin);
+  pivot.add(str, body);
+  lanternPivots.push(pivot);
+  return pivot;
+}
+
+/* Hanging vine: catmull-rom tube drifting downward with leaf sprigs. */
+function buildVine(len){
+  const g = new THREE.Group();
+  g.userData.ph = R(0, Math.PI * 2);
+  const pts = [];
+  let x = 0, z = 0;
+  for (let i = 0; i <= 5; i++){
+    pts.push(new THREE.Vector3(x, -len * i / 5, z));
+    x += R(-0.25, 0.25); z += R(-0.25, 0.25);
+  }
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 10, 0.045, 5), MAT.vine));
+  for (let i = 0; i < 3; i++){
+    const sprig = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.3, 5), MAT.fern);
+    sprig.position.copy(pts[RI(1, 5)]).add(new THREE.Vector3(R(-0.1, 0.1), 0, R(-0.1, 0.1)));
+    sprig.rotation.set(R(0, 3), R(0, 3), R(0, 3));
+    g.add(sprig);
+  }
+  vineGroups.push(g);
+  return g;
+}
+
+/* ================================================================
+   7. INSTANCED UNDERGROWTH — mushrooms, ferns, stones, leaf litter
+   ================================================================ */
+const mushStemMats = [], mushCapMats = [], frondMats = [], stoneMats = [];
+const dummyO = new THREE.Object3D();
+function addMushroomPatch(cx, cz, count){
+  for (let k = 0; k < count; k++){
+    const x = cx + R(-0.7, 0.7), z = cz + R(-0.7, 0.7), s = R(0.5, 1.4), y = groundH(x, z);
+    dummyO.position.set(x, y + 0.26 * s, z);
+    dummyO.scale.set(s, s, s); dummyO.rotation.set(0, R(0, 6.28), 0);
+    dummyO.updateMatrix(); mushStemMats.push(dummyO.matrix.clone());
+    dummyO.position.set(x, y + 0.5 * s, z); dummyO.scale.set(s, s * 0.75, s);
+    dummyO.updateMatrix(); mushCapMats.push(dummyO.matrix.clone());
+  }
+}
+function addFern(cx, cz){
+  const y = groundH(cx, cz), fronds = RI(6, 8);
+  for (let k = 0; k < fronds; k++){
+    dummyO.position.set(cx + R(-0.15, 0.15), y + 0.42, cz + R(-0.15, 0.15));
+    dummyO.rotation.set(0, k / fronds * Math.PI * 2 + R(-0.2, 0.2), 0);
+    dummyO.scale.setScalar(R(0.75, 1.25));
+    dummyO.rotateX(R(-1.15, -0.75));
+    dummyO.updateMatrix(); frondMats.push(dummyO.matrix.clone());
+  }
+}
+function addStone(x, z){
+  dummyO.position.set(x, groundH(x, z) + 0.08, z);
+  dummyO.rotation.set(R(0, 3), R(0, 3), R(0, 3));
+  dummyO.scale.set(R(0.5, 1.6), R(0.4, 1.0), R(0.5, 1.6));
+  dummyO.updateMatrix(); stoneMats.push(dummyO.matrix.clone());
+}
+function finalizeUndergrowth(){
+  const mk = (geo, mat, mats, cast) => {
+    const inst = new THREE.InstancedMesh(geo, mat, mats.length);
+    mats.forEach((m, i) => inst.setMatrixAt(i, m));
+    inst.castShadow = cast; inst.receiveShadow = true;
+    scene.add(inst);
+  };
+  mk(new THREE.CylinderGeometry(0.07, 0.11, 0.55, 7), MAT.mushStem, mushStemMats, true);
+  mk(new THREE.SphereGeometry(0.26, 9, 7, 0, Math.PI * 2, 0, Math.PI * 0.55), MAT.mushCap, mushCapMats, true);
+  const frondGeo = new THREE.ConeGeometry(0.16, 1.15, 5);
+  frondGeo.scale(1, 1, 0.3);
+  mk(frondGeo, MAT.fern, frondMats, false);
+  mk(new THREE.DodecahedronGeometry(0.3, 0), MAT.stone, stoneMats, true);
+}
+
+/* Instanced leaves: mostly green with luminous blue ones mixed in,
+   filling canopy ellipsoids plus leaf-litter dusted over the moss. */
+function scatterCanopyLeaves(centers){
+  const leafGeo = new THREE.PlaneGeometry(0.42, 0.6), NG = 1500, NB = 230;
+  const green = new THREE.InstancedMesh(leafGeo, MAT.leafGreen, NG);
+  const blue  = new THREE.InstancedMesh(leafGeo, MAT.leafBlue, NB);
+  const cA = new THREE.Color(PAL.leafGreenA), cB = new THREE.Color(PAL.leafGreenB), tmp = new THREE.Color();
+  const place = (inst, i, onGround) => {
+    if (onGround){
+      const r = R(2.5, 17), a = R(0, Math.PI * 2), x = Math.cos(a) * r, z = Math.sin(a) * r;
+      dummyO.position.set(x, groundH(x, z) + 0.05, z);
+      dummyO.rotation.set(-Math.PI / 2 + R(-0.25, 0.25), R(0, Math.PI * 2), 0);
+    } else {
+      const v = new THREE.Vector3(R(-1, 1), R(-0.7, 0.7), R(-1, 1));
+      if (v.lengthSq() < 1e-6) v.set(0.5, 0.3, 0.5);
+      v.normalize().multiplyScalar(R(1.2, 3.1) * Math.cbrt(rng()));
+      v.multiply(new THREE.Vector3(1.25, 0.75, 1.25));
+      dummyO.position.copy(pick(centers)).add(v);
+      dummyO.rotation.set(R(0, 6.28), R(0, 6.28), R(0, 6.28));
+    }
+    dummyO.scale.setScalar(R(0.7, 1.35));
+    dummyO.updateMatrix();
+    inst.setMatrixAt(i, dummyO.matrix);
+  };
+  for (let i = 0; i < NG; i++){
+    place(green, i, i >= NG - 260);
+    green.setColorAt(i, tmp.lerpColors(cA, cB, rng()));
+  }
+  for (let i = 0; i < NB; i++) place(blue, i, i >= NB - 40);
+  green.instanceColor.needsUpdate = true;
+  green.castShadow = true;
+  scene.add(green, blue);
+}
+
+/* ================================================================
+   8. ATMOSPHERE — god-rays, fireflies, ground plane, sky dome
+   ================================================================ */
+function buildGodRays(sunPos){
+  const g = new THREE.Group(), axis = sunPos.clone().normalize();
+  for (let i = 0; i < 6; i++){
+    const len = R(20, 26), rTop = R(0.5, 0.9);
+    const mat = new THREE.MeshBasicMaterial({ color: PAL.ray, transparent: true, opacity: 0.06,
+      blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide, fog: false });
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rTop, rTop * R(2.2, 3.2), len, 7, 1, true), mat);
+    m.position.set(R(-9, 9), 0.5, R(-9, 9)).addScaledVector(axis, len * 0.5);
+    m.quaternion.setFromUnitVectors(UP, axis);
+    m.userData.base = R(0.045, 0.08);
+    m.userData.ph = R(0, 6.28);
+    g.add(m);
+  }
+  scene.add(g);
+  return g;
+}
+const FIREFLY_N = 90, fireflyBase = [];
+let fireflyGeo = null;
+function buildFireflies(){
+  fireflyGeo = new THREE.BufferGeometry();
+  const pos = new Float32Array(FIREFLY_N * 3);
+  for (let i = 0; i < FIREFLY_N; i++){
+    const a = R(0, 6.28), r = R(1.5, 10);
+    const b = { x: Math.cos(a) * r, y: R(0.8, 8), z: Math.sin(a) * r, a: R(0.4, 1.4), s: R(0.3, 0.9), p: R(0, 6.28) };
+    fireflyBase.push(b);
+    pos.set([b.x, b.y, b.z], i * 3);
+  }
+  fireflyGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const pts = new THREE.Points(fireflyGeo, MAT.firefly);
+  pts.frustumCulled = false;
+  scene.add(pts);
+}
+function buildGround(){
+  const geo = new THREE.PlaneGeometry(130, 130, 64, 64);
+  geo.rotateX(-Math.PI / 2);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, groundH(p.getX(i), p.getZ(i)));
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, MAT.moss);
+  m.receiveShadow = true;
+  scene.add(m);
+}
+function buildSky(){
+  scene.add(new THREE.Mesh(new THREE.SphereGeometry(140, 24, 14),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false })));
+}
+
+/* ================================================================
+   9. ASSEMBLY & LAYOUT — three colossal trees ring a mossy clearing
+   ================================================================ */
+buildGround();
+buildSky();
+const TREES = [
+  { ang: -1.62, ring: 13.4, h: 24.5, tr: 2.60, platY: 11.4, arc: 1.92 },
+  { ang:  0.52, ring: 13.8, h: 27.2, tr: 2.95, platY: 13.4, arc: 1.92, lookout: 17.6 },
+  { ang:  2.65, ring: 12.9, h: 23.4, tr: 2.35, platY: 12.2, arc: 1.92 },
+];
+const treePos = [], canopyCentersW = [];
+TREES.forEach((t, idx) => {
+  const px = Math.cos(t.ang) * t.ring, pz = Math.sin(t.ang) * t.ring;
+  const pos = new THREE.Vector3(px, groundH(px, pz) - 0.3, pz);
+  treePos.push(pos);
+  const { group, data } = buildColossalTree(t);
+  group.position.copy(pos);
+  scene.add(group);
+  data.canopyCenters.forEach(c => canopyCentersW.push(c.clone().add(pos)));
+  data.branchTips.forEach(tip => {
+    if (rng() < 0.75){
+      const l = buildLantern(R(0.7, 1.5));
+      l.position.copy(tip).add(pos).add(new THREE.Vector3(0, -0.1, 0));
+      scene.add(l);
+    }
+  });
+  /* platform hugging the trunk, arc opening toward the village centre */
+  const plat = buildTrunkPlatform(t.tr, t.arc, true);
+  plat.position.set(px, t.platY, pz);
+  plat.rotation.y = Math.PI - t.ang;
+  scene.add(plat);
+  /* leaf-roofed hut placed clear of the two bridge gaps */
+  const hut = buildLeafHut(R(1.45, 1.65));
+  const ha = [-1.22, 1.18, -1.1][idx], hr = t.tr + 1.95;
+  hut.position.set(Math.cos(ha) * hr, 0.38, -Math.sin(ha) * hr);
+  hut.rotation.y = ha + Math.PI / 2;
+  plat.add(hut);
+  /* lantern poles at both ends of the platform arc */
+  for (const s of [-1, 1]){
+    const a = s * (t.arc - 0.15);
+    const bx = Math.cos(a) * (t.tr + 3.0), bz = -Math.sin(a) * (t.tr + 3.0);
+    plat.add(beamBetween(new THREE.Vector3(bx, 0.38, bz), new THREE.Vector3(bx, 2.2, bz), 0.05, MAT.dark, 5));
+    const ln = buildLantern(0.4);
+    ln.position.set(bx * 1.05, 2.18, bz * 1.05);
+    plat.add(ln);
+  }
+});
+/* ground spiral stair up tree 0 */
+{
+  const t = TREES[0], p = treePos[0], a0 = 2.2;
+  const sx = p.x + Math.cos(a0) * (t.tr + 0.95), sz = p.z - Math.sin(a0) * (t.tr + 0.95);
+  scene.add(buildSpiralStair(t.tr, groundH(sx, sz) + 0.32, t.platY + 0.36, a0, 2.25, p));
+}
+/* lookout deck + upper stair + hanging lantern on tree 1 */
+{
+  const t = TREES[1], p = treePos[1];
+  const look = buildTrunkPlatform(t.tr * 0.9, 1.05, false);
+  look.position.set(p.x, t.lookout, p.z);
+  look.rotation.y = Math.PI - t.ang;
+  scene.add(look);
+  scene.add(buildSpiralStair(t.tr, t.platY + 0.36, t.lookout + 0.36, -0.4, 1.05, p));
+  const ln = buildLantern(0.9);
+  ln.position.set(p.x + 2.6, t.lookout - 0.05, p.z);
+  scene.add(ln);
+}
+/* arched rope bridges linking the three platforms */
+for (const [i, j] of [[0, 1], [1, 2], [2, 0]]){
+  const A = treePos[i], B = treePos[j], ta = TREES[i], tb = TREES[j];
+  const dir = new THREE.Vector3(B.x - A.x, 0, B.z - A.z).normalize();
+  const e1 = new THREE.Vector3(A.x, ta.platY + 0.44, A.z).addScaledVector(dir, ta.tr + 3.35);
+  const e2 = new THREE.Vector3(B.x, tb.platY + 0.44, B.z).addScaledVector(dir, -(tb.tr + 3.35));
+  scene.add(buildRopeBridge(e1, e2));
+}
+/* hanging vines from canopy bellies and bridge midpoints */
+for (let i = 0; i < 15; i++){
+  const v = buildVine(R(2.5, 5.5));
+  v.position.copy(pick(canopyCentersW)).add(new THREE.Vector3(R(-1.5, 1.5), R(-2.2, -1.2), R(-1.5, 1.5)));
+  scene.add(v);
+}
+for (const m of bridgeMids){
+  const v = buildVine(R(1.4, 2.4));
+  v.position.copy(m).add(new THREE.Vector3(R(-0.4, 0.4), -0.12, R(-0.4, 0.4)));
+  scene.add(v);
+}
+/* fairy ring of glowing mushrooms, scattered patches, ferns, stones */
+for (let i = 0; i < 11; i++){
+  const a = i / 11 * Math.PI * 2 + R(-0.1, 0.1);
+  addMushroomPatch(Math.cos(a) * 4.3, Math.sin(a) * 4.3, RI(1, 2));
+}
+for (let i = 0; i < 8; i++){
+  const a = R(0, 6.28), r = R(7, 16);
+  addMushroomPatch(Math.cos(a) * r, Math.sin(a) * r, RI(1, 3));
+}
+for (let i = 0; i < 14; i++){
+  const a = R(0, 6.28), r = R(6, 18);
+  addFern(Math.cos(a) * r, Math.sin(a) * r);
+}
+for (let i = 0; i < 26; i++){
+  const a = R(0, 6.28), r = R(3, 19);
+  addStone(Math.cos(a) * r, Math.sin(a) * r);
+}
+finalizeUndergrowth();
+scatterCanopyLeaves(canopyCentersW);
+const sunPosition = new THREE.Vector3(26, 40, 14);
+const raysGroup = buildGodRays(sunPosition);
+buildFireflies();
+
+/* ================================================================
+   10. LIGHTING RIG — key sun, hemisphere fill, accent glows
+   ================================================================ */
+scene.add(new THREE.AmbientLight(0x22362b, 0.55));
+scene.add(new THREE.HemisphereLight(0x9fd6b8, 0x2c2418, 0.7));
+const sun = new THREE.DirectionalLight(0xfff3cf, 2.6);
+sun.position.copy(sunPosition);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -36;
+sun.shadow.camera.right = sun.shadow.camera.top = 36;
+sun.shadow.camera.near = 5;
+sun.shadow.camera.far = 110;
+sun.shadow.bias = -0.0006;
+sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+const glowCenter = new THREE.PointLight(0x86dcff, 30, 26, 1.9);
+glowCenter.position.set(0, 3.2, 0);
+scene.add(glowCenter);
+const warmHut = new THREE.PointLight(0xffc57d, 26, 20, 1.8);
+warmHut.position.copy(treePos[0]).addScaledVector(treePos[0].clone().setY(0).normalize().negate(), 2.5).setY(TREES[0].platY + 2.4);
+scene.add(warmHut);
+const warmBridge = new THREE.PointLight(0xffc57d, 20, 16, 1.8);
+warmBridge.position.copy(bridgeMids[0]).add(new THREE.Vector3(0, 0.6, 0));
+scene.add(warmBridge);
+
+/* ================================================================
+   11. ANIMATION LOOP — lantern sway, vines, glow pulses, rays, flies
+   ================================================================ */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  for (const p of lanternPivots){
+    p.rotation.x = Math.sin(t * 1.15 + p.userData.ph) * 0.055;
+    p.rotation.z = Math.cos(t * 0.95 + p.userData.ph * 1.3) * 0.055;
+  }
+  for (const v of vineGroups){
+    v.rotation.x = Math.sin(t * 0.62 + v.userData.ph) * 0.045;
+    v.rotation.z = Math.cos(t * 0.5 + v.userData.ph) * 0.045;
+  }
+  MAT.leafBlue.emissiveIntensity = 1.35 + Math.sin(t * 1.3) * 0.4;
+  MAT.mushCap.emissiveIntensity = 1.2 + Math.sin(t * 1.7 + 1.2) * 0.4;
+  MAT.glowWarm.emissiveIntensity = 2.1 + Math.sin(t * 2.3) * 0.35;
+  raysGroup.children.forEach((rm, i) => {
+    rm.material.opacity = rm.userData.base * (0.65 + 0.35 * Math.sin(t * 0.5 + rm.userData.ph + i));
+  });
+  const posAttr = fireflyGeo.attributes.position;
+  for (let i = 0; i < FIREFLY_N; i++){
+    const b = fireflyBase[i];
+    posAttr.setXYZ(i,
+      b.x + Math.sin(t * b.s + b.p) * b.a,
+      b.y + Math.sin(t * b.s * 0.8 + b.p * 2) * 0.5,
+      b.z + Math.cos(t * b.s * 0.9 + b.p) * b.a);
+  }
+  posAttr.needsUpdate = true;
+  MAT.firefly.opacity = 0.65 + 0.3 * Math.sin(t * 2.1);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   12. RESIZE
+   ================================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

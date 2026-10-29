@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Backyard Pond Edge</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 system-ui, sans-serif; color: #9aa0a8;
+    letter-spacing: .3px; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">Backyard pond edge — drag to orbit • scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ============================================================
+   Utility: seeded RNG + procedural value noise (fbm)
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260706);
+const rand = (a, b) => a + (b - a) * rng();
+
+function fract(x){ return x - Math.floor(x); }
+function hash3(x, y, z){
+  const n = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453123;
+  return fract(n);
+}
+function fade(t){ return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t){ return a + (b - a) * t; }
+function noise3(x, y, z){
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = fade(xf), v = fade(yf), w = fade(zf);
+  const c000 = hash3(xi, yi, zi),     c100 = hash3(xi+1, yi, zi);
+  const c010 = hash3(xi, yi+1, zi),   c110 = hash3(xi+1, yi+1, zi);
+  const c001 = hash3(xi, yi, zi+1),   c101 = hash3(xi+1, yi, zi+1);
+  const c011 = hash3(xi, yi+1, zi+1), c111 = hash3(xi+1, yi+1, zi+1);
+  const x00 = lerp(c000, c100, u), x10 = lerp(c010, c110, u);
+  const x01 = lerp(c001, c101, u), x11 = lerp(c011, c111, u);
+  const y0 = lerp(x00, x10, v), y1 = lerp(x01, x11, v);
+  return lerp(y0, y1, w); // 0..1
+}
+function fbm(x, y, z){
+  let f = 0, amp = 0.5, fr = 1;
+  for (let i = 0; i < 4; i++){
+    f += amp * (noise3(x * fr, y * fr, z * fr) * 2 - 1);
+    fr *= 2; amp *= 0.5;
+  }
+  return f; // ~ -1..1
+}
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x14161a);
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 9, 20);
+
+// procedural environment for soft reflections on water & wet stones
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
+
+const camera = new THREE.PerspectiveCamera(43, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.1, 2.15, 3.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.target.set(0, 0.32, 0);
+controls.minDistance = 2.2;
+controls.maxDistance = 9;
+controls.maxPolarAngle = 1.52;
+
+/* ============================================================
+   Lighting: hemisphere + directional key, fill and rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xbcd4ff, 0x37301f, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.6);
+key.position.set(5, 7.5, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 26;
+key.shadow.camera.left = -3.6;
+key.shadow.camera.right = 3.6;
+key.shadow.camera.top = 3.6;
+key.shadow.camera.bottom = -3.6;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x9db6d6, 0.55);
+fill.position.set(-5, 3, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xd2e2ff, 0.85);
+rim.position.set(-3.5, 4, -6);
+scene.add(rim);
+
+/* ============================================================
+   The single centered object: the pond
+   ============================================================ */
+const pond = new THREE.Group();
+scene.add(pond);
+
+/* ---- shared terrain height field (used by ground + grass) ---- */
+function groundHeight(x, z){
+  const r = Math.hypot(x, z);
+  const berm = 0.15 * Math.exp(-Math.pow((r - 1.35) / 0.55, 2)); // raised planting edge
+  const undul = 0.10 * fbm(x * 0.55 + 11, 5.0, z * 0.55 + 7);
+  return 0.055 + berm + undul;
+}
+
+/* ------------------------------------------------------------
+   1. Surrounding low ground (procedural, vertex-colored)
+   ------------------------------------------------------------ */
+(function buildGround(){
+  const geo = new THREE.RingGeometry(1.14, 5.0, 108, 40);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const cGreen = new THREE.Color(0x50602c);
+  const cDry   = new THREE.Color(0x707537);
+  const cBrown = new THREE.Color(0x574429);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < pos.count; i++){
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, groundHeight(x, z));
+    const r = Math.hypot(x, z);
+    const patch = fbm(x * 1.3 + 3, 0, z * 1.3 - 2) * 0.5 + 0.5;
+    tmp.copy(cGreen).lerp(cDry, patch);
+    // mulch/dirt browning close to the stone ring
+    const edge = THREE.MathUtils.clamp(1 - (r - 1.14) / 0.55, 0, 1);
+    tmp.lerp(cBrown, edge * 0.7);
+    tmp.multiplyScalar(0.82 + 0.28 * (fbm(x * 4 + 9, 1, z * 4) * 0.5 + 0.5));
+    colors[i*3] = tmp.r; colors[i*3+1] = tmp.g; colors[i*3+2] = tmp.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.97, metalness: 0 });
+  const ground = new THREE.Mesh(geo, mat);
+  ground.receiveShadow = true;
+  pond.add(ground);
+})();
+
+/* subtle plane that only receives shadows (studio floor beyond terrain) */
+(function shadowCatcher(){
+  const g = new THREE.PlaneGeometry(40, 40);
+  g.rotateX(-Math.PI / 2);
+  const m = new THREE.ShadowMaterial({ opacity: 0.32 });
+  const p = new THREE.Mesh(g, m);
+  p.position.y = -0.02;
+  p.receiveShadow = true;
+  pond.add(p);
+})();
+
+/* ------------------------------------------------------------
+   2. Black pond liner (EPDM) — a lathed bowl with a visible lip
+   ------------------------------------------------------------ */
+(function buildLiner(){
+  const profile = [
+    new THREE.Vector2(0.00, -0.42),
+    new THREE.Vector2(0.50, -0.42),
+    new THREE.Vector2(0.78, -0.32),
+    new THREE.Vector2(0.86, -0.12),
+    new THREE.Vector2(0.895, -0.02),
+    new THREE.Vector2(0.925, 0.05),   // wet lip, just above waterline
+    new THREE.Vector2(0.965, 0.09),
+    new THREE.Vector2(1.05,  0.11),
+    new THREE.Vector2(1.24,  0.13)    // tucks up behind the stones
+  ];
+  const geo = new THREE.LatheGeometry(profile, 120);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x0b0d0e, roughness: 0.45, metalness: 0.0,
+    side: THREE.DoubleSide, envMapIntensity: 0.5
+  });
+  const liner = new THREE.Mesh(geo, mat);
+  liner.receiveShadow = true;
+  liner.castShadow = false;
+  pond.add(liner);
+})();
+
+/* ------------------------------------------------------------
+   3. Water plane — tessellated disc with gentle animated ripples
+   ------------------------------------------------------------ */
+let waterGeo, waterBase;
+(function buildWater(){
+  const R = 0.9, rings = 16, segs = 60;
+  const positions = [0, 0, 0];
+  const uvs = [0.5, 0.5];
+  const indices = [];
+  for (let i = 1; i <= rings; i++){
+    const r = R * i / rings;
+    for (let j = 0; j < segs; j++){
+      const a = j / segs * Math.PI * 2;
+      const x = Math.cos(a) * r, z = Math.sin(a) * r;
+      positions.push(x, 0, z);
+      uvs.push(0.5 + 0.5 * Math.cos(a) * i / rings, 0.5 + 0.5 * Math.sin(a) * i / rings);
+    }
+  }
+  const idx = (i, j) => 1 + (i - 1) * segs + (j % segs);
+  for (let j = 0; j < segs; j++)
+    indices.push(0, idx(1, j + 1), idx(1, j));
+  for (let i = 1; i < rings; i++){
+    for (let j = 0; j < segs; j++){
+      const a = idx(i, j), b = idx(i, j + 1), c = idx(i + 1, j), d = idx(i + 1, j + 1);
+      indices.push(a, b, d, a, d, c);
+    }
+  }
+  waterGeo = new THREE.BufferGeometry();
+  waterGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  waterGeo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  waterGeo.setIndex(indices);
+  waterGeo.computeVertexNormals();
+  waterBase = Float32Array.from(positions);
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0x2a565c, roughness: 0.06, metalness: 0.0,
+    transparent: true, opacity: 0.74, envMapIntensity: 1.35,
+    side: THREE.DoubleSide, depthWrite: false
+  });
+  const water = new THREE.Mesh(waterGeo, mat);
+  water.position.y = 0.0;
+  water.renderOrder = 2;
+  pond.add(water);
+})();
+
+/* ------------------------------------------------------------
+   4. Ring of rounded stones (+ filler + a few loose pebbles)
+   ------------------------------------------------------------ */
+const STONE_COLORS = [0x8d8577, 0x9a9285, 0x7c7166, 0xa39b8b, 0x6f6a63, 0x847b6c, 0x958a79];
+
+function makeStoneGeometry(sx, sy, sz, seed){
+  const g = new THREE.IcosahedronGeometry(1, 2);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++){
+    v.fromBufferAttribute(pos, i).normalize();
+    const d = 1
+      + 0.17 * fbm(v.x * 1.8 + seed, v.y * 1.8 + seed, v.z * 1.8 - seed)
+      + 0.06 * fbm(v.x * 5.5 - seed, v.y * 5.5, v.z * 5.5 + seed);
+    pos.setXYZ(i, v.x * d, v.y * d, v.z * d);
+  }
+  g.scale(sx, sy, sz);
+  g.computeVertexNormals();
+  return g;
+}
+
+function placeStone(radius, angle, size, wet){
+  const rx = rand(0.9, 1.2), ry = rand(0.62, 0.86), rz = rand(0.9, 1.2);
+  const geo = makeStoneGeometry(size * rx, size * ry, size * rz, rand(0, 40));
+  const col = new THREE.Color(STONE_COLORS[(rng() * STONE_COLORS.length) | 0]);
+  col.multiplyScalar(0.82 + 0.34 * rng());
+  if (rng() < 0.22) col.lerp(new THREE.Color(0x5c6b3d), 0.22); // occasional moss tint
+  let rough = 0.55 + 0.35 * rng();
+  if (wet) rough *= 0.55;
+  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: rough, metalness: 0.0, envMapIntensity: 0.7 });
+  const m = new THREE.Mesh(geo, mat);
+  const sy = size * ry;
+  m.position.set(Math.cos(angle) * radius, 0.05 + sy * 0.5, Math.sin(angle) * radius);
+  m.rotation.set(rand(0, Math.PI), rand(0, Math.PI * 2), rand(0, Math.PI));
+  m.castShadow = true;
+  m.receiveShadow = true;
+  pond.add(m);
+}
+
+(function buildStones(){
+  // main ring
+  const count = 26;
+  for (let i = 0; i < count; i++){
+    const angle = (i / count) * Math.PI * 2 + rand(-0.06, 0.06);
+    const radius = 1.03 + rand(-0.05, 0.06);
+    placeStone(radius, angle, rand(0.135, 0.225), radius < 1.02);
+  }
+  // filler stones to close gaps (slightly outward, smaller)
+  const fcount = 16;
+  for (let i = 0; i < fcount; i++){
+    const angle = (i / fcount) * Math.PI * 2 + rand(-0.12, 0.12) + 0.12;
+    const radius = 1.12 + rand(-0.03, 0.08);
+    placeStone(radius, angle, rand(0.09, 0.15), false);
+  }
+  // a few loose pebbles scattered on the berm
+  for (let i = 0; i < 14; i++){
+    const angle = rand(0, Math.PI * 2);
+    const radius = rand(1.25, 1.75);
+    const size = rand(0.03, 0.06);
+    const geo = makeStoneGeometry(size * rand(0.9, 1.3), size * 0.7, size * rand(0.9, 1.3), rand(0, 40));
+    const col = new THREE.Color(STONE_COLORS[(rng() * STONE_COLORS.length) | 0]).multiplyScalar(0.8 + 0.3 * rng());
+    const m = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ color: col, roughness: 0.85, metalness: 0 }));
+    const x = Math.cos(angle) * radius, z = Math.sin(angle) * radius;
+    m.position.set(x, groundHeight(x, z) + size * 0.35, z);
+    m.rotation.set(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28));
+    m.castShadow = true; m.receiveShadow = true;
+    pond.add(m);
+  }
+})();
+
+/* ------------------------------------------------------------
+   5. Cattails (stem + brown seed head + spike tip + arching leaves)
+   ------------------------------------------------------------ */
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x6d8f3c, roughness: 0.8, metalness: 0 });
+const headMat = new THREE.MeshStandardMaterial({ color: 0x5a3a1f, roughness: 1.0, metalness: 0 });
+const tipMat  = new THREE.MeshStandardMaterial({ color: 0x7f9a45, roughness: 0.85, metalness: 0 });
+const leafMat = new THREE.MeshStandardMaterial({ color: 0x5f8a37, roughness: 0.72, metalness: 0, side: THREE.DoubleSide });
+
+function makeLeafGeometry(length, baseWidth, arch, twist){
+  const seg = 12;
+  const verts = [];
+  const idx = [];
+  for (let i = 0; i <= seg; i++){
+    const t = i / seg;
+    const sx = arch * Math.pow(t, 1.7);
+    let sy = length * t;
+    if (t > 0.55) sy -= length * 0.18 * Math.pow((t - 0.55) / 0.45, 2); // droop near the tip
+    const hw = Math.max(0.0015, baseWidth * 0.5 * Math.pow(1 - t, 0.6));
+    const ty = twist * hw * t;
+    verts.push(sx, sy + ty, +hw);   // left edge
+    verts.push(sx, sy - ty, -hw);   // right edge
+  }
+  for (let i = 0; i < seg; i++){
+    const a = 2*i, b = 2*i+1, c = 2*i+2, d = 2*i+3;
+    idx.push(a, b, c, b, d, c);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+function makeStem(h){
+  const grp = new THREE.Group();
+  const L = 0.11 * h; // gentle lean magnitude
+  const pts = [
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(L * 0.15, 0.4 * h, 0),
+    new THREE.Vector3(L * 0.55, 0.75 * h, 0),
+    new THREE.Vector3(L * 0.95, h, 0)
+  ];
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const stem = new THREE.Mesh(new THREE.TubeGeometry(curve, 26, 0.0075, 8), stemMat);
+  stem.castShadow = true;
+  grp.add(stem);
+
+  // brown seed head
+  const t0 = 0.8;
+  const p = curve.getPointAt(t0);
+  const tan = curve.getTangentAt(t0).normalize();
+  const quat = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan);
+  const head = new THREE.Mesh(new THREE.CapsuleGeometry(0.018, 0.13, 6, 14), headMat);
+  head.quaternion.copy(quat);
+  head.position.copy(curve.getPointAt(0.86));
+  head.castShadow = true;
+  grp.add(head);
+
+  // thin green spike above the head
+  const tip = new THREE.Mesh(new THREE.ConeGeometry(0.006, 0.2, 8), tipMat);
+  const tp = curve.getPointAt(1.0);
+  tip.quaternion.copy(quat);
+  tip.position.copy(tp).addScaledVector(tan, 0.1);
+  grp.add(tip);
+
+  return grp;
+}
+
+function makeCattailClump(x, z, stemHeights, leafCount){
+  const clump = new THREE.Group();
+  clump.position.set(x, groundHeight(x, z) - 0.02, z);
+  clump.rotation.y = rand(0, Math.PI * 2);
+
+  for (const h of stemHeights){
+    const s = makeStem(h);
+    s.position.set(rand(-0.08, 0.08), 0, rand(-0.08, 0.08));
+    s.rotation.y = rand(0, Math.PI * 2);
+    clump.add(s);
+  }
+  for (let i = 0; i < leafCount; i++){
+    const len = rand(0.85, 1.3);
+    const leaf = new THREE.Mesh(
+      makeLeafGeometry(len, rand(0.028, 0.04), rand(0.12, 0.32), rand(-0.4, 0.4)),
+      leafMat
+    );
+    leaf.position.set(rand(-0.09, 0.09), 0, rand(-0.09, 0.09));
+    leaf.rotation.y = (i / leafCount) * Math.PI * 2 + rand(-0.3, 0.3);
+    leaf.rotation.z = rand(-0.06, 0.06);
+    leaf.castShadow = true;
+    clump.add(leaf);
+  }
+  pond.add(clump);
+}
+
+// main clump + a smaller secondary clump for balance
+makeCattailClump(Math.cos(2.3) * 1.16, Math.sin(2.3) * 1.16, [1.55, 1.3, 1.02], 6);
+makeCattailClump(Math.cos(5.4) * 1.12, Math.sin(5.4) * 1.12, [1.15, 0.9], 4);
+
+/* ------------------------------------------------------------
+   6. Sparse lawn grass (instanced) on the surrounding ground
+   ------------------------------------------------------------ */
+(function buildGrass(){
+  const blade = new THREE.BufferGeometry();
+  const v = [
+    -0.5, 0, 0,   0.5, 0, 0,
+    -0.32, 0.55, 0.12,   0.32, 0.55, 0.12,
+    0, 1.0, 0.28
+  ];
+  blade.setAttribute('position', new THREE.Float32BufferAttribute(v, 3));
+  blade.setIndex([0, 1, 2, 2, 1, 3, 2, 3, 4]);
+  blade.computeVertexNormals();
+
+  const COUNT = 620;
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0, side: THREE.DoubleSide });
+  const mesh = new THREE.InstancedMesh(blade, mat, COUNT);
+  mesh.receiveShadow = true;
+
+  const dummy = new THREE.Object3D();
+  const gA = new THREE.Color(0x66802f), gB = new THREE.Color(0x869145);
+  const col = new THREE.Color();
+  for (let i = 0; i < COUNT; i++){
+    const ang = rand(0, Math.PI * 2);
+    const r = 1.28 + 3.0 * Math.pow(rng(), 1.6);   // denser near the pond edge
+    const x = Math.cos(ang) * r, z = Math.sin(ang) * r;
+    dummy.position.set(x, groundHeight(x, z), z);
+    dummy.rotation.set(rand(-0.12, 0.12), rand(0, Math.PI * 2), rand(-0.12, 0.12));
+    const s = rand(0.7, 1.5);
+    dummy.scale.set(0.013 * rand(0.8, 1.3), 0.06 * s, 0.013);
+    dummy.updateMatrix();
+    mesh.setMatrixAt(i, dummy.matrix);
+    col.copy(gA).lerp(gB, rng()).multiplyScalar(0.8 + 0.35 * rng());
+    mesh.setColorAt(i, col);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  pond.add(mesh);
+})();
+
+/* ------------------------------------------------------------
+   center the composed object
+   ------------------------------------------------------------ */
+key.target.position.set(0, 0.2, 0);
+pond.position.y = 0;
+
+/* ============================================================
+   Animate
+   ============================================================ */
+const clock = new THREE.Clock();
+const wpos = waterGeo.attributes.position;
+
+function updateWater(t){
+  for (let i = 0; i < wpos.count; i++){
+    const x = waterBase[i*3], z = waterBase[i*3+2];
+    const y =
+      0.0045 * Math.sin(x * 6.0 + t * 1.5) +
+      0.0035 * Math.sin(z * 7.0 - t * 1.25) +
+      0.0028 * Math.sin((x + z) * 5.0 + t * 2.0) +
+      0.0016 * fbm(x * 3 + t * 0.3, 0.0, z * 3);
+    wpos.setY(i, y);
+  }
+  wpos.needsUpdate = true;
+  waterGeo.computeVertexNormals();
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  updateWater(t);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

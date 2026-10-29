@@ -1,0 +1,930 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liquid Chrome Hummingbird</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0b0d; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(220, 228, 238, 0.42); pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Liquid Chrome Hummingbird &mdash; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0c0f);
+scene.fog = new THREE.FogExp2(0x0b0c0f, 0.055);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 200);
+camera.position.set(0.62, 0.34, 0.98);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 0.45;
+controls.maxDistance = 4.0;
+controls.target.set(0, 0.30, 0);
+controls.maxPolarAngle = Math.PI * 0.92;
+
+/* ============================================================
+   Studio environment (procedural, generated into a cube RT)
+   Gives the chrome something rich to mirror: gradient sky,
+   soft floor, and a few bright rectangular "softbox" cards.
+   ============================================================ */
+
+function buildEnvironmentScene() {
+  const env = new THREE.Scene();
+
+  // Big gradient dome
+  const domeGeo = new THREE.SphereGeometry(30, 48, 32);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      topColor: { value: new THREE.Color(0x2b3340) },
+      midColor: { value: new THREE.Color(0x11141a) },
+      botColor: { value: new THREE.Color(0x04050700 & 0xffffff) }
+    },
+    vertexShader: [
+      'varying vec3 vDir;',
+      'void main() {',
+      '  vDir = normalize(position);',
+      '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+      '}'
+    ].join('\n'),
+    fragmentShader: [
+      'varying vec3 vDir;',
+      'uniform vec3 topColor;',
+      'uniform vec3 midColor;',
+      'uniform vec3 botColor;',
+      'void main() {',
+      '  float h = vDir.y * 0.5 + 0.5;',
+      '  vec3 c = mix(botColor, midColor, smoothstep(0.0, 0.5, h));',
+      '  c = mix(c, topColor, smoothstep(0.45, 1.0, h));',
+      '  // subtle horizon glow band',
+      '  float band = exp(-pow((h - 0.52) * 14.0, 2.0));',
+      '  c += vec3(0.10, 0.12, 0.15) * band;',
+      '  gl_FragColor = vec4(c, 1.0);',
+      '}'
+    ].join('\n')
+  });
+  env.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // Soft floor card (dark, slightly reflective-looking)
+  const floor = new THREE.Mesh(
+    new THREE.CircleGeometry(26, 64),
+    new THREE.MeshBasicMaterial({ color: 0x0a0c10 })
+  );
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -6;
+  env.add(floor);
+
+  // Softboxes: bright panels that create long specular streaks in the chrome.
+  const panel = (w, h, color, intensity, pos, lookAt) => {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color).multiplyScalar(intensity),
+        side: THREE.DoubleSide
+      })
+    );
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+    env.add(m);
+    return m;
+  };
+
+  panel(16, 5.5, 0xffffff, 3.6, [ 7,  9, -6], [0, 0, 0]);  // key
+  panel(11, 9.0, 0xbfd4ff, 1.5, [-10, 4,  5], [0, 0, 0]);  // cool fill
+  panel(14, 2.4, 0xffe6c8, 2.1, [ 0,  6, 12], [0, 0, 0]);  // warm rim strip
+  panel(6,  16,  0xffffff, 1.1, [-4, 2, -12], [0, 0, 0]);  // vertical strip
+  panel(20, 20,  0x1a2028, 0.6, [ 0, 16,  0], [0, 0, 0]);  // ceiling wash
+
+  return env;
+}
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envScene = buildEnvironmentScene();
+const envRT = pmrem.fromScene(envScene, 0.02);
+const envMap = envRT.texture;
+scene.environment = envMap;
+
+/* ============================================================
+   Lighting: key + fill + rim, hemisphere ambient, soft shadows
+   ============================================================ */
+
+const hemi = new THREE.HemisphereLight(0x9fb6d6, 0x0a0b0d, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.6);
+key.position.set(1.9, 2.7, 1.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -1.4;
+key.shadow.camera.right = 1.4;
+key.shadow.camera.top = 1.4;
+key.shadow.camera.bottom = -1.4;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9dc0ff, 0.85);
+fill.position.set(-2.4, 1.1, 1.6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.5);
+rim.position.set(-1.1, 1.4, -2.6);
+scene.add(rim);
+
+const kicker = new THREE.PointLight(0xcfe4ff, 3.0, 6, 2);
+kicker.position.set(0.0, 0.95, -0.9);
+scene.add(kicker);
+
+/* Shadow-only ground plane */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 14),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* A faint radial "pool" under the bird so it doesn't float on pure black */
+const poolGeo = new THREE.CircleGeometry(1.5, 96);
+const poolMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  uniforms: { uColor: { value: new THREE.Color(0x2a3644) } },
+  vertexShader: [
+    'varying vec2 vUv;',
+    'void main() {',
+    '  vUv = uv;',
+    '  gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);',
+    '}'
+  ].join('\n'),
+  fragmentShader: [
+    'varying vec2 vUv;',
+    'uniform vec3 uColor;',
+    'void main() {',
+    '  float d = length(vUv - 0.5) * 2.0;',
+    '  float a = smoothstep(1.0, 0.0, d);',
+    '  a = pow(a, 2.4) * 0.55;',
+    '  gl_FragColor = vec4(uColor, a);',
+    '}'
+  ].join('\n')
+});
+const pool = new THREE.Mesh(poolGeo, poolMat);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = 0.001;
+scene.add(pool);
+
+/* ============================================================
+   Liquid chrome material
+   ============================================================ */
+
+const chrome = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 1.0,
+  roughness: 0.045,
+  envMap: envMap,
+  envMapIntensity: 1.65,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.02,
+  side: THREE.DoubleSide,
+  flatShading: false
+});
+
+// Slightly "wetter", darker chrome used for nothing structural — kept as one
+// material for a seamless single-pour look. (Single material = no seams.)
+
+/* ============================================================
+   Math helpers
+   ============================================================ */
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+const easeInOut = (t) => t * t * (3 - 2 * t);
+
+/* Superellipse-ish cross-section radius modifier for soft-oval bodies */
+function ovalize(angle, squash) {
+  // returns multiplier for radius at a given angle around the tube axis
+  const c = Math.cos(angle);
+  const s = Math.sin(angle);
+  return 1.0 / Math.sqrt((c * c) + (s * s) / (squash * squash));
+}
+
+/* Build a smooth lathe-like tube along an arbitrary centerline with a
+   per-station radius + flattening. Produces a watertight, seamless mesh
+   with caps closed by pole vertices. */
+function buildTube(opts) {
+  const {
+    segments,          // number of stations along the spine
+    radial,            // radial resolution
+    spine,             // t -> THREE.Vector3
+    radius,            // t -> number
+    squash = () => 1,  // t -> vertical squash factor (1 = round)
+    twist = () => 0,   // t -> radians
+    capStart = true,
+    capEnd = true
+  } = opts;
+
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  // Precompute spine samples and frames (parallel transport for stability)
+  const pts = [];
+  const tangents = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    pts.push(spine(t));
+  }
+  for (let i = 0; i <= segments; i++) {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(segments, i + 1)];
+    const tan = new THREE.Vector3().subVectors(b, a);
+    if (tan.lengthSq() < 1e-12) tan.set(0, 0, 1);
+    tangents.push(tan.normalize());
+  }
+
+  // Parallel transport frames
+  const normalsF = [];
+  const binormalsF = [];
+  let nRef = new THREE.Vector3(0, 1, 0);
+  if (Math.abs(tangents[0].dot(nRef)) > 0.9) nRef.set(1, 0, 0);
+  let n0 = new THREE.Vector3().crossVectors(tangents[0], nRef).normalize();
+  let b0 = new THREE.Vector3().crossVectors(tangents[0], n0).normalize();
+  normalsF.push(n0.clone());
+  binormalsF.push(b0.clone());
+  for (let i = 1; i <= segments; i++) {
+    const prevT = tangents[i - 1];
+    const currT = tangents[i];
+    let n = normalsF[i - 1].clone();
+    const axis = new THREE.Vector3().crossVectors(prevT, currT);
+    const len = axis.length();
+    if (len > 1e-8) {
+      axis.divideScalar(len);
+      const ang = Math.acos(clamp(prevT.dot(currT), -1, 1));
+      n.applyAxisAngle(axis, ang);
+    }
+    n.sub(currT.clone().multiplyScalar(n.dot(currT))).normalize();
+    const b = new THREE.Vector3().crossVectors(currT, n).normalize();
+    normalsF.push(n);
+    binormalsF.push(b);
+  }
+
+  const ringStart = [];
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const r = Math.max(1e-5, radius(t));
+    const sq = Math.max(0.05, squash(t));
+    const tw = twist(t);
+    const P = pts[i];
+    const N = normalsF[i];
+    const B = binormalsF[i];
+    ringStart.push(positions.length / 3);
+    for (let j = 0; j <= radial; j++) {
+      const v = (j / radial) * Math.PI * 2 + tw;
+      const cx = Math.cos(v);
+      const cy = Math.sin(v);
+      const rr = r * ovalize(v, sq);
+      const px = P.x + N.x * cx * rr + B.x * cy * rr;
+      const py = P.y + N.y * cx * rr + B.y * cy * rr;
+      const pz = P.z + N.z * cx * rr + B.z * cy * rr;
+      positions.push(px, py, pz);
+      normals.push(0, 0, 0);
+      uvs.push(j / radial, t);
+    }
+  }
+
+  for (let i = 0; i < segments; i++) {
+    for (let j = 0; j < radial; j++) {
+      const a = ringStart[i] + j;
+      const b = ringStart[i] + j + 1;
+      const c = ringStart[i + 1] + j;
+      const d = ringStart[i + 1] + j + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+
+  // Caps: fan to a pole vertex placed slightly along the tangent
+  if (capStart) {
+    const P = pts[0].clone().addScaledVector(tangents[0], -radius(0) * 0.85);
+    const poleIdx = positions.length / 3;
+    positions.push(P.x, P.y, P.z);
+    normals.push(0, 0, 0);
+    uvs.push(0.5, 0);
+    for (let j = 0; j < radial; j++) {
+      indices.push(poleIdx, ringStart[0] + j, ringStart[0] + j + 1);
+    }
+  }
+  if (capEnd) {
+    const P = pts[segments].clone().addScaledVector(tangents[segments], radius(1) * 0.85);
+    const poleIdx = positions.length / 3;
+    positions.push(P.x, P.y, P.z);
+    normals.push(0, 0, 0);
+    uvs.push(0.5, 1);
+    for (let j = 0; j < radial; j++) {
+      indices.push(poleIdx, ringStart[segments] + j + 1, ringStart[segments] + j);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ============================================================
+   THE BIRD
+   Scale: real ruby-throated hummingbird ≈ 9 cm body, ~10 cm wingspan.
+   Scene units = meters. Body length ~0.085, wingspan ~0.11.
+   The whole bird sits ~0.30 m above the ground plane.
+   ============================================================ */
+
+const bird = new THREE.Group();
+scene.add(bird);
+
+const HOVER_Y = 0.30;
+const parts = [];
+
+/* ---------- Body + head + neck: one continuous swept tube ---------- */
+/* The spine runs from the tail root (-z, low) forward and up to the head. */
+
+function bodySpine(t) {
+  // t: 0 = tail root, 1 = tip of skull (bill attaches beyond)
+  // Body tilted slightly nose-up like a hovering hummingbird.
+  const z = lerp(-0.050, 0.036, t);
+  const y = 0.004 + 0.030 * Math.sin(Math.PI * clamp(t * 0.92, 0, 1)) * 0.55
+          + smoothstep(0.55, 1.0, t) * 0.022
+          - smoothstep(0.0, 0.25, t) * 0.004;
+  const x = 0;
+  return new THREE.Vector3(x, y, z);
+}
+
+function bodyRadius(t) {
+  // Tail root narrow -> plump chest -> narrow neck -> rounded head
+  const chest = 0.0235 * Math.exp(-Math.pow((t - 0.42) / 0.30, 2));
+  const rootTaper = 0.0060 + 0.0075 * smoothstep(0.0, 0.30, t);
+  const neck = -0.0072 * Math.exp(-Math.pow((t - 0.755) / 0.085, 2));
+  const head = 0.0132 * Math.exp(-Math.pow((t - 0.925) / 0.115, 2));
+  const nose = -0.0125 * smoothstep(0.955, 1.0, t);
+  let r = rootTaper + chest + neck + head + nose;
+  return Math.max(0.0016, r);
+}
+
+function bodySquash(t) {
+  // Slightly taller-than-wide chest, round head
+  return lerp(0.94, 1.02, smoothstep(0.2, 0.9, t));
+}
+
+const bodyGeo = buildTube({
+  segments: 190,
+  radial: 96,
+  spine: bodySpine,
+  radius: bodyRadius,
+  squash: bodySquash,
+  capStart: true,
+  capEnd: true
+});
+const bodyMesh = new THREE.Mesh(bodyGeo, chrome);
+parts.push(bodyMesh);
+
+/* ---------- The needle bill: long tapering chrome spike ---------- */
+/* Real proportions: bill ≈ 45% of body length, dead straight, needle-fine. */
+
+const HEAD_TIP = bodySpine(1.0);
+
+function billSpine(t) {
+  // starts inside the head, extends forward with a whisper of downward droop
+  const z = lerp(HEAD_TIP.z - 0.012, HEAD_TIP.z + 0.043, t);
+  const y = HEAD_TIP.y + 0.0015 - 0.0035 * t * t;
+  return new THREE.Vector3(0, y, z);
+}
+function billRadius(t) {
+  // fat where it merges into the face, needle-thin at the tip
+  const base = 0.0072 * Math.exp(-Math.pow(t / 0.30, 2));
+  const shaft = 0.00185 * Math.pow(1.0 - t, 0.72);
+  return Math.max(0.00012, base * 0.55 + shaft + 0.00035 * (1.0 - t));
+}
+const billGeo = buildTube({
+  segments: 150,
+  radial: 64,
+  spine: billSpine,
+  radius: billRadius,
+  squash: (t) => lerp(0.80, 1.0, t),
+  capStart: false,
+  capEnd: true
+});
+parts.push(new THREE.Mesh(billGeo, chrome));
+
+/* ---------- Wings: two smooth teardrop SHEETS (motion-blur frozen) ---------- */
+/*
+   A wing is a thin lens-shaped sheet: teardrop planform (broad at the shoulder,
+   drawn to a point at the tip), swept and cambered, with a smooth soft edge so
+   it reads as liquid rather than a plate. Built as a closed shell:
+   top surface + bottom surface welded around a rounded rim.
+*/
+
+function buildWingSheet(sign, beat) {
+  // sign: +1 right, -1 left. beat: 0..1 pose parameter (0 = down-ish, 1 = up)
+  const NU = 132; // along span
+  const NV = 56;  // across chord
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  const SPAN = 0.088;
+
+  // Teardrop planform: chord as a function of span position u.
+  function chordAt(u) {
+    // broad near shoulder, gentle bulge, tapering to a fine point
+    const bulge = Math.pow(Math.sin(Math.PI * Math.pow(u, 0.62)), 0.92);
+    const c = 0.0245 * bulge * (1.0 - 0.30 * u) + 0.0022 * (1.0 - u);
+    return Math.max(0.00018, c);
+  }
+  // Camber / arc of the wing in space
+  function spanPoint(u) {
+    // Sweep back and rise: the classic frozen blur arc of a hovering hummer.
+    const x = sign * SPAN * Math.pow(u, 0.94);
+    const sweep = -0.030 * Math.pow(u, 1.55);              // backwards sweep
+    const rise = 0.048 * Math.pow(u, 1.35) * (beat * 2 - 1); // up or down stroke
+    const droop = -0.010 * Math.pow(u, 2.2) * (1 - beat);
+    const y = rise + droop + 0.004 * Math.sin(Math.PI * u) * (beat * 2 - 1);
+    const z = sweep - 0.004 * Math.sin(Math.PI * u);
+    return new THREE.Vector3(x, y, z);
+  }
+  // Local twist (leading edge pitches down towards the tip)
+  function twistAt(u) {
+    return (sign) * (0.42 * (beat * 2 - 1)) * Math.pow(u, 1.2) + sign * 0.10;
+  }
+  // Sheet thickness: thick-ish at the root spar, whisper thin at the trailing edge
+  function thickAt(u, v) {
+    // v in [-1,1] across chord (-1 leading, +1 trailing)
+    const spanTaper = 0.0058 * Math.pow(1.0 - u, 0.60) + 0.00055;
+    // fat near the leading edge, thin at trailing edge -> airfoil-ish lens
+    const prof = Math.pow(Math.max(0.0, 1.0 - v * v), 0.62);
+    const le = 1.0 + 0.55 * smoothstep(0.0, -1.0, v);
+    return spanTaper * prof * le;
+  }
+
+  // Build a closed shell: for each (u, v) we place top and bottom rings by
+  // walking v from leading edge around through trailing edge and back.
+  for (let i = 0; i <= NU; i++) {
+    const u = i / NU;
+    const P = spanPoint(u);
+    const c = chordAt(u);
+    const tw = twistAt(u);
+
+    // Local frame: chordwise axis (z-ish), thickness axis (y-ish), rotated by twist
+    const chordDir = new THREE.Vector3(0, Math.sin(tw), Math.cos(tw));
+    const thickDir = new THREE.Vector3(0, Math.cos(tw), -Math.sin(tw));
+
+    for (let j = 0; j <= NV; j++) {
+      // Walk the closed contour: j/NV in [0,1] maps around the lens.
+      const a = (j / NV) * Math.PI * 2.0;
+      const v = -Math.cos(a);           // -1 -> +1 -> -1
+      const side = Math.sin(a) >= 0 ? 1 : -1;
+      const th = thickAt(u, v) * Math.abs(Math.sin(a));
+
+      // chord offset: shift so the leading edge sits slightly forward
+      const chordOff = v * c * 0.5 - c * 0.10;
+
+      const px = P.x + chordDir.x * chordOff + thickDir.x * th * side;
+      const py = P.y + chordDir.y * chordOff + thickDir.y * th * side;
+      const pz = P.z + chordDir.z * chordOff + thickDir.z * th * side;
+
+      positions.push(px, py, pz);
+      uvs.push(j / NV, u);
+    }
+  }
+
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      const a = i * (NV + 1) + j;
+      const b = a + 1;
+      const cIdx = (i + 1) * (NV + 1) + j;
+      const d = cIdx + 1;
+      if (sign > 0) {
+        indices.push(a, cIdx, b, b, cIdx, d);
+      } else {
+        indices.push(a, b, cIdx, b, d, cIdx);
+      }
+    }
+  }
+
+  // Close the tip with a fan to a single point
+  const tipP = spanPoint(1.0);
+  const tipIdx = positions.length / 3;
+  positions.push(tipP.x, tipP.y, tipP.z);
+  uvs.push(0.5, 1.0);
+  const lastRing = NU * (NV + 1);
+  for (let j = 0; j < NV; j++) {
+    if (sign > 0) indices.push(tipIdx, lastRing + j + 1, lastRing + j);
+    else indices.push(tipIdx, lastRing + j, lastRing + j + 1);
+  }
+  // Close the root with a fan too (it will be buried in the shoulder blend)
+  const rootP = spanPoint(0.0);
+  const rootIdx = positions.length / 3;
+  positions.push(rootP.x, rootP.y, rootP.z);
+  uvs.push(0.5, 0.0);
+  for (let j = 0; j < NV; j++) {
+    if (sign > 0) indices.push(rootIdx, j, j + 1);
+    else indices.push(rootIdx, j + 1, j);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* Shoulder blend: a molten fillet that fuses each wing root into the back,
+   so there is no visible joint — the pour is continuous. */
+function buildShoulderBlob(sign) {
+  const geo = new THREE.SphereGeometry(0.0155, 48, 32);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    // stretch outward along +/-x and flatten vertically into a teardrop pad
+    const nx = v.x / 0.0155, ny = v.y / 0.0155, nz = v.z / 0.0155;
+    v.x *= 1.35 + 0.55 * Math.max(0, nx * sign);
+    v.y *= 0.72;
+    v.z *= 1.05 - 0.25 * Math.max(0, -nz);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const WING_ANCHOR = new THREE.Vector3(0, 0, 0);
+{
+  const p = bodySpine(0.60);
+  WING_ANCHOR.set(0, p.y + 0.0125, p.z + 0.002);
+}
+
+const wingBeats = [0.87, 0.16]; // right wing up-stroke, left wing down-stroke
+[1, -1].forEach((sign, idx) => {
+  const wing = new THREE.Mesh(buildWingSheet(sign, wingBeats[idx]), chrome);
+  wing.position.copy(WING_ANCHOR);
+  wing.position.x = sign * 0.0125;
+  // slight overall dihedral / rake so the pair reads as a frozen beat
+  wing.rotation.z = sign * (0.10 + 0.16 * (wingBeats[idx] - 0.5));
+  wing.rotation.y = sign * -0.16;
+  parts.push(wing);
+
+  const blob = new THREE.Mesh(buildShoulderBlob(sign), chrome);
+  blob.position.copy(WING_ANCHOR);
+  blob.position.x = sign * 0.0085;
+  blob.position.y -= 0.001;
+  blob.rotation.z = sign * 0.20;
+  parts.push(blob);
+});
+
+/* ---------- Tail: flowing molten ribbons ---------- */
+/*
+   Five splayed ribbons pouring out of the tail root, each a thin twisting
+   sheet that widens then tapers to a liquid point.
+*/
+
+const TAIL_ROOT = bodySpine(0.0).clone();
+
+function buildTailRibbon(spreadAngle, droop, length, width, twistAmt, curl) {
+  const NU = 96;
+  const NV = 26;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  const dirX = Math.sin(spreadAngle);
+  const dirZ = -Math.cos(spreadAngle);
+
+  function spanPoint(u) {
+    const L = length * u;
+    // gentle S-curve pour: dips then flares
+    const sag = -droop * (u * u) + curl * Math.pow(u, 3.0);
+    const x = dirX * L * (1.0 + 0.22 * u * u);
+    const z = dirZ * L;
+    const y = sag + 0.006 * Math.sin(Math.PI * u * 0.85);
+    return new THREE.Vector3(x, y, z);
+  }
+  function widthAt(u) {
+    // narrow at root, widest at ~55%, drawn to a liquid point
+    const w = width * (0.42 + 0.85 * Math.sin(Math.PI * Math.pow(u, 0.78)));
+    const taper = Math.pow(1.0 - Math.pow(u, 2.4), 0.55);
+    return Math.max(0.00012, w * taper + 0.0007 * (1 - u));
+  }
+  function thickAt(u) {
+    return Math.max(0.00016, 0.0022 * Math.pow(1.0 - u, 0.75) + 0.00035);
+  }
+  function twistAt(u) {
+    return twistAmt * Math.pow(u, 1.3);
+  }
+
+  for (let i = 0; i <= NU; i++) {
+    const u = i / NU;
+    const P = spanPoint(u);
+    const w = widthAt(u);
+    const th = thickAt(u);
+    const tw = twistAt(u);
+
+    // ribbon local axes: across-ribbon roughly world X rotated about the span
+    const across = new THREE.Vector3(Math.cos(spreadAngle), 0, Math.sin(spreadAngle));
+    const up = new THREE.Vector3(0, 1, 0);
+    // apply twist about the ribbon's own long axis
+    const axis = new THREE.Vector3(dirX, 0, dirZ).normalize();
+    across.applyAxisAngle(axis, tw).normalize();
+    up.applyAxisAngle(axis, tw).normalize();
+
+    for (let j = 0; j <= NV; j++) {
+      const a = (j / NV) * Math.PI * 2.0;
+      const cAcross = -Math.cos(a) * w * 0.5;
+      const cUp = Math.sin(a) * th * Math.pow(Math.max(0, Math.sin(Math.acos(clamp(-Math.cos(a) , -1, 1)))), 0.35);
+      const px = P.x + across.x * cAcross + up.x * cUp;
+      const py = P.y + across.y * cAcross + up.y * cUp;
+      const pz = P.z + across.z * cAcross + up.z * cUp;
+      positions.push(px, py, pz);
+      uvs.push(j / NV, u);
+    }
+  }
+
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      const a = i * (NV + 1) + j;
+      const b = a + 1;
+      const c = (i + 1) * (NV + 1) + j;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  // tip fan
+  const tipP = spanPoint(1.0);
+  const tipIdx = positions.length / 3;
+  positions.push(tipP.x, tipP.y, tipP.z);
+  uvs.push(0.5, 1.0);
+  const lastRing = NU * (NV + 1);
+  for (let j = 0; j < NV; j++) indices.push(tipIdx, lastRing + j + 1, lastRing + j);
+  // root fan
+  const rootP = spanPoint(0.0);
+  const rootIdx = positions.length / 3;
+  positions.push(rootP.x, rootP.y, rootP.z);
+  uvs.push(0.5, 0.0);
+  for (let j = 0; j < NV; j++) indices.push(rootIdx, j, j + 1);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const tailGroup = new THREE.Group();
+tailGroup.position.copy(TAIL_ROOT);
+tailGroup.position.z += 0.004;
+tailGroup.position.y += 0.002;
+tailGroup.rotation.x = -0.24; // tail cocked downward/back like a hovering bird
+
+const ribbonSpecs = [
+  { ang: -0.52, droop: 0.020, len: 0.052, w: 0.0092, tw: -0.55, curl: 0.012 },
+  { ang: -0.27, droop: 0.014, len: 0.060, w: 0.0105, tw: -0.30, curl: 0.009 },
+  { ang:  0.00, droop: 0.009, len: 0.064, w: 0.0112, tw:  0.00, curl: 0.006 },
+  { ang:  0.27, droop: 0.014, len: 0.060, w: 0.0105, tw:  0.30, curl: 0.009 },
+  { ang:  0.52, droop: 0.020, len: 0.052, w: 0.0092, tw:  0.55, curl: 0.012 }
+];
+ribbonSpecs.forEach((s) => {
+  const r = new THREE.Mesh(
+    buildTailRibbon(s.ang, s.droop, s.len, s.w, s.tw, s.curl),
+    chrome
+  );
+  tailGroup.add(r);
+});
+
+/* Tail-root fillet so the ribbons emerge from the body as one pour */
+{
+  const g = new THREE.SphereGeometry(0.0115, 48, 32);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.z *= 1.55;
+    v.y *= 0.82;
+    v.x *= 1.18;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, chrome);
+  m.position.copy(TAIL_ROOT);
+  m.position.z += 0.006;
+  m.position.y += 0.0015;
+  parts.push(m);
+}
+
+/* ---------- Crown ridge: a subtle molten crest over the skull ---------- */
+{
+  const crest = buildTube({
+    segments: 60,
+    radial: 40,
+    spine: (t) => {
+      const p = bodySpine(lerp(0.80, 0.985, t));
+      return new THREE.Vector3(0, p.y + 0.0088 - 0.0025 * t * t, p.z);
+    },
+    radius: (t) => Math.max(0.00035, 0.0042 * Math.sin(Math.PI * clamp(t, 0, 1)) + 0.0006),
+    squash: () => 0.55,
+    capStart: true,
+    capEnd: true
+  });
+  parts.push(new THREE.Mesh(crest, chrome));
+}
+
+/* ---------- Throat gorget swell: a smooth liquid bulge under the chin ---------- */
+{
+  const g = new THREE.SphereGeometry(0.0105, 48, 32);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    v.z *= 1.25;
+    v.y *= 0.82;
+    v.x *= 0.92;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, chrome);
+  const anchor = bodySpine(0.815);
+  m.position.set(0, anchor.y - 0.0055, anchor.z + 0.0055);
+  parts.push(m);
+}
+
+/* ---------- Eye beads: tiny darker chrome spheres, still seamless-looking ---------- */
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0e1116,
+  metalness: 1.0,
+  roughness: 0.08,
+  envMap: envMap,
+  envMapIntensity: 1.2,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03
+});
+{
+  const eyeAnchor = bodySpine(0.905);
+  [1, -1].forEach((s) => {
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.0026, 24, 18), eyeMat);
+    e.position.set(s * 0.0092, eyeAnchor.y + 0.0032, eyeAnchor.z + 0.0055);
+    e.castShadow = true;
+    bird.add(e);
+  });
+}
+
+/* ---------- Feet: two tiny tucked chrome curls ---------- */
+[1, -1].forEach((s) => {
+  const g = buildTube({
+    segments: 40,
+    radial: 20,
+    spine: (t) => {
+      const base = bodySpine(0.36);
+      const ang = lerp(-0.2, 2.4, t);
+      return new THREE.Vector3(
+        s * (0.006 + 0.004 * Math.sin(t * 2.0)),
+        base.y - 0.0175 - 0.008 * Math.sin(ang * 0.6),
+        base.z + 0.004 - 0.010 * t
+      );
+    },
+    radius: (t) => Math.max(0.0003, 0.0016 * (1.0 - 0.75 * t) + 0.0003),
+    squash: () => 1.0,
+    capStart: true,
+    capEnd: true
+  });
+  parts.push(new THREE.Mesh(g, chrome));
+});
+
+/* ---------- Assemble ---------- */
+parts.forEach((m) => {
+  m.castShadow = true;
+  m.receiveShadow = true;
+  bird.add(m);
+});
+tailGroup.children.forEach((m) => {
+  m.castShadow = true;
+  m.receiveShadow = true;
+});
+bird.add(tailGroup);
+
+// Centre the bird on the origin horizontally and float it at HOVER_Y.
+const bbox = new THREE.Box3().setFromObject(bird);
+const center = bbox.getCenter(new THREE.Vector3());
+bird.children.forEach((c) => {
+  c.position.x -= center.x;
+  c.position.z -= center.z;
+  c.position.y -= center.y;
+});
+bird.position.set(0, HOVER_Y, 0);
+
+// A gentle overall scale so the bird reads well in frame (real-ish ~9 cm body)
+bird.scale.setScalar(1.9);
+
+// Slight body attitude: nose-up hover, subtle roll for dynamism
+bird.rotation.x = -0.10;
+bird.rotation.z = 0.045;
+
+// Refresh bounds for the pool + shadow framing
+const finalBox = new THREE.Box3().setFromObject(bird);
+const finalSize = finalBox.getSize(new THREE.Vector3());
+pool.scale.setScalar(Math.max(0.6, finalSize.x * 0.55));
+
+/* ============================================================
+   Contact-shadow softening: aim the key light's shadow camera
+   ============================================================ */
+key.target.position.set(0, HOVER_Y, 0);
+scene.add(key.target);
+
+/* ============================================================
+   Animation
+   ============================================================ */
+
+const clock = new THREE.Clock();
+let elapsed = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  elapsed += dt;
+
+  // Hover bob + micro-sway: the "frozen beat" still breathes.
+  const bob = Math.sin(elapsed * 1.35) * 0.006 + Math.sin(elapsed * 2.7) * 0.002;
+  bird.position.y = HOVER_Y + bob;
+  bird.rotation.z = 0.045 + Math.sin(elapsed * 0.9) * 0.02;
+  bird.rotation.x = -0.10 + Math.sin(elapsed * 1.1 + 1.0) * 0.015;
+
+  // Kicker light drifts to keep the chrome alive
+  kicker.position.x = Math.sin(elapsed * 0.42) * 0.8;
+  kicker.position.z = -0.9 + Math.cos(elapsed * 0.42) * 0.35;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+});
+
+animate();
+</script>
+</body>
+</html>

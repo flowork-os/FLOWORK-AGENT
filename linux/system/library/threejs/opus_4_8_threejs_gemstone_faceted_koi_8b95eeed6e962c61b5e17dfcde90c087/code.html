@@ -1,0 +1,1223 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Faceted Crystal Koi</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0a0c; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: rgba(255, 225, 225, 0.42); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none; text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Faceted Crystal Koi &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0b0e);
+scene.fog = new THREE.FogExp2(0x0b0b0e, 0.018);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(6.2, 3.0, 7.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.65;
+controls.minDistance = 4.0;
+controls.maxDistance = 22.0;
+controls.maxPolarAngle = Math.PI * 0.86;
+controls.target.set(0, 0.25, 0);
+
+/* ============================================================
+   Environment (procedural studio env map for refraction/sparkle)
+   ============================================================ */
+function makeStudioEnvironment() {
+  const env = new THREE.Scene();
+
+  // Gradient dome
+  const domeGeo = new THREE.SphereGeometry(40, 32, 24);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      top:    { value: new THREE.Color(0x232838) },
+      bottom: { value: new THREE.Color(0x05050a) },
+      horiz:  { value: new THREE.Color(0x120d16) }
+    },
+    vertexShader: `
+      varying vec3 vPos;
+      void main() {
+        vPos = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      uniform vec3 top; uniform vec3 bottom; uniform vec3 horiz;
+      varying vec3 vPos;
+      void main() {
+        float h = vPos.y * 0.5 + 0.5;
+        vec3 c = mix(bottom, horiz, smoothstep(0.0, 0.5, h));
+        c = mix(c, top, smoothstep(0.45, 1.0, h));
+        gl_FragColor = vec4(c, 1.0);
+      }
+    `
+  });
+  env.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // Soft area "light cards" that the crystal will pick up as bright reflections
+  const cards = [
+    { pos: [  0,  16,   4 ], scale: [16, 10], color: 0xfff4ea, intensity: 7.5, rotX: -Math.PI / 2.1 },
+    { pos: [-14,   7, -10 ], scale: [12, 12], color: 0xffd6d0, intensity: 4.0, rotY:  Math.PI * 0.32 },
+    { pos: [ 15,   5,  -7 ], scale: [11, 11], color: 0xcfe0ff, intensity: 3.4, rotY: -Math.PI * 0.42 },
+    { pos: [  2,  -9,  10 ], scale: [14,  9], color: 0xff9aa6, intensity: 1.8, rotX:  Math.PI / 2.2 },
+    { pos: [ -6,   3,  16 ], scale: [10,  8], color: 0xffe7c8, intensity: 2.2, rotY:  Math.PI }
+  ];
+  for (const c of cards) {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(c.scale[0], c.scale[1]),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(c.color).multiplyScalar(c.intensity), side: THREE.DoubleSide })
+    );
+    m.position.set(c.pos[0], c.pos[1], c.pos[2]);
+    if (c.rotX) m.rotation.x = c.rotX;
+    if (c.rotY) m.rotation.y = c.rotY;
+    env.add(m);
+  }
+
+  // A ring of small bright points => crisp sparkle glints across facets
+  for (let i = 0; i < 14; i++) {
+    const a = (i / 14) * Math.PI * 2;
+    const r = 22;
+    const s = new THREE.Mesh(
+      new THREE.SphereGeometry(0.9, 8, 6),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color().setHSL((i / 14) * 0.16 + 0.94, 0.35, 0.72).multiplyScalar(4.5)
+      })
+    );
+    s.position.set(Math.cos(a) * r, 4 + Math.sin(i * 1.7) * 7, Math.sin(a) * r);
+    env.add(s);
+  }
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const rt = pmrem.fromScene(env, 0.02);
+  pmrem.dispose();
+  domeGeo.dispose();
+  domeMat.dispose();
+  return rt.texture;
+}
+
+const envMap = makeStudioEnvironment();
+scene.environment = envMap;
+
+/* ============================================================
+   Lighting: key + fill + rim + hemisphere
+   ============================================================ */
+scene.add(new THREE.HemisphereLight(0x3a4460, 0x120a0e, 0.55));
+
+const keyLight = new THREE.DirectionalLight(0xfff1e2, 3.1);
+keyLight.position.set(5.5, 8.5, 5.0);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 32;
+keyLight.shadow.camera.left = -7;
+keyLight.shadow.camera.right = 7;
+keyLight.shadow.camera.top = 7;
+keyLight.shadow.camera.bottom = -7;
+keyLight.shadow.bias = -0.0012;
+keyLight.shadow.normalBias = 0.02;
+keyLight.shadow.radius = 3.5;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0x8fb4ff, 0.85);
+fillLight.position.set(-6.5, 2.0, 4.5);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xff5a72, 1.9);
+rimLight.position.set(-3.0, 3.5, -7.5);
+scene.add(rimLight);
+
+// Warm bounce from below, sells the translucent glowing belly
+const bellyGlow = new THREE.PointLight(0xff2d4a, 6.0, 9.0, 2.0);
+bellyGlow.position.set(0, -1.15, 0);
+scene.add(bellyGlow);
+
+const sparkLight = new THREE.PointLight(0xffd9e6, 3.0, 8.0, 2.0);
+sparkLight.position.set(1.6, 1.4, 1.8);
+scene.add(sparkLight);
+
+/* ============================================================
+   Shadow-only ground
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.46 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.05;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint radial pool of light on the floor (not shadow-receiving, purely ambience)
+const poolCanvasMat = new THREE.MeshBasicMaterial({
+  color: 0x2a1220, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false
+});
+const pool = new THREE.Mesh(new THREE.CircleGeometry(5.2, 64), poolCanvasMat);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = -2.045;
+scene.add(pool);
+
+/* ============================================================
+   Utility: deterministic pseudo-random
+   ============================================================ */
+let _seed = 20260720;
+function rand() {
+  _seed = (_seed * 1664525 + 1013904223) % 4294967296;
+  return _seed / 4294967296;
+}
+function randRange(a, b) { return a + (b - a) * rand(); }
+
+/* ============================================================
+   KOI PROFILE
+   Body runs along +X (head) to -X (tail). Length ~ 3.6 units.
+   ============================================================ */
+const BODY_LEN = 3.55;
+const HEAD_X   =  1.85;   // nose
+const TAIL_X   = -1.70;   // caudal peduncle end
+
+// t in [0,1] : 0 = nose, 1 = tail base
+function xAt(t) { return HEAD_X + (TAIL_X - HEAD_X) * t; }
+
+// Half-width (z) of the body at parameter t
+function bodyHalfWidth(t) {
+  // Fat mid-body, tapered snout and peduncle — classic koi
+  const s = Math.sin(Math.pow(THREE.MathUtils.clamp(t, 0, 1), 0.78) * Math.PI);
+  const w = 0.052 + 0.46 * Math.pow(s, 0.86);
+  // slim the very tail
+  const taper = THREE.MathUtils.smoothstep(1.0 - t, 0.0, 0.20);
+  return w * (0.20 + 0.80 * taper) + 0.028;
+}
+
+// Half-height (y) of the body at parameter t
+function bodyHalfHeight(t) {
+  const s = Math.sin(Math.pow(THREE.MathUtils.clamp(t, 0, 1), 0.72) * Math.PI);
+  const h = 0.075 + 0.60 * Math.pow(s, 0.80);
+  const taper = THREE.MathUtils.smoothstep(1.0 - t, 0.0, 0.18);
+  return h * (0.22 + 0.78 * taper) + 0.032;
+}
+
+// Vertical offset of the body centre-line (gentle arch of the back + swim curve)
+function spineY(t) {
+  return 0.16 * Math.sin(t * Math.PI * 0.92) - 0.05 * t;
+}
+// Lateral S-curve of the spine (frozen mid-swim)
+function spineZ(t) {
+  return 0.30 * Math.sin(t * 2.35 + 0.35) - 0.10;
+}
+
+// Cross-section shape: koi are rounded-triangular — broad belly, keeled back
+function sectionRadius(theta) {
+  // theta = 0 -> top (back), PI -> bottom (belly)
+  const c = Math.cos(theta);
+  return 1.0 - 0.10 * c * c * c + 0.04 * Math.cos(theta * 2.0);
+}
+
+/* Build a point on the body surface (u along body, v around section) */
+const _tmpV = new THREE.Vector3();
+function bodyPoint(t, theta, inflate = 1.0) {
+  const hw = bodyHalfWidth(t) * inflate;
+  const hh = bodyHalfHeight(t) * inflate;
+  const r  = sectionRadius(theta);
+  const y = Math.cos(theta) * hh * r + spineY(t);
+  const z = Math.sin(theta) * hw * r + spineZ(t);
+  return _tmpV.set(xAt(t), y, z);
+}
+
+/* ============================================================
+   FACETED BODY GEOMETRY
+   Build a low-poly ring lattice, then convert to flat-shaded
+   triangles with per-facet random "cut" displacement so every
+   face reads as a distinct gemstone plane.
+   ============================================================ */
+function buildFacetedBody(rings, segs) {
+  const positions = [];
+  const colors = [];
+
+  // Build vertex grid
+  const grid = [];
+  for (let i = 0; i <= rings; i++) {
+    const t = i / rings;
+    const row = [];
+    for (let j = 0; j < segs; j++) {
+      const theta = (j / segs) * Math.PI * 2;
+      const p = bodyPoint(t, theta).clone();
+
+      // Facet jitter: pull vertices onto irregular crystal planes
+      const jitter = 0.030 * Math.sin(i * 2.7 + j * 1.9) + 0.024 * Math.cos(j * 3.1 - i * 1.3);
+      const scale = 1.0 + jitter;
+      p.y = (p.y - spineY(t)) * scale + spineY(t);
+      p.z = (p.z - spineZ(t)) * scale + spineZ(t);
+      p.x += 0.014 * Math.sin(j * 2.2 + i * 1.1);
+
+      row.push(p);
+    }
+    grid.push(row);
+  }
+
+  // Nose and tail cap points
+  const nose = new THREE.Vector3(HEAD_X + 0.20, spineY(0) + 0.02, spineZ(0));
+  const tailTip = new THREE.Vector3(TAIL_X - 0.06, spineY(1), spineZ(1));
+
+  // Colour ramp: deep ruby at the head -> clear white at the tail
+  const cRuby   = new THREE.Color(0x8e0018);
+  const cCrim   = new THREE.Color(0xd6112e);
+  const cRose   = new THREE.Color(0xff6a7e);
+  const cClear  = new THREE.Color(0xfff2f4);
+
+  const _c = new THREE.Color();
+  function colorAt(t, theta) {
+    // t: 0 head -> 1 tail
+    let c;
+    if (t < 0.42) {
+      c = _c.copy(cRuby).lerp(cCrim, THREE.MathUtils.smoothstep(t, 0.0, 0.42));
+    } else if (t < 0.74) {
+      c = _c.copy(cCrim).lerp(cRose, THREE.MathUtils.smoothstep(t, 0.42, 0.74));
+    } else {
+      c = _c.copy(cRose).lerp(cClear, THREE.MathUtils.smoothstep(t, 0.74, 1.0));
+    }
+    // Belly (theta ~ PI) is paler / more translucent white
+    const belly = Math.max(0, -Math.cos(theta));
+    c = c.clone().lerp(new THREE.Color(0xffe3e6), belly * 0.45);
+    return c;
+  }
+
+  function pushTri(a, b, cpt, ta, tb, tc, tha, thb, thc) {
+    positions.push(a.x, a.y, a.z, b.x, b.y, b.z, cpt.x, cpt.y, cpt.z);
+    // one flat colour per facet with slight per-facet variance => gem sparkle
+    const tm = (ta + tb + tc) / 3;
+    const thm = (tha + thb + thc) / 3;
+    const col = colorAt(tm, thm);
+    const v = 0.82 + rand() * 0.36;
+    for (let k = 0; k < 3; k++) colors.push(col.r * v, col.g * v, col.b * v);
+  }
+
+  // Body quads -> 2 triangles each (flat shaded, split for hard facet edges)
+  for (let i = 0; i < rings; i++) {
+    const t0 = i / rings, t1 = (i + 1) / rings;
+    for (let j = 0; j < segs; j++) {
+      const j1 = (j + 1) % segs;
+      const th0 = (j / segs) * Math.PI * 2;
+      const th1 = ((j + 1) / segs) * Math.PI * 2;
+      const a = grid[i][j], b = grid[i][j1], c = grid[i + 1][j1], d = grid[i + 1][j];
+      // alternate diagonal for a brilliant-cut zig-zag lattice
+      if ((i + j) % 2 === 0) {
+        pushTri(a, b, c, t0, t0, t1, th0, th1, th1);
+        pushTri(a, c, d, t0, t1, t1, th0, th1, th0);
+      } else {
+        pushTri(a, b, d, t0, t0, t1, th0, th1, th0);
+        pushTri(b, c, d, t0, t1, t1, th1, th1, th0);
+      }
+    }
+  }
+
+  // Nose cap
+  for (let j = 0; j < segs; j++) {
+    const j1 = (j + 1) % segs;
+    const th0 = (j / segs) * Math.PI * 2;
+    const th1 = ((j + 1) / segs) * Math.PI * 2;
+    pushTri(nose, grid[0][j1], grid[0][j], 0, 0, 0, th0, th1, th0);
+  }
+  // Tail cap
+  for (let j = 0; j < segs; j++) {
+    const j1 = (j + 1) % segs;
+    const th0 = (j / segs) * Math.PI * 2;
+    const th1 = ((j + 1) / segs) * Math.PI * 2;
+    pushTri(tailTip, grid[rings][j], grid[rings][j1], 1, 1, 1, th0, th1, th0);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.computeVertexNormals();   // per-triangle since verts are unshared => flat facets
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/* ============================================================
+   MATERIALS
+   ============================================================ */
+const bodyMaterial = new THREE.MeshPhysicalMaterial({
+  vertexColors: true,
+  metalness: 0.0,
+  roughness: 0.045,
+  transmission: 0.82,
+  thickness: 0.85,
+  ior: 1.82,
+  attenuationColor: new THREE.Color(0xff1030),
+  attenuationDistance: 1.55,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03,
+  iridescence: 0.35,
+  iridescenceIOR: 1.6,
+  iridescenceThicknessRange: [120, 520],
+  specularIntensity: 1.0,
+  envMapIntensity: 1.55,
+  flatShading: true,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 1.0
+});
+
+// A faint inner "core" material: dense ruby that glows through the transmission
+const coreMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x53000c,
+  emissive: 0xb00020,
+  emissiveIntensity: 0.85,
+  metalness: 0.0,
+  roughness: 0.18,
+  flatShading: true,
+  transparent: true,
+  opacity: 0.55,
+  envMapIntensity: 1.0
+});
+
+// Thin faceted blade fins — highly iridescent, prism-like
+function makeFinMaterial(baseColor, opacity) {
+  return new THREE.MeshPhysicalMaterial({
+    color: baseColor,
+    metalness: 0.0,
+    roughness: 0.06,
+    transmission: 0.94,
+    thickness: 0.14,
+    ior: 1.68,
+    attenuationColor: new THREE.Color(0xff5a70),
+    attenuationDistance: 0.9,
+    iridescence: 1.0,
+    iridescenceIOR: 1.9,
+    iridescenceThicknessRange: [180, 780],
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.05,
+    envMapIntensity: 2.0,
+    flatShading: true,
+    vertexColors: true,
+    side: THREE.DoubleSide,
+    transparent: true,
+    opacity
+  });
+}
+
+// Cabochon eye: dark garnet dome
+const garnetMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x2a0208,
+  metalness: 0.0,
+  roughness: 0.02,
+  transmission: 0.55,
+  thickness: 0.16,
+  ior: 1.79,
+  attenuationColor: new THREE.Color(0x5c0010),
+  attenuationDistance: 0.12,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.0,
+  envMapIntensity: 2.4,
+  side: THREE.FrontSide
+});
+
+const eyeRingMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xffd9dd,
+  metalness: 0.0,
+  roughness: 0.06,
+  transmission: 0.6,
+  thickness: 0.1,
+  ior: 1.7,
+  clearcoat: 1.0,
+  iridescence: 0.8,
+  iridescenceIOR: 1.8,
+  envMapIntensity: 1.8,
+  flatShading: true,
+  side: THREE.DoubleSide,
+  transparent: true,
+  opacity: 0.85
+});
+
+/* ============================================================
+   ROOT OBJECT — the single centered koi
+   ============================================================ */
+const koi = new THREE.Group();
+scene.add(koi);
+
+/* ---------- Body ---------- */
+const bodyGeo = buildFacetedBody(30, 16);
+const bodyMesh = new THREE.Mesh(bodyGeo, bodyMaterial);
+bodyMesh.castShadow = true;
+bodyMesh.receiveShadow = true;
+koi.add(bodyMesh);
+
+/* ---------- Inner ruby core (internal reflections / red sparks source) ---------- */
+const coreGeo = buildFacetedBody(14, 9);
+coreGeo.scale(0.985, 0.60, 0.60);
+// re-center the shrunken core onto the spine
+{
+  const pos = coreGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const t = THREE.MathUtils.clamp((HEAD_X - x / 0.985) / (HEAD_X - TAIL_X), 0, 1);
+    pos.setY(i, pos.getY(i) + spineY(t) * 0.40);
+    pos.setZ(i, pos.getZ(i) + spineZ(t) * 0.40);
+    pos.setX(i, x / 0.985 * 0.93);
+  }
+  pos.needsUpdate = true;
+  coreGeo.computeVertexNormals();
+  coreGeo.computeBoundingSphere();
+}
+const coreMesh = new THREE.Mesh(coreGeo, coreMaterial);
+koi.add(coreMesh);
+
+/* ---------- Faceted fin blade builder ----------
+   A fin is a fan of thin triangular crystal blades radiating from
+   a root point, each blade given thickness and a hard ridge so it
+   reads as a cut gem sliver.
+------------------------------------------------- */
+function buildFinBlades(opts) {
+  const {
+    bladeCount = 7,
+    innerR = 0.06,
+    lengthMin = 0.5,
+    lengthMax = 0.9,
+    spreadStart = -0.55,
+    spreadEnd = 0.55,
+    thickness = 0.028,
+    curl = 0.25,
+    droop = 0.0,
+    colorInner = new THREE.Color(0xff2a45),
+    colorOuter = new THREE.Color(0xffffff),
+    ribbon = 0.0
+  } = opts;
+
+  const positions = [];
+  const colors = [];
+  const _cc = new THREE.Color();
+
+  function addTri(p0, p1, p2, c0, c1, c2) {
+    positions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+    colors.push(c0.r, c0.g, c0.b, c1.r, c1.g, c1.b, c2.r, c2.g, c2.b);
+  }
+
+  // Fin lies in local XY plane, thickness along Z.
+  for (let b = 0; b < bladeCount; b++) {
+    const f = bladeCount === 1 ? 0.5 : b / (bladeCount - 1);
+    const ang = THREE.MathUtils.lerp(spreadStart, spreadEnd, f);
+    // length profile: longest in the middle-ish for a graceful flowing silhouette
+    const shape = Math.pow(Math.sin(Math.PI * (0.15 + 0.7 * f)), 0.55);
+    const len = THREE.MathUtils.lerp(lengthMin, lengthMax, shape) * (0.9 + 0.2 * rand());
+    const halfSpan = (Math.abs(spreadEnd - spreadStart) / Math.max(1, bladeCount - 1)) * 0.62;
+
+    // Root edge (two points), tip (one point) => blade
+    const rootA = new THREE.Vector3(Math.cos(ang - halfSpan) * innerR, Math.sin(ang - halfSpan) * innerR, 0);
+    const rootB = new THREE.Vector3(Math.cos(ang + halfSpan) * innerR, Math.sin(ang + halfSpan) * innerR, 0);
+
+    // Mid + tip with curl (bends the blade for a flowing, trailing look)
+    const dirA = ang - halfSpan * 0.15;
+    const midLen = len * 0.55;
+    const tipLen = len;
+    const curlA = curl * 0.55;
+    const mid = new THREE.Vector3(
+      Math.cos(dirA + curlA * 0.5) * midLen,
+      Math.sin(dirA + curlA * 0.5) * midLen - droop * 0.35 * midLen,
+      0
+    );
+    const tip = new THREE.Vector3(
+      Math.cos(dirA + curlA) * tipLen,
+      Math.sin(dirA + curlA) * tipLen - droop * tipLen,
+      0
+    );
+
+    // Widen a ribbon-like waist for flowing fins
+    const wA = new THREE.Vector3().copy(mid);
+    const wB = new THREE.Vector3().copy(mid);
+    const perp = new THREE.Vector3(-Math.sin(dirA), Math.cos(dirA), 0);
+    const waist = halfSpan * midLen * (1.0 + ribbon * 2.4);
+    wA.addScaledVector(perp, waist);
+    wB.addScaledVector(perp, -waist);
+
+    const zt = thickness * (0.65 + 0.5 * rand());
+
+    const cIn = _cc.copy(colorInner).clone();
+    const cMid = colorInner.clone().lerp(colorOuter, 0.45);
+    const cOut = colorOuter.clone();
+    const jv = 0.85 + rand() * 0.3;
+    const CI = cIn.clone().multiplyScalar(jv);
+    const CM = cMid.clone().multiplyScalar(jv);
+    const CO = cOut.clone().multiplyScalar(jv);
+
+    // Front + back shells with a raised central ridge (the "cut")
+    for (const sgn of [1, -1]) {
+      const ridgeMid = mid.clone(); ridgeMid.z = sgn * zt;
+      const ridgeTip = tip.clone(); ridgeTip.z = sgn * zt * 0.25;
+      const rA = rootA.clone(); rA.z = sgn * zt * 0.55;
+      const rB = rootB.clone(); rB.z = sgn * zt * 0.55;
+      const wAz = wA.clone(); wAz.z = 0;
+      const wBz = wB.clone(); wBz.z = 0;
+
+      if (sgn > 0) {
+        addTri(rA, rB, ridgeMid, CI, CI, CM);
+        addTri(rA, ridgeMid, wAz, CI, CM, CM);
+        addTri(rB, wBz, ridgeMid, CI, CM, CM);
+        addTri(wAz, ridgeMid, ridgeTip, CM, CM, CO);
+        addTri(ridgeMid, wBz, ridgeTip, CM, CM, CO);
+        addTri(wAz, ridgeTip, tip, CM, CO, CO);
+        addTri(wBz, tip, ridgeTip, CM, CO, CO);
+      } else {
+        addTri(rB, rA, ridgeMid, CI, CI, CM);
+        addTri(ridgeMid, rA, wAz, CM, CI, CM);
+        addTri(wBz, rB, ridgeMid, CM, CI, CM);
+        addTri(ridgeMid, wAz, ridgeTip, CM, CM, CO);
+        addTri(wBz, ridgeMid, ridgeTip, CM, CM, CO);
+        addTri(ridgeTip, wAz, tip, CO, CM, CO);
+        addTri(tip, wBz, ridgeTip, CO, CM, CO);
+      }
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+
+/* Helper to place a fin group on the body surface */
+function placeFin(mesh, t, theta, rot) {
+  const p = bodyPoint(t, theta, 0.92).clone();
+  mesh.position.copy(p);
+  if (rot) mesh.rotation.set(rot[0], rot[1], rot[2]);
+  return mesh;
+}
+
+const finGroup = new THREE.Group();
+koi.add(finGroup);
+
+function addFin(geo, mat, t, theta, rot, scale = 1) {
+  const m = new THREE.Mesh(geo, mat);
+  placeFin(m, t, theta, rot);
+  m.scale.setScalar(scale);
+  m.castShadow = true;
+  m.receiveShadow = false;
+  finGroup.add(m);
+  return m;
+}
+
+/* ---------- CAUDAL (tail) fin — big flowing double lobe ---------- */
+const tailMat = makeFinMaterial(0xffe9ee, 0.72);
+const tailUpperGeo = buildFinBlades({
+  bladeCount: 9,
+  innerR: 0.05,
+  lengthMin: 0.85,
+  lengthMax: 1.42,
+  spreadStart: 0.10,
+  spreadEnd: 1.30,
+  thickness: 0.030,
+  curl: 0.22,
+  droop: 0.0,
+  ribbon: 0.55,
+  colorInner: new THREE.Color(0xff8fa2),
+  colorOuter: new THREE.Color(0xffffff)
+});
+const tailLowerGeo = buildFinBlades({
+  bladeCount: 9,
+  innerR: 0.05,
+  lengthMin: 0.80,
+  lengthMax: 1.32,
+  spreadStart: -1.28,
+  spreadEnd: -0.08,
+  thickness: 0.030,
+  curl: -0.20,
+  droop: 0.0,
+  ribbon: 0.55,
+  colorInner: new THREE.Color(0xffa8b6),
+  colorOuter: new THREE.Color(0xffffff)
+});
+
+const tailAnchorT = 0.995;
+const tailAnchor = new THREE.Group();
+tailAnchor.position.set(xAt(tailAnchorT) - 0.06, spineY(tailAnchorT), spineZ(tailAnchorT));
+tailAnchor.rotation.y = Math.PI * 0.02;
+koi.add(tailAnchor);
+
+const tailUpper = new THREE.Mesh(tailUpperGeo, tailMat);
+tailUpper.rotation.y = Math.PI;          // point away from head (toward -X)
+tailUpper.rotation.z = 0.0;
+tailUpper.castShadow = true;
+tailAnchor.add(tailUpper);
+
+const tailLower = new THREE.Mesh(tailLowerGeo, tailMat);
+tailLower.rotation.y = Math.PI;
+tailLower.castShadow = true;
+tailAnchor.add(tailLower);
+
+// A subtle second fanned layer for depth / extra refractive flares
+const tailVeilGeo = buildFinBlades({
+  bladeCount: 11,
+  innerR: 0.04,
+  lengthMin: 0.55,
+  lengthMax: 1.05,
+  spreadStart: -1.05,
+  spreadEnd: 1.05,
+  thickness: 0.016,
+  curl: 0.0,
+  ribbon: 0.9,
+  colorInner: new THREE.Color(0xffc0cb),
+  colorOuter: new THREE.Color(0xffffff)
+});
+const tailVeil = new THREE.Mesh(tailVeilGeo, makeFinMaterial(0xffffff, 0.42));
+tailVeil.rotation.y = Math.PI;
+tailVeil.position.z = 0.02;
+tailVeil.scale.set(1.0, 1.05, 1.0);
+tailAnchor.add(tailVeil);
+
+/* ---------- DORSAL fin ---------- */
+const dorsalMat = makeFinMaterial(0xffd3da, 0.66);
+const dorsalGeo = buildFinBlades({
+  bladeCount: 10,
+  innerR: 0.05,
+  lengthMin: 0.24,
+  lengthMax: 0.55,
+  spreadStart: 0.30,
+  spreadEnd: 1.55,
+  thickness: 0.022,
+  curl: -0.30,
+  ribbon: 0.35,
+  colorInner: new THREE.Color(0xd8102e),
+  colorOuter: new THREE.Color(0xffd8de)
+});
+{
+  const dorsal = new THREE.Mesh(dorsalGeo, dorsalMat);
+  const t = 0.42;
+  dorsal.position.set(xAt(t) + 0.10, spineY(t) + bodyHalfHeight(t) * 0.80, spineZ(t));
+  dorsal.rotation.y = Math.PI * 0.5;     // fin plane = XY -> rotate into body's XY vertical plane along length
+  dorsal.rotation.z = 0.0;
+  // Reorient so blades fan backward and upward
+  dorsal.rotation.set(0, 0, 0);
+  dorsal.rotation.y = 0;
+  dorsal.scale.set(1, 1, 1);
+  dorsal.rotation.z = Math.PI * 0.62;    // fan tilts backward over the spine
+  dorsal.castShadow = true;
+  finGroup.add(dorsal);
+}
+
+/* ---------- PECTORAL fins (paired, flowing) ---------- */
+const pectoralMat = makeFinMaterial(0xffe0e6, 0.62);
+function makePectoralGeo(mirror) {
+  return buildFinBlades({
+    bladeCount: 8,
+    innerR: 0.05,
+    lengthMin: 0.40,
+    lengthMax: 0.86,
+    spreadStart: mirror ? -1.15 : -1.15,
+    spreadEnd: mirror ? 0.20 : 0.20,
+    thickness: 0.020,
+    curl: mirror ? -0.28 : -0.28,
+    droop: 0.12,
+    ribbon: 0.5,
+    colorInner: new THREE.Color(0xe01634),
+    colorOuter: new THREE.Color(0xfff4f6)
+  });
+}
+{
+  const tP = 0.30;
+  const y = spineY(tP) - bodyHalfHeight(tP) * 0.20;
+  const zOff = bodyHalfWidth(tP) * 0.90;
+
+  const pecL = new THREE.Mesh(makePectoralGeo(false), pectoralMat);
+  pecL.position.set(xAt(tP) + 0.02, y, spineZ(tP) + zOff);
+  pecL.rotation.set(0.15, -Math.PI * 0.62, -0.18);
+  pecL.castShadow = true;
+  finGroup.add(pecL);
+
+  const pecR = new THREE.Mesh(makePectoralGeo(true), pectoralMat);
+  pecR.position.set(xAt(tP) + 0.02, y, spineZ(tP) - zOff);
+  pecR.rotation.set(-0.15, Math.PI * 0.62, -0.18);
+  pecR.scale.z = -1;
+  pecR.castShadow = true;
+  finGroup.add(pecR);
+}
+
+/* ---------- PELVIC fins (small, paired, under the belly) ---------- */
+const pelvicMat = makeFinMaterial(0xffd6de, 0.55);
+{
+  const tV = 0.56;
+  const y = spineY(tV) - bodyHalfHeight(tV) * 0.78;
+  const zOff = bodyHalfWidth(tV) * 0.55;
+  const geoV = buildFinBlades({
+    bladeCount: 6,
+    innerR: 0.04,
+    lengthMin: 0.22,
+    lengthMax: 0.42,
+    spreadStart: -0.95,
+    spreadEnd: 0.05,
+    thickness: 0.016,
+    curl: -0.2,
+    droop: 0.2,
+    ribbon: 0.4,
+    colorInner: new THREE.Color(0xf03050),
+    colorOuter: new THREE.Color(0xffeef1)
+  });
+  const pvL = new THREE.Mesh(geoV, pelvicMat);
+  pvL.position.set(xAt(tV), y, spineZ(tV) + zOff);
+  pvL.rotation.set(0.35, -Math.PI * 0.66, -0.45);
+  pvL.castShadow = true;
+  finGroup.add(pvL);
+
+  const pvR = new THREE.Mesh(geoV, pelvicMat);
+  pvR.position.set(xAt(tV), y, spineZ(tV) - zOff);
+  pvR.rotation.set(-0.35, Math.PI * 0.66, -0.45);
+  pvR.scale.z = -1;
+  pvR.castShadow = true;
+  finGroup.add(pvR);
+}
+
+/* ---------- ANAL fin ---------- */
+{
+  const tA = 0.74;
+  const geoA = buildFinBlades({
+    bladeCount: 6,
+    innerR: 0.04,
+    lengthMin: 0.20,
+    lengthMax: 0.40,
+    spreadStart: -1.45,
+    spreadEnd: -0.35,
+    thickness: 0.016,
+    curl: 0.18,
+    ribbon: 0.35,
+    colorInner: new THREE.Color(0xf25070),
+    colorOuter: new THREE.Color(0xfff4f6)
+  });
+  const anal = new THREE.Mesh(geoA, makeFinMaterial(0xffdde3, 0.55));
+  anal.position.set(xAt(tA), spineY(tA) - bodyHalfHeight(tA) * 0.85, spineZ(tA));
+  anal.rotation.z = 0.10;
+  anal.castShadow = true;
+  finGroup.add(anal);
+}
+
+/* ============================================================
+   HEAD DETAILS: eyes (cabochon garnet domes), barbels, mouth ridge
+   ============================================================ */
+function makeCabochonEye() {
+  const g = new THREE.Group();
+
+  // Faceted socket bezel
+  const bezel = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.115, 0.135, 0.055, 9, 1, false),
+    eyeRingMaterial
+  );
+  bezel.rotation.x = Math.PI / 2;
+  bezel.castShadow = true;
+  g.add(bezel);
+
+  // Cabochon dome: smooth polished half-sphere of dark garnet
+  const domeGeo = new THREE.SphereGeometry(0.105, 40, 28, 0, Math.PI * 2, 0, Math.PI * 0.52);
+  const dome = new THREE.Mesh(domeGeo, garnetMaterial);
+  dome.rotation.x = Math.PI / 2;
+  dome.position.z = 0.018;
+  dome.castShadow = true;
+  g.add(dome);
+
+  // Flat back of the cabochon so it isn't hollow from behind
+  const back = new THREE.Mesh(
+    new THREE.CircleGeometry(0.105, 32),
+    new THREE.MeshStandardMaterial({ color: 0x180004, roughness: 0.5, metalness: 0.0 })
+  );
+  back.position.z = 0.017;
+  back.rotation.y = Math.PI;
+  g.add(back);
+
+  // Bright specular pip — the "polished" catchlight
+  const pip = new THREE.Mesh(
+    new THREE.SphereGeometry(0.022, 12, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffe6ea })
+  );
+  pip.position.set(-0.032, 0.036, 0.100);
+  g.add(pip);
+
+  // Faint garnet inner glow
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.062, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0x7a0016, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  glow.position.z = 0.03;
+  g.add(glow);
+
+  return g;
+}
+
+{
+  const tE = 0.085;
+  const yE = spineY(tE) + bodyHalfHeight(tE) * 0.30;
+  const zE = bodyHalfWidth(tE) * 0.86;
+
+  const eyeL = makeCabochonEye();
+  eyeL.position.set(xAt(tE), yE, spineZ(tE) + zE);
+  eyeL.rotation.set(0, 0.10, 0);
+  koi.add(eyeL);
+
+  const eyeR = makeCabochonEye();
+  eyeR.position.set(xAt(tE), yE, spineZ(tE) - zE);
+  eyeR.rotation.set(0, Math.PI - 0.10, 0);
+  koi.add(eyeR);
+}
+
+/* ---------- Mouth: a faceted cut ring at the snout ---------- */
+{
+  const lipMat = new THREE.MeshPhysicalMaterial({
+    color: 0x6d0014,
+    roughness: 0.10,
+    metalness: 0.0,
+    transmission: 0.5,
+    thickness: 0.2,
+    ior: 1.75,
+    clearcoat: 1.0,
+    flatShading: true,
+    envMapIntensity: 1.4,
+    side: THREE.DoubleSide
+  });
+  const lip = new THREE.Mesh(new THREE.TorusGeometry(0.085, 0.030, 5, 11), lipMat);
+  lip.position.set(HEAD_X + 0.155, spineY(0) - 0.055, spineZ(0));
+  lip.rotation.y = Math.PI / 2;
+  lip.scale.set(1.0, 0.72, 1.0);
+  lip.castShadow = true;
+  koi.add(lip);
+
+  // Barbels — thin crystal whiskers
+  const barbelMat = new THREE.MeshPhysicalMaterial({
+    color: 0xffc9d2,
+    roughness: 0.06,
+    metalness: 0.0,
+    transmission: 0.85,
+    thickness: 0.05,
+    ior: 1.7,
+    iridescence: 0.9,
+    iridescenceIOR: 1.8,
+    clearcoat: 1.0,
+    envMapIntensity: 2.0,
+    flatShading: true,
+    transparent: true,
+    opacity: 0.85
+  });
+  for (const s of [1, -1]) {
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(HEAD_X + 0.14, spineY(0) - 0.03, spineZ(0) + s * 0.10),
+      new THREE.Vector3(HEAD_X + 0.10, spineY(0) - 0.14, spineZ(0) + s * 0.17),
+      new THREE.Vector3(HEAD_X - 0.05, spineY(0) - 0.26, spineZ(0) + s * 0.20),
+      new THREE.Vector3(HEAD_X - 0.24, spineY(0) - 0.31, spineZ(0) + s * 0.17)
+    ]);
+    const bg = new THREE.TubeGeometry(curve, 22, 0.018, 4, false);
+    const bm = new THREE.Mesh(bg, barbelMat);
+    bm.castShadow = true;
+    koi.add(bm);
+  }
+}
+
+/* ---------- Gill plate: a crisp cut line of facets ---------- */
+{
+  const gillMat = new THREE.MeshPhysicalMaterial({
+    color: 0xff5c78,
+    roughness: 0.05,
+    metalness: 0.0,
+    transmission: 0.7,
+    thickness: 0.1,
+    ior: 1.8,
+    iridescence: 0.9,
+    iridescenceIOR: 1.9,
+    clearcoat: 1.0,
+    envMapIntensity: 2.2,
+    flatShading: true,
+    transparent: true,
+    opacity: 0.75,
+    side: THREE.DoubleSide
+  });
+  const tG = 0.215;
+  for (const s of [1, -1]) {
+    const pts = [];
+    const cols = [];
+    const N = 9;
+    for (let i = 0; i <= N; i++) {
+      const th = THREE.MathUtils.lerp(-1.15, 1.15, i / N);
+      const p = bodyPoint(tG, s > 0 ? (Math.PI / 2 + th * 0.55) : (-Math.PI / 2 - th * 0.55), 1.012).clone();
+      pts.push(p);
+    }
+    const positions = [];
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1];
+      const a2 = a.clone(); a2.x -= 0.10 + 0.05 * Math.sin(i * 1.3);
+      const b2 = b.clone(); b2.x -= 0.10 + 0.05 * Math.sin((i + 1) * 1.3);
+      positions.push(a.x, a.y, a.z, b.x, b.y, b.z, a2.x, a2.y, a2.z);
+      positions.push(b.x, b.y, b.z, b2.x, b2.y, b2.z, a2.x, a2.y, a2.z);
+      cols.push(0, 0, 0);
+    }
+    const gg = new THREE.BufferGeometry();
+    gg.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    gg.computeVertexNormals();
+    gg.computeBoundingSphere();
+    const gm = new THREE.Mesh(gg, gillMat);
+    koi.add(gm);
+  }
+}
+
+/* ============================================================
+   INTERNAL RED SPARKS — scattered points inside the translucent body
+   ============================================================ */
+const sparkCount = 420;
+const sparkPos = new Float32Array(sparkCount * 3);
+const sparkCol = new Float32Array(sparkCount * 3);
+const sparkPhase = new Float32Array(sparkCount);
+const sparkSize = new Float32Array(sparkCount);
+{
+  const c = new THREE.Color();
+  for (let i = 0; i < sparkCount; i++) {
+    // Bias toward the belly and the ruby head
+    const t = Math.pow(rand(), 1.5) * 0.96 + 0.01;
+    const theta = Math.PI * (0.35 + 0.62 * rand()) * (rand() > 0.5 ? 1 : -1);
+    const rr = 0.25 + 0.62 * rand();
+    const hw = bodyHalfWidth(t) * rr;
+    const hh = bodyHalfHeight(t) * rr;
+    sparkPos[i * 3 + 0] = xAt(t) + (rand() - 0.5) * 0.05;
+    sparkPos[i * 3 + 1] = spineY(t) + Math.cos(theta) * hh;
+    sparkPos[i * 3 + 2] = spineZ(t) + Math.sin(theta) * hw;
+
+    const warm = THREE.MathUtils.clamp(1.0 - t * 0.9, 0.0, 1.0);
+    c.setHSL(0.98 - 0.02 * rand(), 0.85 - 0.55 * (1 - warm), 0.45 + 0.4 * (1 - warm) * rand() + 0.15 * warm);
+    sparkCol[i * 3 + 0] = c.r;
+    sparkCol[i * 3 + 1] = c.g;
+    sparkCol[i * 3 + 2] = c.b;
+
+    sparkPhase[i] = rand() * Math.PI * 2;
+    sparkSize[i] = randRange(0.012, 0.045);
+  }
+}
+
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.Float32BufferAttribute(sparkPos, 3));
+sparkGeo.setAttribute('color', new THREE.Float32BufferAttribute(sparkCol, 3));
+sparkGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(sparkPhase, 1));
+sparkGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(sparkSize, 1));
+sparkGeo.computeBoundingSphere();
+
+const sparkMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: {
+    uTime: { value: 0 },
+    uPixelRatio: { value: renderer.getPixelRatio() },
+    uScale: { value: window.innerHeight * 0.5 }
+  },
+  vertexShader: `
+    attribute float aPhase;
+    attribute float aSize;
+    uniform float uTime;
+    uniform float uPixelRatio;
+    uniform float uScale;
+    varying vec3 vColor;
+    varying float vTwinkle;
+    void main() {
+      vColor = color;
+      float tw = 0.35 + 0.65 * pow(abs(sin(uTime * 1.9 + aPhase)), 6.0);
+      vTwinkle = tw;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      float s = aSize * (0.55 + 1.4 * tw);
+      gl_PointSize = s * uScale * uPixelRatio / max(0.0001, -mv.z);
+      gl_PointSize = clamp(gl_PointSize, 1.0, 64.0);
+    }
+  `,
+  fragmentShader: `
+    varying vec3 vColor;
+    varying float vTwinkle;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float d = length(uv);
+      if (d > 0.5) discard;
+      float core = smoothstep(0.5, 0.0, d);
+      core = pow(core, 2.2);
+      // cross-flare streaks for gem sparkle
+      float streak = max(0.0, 1.0 - abs(uv.x) * 14.0) * max(0.0, 1.0 - abs(uv.y) * 2.6);
+      streak += max(0.0, 1.0 - abs(uv.y) * 14.0) * max(0.0, 1.0 - abs(uv.x) * 2.6);
+      float a = core + streak * 0.45 * vTwinkle;
+      gl_FragColor = vec4(vColor * (0.7 + 1.6 * vTwinkle), a * vTwinkle);
+    }
+  `,
+  vertexColors: true
+});
+
+const sparks = new THREE.Points(sparkGeo, sparkMat);
+koi.add(sparks);
+
+/* ============================================================
+   RAINBOW FLARES around the fins — small prism refraction glints
+   ============================================================ */
+const flareCount = 150;
+const flarePos = new Float32Array(flareCount * 3);
+const flareCol = new Float32Array(flareCount * 3);
+const flarePhase = new Float32Array(flareCount);
+const flareSize = new Float32Array(flareCount);
+{
+  const c = new THREE.Color();
+  // sample points near the fins: tail fan, dorsal, pectorals
+  const zones = [
+    { c: new THREE.Vector3(TAIL_X - 0.85, spineY(1) + 0.05, spineZ(1)), r: new THREE.Vector3(0.85, 0.95, 0.30), n: 66 },
+    { c: new THREE.Vector3(xAt(0.42) - 0.05, spineY(0.42) + 0.72, spineZ(0.42)), r: new THREE.Vector3(0.34, 0.28, 0.14), n: 26 },
+    { c: new THREE.Vector3(xAt(0.30) - 0.25, spineY(0.30) - 0.28, spineZ(0.30) + 0.55), r: new THREE.Vector3(0.30, 0.24, 0.24), n: 20 },
+    { c: new THREE.Vector3(xAt(0.30) - 0.25, spineY(0.30) - 0.28, spineZ(0.30) - 0.55), r: new THREE.Vector3(0.30, 0.24, 0.24), n: 20 },
+    { c: new THREE.Vector3(xAt(0.74), spineY(0.74) - 0.42, spineZ(0.74)), r: new THREE.Vector3(0.24, 0.20, 0.16), n: 18 }
+  ];
+  let i = 0;
+  for (const z of zones) {
+    for (let k = 0; k < z.n && i < flareCount; k++, i++) {
+      flarePos[i * 3 + 0] = z.c.x + (rand() - 0.5) * 2 * z.r.x;
+      flarePos[i * 3 + 1] = z.c.y + (rand() - 0.5) * 2 * z.r.y;
+      flarePos[i * 3 + 2] = z.c.z + (rand() - 0.5) * 2 * z.r.z;
+      // full spectrum — refracted rainbow
+      c.setHSL(rand(), 0.95, 0.62);
+      flareCol[i * 3 + 0] = c.r;
+      flareCol[i * 3 + 1] = c.g;
+      flareCol[i * 3 + 2] = c.b;
+      flarePhase[i] = rand() * Math.PI * 2;
+      flareSize[i] = randRange(0.018, 0.055);
+    }
+  }
+  // fill any remainder around the tail
+  for (; i < flareCount; i++) {
+    flarePos[i * 3 + 0] = TAIL_X - rand() * 1.6;
+    flarePos[i * 3 + 1] = spineY(1) + (rand() - 0.5) * 1.8;
+    flarePos[i * 3 + 2] = spineZ(1) + (rand() - 0.5) * 0.6;
+    c.setHSL(rand(), 0.95, 0.62);
+    flareCol[i * 3 + 0] = c.r;
+    flareCol[i * 3 + 1] = c.g;
+    flareCol[i * 3 + 2] = c.b;
+    flarePhase[i] = rand() * Math.PI * 2;
+    flareSize[i] = randRange(0.018, 0.055);
+  }
+}
+
+const flareGeo = new THREE.BufferGeometry();
+flareGeo.setAttribute('position', new THREE.Float32BufferAttribute(flarePos, 3));
+flareGeo.setAttribute('color', new THREE.Float32BufferAttribute(flareCol, 3));
+flareGeo.setAttribute('aPhase', new THREE.Float32BufferAttribute(flarePhase, 1));
+flareGeo.setAttribute('aSize', new THREE.Float32BufferAttribute(flareSize, 1));
+flareGeo.computeBoundingSphere();
+
+const flareMat = sparkMat.clone();
+flareMat.uniforms = {
+  uTime: { value: 0 },
+  uPixelRatio: { value: renderer.getPixelRatio() },
+  uScale: { value: window.innerHeight * 0.5 }
+};
+const flares = new THREE.Points(flareGeo, flareMat);
+koi.add(flares);
+
+/* ============================================================
+   Center & scale the whole koi
+   ============================================================ */
+{
+  const box = new THREE.Box3().setFromObject(koi);
+  const center = box.getCenter(new THREE.Vector3());
+  const size = box.getSize(new THREE.Vector3());
+  // recenter children by shifting the group's inverse offset onto an inner pivot
+  const pivot = new THREE.Group();
+  while (koi.children.length) pivot.add(koi.children[0]);
+  pivot.position.sub(center);
+  koi.add(pivot);
+
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const target = 5.0;
+  koi.scale.setScalar(target / maxDim);
+  koi.position.set(0, 0.25, 0);
+  // A touch of dynamic pose: nose slightly up, gentle bank
+  koi.rotation.set(0.0, 0.0, 0.06);
+}
+
+/* ============================================================
+   Resize
+   ============================================================ */
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  sparkMat.uniforms.uScale.value = h * 0.5;
+  sparkMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+  flareMat.uniforms.uScale.value = h * 0.5;
+  flareMat.uniforms.uPixelRatio.value = renderer.getPixelRatio();
+});
+
+/* ============================================================
+   Animate
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  sparkMat.uniforms.uTime.value = t;
+  flareMat.uniforms.uTime.value = t * 1.4;
+
+  // Slow breathing bob & subtle drift of the pose (koi hovering in place)
+  koi.position.y = 0.25 + Math.sin(t * 0.55) * 0.055;
+  koi.rotation.z = 0.06 + Math.sin(t * 0.42) * 0.035;
+  koi.rotation.x = Math.sin(t * 0.31) * 0.025;
+
+  // Interior glow pulses — internal reflections scattering red sparks
+  bellyGlow.intensity = 5.0 + Math.sin(t * 1.3) * 2.0;
+  coreMaterial.emissiveIntensity = 0.7 + 0.35 * (0.5 + 0.5 * Math.sin(t * 1.15));
+
+  // Sparkle light orbits slowly to keep facets flashing
+  sparkLight.position.set(Math.cos(t * 0.6) * 2.6, 1.5 + Math.sin(t * 0.9) * 0.7, Math.sin(t * 0.6) * 2.6);
+
+  // Fin iridescence shimmer
+  const shimmer = 0.75 + 0.25 * Math.sin(t * 0.8);
+  tailMat.iridescence = shimmer;
+  dorsalMat.iridescence = 0.6 + 0.4 * Math.sin(t * 0.65 + 1.2);
+  pectoralMat.iridescence = 0.6 + 0.4 * Math.sin(t * 0.7 + 2.4);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

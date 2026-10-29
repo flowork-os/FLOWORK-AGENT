@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Procedural Cordless Drill — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9dde2; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #3a3f45;
+    background: rgba(255,255,255,0.55); padding: 6px 10px; border-radius: 6px;
+    pointer-events: none; user-select: none;
+  }
+</style>
+
+<!-- Requirement 1: three.js + OrbitControls loaded ONLY via importmap (jsDelivr, three@0.160.0) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="info">Cordless Drill · drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER  (antialias, ACES tone mapping, sRGB, soft shadows)
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================
+   SCENE + CAMERA
+   ============================================================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdadfe4); // neutral studio backdrop
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 100);
+
+/* ============================================================
+   LIGHTING  (hemisphere fill + shadow key + soft fill)
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xbfd4e6, 0x484036, 0.85);
+hemi.position.set(0, 1, 0);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+keyLight.position.set(0.35, 0.6, 0.32);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 0.05;
+keyLight.shadow.camera.far = 3;
+keyLight.shadow.camera.left = -0.35;
+keyLight.shadow.camera.right = 0.35;
+keyLight.shadow.camera.top = 0.35;
+keyLight.shadow.camera.bottom = -0.35;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.radius = 3;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xdfe8ff, 0.55);
+fillLight.position.set(-0.4, 0.28, -0.35);
+scene.add(fillLight);
+
+/* ============================================================
+   PROCEDURAL TEXTURES (CanvasTexture)
+   ============================================================ */
+// Speckled rubber bump map for the pistol grip / overmold
+function makeRubberBump() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 256, 256);
+  // fine grain speckle
+  for (let i = 0; i < 12000; i++) {
+    const g = 90 + Math.floor(Math.random() * 120);
+    ctx.fillStyle = `rgb(${g},${g},${g})`;
+    ctx.fillRect(Math.random() * 256, Math.random() * 256, 1.4, 1.4);
+  }
+  // small raised diamond nubs for tactile grip
+  for (let y = 8; y < 256; y += 18) {
+    for (let x = ((y / 18) % 2) * 9; x < 256; x += 18) {
+      ctx.fillStyle = '#c8c8c8';
+      ctx.beginPath();
+      ctx.arc(x, y, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 4);
+  return tex;
+}
+
+// Vertical knurl stripes bump map for the metal chuck sleeve
+function makeKnurlBump() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, 256, 256);
+  for (let x = 0; x < 256; x += 6) {
+    ctx.fillStyle = '#d0d0d0';
+    ctx.fillRect(x, 0, 3, 256);
+    ctx.fillStyle = '#505050';
+    ctx.fillRect(x + 3, 0, 3, 256);
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(6, 1);
+  return tex;
+}
+
+const rubberBump = makeRubberBump();
+const knurlBump  = makeKnurlBump();
+
+/* ============================================================
+   MATERIALS  (per-part color / roughness / metalness)
+   ============================================================ */
+const matBody = new THREE.MeshStandardMaterial({ color: 0xf7b500, roughness: 0.48, metalness: 0.05 }); // amber housing
+const matBodyDark = new THREE.MeshStandardMaterial({ color: 0x26292e, roughness: 0.6, metalness: 0.1 }); // dark trim / collar
+const matRubber = new THREE.MeshStandardMaterial({
+  color: 0x151515, roughness: 0.95, metalness: 0.0,
+  bumpMap: rubberBump, bumpScale: 0.0025
+});
+const matChuck = new THREE.MeshStandardMaterial({
+  color: 0x9aa0a6, roughness: 0.34, metalness: 0.92,
+  bumpMap: knurlBump, bumpScale: 0.002
+});
+const matChuckPlain = new THREE.MeshStandardMaterial({ color: 0x8f9499, roughness: 0.3, metalness: 0.95 });
+const matJaw = new THREE.MeshStandardMaterial({ color: 0x64696e, roughness: 0.42, metalness: 1.0 });
+const matTrigger = new THREE.MeshStandardMaterial({ color: 0x101010, roughness: 0.55, metalness: 0.1 });
+const matBattery = new THREE.MeshStandardMaterial({ color: 0x1c1e22, roughness: 0.55, metalness: 0.12 });
+const matBatteryAccent = new THREE.MeshStandardMaterial({ color: 0xf7b500, roughness: 0.5, metalness: 0.05 });
+const matScrew = new THREE.MeshStandardMaterial({ color: 0x4a4d52, roughness: 0.45, metalness: 0.85 });
+const matDarkPlastic = new THREE.MeshStandardMaterial({ color: 0x2a2d31, roughness: 0.6, metalness: 0.1 });
+const matRed = new THREE.MeshStandardMaterial({ color: 0xc0392b, roughness: 0.5, metalness: 0.1 });
+const matLED = new THREE.MeshStandardMaterial({ color: 0x2ecc71, roughness: 0.4, metalness: 0.0, emissive: 0x0d5a2b, emissiveIntensity: 0.6 });
+
+/* small helper: create a mesh, enable shadows, name it, add to a parent */
+function part(geo, mat, name, parent) {
+  const m = new THREE.Mesh(geo, mat);
+  m.name = name;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* ============================================================
+   BUILD THE DRILL   (oriented: chuck toward +X, grip toward -Y)
+   ============================================================ */
+const drill = new THREE.Group();
+drill.name = 'CordlessDrill';
+
+/* ---- Motor housing (main body, rounded via capsule) ---- */
+const motorHousing = part(
+  new THREE.CapsuleGeometry(0.033, 0.075, 8, 24),
+  matBody, 'MotorHousing', drill
+);
+motorHousing.rotation.z = Math.PI / 2;  // lay capsule along X
+motorHousing.position.set(0.012, 0.0, 0.0);
+
+/* rear motor cap (dark) */
+const motorCap = part(
+  new THREE.SphereGeometry(0.0335, 24, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+  matBodyDark, 'MotorCap', drill
+);
+motorCap.rotation.z = Math.PI / 2;      // dome faces -X
+motorCap.position.set(-0.062, 0.0, 0.0);
+
+/* top vent slots on the motor housing */
+for (let i = 0; i < 4; i++) {
+  const vent = part(new THREE.BoxGeometry(0.006, 0.004, 0.03), matBodyDark, 'Vent' + i, drill);
+  vent.position.set(-0.03 + i * 0.012, 0.031, 0.0);
+}
+
+/* small speed-selector switch on top */
+const speedSwitch = part(new THREE.BoxGeometry(0.02, 0.006, 0.02), matDarkPlastic, 'SpeedSwitch', drill);
+speedSwitch.position.set(0.03, 0.033, 0.0);
+
+/* ---- Gearbox (front tapered section) ---- */
+const gearbox = part(
+  new THREE.CylinderGeometry(0.026, 0.031, 0.052, 28),
+  matBody, 'Gearbox', drill
+);
+gearbox.rotation.z = Math.PI / 2;
+gearbox.position.set(0.095, 0.0, 0.0);
+
+/* clutch / mode-selection collar (dark ring with numbered look) */
+const clutchCollar = part(
+  new THREE.CylinderGeometry(0.029, 0.029, 0.016, 28),
+  matBodyDark, 'ClutchCollar', drill
+);
+clutchCollar.rotation.z = Math.PI / 2;
+clutchCollar.position.set(0.128, 0.0, 0.0);
+
+/* ---- Keyless chuck assembly (metal, at the front) ---- */
+const chuck = new THREE.Group();
+chuck.name = 'ChuckAssembly';
+drill.add(chuck);
+
+// knurled adjustment sleeve
+const chuckSleeve = part(new THREE.CylinderGeometry(0.024, 0.024, 0.03, 32), matChuck, 'ChuckSleeve', chuck);
+chuckSleeve.rotation.z = Math.PI / 2;
+chuckSleeve.position.set(0.152, 0.0, 0.0);
+
+// tapered nose of the chuck
+const chuckNose = part(new THREE.CylinderGeometry(0.014, 0.023, 0.02, 32), matChuckPlain, 'ChuckNose', chuck);
+chuckNose.rotation.z = -Math.PI / 2;   // narrow end forward (+X)
+chuckNose.position.set(0.176, 0.0, 0.0);
+
+// front face ring of the chuck (where jaws emerge)
+const chuckRing = part(new THREE.TorusGeometry(0.011, 0.003, 12, 28), matChuckPlain, 'ChuckRing', chuck);
+chuckRing.rotation.y = Math.PI / 2;
+chuckRing.position.set(0.186, 0.0, 0.0);
+
+// three visible chuck jaws converging toward the axis
+for (let i = 0; i < 3; i++) {
+  const pivot = new THREE.Group();
+  pivot.name = 'JawPivot' + i;
+  const jaw = part(new THREE.BoxGeometry(0.026, 0.004, 0.011), matJaw, 'Jaw' + i, pivot);
+  jaw.position.set(0.176, 0.0085, 0.0);
+  jaw.rotation.z = -0.30;               // tilt so the tip leans inward to the centre
+  pivot.rotation.x = i * (Math.PI * 2 / 3);
+  chuck.add(pivot);
+}
+
+/* ---- Pistol grip (rubber-textured, raked back) ---- */
+const handleGroup = new THREE.Group();
+handleGroup.name = 'HandleGroup';
+handleGroup.position.set(0.0, -0.085, 0.0);
+handleGroup.rotation.z = -0.15;          // rake the base slightly rearward
+drill.add(handleGroup);
+
+// main grip body (capsule flattened front-to-back for an ergonomic section)
+const grip = part(new THREE.CapsuleGeometry(0.02, 0.09, 8, 20), matRubber, 'Grip', handleGroup);
+grip.scale.set(1.45, 1.0, 0.82);
+
+// finger grooves (raised ridges across the front of the grip)
+for (let i = 0; i < 3; i++) {
+  const groove = part(new THREE.CapsuleGeometry(0.004, 0.02, 4, 10), matRubber, 'FingerGroove' + i, handleGroup);
+  groove.rotation.x = Math.PI / 2;       // lay across the grip (along Z)
+  groove.position.set(0.03, 0.02 - i * 0.026, 0.0);
+}
+
+/* ---- Trigger + forward/reverse switch ---- */
+const trigger = part(new THREE.BoxGeometry(0.018, 0.032, 0.026), matTrigger, 'Trigger', drill);
+trigger.position.set(0.042, -0.052, 0.0);
+trigger.rotation.z = 0.1;
+// round the trigger face a touch with a small cylinder pad
+const triggerPad = part(new THREE.CylinderGeometry(0.013, 0.013, 0.026, 16), matTrigger, 'TriggerPad', drill);
+triggerPad.rotation.x = Math.PI / 2;
+triggerPad.position.set(0.05, -0.052, 0.0);
+
+// forward/reverse rocker button passing through the body just above the trigger
+const fwdRev = part(new THREE.CylinderGeometry(0.006, 0.006, 0.07, 16), matRed, 'FwdRevSwitch', drill);
+fwdRev.rotation.x = Math.PI / 2;
+fwdRev.position.set(0.03, -0.028, 0.0);
+
+/* ---- Slide-in battery pack at the base of the handle ---- */
+const batteryGroup = new THREE.Group();
+batteryGroup.name = 'BatteryPack';
+drill.add(batteryGroup);
+
+// connecting neck between handle base and battery
+const battNeck = part(new THREE.BoxGeometry(0.052, 0.028, 0.05), matBattery, 'BatteryNeck', batteryGroup);
+battNeck.position.set(-0.012, -0.152, 0.0);
+
+// slide rails on top of the pack (the "slide-in" interface)
+for (let s = -1; s <= 1; s += 2) {
+  const rail = part(new THREE.BoxGeometry(0.056, 0.006, 0.006), matBatteryAccent, 'Rail' + s, batteryGroup);
+  rail.position.set(-0.014, -0.138, s * 0.019);
+}
+
+// main battery block (the drill rests on its flat base)
+const battBody = part(new THREE.BoxGeometry(0.078, 0.052, 0.064), matBattery, 'BatteryBody', batteryGroup);
+battBody.position.set(-0.02, -0.176, 0.0);
+
+// amber accent stripe around the pack
+const battStripe = part(new THREE.BoxGeometry(0.08, 0.008, 0.066), matBatteryAccent, 'BatteryStripe', batteryGroup);
+battStripe.position.set(-0.02, -0.166, 0.0);
+
+// rounded bottom cap / foot so the base reads as moulded plastic
+const battFoot = part(new THREE.BoxGeometry(0.07, 0.01, 0.056), matDarkPlastic, 'BatteryFoot', batteryGroup);
+battFoot.position.set(-0.02, -0.203, 0.0);
+
+// fuel-gauge LEDs + button on the back face of the pack
+for (let i = 0; i < 3; i++) {
+  const led = part(new THREE.CircleGeometry(0.003, 12), matLED, 'FuelLED' + i, batteryGroup);
+  led.position.set(-0.052 + i * 0.008, -0.176, 0.0);
+  led.rotation.y = -Math.PI / 2;         // face -X (back)
+}
+// release latch buttons on the sides
+for (let s = -1; s <= 1; s += 2) {
+  const latch = part(new THREE.BoxGeometry(0.012, 0.012, 0.006), matDarkPlastic, 'Latch' + s, batteryGroup);
+  latch.position.set(0.014, -0.162, s * 0.033);
+}
+
+/* ---- Visible screw locations on the body halves & handle ---- */
+function makeScrew(x, y, z) {
+  const g = new THREE.Group();
+  g.name = 'Screw';
+  const head = part(new THREE.CylinderGeometry(0.0055, 0.0055, 0.004, 16), matScrew, 'ScrewHead', g);
+  head.rotation.x = Math.PI / 2;         // face +Z
+  // phillips cross slot
+  const slotA = part(new THREE.BoxGeometry(0.008, 0.0012, 0.002), matBodyDark, 'ScrewSlotA', g);
+  slotA.position.z = 0.002;
+  const slotB = part(new THREE.BoxGeometry(0.0012, 0.008, 0.002), matBodyDark, 'ScrewSlotB', g);
+  slotB.position.z = 0.002;
+  g.position.set(x, y, z);
+  drill.add(g);
+  return g;
+}
+// screws along the visible clamshell seam
+makeScrew(0.0,   0.0,   0.0345);
+makeScrew(0.088, 0.006, 0.028);
+makeScrew(-0.04, -0.012, 0.033);
+makeScrew(0.008, -0.06,  0.019);   // on the grip half
+makeScrew(-0.01, -0.11,  0.017);   // lower grip half
+
+/* ============================================================
+   REST ON GROUND + CENTER AT ORIGIN (x/z centred, base at y=0)
+   ============================================================ */
+let bbox = new THREE.Box3().setFromObject(drill);
+let center = bbox.getCenter(new THREE.Vector3());
+drill.position.x -= center.x;
+drill.position.z -= center.z;
+drill.position.y -= bbox.min.y;          // drop base onto the ground plane
+drill.updateMatrixWorld(true);
+scene.add(drill);
+
+/* ============================================================
+   GROUND PLANE  (soft studio floor that receives contact shadow)
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(2.5, 64),
+  new THREE.MeshStandardMaterial({ color: 0xcdd2d8, roughness: 1.0, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   AUTO-FRAME CAMERA TO BOUNDING BOX + ORBIT CONTROLS
+   ============================================================ */
+bbox = new THREE.Box3().setFromObject(drill);
+const sphere = bbox.getBoundingSphere(new THREE.Sphere());
+const fov = camera.fov * Math.PI / 180;
+let dist = (sphere.radius / Math.sin(fov / 2)) * 1.3;
+
+camera.near = dist / 100;
+camera.far = dist * 20;
+camera.position.set(sphere.center.x + dist * 0.62, sphere.center.y + dist * 0.34, dist * 0.72);
+camera.updateProjectionMatrix();
+
+// aim the shadow key light at the model
+keyLight.target.position.copy(sphere.center);
+scene.add(keyLight.target);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(sphere.center);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = dist * 0.5;
+controls.maxDistance = dist * 3;
+controls.maxPolarAngle = Math.PI * 0.5 + 0.16;  // keep the camera at/above the floor
+controls.update();
+
+/* ============================================================
+   RESIZE + RENDER LOOP
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

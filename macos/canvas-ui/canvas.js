@@ -12113,14 +12113,38 @@ async function uploadAttachmentToServer(att) {
   let base64 = '';
   if (att.isImage && att.file) {
     try {
-      base64 = await new Promise((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const res = reader.result;
-          resolve(typeof res === 'string' ? res.split(',')[1] : '');
-        };
-        reader.onerror = () => resolve('');
-        reader.readAsDataURL(att.file);
+      base64 = await new Promise(async (resolve) => {
+        try {
+          const bitmap = await createImageBitmap(att.file);
+          const maxDim = 1280;
+          let w = bitmap.width;
+          let h = bitmap.height;
+          if (w > maxDim || h > maxDim) {
+            if (w > h) {
+              h = Math.round((h * maxDim) / w);
+              w = maxDim;
+            } else {
+              w = Math.round((w * maxDim) / h);
+              h = maxDim;
+            }
+          }
+          const offscreen = document.createElement('canvas');
+          offscreen.width = w;
+          offscreen.height = h;
+          const ctx = offscreen.getContext('2d');
+          ctx.drawImage(bitmap, 0, 0, w, h);
+          bitmap.close();
+          const dataUrl = offscreen.toDataURL('image/jpeg', 0.82);
+          resolve(dataUrl.split(',')[1] || '');
+        } catch (_) {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const res = reader.result;
+            resolve(typeof res === 'string' ? res.split(',')[1] : '');
+          };
+          reader.onerror = () => resolve('');
+          reader.readAsDataURL(att.file);
+        }
       });
     } catch (_) {}
   }
@@ -12194,22 +12218,35 @@ async function captureScreenshotToChat() {
     await video.play();
     await new Promise(resolve => setTimeout(resolve, 80));
 
+    const maxDim = 1280;
+    let w = video.videoWidth || 1920;
+    let h = video.videoHeight || 1080;
+    if (w > maxDim || h > maxDim) {
+      if (w > h) {
+        h = Math.round((h * maxDim) / w);
+        w = maxDim;
+      } else {
+        w = Math.round((w * maxDim) / h);
+        h = maxDim;
+      }
+    }
+
     const canvas = document.createElement('canvas');
-    canvas.width = video.videoWidth || 1920;
-    canvas.height = video.videoHeight || 1080;
+    canvas.width = w;
+    canvas.height = h;
     const ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(video, 0, 0, w, h);
     track.stop();
 
     canvas.toBlob((blob) => {
       if (blob) {
-        const file = new File([blob], `screenshot_${Date.now()}.png`, { type: 'image/png' });
+        const file = new File([blob], `screenshot_${Date.now()}.jpg`, { type: 'image/jpeg' });
         addChatAttachment(file);
-        showToast('📸 Screenshot captured & attached!');
+        showToast('📸 Screenshot captured & optimized!');
         const chatInput = document.getElementById('rightbar-chat-input');
         if (chatInput) chatInput.focus();
       }
-    }, 'image/png');
+    }, 'image/jpeg', 0.85);
   } catch (err) {
     if (err && err.name !== 'NotAllowedError') {
       console.warn('[Screenshot] Screen capture failed:', err);

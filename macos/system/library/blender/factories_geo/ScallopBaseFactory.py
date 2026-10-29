@@ -1,0 +1,259 @@
+# [FL_INDEX: keywords="blender_factory, procedural_3d, ScallopBaseFactory, infinigen, generator" | COT="Procedural 3D Blender asset generator from 3DCodeverse"]
+# Asset: ScallopBaseFactory | Category: factories_geo
+# Prompt: A 3D model of a scallop shell rendered from a three-quarter perspective, featuring two rounded fan-shaped valve halves hinged together and partially open, with smooth convex outer surfaces and a nearly circular outline, displayed with a clean white untextured surface.
+
+import math
+import random
+
+import bmesh
+import bpy
+import numpy as np
+from scipy.interpolate import interp1d
+
+SEED = 0
+random.seed(SEED)
+np.random.seed(SEED)
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def clear_scene():
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
+    for m in list(bpy.data.meshes):
+        bpy.data.meshes.remove(m)
+    bpy.context.scene.cursor.location = (0, 0, 0)
+
+
+def apply_tf(obj):
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+
+def read_co(obj):
+    arr = np.zeros(len(obj.data.vertices) * 3)
+    obj.data.vertices.foreach_get("co", arr)
+    return arr.reshape(-1, 3)
+
+
+def write_co(obj, arr):
+    obj.data.vertices.foreach_set("co", arr.reshape(-1))
+    obj.data.update()
+
+
+def log_uniform(low, high):
+    return float(np.exp(np.random.uniform(np.log(low), np.log(high))))
+
+
+# ── shell geometry ────────────────────────────────────────────────────────────
+
+def build_filled_disc(n_verts=1024):
+    """
+
+    Create a filled circle disc at location (1,0,0).
+    Matches new_circle(vertices=1024) + fill_grid.
+    """
+
+    bpy.ops.mesh.primitive_circle_add(vertices=n_verts, location=(1, 0, 0))
+    obj = bpy.context.active_object
+    apply_tf(obj)
+
+    bpy.ops.object.mode_set(mode='EDIT')
+    bpy.ops.mesh.fill_grid()
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    return obj
+
+
+def build_ellipse(obj, viewpoint=(0.0, 0.0, 1.0), softness=0.3):
+    """
+
+    Deform filled disc toward viewpoint to create dome shape.
+    For each vertex: r = dist(pos, (1,0,0)), t = 1-softness+softness*r^4
+    displacement = (1-t) * (viewpoint - pos)
+    """
+
+    viewpoint = np.array(viewpoint)
+    co = read_co(obj)
+
+    x, y, z = co.T
+    r = np.sqrt((x - 1) ** 2 + y ** 2 + z ** 2)
+    t = 1.0 - softness + softness * r ** 4
+
+    displacement = (1.0 - t)[:, np.newaxis] * (viewpoint[np.newaxis, :] - co)
+    co += displacement
+    write_co(obj, co)
+    return obj
+
+
+def shape_by_angles(obj, angles, scales):
+    """
+
+    Radially scale vertices based on their angular position.
+    Uses quadratic interpolation from scipy.
+    """
+
+    co = read_co(obj)
+    x, y, z = co.T
+    vert_angles = np.arctan2(y, x)
+
+    f = interp1d(angles, scales, kind='quadratic', bounds_error=False, fill_value=0)
+    vert_scales = f(vert_angles)
+
+    co *= vert_scales[:, np.newaxis]
+    write_co(obj, co)
+    return obj
+
+
+def add_radial_groove(obj):
+    co = read_co(obj)
+    x, y, z = co.T
+
+    a = np.arctan(y / (x + 1e-6 * (x >= 0).astype(float)))
+    r = np.sqrt(x * x + y * y + z * z)
+    fn = 0.02 * np.cos(a * 45) * np.clip(r - 0.25, 0, None)
+
+    for i in range(3):
+        co[:, i] += fn[i]
+    write_co(obj, co)
+    return obj
+
+
+def add_hinge(obj):
+    """
+
+    Add trapezoidal hinge piece at the shell's back edge.
+    Matches ShellBaseFactory.add_hinge.
+    """
+
+    length = 0.4
+    width = 0.1
+    x_fac = float(np.random.uniform(0.8, 1.0))
+    vertices = [
+        [0, -length, 0],
+        [width, -length * x_fac, 0],
+        [width, length * x_fac, 0],
+        [0, length, 0],
+    ]
+    mesh = bpy.data.meshes.new("hinge")
+    mesh.from_pydata(vertices, [], [[0, 1, 2, 3]])
+    mesh.update()
+    hinge = bpy.data.objects.new("hinge", mesh)
+    bpy.context.collection.objects.link(hinge)
+    bpy.context.view_layer.objects.active = hinge
+    hinge.select_set(True)
+
+    # Subdivision
+    mod = hinge.modifiers.new("sub", 'SUBSURF')
+    mod.levels = 2
+    mod.render_levels = 2
+    mod.subdivision_type = 'SIMPLE'
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+    # Noise displacement
+    tex = bpy.data.textures.new(name="hinge_tex", type='STUCCI')
+    mod2 = hinge.modifiers.new("disp", 'DISPLACE')
+    mod2.strength = 0.2
+    mod2.texture = tex
+    bpy.ops.object.modifier_apply(modifier=mod2.name)
+
+    # Join with shell
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    hinge.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.join()
+    return bpy.context.active_object
+
+
+def deep_clone(obj):
+    """Clone an object with its mesh data."""
+
+    mesh_copy = obj.data.copy()
+    clone = bpy.data.objects.new(obj.name + "_clone", mesh_copy)
+    bpy.context.collection.objects.link(clone)
+    return clone
+
+
+# ── scallop maker ─────────────────────────────────────────────────────────────
+
+def scallop_make():
+    """
+
+    Build one scallop shell half.
+    Matches ShellBaseFactory.scallop_make.
+    """
+
+    obj = build_filled_disc(1024)
+    build_ellipse(obj, viewpoint=(0, 0, 1), softness=0.3)
+
+    obj.scale = (1, 1.2, 1)
+    apply_tf(obj)
+
+    boundary = 0.42
+    outer = float(np.random.uniform(0.28, 0.32))
+    inner = float(np.random.uniform(0.18, 0.22))
+    s = float(np.random.uniform(0.6, 0.7))
+    angles = np.array([-boundary, -outer, -inner, inner, outer, boundary]) * np.pi
+    scales = [0, s, 1, 1, s, 0]
+    shape_by_angles(obj, angles, scales)
+
+    add_radial_groove(obj)
+    obj = add_hinge(obj)
+    return obj
+
+
+# ── main factory ──────────────────────────────────────────────────────────────
+
+def create_shell_asset(maker_fn):
+    """
+
+    Create a bivalve shell: upper and lower halves, slightly open.
+    Matches ShellBaseFactory.create_asset.
+    """
+
+    upper = maker_fn()
+    apply_tf(upper)
+
+    dim = float(np.sqrt(upper.dimensions[0] * upper.dimensions[1] + 0.01))
+    s = 1.0 / dim
+    upper.scale = (s, s, s)
+    upper.location[2] += 0.005
+    apply_tf(upper)
+
+    lower = deep_clone(upper)
+    lower.scale = (1, 1, -1)
+    apply_tf(lower)
+
+    base = float(np.random.uniform(0, np.pi / 4))
+    lower.rotation_euler[1] = -base
+    upper.rotation_euler[1] = -base - float(np.random.uniform(np.pi / 6, np.pi / 3))
+
+    bpy.ops.object.select_all(action="DESELECT")
+    lower.select_set(True)
+    upper.select_set(True)
+    bpy.context.view_layer.objects.active = lower
+    bpy.ops.object.join()
+
+    result = bpy.context.active_object
+    result.location = (0, 0, 0)
+    result.rotation_euler = (0, 0, 0)
+    result.scale = (1, 1, 1)
+    return result
+
+
+def build_scallop_base_factory():
+    np.random.seed(SEED)
+    random.seed(SEED)
+    clear_scene()
+
+    result = create_shell_asset(scallop_make)
+    return result
+
+
+result = build_scallop_base_factory()
+result.name = "ScallopBaseFactory"
+print(f"ScallopBaseFactory built: {len(result.data.vertices)} verts, "
+      f"{len(result.data.polygons)} faces")

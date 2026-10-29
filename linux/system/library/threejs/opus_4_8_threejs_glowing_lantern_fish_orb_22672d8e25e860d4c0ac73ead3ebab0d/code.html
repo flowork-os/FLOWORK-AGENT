@@ -1,0 +1,1053 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Glowing Deep Lanternfish</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #05070d; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(180, 226, 240, 0.45); letter-spacing: 0.06em; pointer-events: none;
+    text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Deep Lanternfish &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer / Scene / Camera
+--------------------------------------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x080b12);
+scene.fog = new THREE.FogExp2(0x070a11, 0.017);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(6.4, 2.5, 9.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 4.0;
+controls.maxDistance = 26.0;
+controls.target.set(0, 0.15, 0);
+
+/* ---------------------------------------------------------------------------
+   Palette
+--------------------------------------------------------------------------- */
+const COL = {
+  body:      new THREE.Color(0x0b1430),
+  bodyDeep:  new THREE.Color(0x060a1c),
+  belly:     new THREE.Color(0x121e40),
+  photo:     new THREE.Color(0xbff6ff),
+  photoCore: new THREE.Color(0xe8ffff),
+  aqua:      new THREE.Color(0x7fe9f5),
+  lure:      new THREE.Color(0xd8fbff),
+  fin:       new THREE.Color(0x16243f),
+  eye:       new THREE.Color(0x9fe8f2)
+};
+
+/* ---------------------------------------------------------------------------
+   Root group — the ONE centered object
+--------------------------------------------------------------------------- */
+const fish = new THREE.Group();
+scene.add(fish);
+
+/* ---------------------------------------------------------------------------
+   Spine: a crescent arc. Body runs along +X, arched in Y.
+--------------------------------------------------------------------------- */
+const L = 4.6;              // total body length
+const ARC = 1.05;           // crescent depth
+
+// t in [0,1]; 0 = snout, 1 = tail tip
+function spineAt(t) {
+  const x = (t - 0.5) * L;
+  // crescent: a smooth arc plus a slight tail-flick
+  const u = (t - 0.5) * 2.0;                       // -1..1
+  const y = -ARC * (1.0 - u * u) + ARC * 0.5;      // bow downward, centered
+  const z = Math.sin(t * Math.PI * 1.0) * 0.16 + Math.pow(t, 3) * 0.28;
+  return new THREE.Vector3(x, y, z);
+}
+
+const spinePts = [];
+const SPINE_SAMPLES = 180;
+for (let i = 0; i <= SPINE_SAMPLES; i++) spinePts.push(spineAt(i / SPINE_SAMPLES));
+const spineCurve = new THREE.CatmullRomCurve3(spinePts, false, 'catmullrom', 0.5);
+
+// Frames for consistent orientation
+const frames = spineCurve.computeFrenetFrames(SPINE_SAMPLES, false);
+
+function frameAt(t) {
+  const i = Math.min(SPINE_SAMPLES, Math.max(0, Math.round(t * SPINE_SAMPLES)));
+  return {
+    pos: spineCurve.getPointAt(Math.min(1, Math.max(0, t))),
+    tan: frames.tangents[i].clone(),
+    nor: frames.normals[i].clone(),
+    bin: frames.binormals[i].clone()
+  };
+}
+
+/* Body cross-section radii: deep-bodied myctophid — tall head, tapering to a
+   thin caudal peduncle before the tail fin. */
+function bodyHeight(t) {
+  // t: 0 snout .. 1 tail tip
+  if (t < 0.055) return 0.055 + t * 2.4;
+  const s = (t - 0.055) / 0.945;
+  const bulge = Math.pow(Math.sin(Math.PI * Math.pow(s, 0.62)), 0.85);
+  const taper = Math.pow(1.0 - s, 0.28);
+  return 0.10 + 0.46 * bulge * taper;
+}
+function bodyWidth(t) {
+  return bodyHeight(t) * (0.52 + 0.16 * Math.sin(Math.PI * t));
+}
+
+/* ---------------------------------------------------------------------------
+   Body mesh — swept lofted tube with elliptical, slightly keeled sections
+--------------------------------------------------------------------------- */
+function buildBodyGeometry() {
+  const SEG_U = 220;     // along body
+  const SEG_V = 34;      // around
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= SEG_U; i++) {
+    const t = i / SEG_U;
+    const f = frameAt(t);
+    const hh = bodyHeight(t);
+    const hw = bodyWidth(t);
+
+    for (let j = 0; j <= SEG_V; j++) {
+      const v = j / SEG_V;
+      const a = v * Math.PI * 2.0;
+      let cy = Math.cos(a);
+      let cx = Math.sin(a);
+
+      // slight dorsal keel + rounded belly
+      const keel = 1.0 + 0.10 * Math.pow(Math.max(0, cy), 3.0);
+      const bellyFlat = 1.0 - 0.10 * Math.pow(Math.max(0, -cy), 2.0);
+
+      const oy = cy * hh * keel * bellyFlat;
+      const ox = cx * hw;
+
+      // head slightly wider dorsally (snout taper handled by bodyHeight)
+      const p = f.pos.clone()
+        .addScaledVector(f.nor, oy)
+        .addScaledVector(f.bin, ox);
+
+      positions.push(p.x, p.y, p.z);
+      uvs.push(t, v);
+      normals.push(0, 0, 0); // computed later
+    }
+  }
+
+  for (let i = 0; i < SEG_U; i++) {
+    for (let j = 0; j < SEG_V; j++) {
+      const a = i * (SEG_V + 1) + j;
+      const b = a + SEG_V + 1;
+      indices.push(a, b, a + 1);
+      indices.push(b, b + 1, a + 1);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+const bodyGeo = buildBodyGeometry();
+
+// Near-matte dark navy with a faint iridescent sheen and subtle vertex-driven belly lightening
+const bodyMat = new THREE.MeshPhysicalMaterial({
+  color: COL.body,
+  roughness: 0.82,
+  metalness: 0.06,
+  clearcoat: 0.35,
+  clearcoatRoughness: 0.65,
+  sheen: 0.5,
+  sheenColor: new THREE.Color(0x2b6f8f),
+  sheenRoughness: 0.8,
+  emissive: new THREE.Color(0x030a18),
+  emissiveIntensity: 1.0,
+  side: THREE.FrontSide,
+  flatShading: false
+});
+
+// gentle belly gradient via onBeforeCompile (uv.y ~ around-body angle)
+bodyMat.onBeforeCompile = (shader) => {
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <color_fragment>',
+    `#include <color_fragment>
+     float ang = vMapUv.y;
+     float ventral = smoothstep(0.30, 0.62, abs(ang - 0.5) * 2.0);
+     float along = vMapUv.x;
+     vec3 belly = vec3(0.075, 0.120, 0.255);
+     vec3 dorsal = vec3(0.022, 0.038, 0.105);
+     diffuseColor.rgb = mix(dorsal, belly, 1.0 - ventral);
+     diffuseColor.rgb *= mix(1.15, 0.72, smoothstep(0.55, 1.0, along));
+    `
+  );
+};
+// give the material a map-uv varying to sample (a 1x1 white texture enables vMapUv)
+const whitePixel = new THREE.DataTexture(new Uint8Array([255, 255, 255, 255]), 1, 1, THREE.RGBAFormat);
+whitePixel.needsUpdate = true;
+bodyMat.map = whitePixel;
+
+const body = new THREE.Mesh(bodyGeo, bodyMat);
+body.castShadow = true;
+body.receiveShadow = true;
+fish.add(body);
+
+/* ---------------------------------------------------------------------------
+   Helper: place an object on the body surface at (t, angle)
+   angle: 0 = dorsal (+normal), PI = ventral
+--------------------------------------------------------------------------- */
+function surfacePoint(t, angle, inset = 0.0) {
+  const f = frameAt(t);
+  const hh = bodyHeight(t);
+  const hw = bodyWidth(t);
+  const cy = Math.cos(angle);
+  const cx = Math.sin(angle);
+  const oy = cy * (hh - inset);
+  const ox = cx * (hw - inset);
+  const p = f.pos.clone().addScaledVector(f.nor, oy).addScaledVector(f.bin, ox);
+  // approximate outward normal
+  const n = f.nor.clone().multiplyScalar(cy / Math.max(hh, 1e-4))
+    .addScaledVector(f.bin, cx / Math.max(hw, 1e-4)).normalize();
+  return { p, n, f };
+}
+
+/* ---------------------------------------------------------------------------
+   Photophores — instanced glowing beads + additive halo sprites
+--------------------------------------------------------------------------- */
+const photoPositions = [];   // {p, n, size, phase}
+
+// Rows: ventral pair (main myctophid rows), lateral row, head cluster.
+function addRow(tStart, tEnd, count, angle, size, jitter = 0.0) {
+  for (let i = 0; i < count; i++) {
+    const k = count > 1 ? i / (count - 1) : 0.5;
+    const t = tStart + (tEnd - tStart) * k;
+    const a = angle + (jitter ? Math.sin(i * 2.3) * jitter : 0);
+    const sp = surfacePoint(t, a, 0.008);
+    photoPositions.push({
+      p: sp.p,
+      n: sp.n,
+      size: size * (0.85 + 0.3 * Math.abs(Math.sin(i * 1.7))),
+      phase: i * 0.8 + t * 5.0
+    });
+  }
+}
+
+// ventral rows (two, straddling the belly midline) — the classic lanternfish pattern
+addRow(0.13, 0.93, 22, Math.PI * 0.88, 0.052);
+addRow(0.13, 0.93, 22, Math.PI * 1.12, 0.052);
+// second ventral pair, slightly higher on the flank
+addRow(0.18, 0.90, 16, Math.PI * 0.70, 0.044);
+addRow(0.18, 0.90, 16, Math.PI * 1.30, 0.044);
+// mid-lateral row
+addRow(0.24, 0.88, 13, Math.PI * 0.52, 0.038);
+addRow(0.24, 0.88, 13, Math.PI * 1.48, 0.038);
+// dorsal sparse row
+addRow(0.30, 0.86, 8, Math.PI * 0.18, 0.030);
+addRow(0.30, 0.86, 8, Math.PI * 1.82, 0.030);
+// head/cheek cluster
+addRow(0.055, 0.145, 5, Math.PI * 0.80, 0.040);
+addRow(0.055, 0.145, 5, Math.PI * 1.20, 0.040);
+// caudal peduncle bright pair
+addRow(0.945, 0.985, 3, Math.PI * 0.95, 0.050);
+addRow(0.945, 0.985, 3, Math.PI * 1.05, 0.050);
+
+// --- instanced emissive beads
+const beadGeo = new THREE.SphereGeometry(1, 12, 10);
+const beadMat = new THREE.MeshBasicMaterial({ color: COL.photoCore, toneMapped: false });
+const beads = new THREE.InstancedMesh(beadGeo, beadMat, photoPositions.length);
+beads.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+beads.frustumCulled = false;
+const beadColorAttr = new THREE.InstancedBufferAttribute(new Float32Array(photoPositions.length * 3), 3);
+beads.instanceColor = beadColorAttr;
+
+const _m = new THREE.Matrix4();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+const _pos = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+
+photoPositions.forEach((ph, i) => {
+  _pos.copy(ph.p).addScaledVector(ph.n, ph.size * 0.35);
+  _q.setFromUnitVectors(_up, ph.n);
+  _s.set(ph.size, ph.size * 0.65, ph.size);
+  _m.compose(_pos, _q, _s);
+  beads.setMatrixAt(i, _m);
+  beads.setColorAt(i, COL.photoCore);
+});
+beads.instanceMatrix.needsUpdate = true;
+fish.add(beads);
+
+/* --- soft additive halos around each photophore (billboarded quads via Points-like sprite shader) */
+function makeGlowTexture(size = 128, innerAlpha = 1.0, power = 2.6) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const half = size / 2;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = (x - half + 0.5) / half;
+      const dy = (y - half + 0.5) / half;
+      const d = Math.sqrt(dx * dx + dy * dy);
+      let a = Math.max(0, 1 - d);
+      a = Math.pow(a, power) * innerAlpha;
+      // small hot core
+      a += Math.pow(Math.max(0, 1 - d * 3.2), 4.0) * 0.9;
+      a = Math.min(1, a);
+      const idx = (y * size + x) * 4;
+      img.data[idx + 0] = 235;
+      img.data[idx + 1] = 253;
+      img.data[idx + 2] = 255;
+      img.data[idx + 3] = Math.round(a * 255);
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+  return tex;
+}
+const glowTex = makeGlowTexture(128, 0.92, 2.8);
+const softTex = makeGlowTexture(160, 0.55, 1.9);
+
+// Halo sprites for photophores
+const haloGroup = new THREE.Group();
+fish.add(haloGroup);
+const halos = [];
+photoPositions.forEach((ph) => {
+  const mat = new THREE.SpriteMaterial({
+    map: glowTex,
+    color: COL.photo,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    opacity: 0.85,
+    toneMapped: false
+  });
+  const s = new THREE.Sprite(mat);
+  s.position.copy(ph.p).addScaledVector(ph.n, ph.size * 0.4);
+  const sc = ph.size * 7.0;
+  s.scale.set(sc, sc, sc);
+  haloGroup.add(s);
+  halos.push({ sprite: s, base: sc, phase: ph.phase, mat });
+});
+
+/* ---------------------------------------------------------------------------
+   Head details: snout, jaw, eyes
+--------------------------------------------------------------------------- */
+const headGroup = new THREE.Group();
+fish.add(headGroup);
+
+// Large eyes (myctophids have huge eyes)
+const eyeT = 0.105;
+[+1, -1].forEach((side) => {
+  const sp = surfacePoint(eyeT, side > 0 ? Math.PI * 0.5 : Math.PI * 1.5, 0.02);
+  const eyeball = new THREE.Mesh(
+    new THREE.SphereGeometry(0.105, 24, 18),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x05070f, roughness: 0.15, metalness: 0.0,
+      clearcoat: 1.0, clearcoatRoughness: 0.05,
+      emissive: new THREE.Color(0x081f2c), emissiveIntensity: 1.0
+    })
+  );
+  eyeball.position.copy(sp.p).addScaledVector(sp.n, 0.012);
+  eyeball.castShadow = true;
+  headGroup.add(eyeball);
+
+  // glassy iris ring, faintly reflecting the lure
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.078, 0.012, 10, 28),
+    new THREE.MeshBasicMaterial({ color: 0x63d4e6, toneMapped: false, transparent: true, opacity: 0.55 })
+  );
+  ring.position.copy(eyeball.position).addScaledVector(sp.n, 0.052);
+  ring.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), sp.n);
+  headGroup.add(ring);
+
+  // tapetum shine
+  const shine = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: glowTex, color: 0x9fe8f2, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.5, toneMapped: false
+  }));
+  shine.position.copy(eyeball.position).addScaledVector(sp.n, 0.06);
+  shine.scale.setScalar(0.26);
+  headGroup.add(shine);
+});
+
+// Lower jaw — a slim wedge under the snout
+{
+  const jawShape = new THREE.Shape();
+  jawShape.moveTo(0, 0);
+  jawShape.lineTo(0.62, -0.035);
+  jawShape.lineTo(0.66, 0.055);
+  jawShape.lineTo(0.06, 0.075);
+  jawShape.closePath();
+  const jawGeo = new THREE.ExtrudeGeometry(jawShape, { depth: 0.14, bevelEnabled: true, bevelSize: 0.02, bevelThickness: 0.02, bevelSegments: 2 });
+  jawGeo.center();
+  const jaw = new THREE.Mesh(jawGeo, new THREE.MeshStandardMaterial({
+    color: 0x0a1226, roughness: 0.85, metalness: 0.05
+  }));
+  const sp = surfacePoint(0.045, Math.PI * 0.98, 0.0);
+  jaw.position.copy(sp.p).addScaledVector(sp.n, 0.03);
+  const f = frameAt(0.06);
+  const mBasis = new THREE.Matrix4().makeBasis(f.tan, f.nor, f.bin);
+  jaw.quaternion.setFromRotationMatrix(mBasis);
+  jaw.rotateZ(-0.12);
+  jaw.castShadow = true;
+  headGroup.add(jaw);
+}
+
+// Tiny teeth glints along the jawline
+{
+  const toothGeo = new THREE.ConeGeometry(0.012, 0.055, 6);
+  const toothMat = new THREE.MeshStandardMaterial({
+    color: 0xcfe9f2, roughness: 0.35, metalness: 0.0,
+    emissive: new THREE.Color(0x1a3540), emissiveIntensity: 0.6
+  });
+  const teeth = new THREE.InstancedMesh(toothGeo, toothMat, 24);
+  let n = 0;
+  for (let i = 0; i < 12; i++) {
+    const t = 0.035 + (i / 11) * 0.085;
+    for (const side of [0.55, -0.55]) {
+      const sp = surfacePoint(t, Math.PI * (1.0 + side * 0.32), 0.0);
+      const f = frameAt(t);
+      _pos.copy(sp.p).addScaledVector(sp.n, 0.012);
+      _q.setFromUnitVectors(_up, sp.n.clone().negate().lerp(f.nor.clone().negate(), 0.3).normalize());
+      _s.setScalar(1);
+      _m.compose(_pos, _q, _s);
+      teeth.setMatrixAt(n++, _m);
+    }
+  }
+  teeth.count = n;
+  teeth.instanceMatrix.needsUpdate = true;
+  headGroup.add(teeth);
+}
+
+/* ---------------------------------------------------------------------------
+   Forehead filament (illicium) with dangling bulb
+--------------------------------------------------------------------------- */
+const lureGroup = new THREE.Group();
+fish.add(lureGroup);
+
+const filamentBase = surfacePoint(0.135, Math.PI * 0.06, 0.0);
+
+const filamentPts = [];
+{
+  const start = filamentBase.p.clone();
+  const dir = filamentBase.n.clone();
+  // Arc forward over the snout then droop
+  const p0 = start.clone();
+  const p1 = start.clone().addScaledVector(dir, 0.55).add(new THREE.Vector3(-0.30, 0.10, 0));
+  const p2 = start.clone().add(new THREE.Vector3(-1.05, 0.62, 0.02));
+  const p3 = start.clone().add(new THREE.Vector3(-1.62, 0.38, 0.03));
+  const p4 = start.clone().add(new THREE.Vector3(-1.76, -0.02, 0.03));
+  const c = new THREE.CubicBezierCurve3(p0, p1, p2, p3);
+  for (let i = 0; i <= 24; i++) filamentPts.push(c.getPoint(i / 24));
+  const c2 = new THREE.QuadraticBezierCurve3(p3, p3.clone().lerp(p4, 0.6).add(new THREE.Vector3(-0.06, 0.02, 0)), p4);
+  for (let i = 1; i <= 12; i++) filamentPts.push(c2.getPoint(i / 12));
+}
+const filamentCurve = new THREE.CatmullRomCurve3(filamentPts, false, 'catmullrom', 0.4);
+
+const filamentGeo = new THREE.TubeGeometry(filamentCurve, 90, 0.016, 8, false);
+// taper the tube manually
+{
+  const pos = filamentGeo.attributes.position;
+  const uv = filamentGeo.attributes.uv;
+  const tmp = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const t = uv.getX(i);
+    const center = filamentCurve.getPointAt(Math.min(1, Math.max(0, t)));
+    tmp.set(pos.getX(i), pos.getY(i), pos.getZ(i)).sub(center);
+    const scale = 1.0 - 0.5 * t;
+    tmp.multiplyScalar(scale).add(center);
+    pos.setXYZ(i, tmp.x, tmp.y, tmp.z);
+  }
+  pos.needsUpdate = true;
+  filamentGeo.computeVertexNormals();
+}
+const filament = new THREE.Mesh(filamentGeo, new THREE.MeshStandardMaterial({
+  color: 0x0d1830, roughness: 0.7, metalness: 0.0,
+  emissive: new THREE.Color(0x0d3a4a), emissiveIntensity: 0.7
+}));
+filament.castShadow = true;
+lureGroup.add(filament);
+
+// The bulb
+const bulbPos = filamentCurve.getPointAt(1.0);
+const bulbGroup = new THREE.Group();
+bulbGroup.position.copy(bulbPos);
+lureGroup.add(bulbGroup);
+
+const bulbCore = new THREE.Mesh(
+  new THREE.SphereGeometry(0.115, 28, 22),
+  new THREE.MeshBasicMaterial({ color: 0xf2ffff, toneMapped: false })
+);
+bulbGroup.add(bulbCore);
+
+const bulbShell = new THREE.Mesh(
+  new THREE.SphereGeometry(0.165, 28, 22),
+  new THREE.MeshPhysicalMaterial({
+    color: 0x9ff0ff, transmission: 0.85, thickness: 0.25,
+    roughness: 0.25, metalness: 0.0, ior: 1.3,
+    transparent: true, opacity: 0.55,
+    emissive: new THREE.Color(0x2fa8c4), emissiveIntensity: 1.4,
+    depthWrite: false
+  })
+);
+bulbGroup.add(bulbShell);
+
+// bulb halos (layered sprites)
+const bulbHalos = [];
+[
+  { tex: glowTex, scale: 1.05, opacity: 0.95, color: 0xd8fbff },
+  { tex: softTex, scale: 2.4, opacity: 0.5, color: 0x7fe9f5 },
+  { tex: softTex, scale: 4.6, opacity: 0.22, color: 0x3fb6d8 }
+].forEach((cfg) => {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: cfg.tex, color: cfg.color, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    opacity: cfg.opacity, toneMapped: false
+  }));
+  s.scale.setScalar(cfg.scale);
+  bulbGroup.add(s);
+  bulbHalos.push({ sprite: s, base: cfg.scale, baseOpacity: cfg.opacity });
+});
+
+// Light emitted by the bulb — this is the cool light that falls on the fins
+const bulbLight = new THREE.PointLight(0x9ff2ff, 6.0, 7.5, 2.0);
+bulbLight.castShadow = true;
+bulbLight.shadow.mapSize.set(1024, 1024);
+bulbLight.shadow.bias = -0.002;
+bulbLight.shadow.camera.near = 0.05;
+bulbLight.shadow.camera.far = 8;
+bulbGroup.add(bulbLight);
+
+/* ---------------------------------------------------------------------------
+   Fins — thin translucent membranes with ray struts
+--------------------------------------------------------------------------- */
+const finMat = new THREE.MeshPhysicalMaterial({
+  color: 0x1a2c4c,
+  roughness: 0.55,
+  metalness: 0.0,
+  transmission: 0.55,
+  thickness: 0.06,
+  ior: 1.32,
+  transparent: true,
+  opacity: 0.9,
+  side: THREE.DoubleSide,
+  emissive: new THREE.Color(0x081c2c),
+  emissiveIntensity: 0.9,
+  sheen: 0.6,
+  sheenColor: new THREE.Color(0x63c8de),
+  sheenRoughness: 0.6,
+  clearcoat: 0.4,
+  clearcoatRoughness: 0.4
+});
+
+const rayMat = new THREE.MeshStandardMaterial({
+  color: 0x9adcea,
+  roughness: 0.45,
+  metalness: 0.0,
+  emissive: new THREE.Color(0x14444f),
+  emissiveIntensity: 0.9
+});
+
+/**
+ * Builds a fin membrane from a base curve on the body and an outline profile.
+ * pts2D: array of [along(0..1) , out(0..1)] describing the free edge.
+ */
+function buildFin(tStart, tEnd, angle, profile, height, thickness, zSpread = 0) {
+  const group = new THREE.Group();
+
+  const N = profile.length;
+  const basePts = [];
+  const tipPts = [];
+  for (let i = 0; i < N; i++) {
+    const k = profile[i][0];
+    const out = profile[i][1];
+    const t = tStart + (tEnd - tStart) * k;
+    const sp = surfacePoint(t, angle, 0.01);
+    const f = frameAt(t);
+    basePts.push(sp.p.clone());
+    const tip = sp.p.clone()
+      .addScaledVector(sp.n, out * height)
+      .addScaledVector(f.tan, -out * height * 0.28)
+      .addScaledVector(f.bin, zSpread * out * height);
+    tipPts.push(tip);
+  }
+
+  // membrane: strip between base and tip, extruded slightly in the binormal
+  const positions = [];
+  const indices = [];
+  const uvs = [];
+  const halfT = thickness * 0.5;
+
+  for (let layer = 0; layer < 2; layer++) {
+    const sgn = layer === 0 ? 1 : -1;
+    for (let i = 0; i < N; i++) {
+      const t = tStart + (tEnd - tStart) * profile[i][0];
+      const f = frameAt(t);
+      const off = f.bin.clone().multiplyScalar(sgn * halfT);
+      const b = basePts[i].clone().add(off);
+      const tp = tipPts[i].clone().add(off);
+      positions.push(b.x, b.y, b.z);
+      uvs.push(profile[i][0], 0);
+      positions.push(tp.x, tp.y, tp.z);
+      uvs.push(profile[i][0], 1);
+    }
+  }
+  const stride = N * 2;
+  for (let layer = 0; layer < 2; layer++) {
+    const o = layer * stride;
+    for (let i = 0; i < N - 1; i++) {
+      const a = o + i * 2, b = a + 1, c = a + 2, d = a + 3;
+      if (layer === 0) { indices.push(a, b, c, b, d, c); }
+      else { indices.push(a, c, b, b, c, d); }
+    }
+  }
+  // rim connecting the two layers along the free edge
+  for (let i = 0; i < N - 1; i++) {
+    const a = i * 2 + 1, b = stride + i * 2 + 1;
+    const c = (i + 1) * 2 + 1, d = stride + (i + 1) * 2 + 1;
+    indices.push(a, b, c, b, d, c);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(g, finMat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  group.add(mesh);
+
+  // ray struts
+  const rayCount = Math.max(3, Math.floor(N / 2));
+  const rayGeo = new THREE.CylinderGeometry(0.008, 0.004, 1, 6, 1, true);
+  const rays = new THREE.InstancedMesh(rayGeo, rayMat, rayCount);
+  let placed = 0;
+  for (let r = 0; r < rayCount; r++) {
+    const idx = Math.round((r / (rayCount - 1)) * (N - 1));
+    const b = basePts[idx];
+    const tp = tipPts[idx];
+    const dir = tp.clone().sub(b);
+    const len = dir.length();
+    if (len < 1e-4) continue;
+    dir.normalize();
+    _pos.copy(b).addScaledVector(dir, len * 0.5);
+    _q.setFromUnitVectors(_up, dir);
+    _s.set(1, len, 1);
+    _m.compose(_pos, _q, _s);
+    rays.setMatrixAt(placed++, _m);
+  }
+  rays.count = placed;
+  rays.instanceMatrix.needsUpdate = true;
+  group.add(rays);
+
+  return group;
+}
+
+// Dorsal fin (mid-back, tall triangular)
+const dorsalProfile = [
+  [0.00, 0.05], [0.12, 0.55], [0.26, 0.85], [0.42, 1.00],
+  [0.58, 0.94], [0.74, 0.74], [0.88, 0.42], [1.00, 0.05]
+];
+fish.add(buildFin(0.34, 0.60, 0.0, dorsalProfile, 0.62, 0.022));
+
+// Adipose fin (small, characteristic of lanternfish)
+const adiposeProfile = [[0, 0.05], [0.4, 0.7], [0.7, 0.55], [1, 0.05]];
+fish.add(buildFin(0.79, 0.855, 0.0, adiposeProfile, 0.20, 0.016));
+
+// Anal fin (ventral, behind mid-body)
+const analProfile = [
+  [0.00, 0.05], [0.18, 0.62], [0.38, 0.86], [0.58, 0.82], [0.78, 0.55], [1.00, 0.05]
+];
+fish.add(buildFin(0.60, 0.80, Math.PI, analProfile, 0.42, 0.020));
+
+// Pelvic fins (paired, ventral)
+const pelvicProfile = [[0, 0.06], [0.3, 0.75], [0.62, 0.9], [1, 0.08]];
+fish.add(buildFin(0.34, 0.44, Math.PI * 0.80, pelvicProfile, 0.34, 0.016, 0.55));
+fish.add(buildFin(0.34, 0.44, Math.PI * 1.20, pelvicProfile, 0.34, 0.016, -0.55));
+
+// Pectoral fins (paired, on the flank behind the head) — fan-shaped
+const pectoralProfile = [[0, 0.10], [0.25, 0.72], [0.55, 0.98], [0.8, 0.80], [1, 0.20]];
+fish.add(buildFin(0.185, 0.255, Math.PI * 0.56, pectoralProfile, 0.55, 0.016, 0.85));
+fish.add(buildFin(0.185, 0.255, Math.PI * 1.44, pectoralProfile, 0.55, 0.016, -0.85));
+
+/* --- Caudal (tail) fin: deeply forked, built as two lobes --- */
+function buildCaudalLobe(sign) {
+  const f = frameAt(1.0);
+  const origin = spineCurve.getPointAt(1.0);
+  const tan = f.tan.clone();
+  const nor = f.nor.clone();
+  const bin = f.bin.clone();
+
+  const N = 18;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  const halfT = 0.011;
+
+  // lobe outline: sweeps back along -tan and out along sign*nor
+  function lobePoint(k) {
+    // k 0..1 from body attach to lobe tip
+    const back = 0.10 + k * 0.86;
+    const out = sign * (0.06 + Math.pow(k, 0.85) * 0.66);
+    const curl = Math.sin(k * Math.PI) * 0.06;
+    return origin.clone()
+      .addScaledVector(tan, back)
+      .addScaledVector(nor, out)
+      .addScaledVector(bin, curl * sign * 0.2);
+  }
+  function innerPoint(k) {
+    const back = 0.05 + k * 0.55;
+    const out = sign * (0.02 + k * 0.16);
+    return origin.clone().addScaledVector(tan, back).addScaledVector(nor, out);
+  }
+
+  for (let layer = 0; layer < 2; layer++) {
+    const sgn = layer === 0 ? 1 : -1;
+    const off = bin.clone().multiplyScalar(sgn * halfT);
+    for (let i = 0; i < N; i++) {
+      const k = i / (N - 1);
+      const a = innerPoint(k).add(off);
+      const b = lobePoint(k).add(off);
+      positions.push(a.x, a.y, a.z); uvs.push(k, 0);
+      positions.push(b.x, b.y, b.z); uvs.push(k, 1);
+    }
+  }
+  const stride = N * 2;
+  for (let layer = 0; layer < 2; layer++) {
+    const o = layer * stride;
+    for (let i = 0; i < N - 1; i++) {
+      const a = o + i * 2, b = a + 1, c = a + 2, d = a + 3;
+      if (layer === 0) indices.push(a, b, c, b, d, c);
+      else indices.push(a, c, b, b, c, d);
+    }
+  }
+  for (let i = 0; i < N - 1; i++) {
+    const a = i * 2 + 1, b = stride + i * 2 + 1;
+    const c = (i + 1) * 2 + 1, d = stride + (i + 1) * 2 + 1;
+    indices.push(a, b, c, b, d, c);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(g, finMat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  const grp = new THREE.Group();
+  grp.add(mesh);
+
+  // rays across the lobe
+  const rayGeo = new THREE.CylinderGeometry(0.007, 0.0035, 1, 6, 1, true);
+  const rays = new THREE.InstancedMesh(rayGeo, rayMat, 9);
+  let placed = 0;
+  for (let r = 0; r < 9; r++) {
+    const k = r / 8;
+    const a = innerPoint(k);
+    const b = lobePoint(k);
+    const dir = b.clone().sub(a);
+    const len = dir.length();
+    if (len < 1e-4) continue;
+    dir.normalize();
+    _pos.copy(a).addScaledVector(dir, len * 0.5);
+    _q.setFromUnitVectors(_up, dir);
+    _s.set(1, len, 1);
+    _m.compose(_pos, _q, _s);
+    rays.setMatrixAt(placed++, _m);
+  }
+  rays.count = placed;
+  rays.instanceMatrix.needsUpdate = true;
+  grp.add(rays);
+
+  return grp;
+}
+fish.add(buildCaudalLobe(1));
+fish.add(buildCaudalLobe(-1));
+
+/* ---------------------------------------------------------------------------
+   Tail-tip volumetric bleed
+--------------------------------------------------------------------------- */
+const tailGlowGroup = new THREE.Group();
+{
+  const tailAnchor = spineCurve.getPointAt(1.0).clone()
+    .addScaledVector(frameAt(1.0).tan, 0.55);
+  tailGlowGroup.position.copy(tailAnchor);
+}
+fish.add(tailGlowGroup);
+
+const tailGlowSprites = [];
+[
+  { s: 0.85, o: 0.55, c: 0xd6fbff, tex: glowTex },
+  { s: 1.9,  o: 0.30, c: 0x76e2f2, tex: softTex },
+  { s: 3.4,  o: 0.16, c: 0x39a9cf, tex: softTex },
+  { s: 5.6,  o: 0.08, c: 0x1f6f96, tex: softTex }
+].forEach((cfg) => {
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: cfg.tex, color: cfg.c, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false,
+    opacity: cfg.o, toneMapped: false
+  }));
+  sp.scale.setScalar(cfg.s);
+  tailGlowGroup.add(sp);
+  tailGlowSprites.push({ sprite: sp, base: cfg.s, baseOpacity: cfg.o });
+});
+
+// caudal tip emissive core
+const tailCore = new THREE.Mesh(
+  new THREE.SphereGeometry(0.055, 16, 12),
+  new THREE.MeshBasicMaterial({ color: 0xeafeff, toneMapped: false })
+);
+tailGlowGroup.add(tailCore);
+
+const tailLight = new THREE.PointLight(0x7fe0f5, 3.2, 5.5, 2.0);
+tailGlowGroup.add(tailLight);
+
+/* ---------------------------------------------------------------------------
+   Overall body sheen glow — a very faint elongated aura hugging the flank
+--------------------------------------------------------------------------- */
+{
+  const auraGroup = new THREE.Group();
+  fish.add(auraGroup);
+  for (let i = 0; i < 14; i++) {
+    const t = 0.12 + (i / 13) * 0.82;
+    const p = spineCurve.getPointAt(t);
+    const sp = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: softTex, color: 0x2c88ad, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false,
+      opacity: 0.085, toneMapped: false
+    }));
+    sp.position.copy(p);
+    const sc = 0.9 + bodyHeight(t) * 2.2;
+    sp.scale.setScalar(sc);
+    auraGroup.add(sp);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Drifting marine snow — a few faint motes for depth (tiny, non-intrusive)
+--------------------------------------------------------------------------- */
+const snow = (() => {
+  const COUNT = 240;
+  const pos = new Float32Array(COUNT * 3);
+  const seed = [];
+  for (let i = 0; i < COUNT; i++) {
+    const r = 3.5 + Math.random() * 9.0;
+    const th = Math.random() * Math.PI * 2;
+    const ph = Math.acos(2 * Math.random() - 1);
+    pos[i * 3 + 0] = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = (Math.random() - 0.35) * 8.0;
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    seed.push(Math.random() * Math.PI * 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.035, color: 0x8fc4d8, transparent: true, opacity: 0.35,
+    map: softTex, blending: THREE.AdditiveBlending, depthWrite: false,
+    sizeAttenuation: true, toneMapped: false
+  });
+  const p = new THREE.Points(g, m);
+  scene.add(p);
+  return { points: p, geom: g, seed, base: Float32Array.from(pos) };
+})();
+
+/* ---------------------------------------------------------------------------
+   Center + scale the fish
+--------------------------------------------------------------------------- */
+{
+  const box = new THREE.Box3().setFromObject(fish);
+  const center = box.getCenter(new THREE.Vector3());
+  fish.children.forEach((c) => c.position.sub(center));
+  // also recentre sprite anchors already positioned in world-of-fish space handled above
+  fish.position.set(0, 0.55, 0);
+  fish.rotation.y = -0.25;
+  fish.rotation.z = 0.06;
+}
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key + fill + rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0x2c5c78, 0x04060c, 0.35);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xa8d8ea, 1.05);
+key.position.set(5.5, 8.0, 4.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -7;
+key.shadow.camera.right = 7;
+key.shadow.camera.top = 7;
+key.shadow.camera.bottom = -7;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x2a6a96, 0.35);
+fill.position.set(-6.0, 1.5, 5.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0x67d9f0, 0.75);
+rim.position.set(-4.0, 3.5, -6.5);
+scene.add(rim);
+
+const ambient = new THREE.AmbientLight(0x16283c, 0.28);
+scene.add(ambient);
+
+/* Ground plane — receives shadows only */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.35;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* A faint radial pool under the fish so the ground isn't pure void */
+{
+  const poolTex = makeGlowTexture(256, 0.35, 1.6);
+  const pool = new THREE.Mesh(
+    new THREE.PlaneGeometry(14, 14),
+    new THREE.MeshBasicMaterial({
+      map: poolTex, color: 0x123246, transparent: true,
+      blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.35,
+      toneMapped: false
+    })
+  );
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.y = -2.33;
+  scene.add(pool);
+}
+
+/* ---------------------------------------------------------------------------
+   Animation
+--------------------------------------------------------------------------- */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // photophore shimmer
+  for (let i = 0; i < halos.length; i++) {
+    const h = halos[i];
+    const pulse = 0.78 + 0.34 * Math.sin(t * 1.9 + h.phase) * 0.5 + 0.18 * Math.sin(t * 4.3 + h.phase * 1.7) * 0.5;
+    const s = h.base * (0.85 + pulse * 0.35);
+    h.sprite.scale.set(s, s, s);
+    h.mat.opacity = 0.55 + pulse * 0.45;
+  }
+  // bead brightness tint
+  if (beads.instanceColor) {
+    const c = new THREE.Color();
+    for (let i = 0; i < photoPositions.length; i++) {
+      const ph = photoPositions[i];
+      const k = 0.72 + 0.28 * (0.5 + 0.5 * Math.sin(t * 2.1 + ph.phase));
+      c.copy(COL.photoCore).multiplyScalar(k);
+      beads.setColorAt(i, c);
+    }
+    beads.instanceColor.needsUpdate = true;
+  }
+
+  // lure pulse
+  const lp = 0.75 + 0.25 * Math.sin(t * 1.35) + 0.08 * Math.sin(t * 3.9);
+  bulbHalos.forEach((h) => {
+    h.sprite.scale.setScalar(h.base * (0.9 + lp * 0.22));
+    h.sprite.material.opacity = h.baseOpacity * (0.7 + lp * 0.45);
+  });
+  bulbLight.intensity = 4.4 + lp * 2.6;
+  bulbCore.scale.setScalar(0.94 + lp * 0.1);
+
+  // gentle sway of the lure filament
+  lureGroup.rotation.z = Math.sin(t * 0.6) * 0.045;
+  lureGroup.rotation.y = Math.sin(t * 0.43 + 1.1) * 0.06;
+
+  // tail bleed pulse
+  const tp = 0.7 + 0.3 * Math.sin(t * 1.05 + 0.9);
+  tailGlowSprites.forEach((g) => {
+    g.sprite.scale.setScalar(g.base * (0.88 + tp * 0.28));
+    g.sprite.material.opacity = g.baseOpacity * (0.65 + tp * 0.55);
+  });
+  tailLight.intensity = 2.2 + tp * 2.0;
+
+  // whole-fish idle drift (slow hover, keeps it centered)
+  fish.position.y = 0.55 + Math.sin(t * 0.5) * 0.06;
+  fish.rotation.x = Math.sin(t * 0.37) * 0.035;
+
+  // marine snow drift
+  {
+    const p = snow.geom.attributes.position;
+    for (let i = 0; i < snow.seed.length; i++) {
+      const b = snow.base;
+      p.setX(i, b[i * 3 + 0] + Math.sin(t * 0.15 + snow.seed[i]) * 0.22);
+      p.setY(i, b[i * 3 + 1] + Math.sin(t * 0.09 + snow.seed[i] * 1.7) * 0.30 - ((t * 0.05) % 1) * 0.0);
+      p.setZ(i, b[i * 3 + 2] + Math.cos(t * 0.12 + snow.seed[i] * 0.8) * 0.22);
+    }
+    p.needsUpdate = true;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------------------------------------------------------------------------
+   Resize
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

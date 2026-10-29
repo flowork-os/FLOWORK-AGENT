@@ -1,0 +1,504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Traffic Cone — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e0f12; }
+  #app { position: fixed; inset: 0; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(230,235,240,0.5); letter-spacing: 0.3px; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="hint">drag to orbit · scroll to zoom · auto-rotating</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
+
+/* ------------------------------------------------------------------ *
+ *  Scene + camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+
+// Neutral dark studio background (subtle radial vignette)
+scene.background = makeBackground();
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.78, 0.56, 0.98);
+
+// Image-based lighting for believable PBR reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (hemisphere fill + directional key/fill/rim)
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x8ea0b8, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e6, 3.2);
+key.position.set(0.95, 1.55, 0.9);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 4;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+const sc = key.shadow.camera;
+sc.near = 0.05; sc.far = 6;
+sc.left = -0.7; sc.right = 0.7; sc.top = 1.1; sc.bottom = -0.15;
+sc.updateProjectionMatrix();
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 0.30, 0);
+
+const fill = new THREE.DirectionalLight(0xbcd0ff, 0.75);
+fill.position.set(-1.1, 0.65, -0.35);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe6cc, 1.8);
+rim.position.set(-0.6, 1.15, -1.25);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane — receives shadows only
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(8, 8),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  The traffic cone  (fully procedural)
+ *  Real-world scale in metres — ~0.72 m tall, 0.36 m square base
+ * ------------------------------------------------------------------ */
+const cone = new THREE.Group();
+scene.add(cone);
+
+// ---- Outer body profile (radius, height), gentle bell taper ----------
+const keyPts = [
+  new THREE.Vector2(0.148, 0.020),
+  new THREE.Vector2(0.120, 0.065),
+  new THREE.Vector2(0.106, 0.115),
+  new THREE.Vector2(0.092, 0.195),
+  new THREE.Vector2(0.077, 0.290),
+  new THREE.Vector2(0.062, 0.400),
+  new THREE.Vector2(0.048, 0.500),
+  new THREE.Vector2(0.034, 0.600),
+  new THREE.Vector2(0.025, 0.680),
+  new THREE.Vector2(0.020, 0.720),
+];
+const outerCurve = new THREE.SplineCurve(keyPts);
+const outerPts = outerCurve.getPoints(160);          // Vector2(x=radius, y=height), bottom→top
+const topY = outerPts[outerPts.length - 1].y;
+const WALL = 0.008;
+
+function radiusAtY(y) {
+  const p = outerPts;
+  if (y <= p[0].y) return p[0].x;
+  if (y >= p[p.length - 1].y) return p[p.length - 1].x;
+  for (let i = 0; i < p.length - 1; i++) {
+    if (y >= p[i].y && y <= p[i + 1].y) {
+      const f = (y - p[i].y) / (p[i + 1].y - p[i].y);
+      return p[i].x + (p[i + 1].x - p[i].x) * f;
+    }
+  }
+  return p[p.length - 1].x;
+}
+
+// ---- Textures --------------------------------------------------------
+const coneMaps = makeConeMaps();
+const coneColorTex = new THREE.CanvasTexture(coneMaps.color);
+coneColorTex.colorSpace = THREE.SRGBColorSpace;
+coneColorTex.wrapS = THREE.RepeatWrapping;
+coneColorTex.anisotropy = MAX_ANISO;
+
+const coneRoughTex = new THREE.CanvasTexture(coneMaps.rough);
+coneRoughTex.colorSpace = THREE.NoColorSpace;
+coneRoughTex.wrapS = THREE.RepeatWrapping;
+coneRoughTex.anisotropy = MAX_ANISO;
+
+const bandTex = new THREE.CanvasTexture(makeBandTexture());
+bandTex.colorSpace = THREE.SRGBColorSpace;
+bandTex.wrapS = THREE.RepeatWrapping;
+bandTex.anisotropy = MAX_ANISO;
+
+const baseTex = new THREE.CanvasTexture(makeBaseTexture());
+baseTex.colorSpace = THREE.SRGBColorSpace;
+baseTex.wrapS = baseTex.wrapT = THREE.RepeatWrapping;
+baseTex.repeat.set(2, 2);
+baseTex.anisotropy = MAX_ANISO;
+
+// ---- Materials -------------------------------------------------------
+const coneMat = new THREE.MeshStandardMaterial({
+  map: coneColorTex,
+  roughnessMap: coneRoughTex,
+  bumpMap: coneRoughTex,
+  bumpScale: 0.006,
+  color: 0xffffff,
+  roughness: 1.0,
+  metalness: 0.0,
+  envMapIntensity: 0.55,
+});
+
+const innerMat = new THREE.MeshStandardMaterial({
+  color: 0x54280f,
+  roughness: 1.0,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.15,
+});
+
+const rimMat = new THREE.MeshStandardMaterial({
+  color: 0xb0560f,
+  roughness: 0.9,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.4,
+});
+
+const bandMat = new THREE.MeshStandardMaterial({
+  map: bandTex,
+  color: 0xffffff,
+  roughness: 0.32,
+  metalness: 0.18,
+  emissive: 0x1c1a15,
+  emissiveIntensity: 0.14,
+  envMapIntensity: 1.5,
+});
+
+const baseMat = new THREE.MeshStandardMaterial({
+  map: baseTex,
+  color: 0x2a2b2e,
+  roughness: 0.92,
+  metalness: 0.0,
+  envMapIntensity: 0.35,
+});
+
+// ---- Outer shell -----------------------------------------------------
+const outerGeo = new THREE.LatheGeometry(outerPts, 128);
+const outerMesh = new THREE.Mesh(outerGeo, coneMat);
+outerMesh.castShadow = true;
+outerMesh.receiveShadow = true;
+cone.add(outerMesh);
+
+// ---- Inner (hollow) shell -------------------------------------------
+const innerPts = outerPts.map(p => new THREE.Vector2(Math.max(p.x - WALL, 0.006), p.y));
+const innerGeo = new THREE.LatheGeometry(innerPts, 128);
+const innerMesh = new THREE.Mesh(innerGeo, innerMat);
+innerMesh.castShadow = false;
+innerMesh.receiveShadow = true;
+cone.add(innerMesh);
+
+// ---- Top rim (caps the wall thickness at the opening) ----------------
+const outerTopR = outerPts[outerPts.length - 1].x;
+const innerTopR = Math.max(outerTopR - WALL, 0.006);
+const ringGeo = new THREE.RingGeometry(innerTopR, outerTopR, 128);
+const ringMesh = new THREE.Mesh(ringGeo, rimMat);
+ringMesh.rotation.x = -Math.PI / 2;
+ringMesh.position.y = topY;
+ringMesh.castShadow = true;
+cone.add(ringMesh);
+
+// ---- Reflective bands (raised sleeves) -------------------------------
+function makeBand(y0, y1, offset) {
+  const n = 28;
+  const pts = [];
+  for (let i = 0; i <= n; i++) {                    // proud outer face, bottom→top
+    const y = y0 + (y1 - y0) * i / n;
+    pts.push(new THREE.Vector2(radiusAtY(y) + offset, y));
+  }
+  pts.push(new THREE.Vector2(radiusAtY(y1) + 0.0006, y1));   // top lip inward
+  for (let i = n; i >= 0; i--) {                    // hug cone surface, top→bottom
+    const y = y0 + (y1 - y0) * i / n;
+    pts.push(new THREE.Vector2(radiusAtY(y) + 0.0006, y));
+  }
+  pts.push(new THREE.Vector2(radiusAtY(y0) + offset, y0)); // bottom lip outward
+  const g = new THREE.LatheGeometry(pts, 128);
+  const m = new THREE.Mesh(g, bandMat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+cone.add(makeBand(0.460, 0.580, 0.0065)); // upper (wider) band
+cone.add(makeBand(0.300, 0.380, 0.0065)); // lower band
+
+// ---- Square weighted base -------------------------------------------
+const base = makeBase(baseMat);
+cone.add(base);
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 0.34, 0);
+controls.minDistance = 0.6;
+controls.maxDistance = 3.0;
+controls.minPolarAngle = 0.15;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+/* ================================================================== *
+ *  Procedural geometry / texture builders
+ * ================================================================== */
+
+// Square base with rounded corners + beveled edges (dark rubber slab)
+function makeBase(material) {
+  const half = 0.18, r = 0.035;
+  const shape = new THREE.Shape();
+  shape.moveTo(-half + r, -half);
+  shape.lineTo(half - r, -half);
+  shape.quadraticCurveTo(half, -half, half, -half + r);
+  shape.lineTo(half, half - r);
+  shape.quadraticCurveTo(half, half, half - r, half);
+  shape.lineTo(-half + r, half);
+  shape.quadraticCurveTo(-half, half, -half, half - r);
+  shape.lineTo(-half, -half + r);
+  shape.quadraticCurveTo(-half, -half, -half + r, -half);
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.028,
+    bevelEnabled: true,
+    bevelThickness: 0.011,
+    bevelSize: 0.011,
+    bevelSegments: 4,
+    curveSegments: 8,
+  });
+  geo.rotateX(-Math.PI / 2);          // lay flat
+  geo.computeBoundingBox();
+  geo.translate(0, -geo.boundingBox.min.y, 0); // sit on ground (y=0)
+
+  const mesh = new THREE.Mesh(geo, material);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+// Scuffed, sun-faded orange colour map + correlated roughness map
+function makeConeMaps() {
+  const S = 1024;
+  const cc = document.createElement('canvas'); cc.width = cc.height = S;
+  const c = cc.getContext('2d');
+  const rc = document.createElement('canvas'); rc.width = rc.height = S;
+  const r = rc.getContext('2d');
+
+  // base vertical gradient (canvas top == cone top: most sun-faded)
+  const g = c.createLinearGradient(0, 0, 0, S);
+  g.addColorStop(0.00, '#eaa972');
+  g.addColorStop(0.22, '#e1873f');
+  g.addColorStop(0.55, '#d06e22');
+  g.addColorStop(1.00, '#bb5911');
+  c.fillStyle = g; c.fillRect(0, 0, S, S);
+
+  r.fillStyle = '#8f8f8f'; r.fillRect(0, 0, S, S);
+
+  // uneven sun-fade blotches near the top
+  for (let i = 0; i < 60; i++) {
+    const x = Math.random() * S, y = Math.random() * S * 0.5;
+    const rad = 40 + Math.random() * 160;
+    c.globalAlpha = 0.04 + Math.random() * 0.06;
+    c.fillStyle = Math.random() < 0.5 ? '#f2c79a' : '#f0d0b0';
+    c.beginPath(); c.ellipse(x, y, rad, rad * 0.7, 0, 0, 7); c.fill();
+  }
+  c.globalAlpha = 1;
+
+  // scuffs / abrasions, denser toward the bottom (heavy wear)
+  for (let i = 0; i < 240; i++) {
+    const y = Math.pow(Math.random(), 0.5) * S;   // bias to large y (bottom)
+    const x = Math.random() * S;
+    const len = 6 + Math.random() * 42;
+    const ang = (Math.random() - 0.5) * 0.8;
+    const a = 0.05 + Math.random() * 0.18;
+
+    c.save(); c.translate(x, y); c.rotate(ang);
+    c.globalAlpha = a;
+    c.strokeStyle = Math.random() < 0.6 ? '#d9c7b4' : '#8a5a30';
+    c.lineWidth = 1 + Math.random() * 2.5;
+    c.beginPath(); c.moveTo(-len / 2, 0); c.lineTo(len / 2, 0); c.stroke();
+    c.restore();
+
+    r.save(); r.translate(x, y); r.rotate(ang);
+    r.globalAlpha = a * 0.8;
+    r.strokeStyle = Math.random() < 0.5 ? '#c8c8c8' : '#6a6a6a';
+    r.lineWidth = 1 + Math.random() * 3;
+    r.beginPath(); r.moveTo(-len / 2, 0); r.lineTo(len / 2, 0); r.stroke();
+    r.restore();
+  }
+  c.globalAlpha = 1; r.globalAlpha = 1;
+
+  // fine dark scratches
+  for (let i = 0; i < 130; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const len = 10 + Math.random() * 60;
+    const ang = (Math.random() - 0.5) * 1.4;
+    c.save(); c.translate(x, y); c.rotate(ang);
+    c.globalAlpha = 0.05 + Math.random() * 0.1;
+    c.strokeStyle = '#6e3c17';
+    c.lineWidth = 0.7 + Math.random() * 1.2;
+    c.beginPath(); c.moveTo(-len / 2, 0); c.lineTo(len / 2, 0); c.stroke();
+    c.restore();
+  }
+  c.globalAlpha = 1;
+
+  // ground dirt at the very bottom
+  const dg = c.createLinearGradient(0, S * 0.8, 0, S);
+  dg.addColorStop(0, 'rgba(60,40,25,0)');
+  dg.addColorStop(1, 'rgba(45,30,18,0.5)');
+  c.fillStyle = dg; c.fillRect(0, S * 0.8, S, S * 0.2);
+
+  // subtle per-pixel noise
+  addNoise(c, S, 16);
+  addNoise(r, S, 30);
+
+  return { color: cc, rough: rc };
+}
+
+function addNoise(ctx, S, amt) {
+  const img = ctx.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * amt;
+    d[i] += n; d[i + 1] += n; d[i + 2] += n;
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+// Retroreflective sheeting: near-white, faintly striped, dirtied at edges
+function makeBandTexture() {
+  const W = 1024, H = 256;
+  const cv = document.createElement('canvas'); cv.width = W; cv.height = H;
+  const x = cv.getContext('2d');
+
+  x.fillStyle = '#eeeee8'; x.fillRect(0, 0, W, H);
+
+  for (let y = 0; y < H; y += 3) {
+    x.globalAlpha = 0.05;
+    x.fillStyle = ((y / 3) % 2) ? '#d9d9d2' : '#ffffff';
+    x.fillRect(0, y, W, 1);
+  }
+  x.globalAlpha = 1;
+
+  const g = x.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0.0, 'rgba(210,190,150,0.18)');
+  g.addColorStop(0.5, 'rgba(255,255,255,0)');
+  g.addColorStop(1.0, 'rgba(180,160,120,0.22)');
+  x.fillStyle = g; x.fillRect(0, 0, W, H);
+
+  for (let i = 0; i < 420; i++) {
+    const px = Math.random() * W, py = Math.random() * H;
+    x.globalAlpha = 0.04 + Math.random() * 0.12;
+    x.fillStyle = Math.random() < 0.5 ? '#9a9083' : '#c9c2b4';
+    const rr = 0.6 + Math.random() * 2.4;
+    x.beginPath(); x.arc(px, py, rr, 0, 7); x.fill();
+  }
+  for (let i = 0; i < 90; i++) {
+    const px = Math.random() * W;
+    const edge = Math.random() < 0.5 ? 0 : H;
+    x.globalAlpha = 0.05 + Math.random() * 0.1;
+    x.fillStyle = '#7a6f5f';
+    x.beginPath(); x.ellipse(px, edge, 4 + Math.random() * 10, 3 + Math.random() * 6, 0, 0, 7); x.fill();
+  }
+  x.globalAlpha = 1;
+  return cv;
+}
+
+// Dark rubber base with dust + scuffs
+function makeBaseTexture() {
+  const S = 512;
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const x = cv.getContext('2d');
+
+  x.fillStyle = '#26272a'; x.fillRect(0, 0, S, S);
+
+  for (let i = 0; i < 1400; i++) {
+    const px = Math.random() * S, py = Math.random() * S;
+    x.globalAlpha = 0.03 + Math.random() * 0.08;
+    x.fillStyle = Math.random() < 0.5 ? '#3a3b3e' : '#4a4640';
+    x.fillRect(px, py, 1 + Math.random() * 2, 1 + Math.random() * 2);
+  }
+  for (let i = 0; i < 130; i++) {
+    const px = Math.random() * S, py = Math.random() * S;
+    const len = 8 + Math.random() * 40, ang = Math.random() * Math.PI;
+    x.save(); x.translate(px, py); x.rotate(ang);
+    x.globalAlpha = 0.05 + Math.random() * 0.12;
+    x.strokeStyle = Math.random() < 0.5 ? '#55514a' : '#1a1a1c';
+    x.lineWidth = 1 + Math.random() * 2;
+    x.beginPath(); x.moveTo(-len / 2, 0); x.lineTo(len / 2, 0); x.stroke();
+    x.restore();
+  }
+  x.globalAlpha = 1;
+  return cv;
+}
+
+// Neutral dark studio backdrop
+function makeBackground() {
+  const S = 512;
+  const cv = document.createElement('canvas'); cv.width = cv.height = S;
+  const x = cv.getContext('2d');
+  const g = x.createRadialGradient(S * 0.5, S * 0.42, S * 0.05, S * 0.5, S * 0.5, S * 0.75);
+  g.addColorStop(0.0, '#3a3f45');
+  g.addColorStop(0.5, '#23262b');
+  g.addColorStop(1.0, '#0e0f12');
+  x.fillStyle = g; x.fillRect(0, 0, S, S);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+</script>
+</body>
+</html>

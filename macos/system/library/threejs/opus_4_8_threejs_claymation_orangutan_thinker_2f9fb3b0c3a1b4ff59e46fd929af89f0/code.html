@@ -1,0 +1,1128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Clay Orangutan Figure — Claymation Study</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16151a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 16px; bottom: 14px;
+    font: 12px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(235, 225, 215, 0.42); letter-spacing: 0.06em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Clay Orangutan &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   RENDERER / SCENE / CAMERA
+   ========================================================================== */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17161b);
+scene.fog = new THREE.Fog(0x17161b, 3.2, 9.5);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(1.35, 1.06, 2.05);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.62;
+controls.target.set(0, 0.60, 0);
+controls.minDistance = 1.15;
+controls.maxDistance = 5.2;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ============================================================================
+   DETERMINISTIC PSEUDO-RANDOM (so the "handmade" wobble is stable)
+   ========================================================================== */
+
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >>> 17;
+    s ^= s << 5;  s >>>= 0;
+    return s / 4294967296;
+  };
+}
+const rng = makeRng(20260721);
+const rand = (a, b) => a + (b - a) * rng();
+
+// Cheap smooth value noise (3D) built from a hashed lattice — used for clay lumps.
+function hash3(x, y, z) {
+  let h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return h - Math.floor(h);
+}
+function smoothstep(t) { return t * t * (3 - 2 * t); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function valueNoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = smoothstep(xf), v = smoothstep(yf), w = smoothstep(zf);
+  const c000 = hash3(xi, yi, zi),         c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi),     c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1),     c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  const x00 = lerp(c000, c100, u), x10 = lerp(c010, c110, u);
+  const x01 = lerp(c001, c101, u), x11 = lerp(c011, c111, u);
+  return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w) * 2 - 1;
+}
+function fbm(x, y, z) {
+  return valueNoise(x, y, z) * 0.6
+       + valueNoise(x * 2.03 + 5.1, y * 2.03 - 3.7, z * 2.03 + 1.9) * 0.28
+       + valueNoise(x * 4.11 - 2.4, y * 4.11 + 8.3, z * 4.11 - 6.2) * 0.12;
+}
+
+/* ============================================================================
+   PROCEDURAL CLAY SURFACE MAPS
+   Thumbprint dents + tool-drag striations, baked into canvas textures.
+   ========================================================================== */
+
+function makeCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  return c;
+}
+
+// --- Fur coat: burnt orange clay with drag striations + thumb dents -------
+function makeClayFurMaps(size) {
+  const size2 = size;
+  const colC = makeCanvas(size2);
+  const cctx = colC.getContext('2d');
+
+  // Base burnt-orange, slightly mottled by hand-mixing streaks
+  cctx.fillStyle = '#a8471c';
+  cctx.fillRect(0, 0, size2, size2);
+
+  const r2 = makeRng(4711);
+  // Marbled clay swirls (unevenly kneaded pigment)
+  for (let i = 0; i < 220; i++) {
+    const x = r2() * size2, y = r2() * size2;
+    const len = 40 + r2() * 260;
+    const ang = (r2() - 0.5) * 1.1 + Math.PI * 0.5;
+    const w = 6 + r2() * 26;
+    const dark = r2() < 0.5;
+    cctx.save();
+    cctx.translate(x, y);
+    cctx.rotate(ang);
+    const g = cctx.createLinearGradient(0, -len * 0.5, 0, len * 0.5);
+    const tint = dark ? 'rgba(96,46,18,' : 'rgba(214,110,44,';
+    g.addColorStop(0, tint + '0)');
+    g.addColorStop(0.5, tint + (0.10 + r2() * 0.16) + ')');
+    g.addColorStop(1, tint + '0)');
+    cctx.fillStyle = g;
+    cctx.fillRect(-w * 0.5, -len * 0.5, w, len);
+    cctx.restore();
+  }
+  // Faint sooty clay speckle (dust of the studio)
+  for (let i = 0; i < 2600; i++) {
+    const x = r2() * size2, y = r2() * size2;
+    const rr = 0.6 + r2() * 2.0;
+    cctx.fillStyle = r2() < 0.5
+      ? 'rgba(60,30,14,' + (0.05 + r2() * 0.14) + ')'
+      : 'rgba(232,150,84,' + (0.04 + r2() * 0.12) + ')';
+    cctx.beginPath(); cctx.arc(x, y, rr, 0, Math.PI * 2); cctx.fill();
+  }
+
+  // --- bump/normal source: grayscale height field ---
+  const bumpC = makeCanvas(size2);
+  const bctx = bumpC.getContext('2d');
+  bctx.fillStyle = '#808080';
+  bctx.fillRect(0, 0, size2, size2);
+
+  const r3 = makeRng(90210);
+
+  // Tool-drag striations: long, slightly curved grooves (sculpting rake)
+  for (let i = 0; i < 900; i++) {
+    const x0 = r3() * size2;
+    const y0 = r3() * size2;
+    const baseAng = Math.PI * 0.5 + (r3() - 0.5) * 0.85;
+    const len = 30 + r3() * 190;
+    const segs = 8;
+    const curve = (r3() - 0.5) * 0.9;
+    const lw = 1.0 + r3() * 3.4;
+    const deep = r3() < 0.55;
+    bctx.beginPath();
+    bctx.moveTo(x0, y0);
+    let px = x0, py = y0, ang = baseAng;
+    for (let s = 1; s <= segs; s++) {
+      ang += curve / segs + (r3() - 0.5) * 0.08;
+      px += Math.cos(ang) * (len / segs);
+      py += Math.sin(ang) * (len / segs);
+      bctx.lineTo(px, py);
+    }
+    bctx.lineCap = 'round';
+    bctx.lineJoin = 'round';
+    bctx.lineWidth = lw;
+    bctx.strokeStyle = deep
+      ? 'rgba(46,46,46,' + (0.16 + r3() * 0.34) + ')'
+      : 'rgba(214,214,214,' + (0.12 + r3() * 0.26) + ')';
+    bctx.stroke();
+    // ridge of displaced clay alongside the groove
+    if (deep && r3() < 0.7) {
+      bctx.lineWidth = lw * 0.7;
+      bctx.strokeStyle = 'rgba(206,206,206,0.16)';
+      bctx.save();
+      bctx.translate(Math.cos(baseAng + Math.PI / 2) * lw, Math.sin(baseAng + Math.PI / 2) * lw);
+      bctx.stroke();
+      bctx.restore();
+    }
+  }
+
+  // Thumbprint dents: concave ovals with a soft raised lip
+  for (let i = 0; i < 130; i++) {
+    const x = r3() * size2, y = r3() * size2;
+    const rr = size2 * (0.012 + r3() * 0.030);
+    const ang = r3() * Math.PI;
+    const squash = 0.55 + r3() * 0.4;
+    bctx.save();
+    bctx.translate(x, y);
+    bctx.rotate(ang);
+    bctx.scale(1, squash);
+    // raised lip
+    const gl = bctx.createRadialGradient(0, 0, rr * 0.55, 0, 0, rr * 1.28);
+    gl.addColorStop(0, 'rgba(190,190,190,0)');
+    gl.addColorStop(0.62, 'rgba(206,206,206,0.30)');
+    gl.addColorStop(1, 'rgba(128,128,128,0)');
+    bctx.fillStyle = gl;
+    bctx.beginPath(); bctx.arc(0, 0, rr * 1.28, 0, Math.PI * 2); bctx.fill();
+    // dent bowl
+    const gd = bctx.createRadialGradient(rr * 0.12, -rr * 0.1, 0, 0, 0, rr);
+    gd.addColorStop(0, 'rgba(40,40,40,0.55)');
+    gd.addColorStop(0.6, 'rgba(80,80,80,0.30)');
+    gd.addColorStop(1, 'rgba(128,128,128,0)');
+    bctx.fillStyle = gd;
+    bctx.beginPath(); bctx.arc(0, 0, rr, 0, Math.PI * 2); bctx.fill();
+    // fingerprint ridge arcs inside the dent
+    bctx.lineWidth = 0.9;
+    for (let k = 1; k <= 4; k++) {
+      bctx.strokeStyle = 'rgba(170,170,170,' + (0.10 + r3() * 0.10) + ')';
+      bctx.beginPath();
+      bctx.arc(0, 0, rr * (0.16 * k + 0.10), 0.6 + r3(), 3.6 + r3());
+      bctx.stroke();
+    }
+    bctx.restore();
+  }
+
+  // Fine grain so the clay never looks plastic
+  const grain = bctx.getImageData(0, 0, size2, size2);
+  const gd = grain.data;
+  const r4 = makeRng(1337);
+  for (let i = 0; i < gd.length; i += 4) {
+    const n = (r4() - 0.5) * 26;
+    gd[i] = Math.max(0, Math.min(255, gd[i] + n));
+    gd[i + 1] = Math.max(0, Math.min(255, gd[i + 1] + n));
+    gd[i + 2] = Math.max(0, Math.min(255, gd[i + 2] + n));
+  }
+  bctx.putImageData(grain, 0, 0);
+
+  // Multiply a little of the height into the albedo (grooves read darker)
+  cctx.save();
+  cctx.globalAlpha = 0.34;
+  cctx.globalCompositeOperation = 'overlay';
+  cctx.drawImage(bumpC, 0, 0);
+  cctx.restore();
+
+  // Roughness: dents/grooves are slightly duller than the burnished high spots
+  const roughC = makeCanvas(size2);
+  const rctx = roughC.getContext('2d');
+  rctx.fillStyle = '#b4b4b4';
+  rctx.fillRect(0, 0, size2, size2);
+  rctx.globalAlpha = 0.75;
+  rctx.globalCompositeOperation = 'overlay';
+  rctx.drawImage(bumpC, 0, 0);
+  rctx.globalCompositeOperation = 'source-over';
+  rctx.globalAlpha = 1;
+
+  const colorTex = new THREE.CanvasTexture(colC);
+  const bumpTex  = new THREE.CanvasTexture(bumpC);
+  const roughTex = new THREE.CanvasTexture(roughC);
+  for (const t of [colorTex, bumpTex, roughTex]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  }
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  return { colorTex, bumpTex, roughTex };
+}
+
+// --- Face pad / skin: smoothed putty-beige, gently burnished ---------------
+function makePuttyMaps(size, baseHex, streakHex) {
+  const c = makeCanvas(size);
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = baseHex;
+  ctx.fillRect(0, 0, size, size);
+  const r = makeRng(8112);
+  for (let i = 0; i < 160; i++) {
+    const x = r() * size, y = r() * size;
+    const rr = size * (0.02 + r() * 0.09);
+    const g = ctx.createRadialGradient(x, y, 0, x, y, rr);
+    g.addColorStop(0, streakHex.replace('ALPHA', (0.05 + r() * 0.13).toFixed(3)));
+    g.addColorStop(1, streakHex.replace('ALPHA', '0'));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.fill();
+  }
+
+  const b = makeCanvas(size);
+  const bx = b.getContext('2d');
+  bx.fillStyle = '#808080';
+  bx.fillRect(0, 0, size, size);
+  const r2 = makeRng(3391);
+  // burnishing swirls — the sculptor's thumb smoothing the pad flat
+  for (let i = 0; i < 260; i++) {
+    const x = r2() * size, y = r2() * size;
+    const rr = size * (0.01 + r2() * 0.05);
+    bx.strokeStyle = (r2() < 0.5 ? 'rgba(150,150,150,' : 'rgba(108,108,108,') + (0.06 + r2() * 0.10) + ')';
+    bx.lineWidth = 0.8 + r2() * 2.0;
+    bx.beginPath();
+    bx.arc(x, y, rr, r2() * 6.28, r2() * 6.28 + 1.6 + r2() * 2.4);
+    bx.stroke();
+  }
+  const img = bx.getImageData(0, 0, size, size);
+  const d = img.data;
+  const r3 = makeRng(5150);
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (r3() - 0.5) * 14;
+    d[i] += n; d[i + 1] += n; d[i + 2] += n;
+  }
+  bx.putImageData(img, 0, 0);
+
+  const colorTex = new THREE.CanvasTexture(c);
+  const bumpTex = new THREE.CanvasTexture(b);
+  for (const t of [colorTex, bumpTex]) {
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+  }
+  colorTex.colorSpace = THREE.SRGBColorSpace;
+  return { colorTex, bumpTex };
+}
+
+const furMaps   = makeClayFurMaps(1024);
+const faceMaps  = makePuttyMaps(512, '#d8b892', 'rgba(160,124,90,ALPHA)');
+
+/* ============================================================================
+   MATERIALS
+   ========================================================================== */
+
+const furMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  map: furMaps.colorTex,
+  bumpMap: furMaps.bumpTex,
+  bumpScale: 0.020,
+  roughnessMap: furMaps.roughTex,
+  roughness: 0.93,
+  metalness: 0.0
+});
+
+const furMatDark = furMat.clone();
+furMatDark.color = new THREE.Color(0x9a7263);
+furMatDark.bumpScale = 0.016;
+
+const faceMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  map: faceMaps.colorTex,
+  bumpMap: faceMaps.bumpTex,
+  bumpScale: 0.008,
+  roughness: 0.72,
+  metalness: 0.0
+});
+
+const skinMat = new THREE.MeshStandardMaterial({
+  color: 0x6b4536,
+  roughness: 0.80,
+  metalness: 0.0,
+  bumpMap: faceMaps.bumpTex,
+  bumpScale: 0.006
+});
+
+const eyeMat = new THREE.MeshStandardMaterial({
+  color: 0x120c09,
+  roughness: 0.16,
+  metalness: 0.05
+});
+
+const glintMat = new THREE.MeshBasicMaterial({ color: 0xf6efe6 });
+
+const baseMat = new THREE.MeshStandardMaterial({
+  color: 0x3a3640,
+  roughness: 0.95,
+  metalness: 0.0
+});
+
+/* ============================================================================
+   CLAY GEOMETRY HELPERS
+   Every part starts as a smooth primitive, then gets kneaded: fbm lumps,
+   asymmetric squash, and a per-part "hand wobble" so nothing is machine-true.
+   ========================================================================== */
+
+function clayify(geo, opts = {}) {
+  const amp = opts.amp !== undefined ? opts.amp : 0.020;
+  const freq = opts.freq !== undefined ? opts.freq : 4.0;
+  const seed = opts.seed !== undefined ? opts.seed : 0;
+  const squash = opts.squash || new THREE.Vector3(1, 1, 1);
+  const lean = opts.lean || new THREE.Vector3(0, 0, 0); // per-unit-Y shear
+
+  geo = geo.toNonIndexed ? geo : geo;
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    n.fromBufferAttribute(nrm, i);
+
+    const d = fbm(v.x * freq + seed, v.y * freq + seed * 1.7, v.z * freq + seed * 0.6);
+    const d2 = fbm(v.x * freq * 2.6 - seed, v.y * freq * 2.6 + seed, v.z * freq * 2.6 + 3.3);
+    const disp = d * amp + d2 * amp * 0.35;
+
+    v.addScaledVector(n, disp);
+    v.multiply(squash);
+    v.x += lean.x * v.y;
+    v.z += lean.z * v.y;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+let partSeed = 1;
+function clayBall(radius, segW, segH, opts = {}) {
+  const g = new THREE.SphereGeometry(radius, segW, segH);
+  return clayify(g, Object.assign({ seed: partSeed++ * 3.77, amp: radius * 0.075, freq: 5.0 / Math.max(radius, 0.01) * 0.45 }, opts));
+}
+
+function clayCapsule(radius, length, capSeg, radSeg, opts = {}) {
+  const g = new THREE.CapsuleGeometry(radius, length, capSeg, radSeg);
+  return clayify(g, Object.assign({ seed: partSeed++ * 2.31, amp: radius * 0.085, freq: 6.5 }, opts));
+}
+
+// A limb built as a chain of spheres along a quadratic curve — reads as clay
+// rolled into a snake and bent by hand, with a slight taper.
+function clayLimb(points, rStart, rEnd, segments, opts = {}) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p => p.clone()), false, 'catmullrom', 0.4);
+  const group = new THREE.Group();
+  const bulge = opts.bulge !== undefined ? opts.bulge : 0.0;
+  const seed = opts.seed !== undefined ? opts.seed : partSeed++ * 1.93;
+  const mat = opts.material || furMat;
+
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    const p = curve.getPointAt(t);
+    // taper with a subtle mid-limb muscle bulge
+    let r = lerp(rStart, rEnd, t) * (1 + bulge * Math.sin(t * Math.PI));
+    // handmade unevenness along the length
+    r *= 1 + 0.085 * fbm(t * 5.3 + seed, seed * 0.7, t * 2.1);
+    const geo = clayBall(Math.max(r, 0.004), 20, 14, {
+      amp: r * 0.10,
+      freq: 7.0,
+      seed: seed + i * 0.83,
+      squash: new THREE.Vector3(1, 0.98 + 0.06 * Math.sin(i * 1.7), 1.02)
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.copy(p);
+    m.rotation.set(rand(-0.25, 0.25), rand(-0.4, 0.4), rand(-0.25, 0.25));
+    m.castShadow = true;
+    m.receiveShadow = true;
+    group.add(m);
+  }
+  return group;
+}
+
+function meshOf(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================================
+   THE ORANGUTAN
+   Seated, ~0.95 units tall as posed (a ~10cm maquette scaled to metres-ish
+   proportion for the studio). Origin at the ground, facing +Z.
+   ========================================================================== */
+
+const orangutan = new THREE.Group();
+scene.add(orangutan);
+
+/* ---- 1. Seated haunches / rump ------------------------------------------ */
+
+const rump = meshOf(
+  clayBall(0.30, 40, 30, {
+    amp: 0.020, freq: 6.0, seed: 11.3,
+    squash: new THREE.Vector3(1.10, 0.72, 1.00)
+  }),
+  furMat
+);
+rump.position.set(0.0, 0.215, -0.045);
+rump.rotation.set(0.06, 0.12, -0.03);
+orangutan.add(rump);
+
+// Left thigh, lying flat/folded (the arm-draped leg is the right one, bent up)
+const thighL = meshOf(
+  clayCapsule(0.108, 0.20, 8, 22, {
+    amp: 0.014, freq: 7.0, seed: 4.2,
+    squash: new THREE.Vector3(1.05, 1.0, 0.92)
+  }),
+  furMat
+);
+thighL.position.set(-0.225, 0.135, 0.075);
+thighL.rotation.set(Math.PI * 0.5 - 0.30, 0.0, -0.62);
+orangutan.add(thighL);
+
+// Left shin folded in front, foot tucked toward centre
+const shinL = meshOf(
+  clayCapsule(0.088, 0.185, 8, 20, {
+    amp: 0.013, freq: 7.5, seed: 6.8,
+    squash: new THREE.Vector3(1.0, 1.0, 0.95)
+  }),
+  furMat
+);
+shinL.position.set(-0.115, 0.105, 0.235);
+shinL.rotation.set(Math.PI * 0.5 - 0.12, 0.0, 0.95);
+orangutan.add(shinL);
+
+// Right leg: knee up, the elbow-rest for the draped arm
+const thighR = meshOf(
+  clayCapsule(0.112, 0.215, 8, 22, {
+    amp: 0.015, freq: 6.6, seed: 9.1,
+    squash: new THREE.Vector3(1.02, 1.0, 0.94)
+  }),
+  furMat
+);
+thighR.position.set(0.205, 0.275, 0.115);
+thighR.rotation.set(0.98, -0.16, -0.24);
+orangutan.add(thighR);
+
+const kneeR = meshOf(
+  clayBall(0.108, 26, 20, { amp: 0.010, freq: 8.0, seed: 13.4,
+    squash: new THREE.Vector3(1.0, 0.95, 1.04) }),
+  furMat
+);
+kneeR.position.set(0.245, 0.435, 0.235);
+orangutan.add(kneeR);
+
+const shinR = meshOf(
+  clayCapsule(0.085, 0.215, 8, 20, {
+    amp: 0.012, freq: 7.8, seed: 15.6,
+    squash: new THREE.Vector3(1.0, 1.0, 0.96)
+  }),
+  furMat
+);
+shinR.position.set(0.255, 0.245, 0.290);
+shinR.rotation.set(-0.30, 0.05, 0.09);
+orangutan.add(shinR);
+
+/* ---- 2. Feet: long clay slabs with stubby toes -------------------------- */
+
+function makeFoot(seed) {
+  const g = new THREE.Group();
+  const sole = meshOf(
+    clayBall(0.082, 24, 18, {
+      amp: 0.008, freq: 9.0, seed: seed,
+      squash: new THREE.Vector3(0.72, 0.62, 1.35)
+    }),
+    furMatDark
+  );
+  g.add(sole);
+  // four little toes + a thumb-toe
+  for (let i = 0; i < 4; i++) {
+    const t = i / 3;
+    const r = 0.023 - i * 0.0022;
+    const toe = meshOf(
+      clayBall(r, 14, 10, { amp: r * 0.16, freq: 12, seed: seed + i,
+        squash: new THREE.Vector3(0.9, 0.85, 1.5) }),
+      furMatDark
+    );
+    toe.position.set(-0.033 + t * 0.066, -0.012, 0.108 - Math.abs(t - 0.45) * 0.022);
+    toe.rotation.set(rand(-0.2, 0.1), rand(-0.2, 0.2), 0);
+    g.add(toe);
+  }
+  const bigToe = meshOf(
+    clayBall(0.029, 16, 12, { amp: 0.004, freq: 12, seed: seed + 7,
+      squash: new THREE.Vector3(1.0, 0.85, 1.25) }),
+    furMatDark
+  );
+  bigToe.position.set(-0.056, -0.010, 0.030);
+  bigToe.rotation.z = 0.4;
+  g.add(bigToe);
+  return g;
+}
+
+const footL = makeFoot(21.5);
+footL.position.set(-0.005, 0.062, 0.330);
+footL.rotation.set(0.05, 0.55, 0.12);
+orangutan.add(footL);
+
+const footR = makeFoot(33.1);
+footR.position.set(0.250, 0.062, 0.360);
+footR.rotation.set(0.10, -0.22, -0.06);
+orangutan.add(footR);
+
+/* ---- 3. Torso: barrel chest, slight forward slump ----------------------- */
+
+const belly = meshOf(
+  clayBall(0.255, 40, 30, {
+    amp: 0.018, freq: 6.2, seed: 17.2,
+    squash: new THREE.Vector3(1.06, 0.94, 0.90)
+  }),
+  furMat
+);
+belly.position.set(-0.005, 0.395, 0.005);
+belly.rotation.set(0.10, -0.15, 0.04);
+orangutan.add(belly);
+
+const chest = meshOf(
+  clayBall(0.245, 40, 30, {
+    amp: 0.018, freq: 6.0, seed: 19.9,
+    squash: new THREE.Vector3(1.14, 0.92, 0.82),
+    lean: new THREE.Vector3(0.05, 0, 0.10)
+  }),
+  furMat
+);
+chest.position.set(-0.012, 0.585, -0.012);
+chest.rotation.set(-0.08, 0.10, -0.05);
+orangutan.add(chest);
+
+// Broad shoulder yoke (the classic flanged-male silhouette, softened)
+const shoulderYoke = meshOf(
+  clayBall(0.215, 36, 26, {
+    amp: 0.016, freq: 6.5, seed: 23.4,
+    squash: new THREE.Vector3(1.42, 0.56, 0.80)
+  }),
+  furMat
+);
+shoulderYoke.position.set(-0.010, 0.700, -0.030);
+shoulderYoke.rotation.set(0.06, 0.05, 0.035);
+orangutan.add(shoulderYoke);
+
+/* ---- 4. The visible seam along the shoulder ----------------------------- */
+/* Two clay slabs pressed together: a raised bead of squeezed-out clay
+   running over the right shoulder, plus a fine dark crease line.           */
+
+const seamGroup = new THREE.Group();
+{
+  const seamPts = [];
+  const N = 26;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    // arc from mid-chest, up over the shoulder cap, to the upper back
+    const a = lerp(-0.55, 2.55, t);
+    const rr = 0.212 + 0.012 * Math.sin(t * 5.1);
+    seamPts.push(new THREE.Vector3(
+      Math.cos(a) * rr * 0.98,
+      0.700 + Math.sin(t * Math.PI) * 0.052 - 0.010,
+      Math.sin(a) * rr * 0.70
+    ));
+  }
+  const seamCurve = new THREE.CatmullRomCurve3(seamPts, false, 'catmullrom', 0.5);
+
+  // raised squeeze-out bead
+  const beadGeo = new THREE.TubeGeometry(seamCurve, 120, 0.0125, 10, false);
+  clayify(beadGeo, { amp: 0.0035, freq: 22.0, seed: 42.1 });
+  const bead = meshOf(beadGeo, furMat);
+  bead.material = furMat;
+  seamGroup.add(bead);
+
+  // dark crease sitting just inside the bead
+  const creaseGeo = new THREE.TubeGeometry(seamCurve, 120, 0.0052, 8, false);
+  clayify(creaseGeo, { amp: 0.0016, freq: 26.0, seed: 44.7 });
+  const creaseMat = new THREE.MeshStandardMaterial({
+    color: 0x51230f, roughness: 0.98, metalness: 0.0
+  });
+  const crease = meshOf(creaseGeo, creaseMat);
+  crease.scale.setScalar(1.0);
+  crease.position.y += 0.004;
+  seamGroup.add(crease);
+
+  // a couple of thumb-press blobs where the seam was pinched shut
+  for (let i = 0; i < 5; i++) {
+    const t = 0.14 + i * 0.18;
+    const p = seamCurve.getPointAt(Math.min(t, 0.999));
+    const blob = meshOf(
+      clayBall(0.026 + rand(-0.005, 0.006), 16, 12, {
+        amp: 0.004, freq: 14, seed: 50 + i,
+        squash: new THREE.Vector3(1.25, 0.42, 0.95)
+      }),
+      furMat
+    );
+    blob.position.copy(p);
+    blob.position.y += 0.006;
+    blob.rotation.set(rand(-0.3, 0.3), rand(0, 3.14), rand(-0.3, 0.3));
+    seamGroup.add(blob);
+  }
+}
+seamGroup.rotation.y = -0.28;
+orangutan.add(seamGroup);
+
+/* ---- 5. Neck + head ----------------------------------------------------- */
+
+const neck = meshOf(
+  clayCapsule(0.088, 0.055, 8, 20, { amp: 0.008, freq: 9.0, seed: 27.7 }),
+  furMat
+);
+neck.position.set(-0.012, 0.775, 0.010);
+neck.rotation.set(0.20, 0, -0.05);
+orangutan.add(neck);
+
+const head = new THREE.Group();
+head.position.set(-0.020, 0.885, 0.030);
+head.rotation.set(0.06, 0.30, -0.09);   // tipped into the propping hand
+orangutan.add(head);
+
+// cranium — slightly lopsided, as thumbed into shape
+const skull = meshOf(
+  clayBall(0.145, 40, 30, {
+    amp: 0.011, freq: 7.0, seed: 31.5,
+    squash: new THREE.Vector3(1.00, 1.06, 0.94)
+  }),
+  furMat
+);
+skull.position.set(0, 0.010, -0.010);
+head.add(skull);
+
+// the great cheek flanges — two fat clay pads either side of the face
+function makeFlange(sign, seed) {
+  const f = meshOf(
+    clayBall(0.115, 30, 22, {
+      amp: 0.012, freq: 7.5, seed: seed,
+      squash: new THREE.Vector3(0.52, 1.16, 0.86)
+    }),
+    furMat
+  );
+  f.position.set(sign * 0.150, -0.018, 0.028);
+  f.rotation.set(0.05, sign * -0.22, sign * -0.16);
+  return f;
+}
+const flangeL = makeFlange(-1, 35.2);
+const flangeR = makeFlange(1, 37.9);
+flangeR.scale.set(1.06, 0.97, 1.02);   // deliberately uneven pair
+flangeL.scale.set(0.97, 1.03, 0.99);
+head.add(flangeL, flangeR);
+
+// brow shelf
+const brow = meshOf(
+  clayBall(0.098, 26, 18, {
+    amp: 0.006, freq: 10.0, seed: 39.3,
+    squash: new THREE.Vector3(1.10, 0.42, 0.60)
+  }),
+  furMat
+);
+brow.position.set(0.002, 0.055, 0.098);
+brow.rotation.set(-0.16, 0.02, 0.05);
+head.add(brow);
+
+// crown tuft of clay hair — a few dragged spikes
+for (let i = 0; i < 9; i++) {
+  const t = i / 8;
+  const r = 0.016 + rand(-0.004, 0.005);
+  const spike = meshOf(
+    clayBall(r, 12, 10, { amp: r * 0.2, freq: 16, seed: 60 + i,
+      squash: new THREE.Vector3(0.8, 2.1, 0.8) }),
+    furMat
+  );
+  const a = lerp(-1.1, 1.1, t);
+  spike.position.set(Math.sin(a) * 0.075, 0.140 - Math.abs(a) * 0.020, Math.cos(a) * 0.045 - 0.020);
+  spike.rotation.set(rand(-0.5, 0.2), rand(-0.5, 0.5), a * 0.55 + rand(-0.2, 0.2));
+  head.add(spike);
+}
+
+/* ---- 6. Face pad: smoothed disc of putty-beige --------------------------- */
+
+const facePad = new THREE.Group();
+facePad.position.set(0.004, -0.012, 0.086);
+facePad.rotation.set(-0.02, 0.0, 0.04);
+head.add(facePad);
+
+// the disc itself — a flattened, burnished sphere pressed into the face
+const padGeo = clayBall(0.098, 44, 32, {
+  amp: 0.0032, freq: 9.0, seed: 71.4,
+  squash: new THREE.Vector3(1.00, 1.16, 0.42)
+});
+const pad = meshOf(padGeo, faceMat);
+pad.position.z = 0.010;
+facePad.add(pad);
+
+// faint rim of clay pushed up around the disc where it was pressed in
+const rimGeo = new THREE.TorusGeometry(0.101, 0.0095, 10, 48);
+clayify(rimGeo, { amp: 0.0028, freq: 18, seed: 73.9,
+  squash: new THREE.Vector3(1.0, 1.14, 1.0) });
+const rim = meshOf(rimGeo, furMat);
+rim.position.z = -0.008;
+facePad.add(rim);
+
+// brow ridge nub over the pad
+const padBrow = meshOf(
+  clayBall(0.052, 18, 14, { amp: 0.003, freq: 14, seed: 75.1,
+    squash: new THREE.Vector3(1.40, 0.34, 0.55) }),
+  faceMat
+);
+padBrow.position.set(0.0, 0.062, 0.026);
+facePad.add(padBrow);
+
+// muzzle: a low putty mound with two nostril pokes and a pressed-in mouth line
+const muzzle = meshOf(
+  clayBall(0.058, 24, 18, {
+    amp: 0.0026, freq: 12, seed: 77.6,
+    squash: new THREE.Vector3(1.02, 0.86, 0.72)
+  }),
+  faceMat
+);
+muzzle.position.set(0.001, -0.045, 0.040);
+facePad.add(muzzle);
+
+const nostrilGeo = clayBall(0.0072, 12, 10, { amp: 0.0012, freq: 20, seed: 79.2,
+  squash: new THREE.Vector3(1.0, 0.75, 0.8) });
+for (const sx of [-1, 1]) {
+  const nos = meshOf(nostrilGeo, skinMat);
+  nos.position.set(sx * 0.0155, -0.036, 0.078);
+  nos.scale.set(1 + sx * 0.05, 1, 1);
+  facePad.add(nos);
+}
+
+// mouth: a shallow tool-drag crease
+const mouthGeo = new THREE.TorusGeometry(0.030, 0.0048, 8, 26, Math.PI * 0.86);
+const mouthMat = new THREE.MeshStandardMaterial({ color: 0x7d5a3f, roughness: 0.9 });
+const mouth = meshOf(mouthGeo, mouthMat);
+mouth.position.set(0.0, -0.056, 0.074);
+mouth.rotation.set(0.30, 0, Math.PI + Math.PI * 0.07);
+facePad.add(mouth);
+
+// lower lip pad
+const lip = meshOf(
+  clayBall(0.030, 16, 12, { amp: 0.002, freq: 16, seed: 81.5,
+    squash: new THREE.Vector3(1.25, 0.55, 0.6) }),
+  faceMat
+);
+lip.position.set(0.0, -0.076, 0.058);
+facePad.add(lip);
+
+/* ---- 7. Bead eyes pressed into the putty -------------------------------- */
+
+function makeEye(sign) {
+  const g = new THREE.Group();
+  // socket: a pressed dent, slightly darker putty
+  const socket = meshOf(
+    clayBall(0.0195, 18, 14, { amp: 0.0012, freq: 22, seed: 90 + sign,
+      squash: new THREE.Vector3(1.15, 0.9, 0.42) }),
+    new THREE.MeshStandardMaterial({ color: 0xb08f6c, roughness: 0.85 })
+  );
+  socket.position.z = 0.004;
+  g.add(socket);
+
+  // the bead
+  const bead = meshOf(new THREE.SphereGeometry(0.0102, 20, 16), eyeMat);
+  bead.position.z = 0.011;
+  g.add(bead);
+
+  // catchlight
+  const glint = new THREE.Mesh(new THREE.SphereGeometry(0.0026, 10, 8), glintMat);
+  glint.position.set(-0.0032 + sign * 0.0006, 0.0036, 0.0185);
+  g.add(glint);
+
+  return g;
+}
+
+const eyeL = makeEye(-1);
+eyeL.position.set(-0.0305, 0.020, 0.0705);
+eyeL.rotation.y = 0.22;
+facePad.add(eyeL);
+
+const eyeR = makeEye(1);
+eyeR.position.set(0.0322, 0.0225, 0.0700);  // deliberately a hair off-match
+eyeR.rotation.y = -0.20;
+eyeR.scale.setScalar(1.05);
+facePad.add(eyeR);
+
+/* ---- 8. Arms ------------------------------------------------------------ */
+/* RIGHT arm (figure's right, +X): long, draped over the raised knee,
+   hand hanging loose past the shin.                                        */
+
+const shoulderR = new THREE.Vector3(0.198, 0.712, -0.012);
+const elbowR    = new THREE.Vector3(0.330, 0.520, 0.170);
+const wristR    = new THREE.Vector3(0.300, 0.400, 0.395);
+
+const armR = clayLimb(
+  [
+    shoulderR,
+    new THREE.Vector3(0.268, 0.640, 0.045),
+    elbowR,
+    new THREE.Vector3(0.352, 0.455, 0.290),
+    wristR
+  ],
+  0.098, 0.058, 26, { bulge: 0.07, seed: 101.3 }
+);
+orangutan.add(armR);
+
+// shoulder cap where the arm meets the yoke (hides the join, sells the clay)
+const capR = meshOf(
+  clayBall(0.108, 26, 20, { amp: 0.010, freq: 8, seed: 103.2,
+    squash: new THREE.Vector3(1.0, 0.94, 1.02) }),
+  furMat
+);
+capR.position.copy(shoulderR).add(new THREE.Vector3(-0.012, 0.006, -0.004));
+orangutan.add(capR);
+
+/* LEFT arm (figure's left, -X): bent up, forearm vertical, hand under chin. */
+
+const shoulderL = new THREE.Vector3(-0.205, 0.700, -0.018);
+const elbowL    = new THREE.Vector3(-0.300, 0.470, 0.130);
+const wristL    = new THREE.Vector3(-0.150, 0.760, 0.150);
+
+const armL = clayLimb(
+  [
+    shoulderL,
+    new THREE.Vector3(-0.272, 0.600, 0.030),
+    elbowL,
+    new THREE.Vector3(-0.245, 0.605, 0.165),
+    wristL
+  ],
+  0.095, 0.056, 26, { bulge: 0.06, seed: 107.9 }
+);
+orangutan.add(armL);
+
+const capL = meshOf(
+  clayBall(0.105, 26, 20, { amp: 0.010, freq: 8, seed: 109.4,
+    squash: new THREE.Vector3(1.0, 0.95, 1.02) }),
+  furMat
+);
+capL.position.copy(shoulderL).add(new THREE.Vector3(0.010, 0.008, -0.004));
+orangutan.add(capL);
+
+/* ---- 9. Hands: long clay palms with four hooked fingers + a low thumb --- */
+
+function makeHand(seed, curl) {
+  const g = new THREE.Group();
+
+  const palm = meshOf(
+    clayBall(0.062, 26, 20, {
+      amp: 0.005, freq: 11, seed: seed,
+      squash: new THREE.Vector3(0.62, 1.22, 0.82)
+    }),
+    furMatDark
+  );
+  g.add(palm);
+
+  // four fingers, curled by `curl` radians
+  for (let i = 0; i < 4; i++) {
+    const t = i / 3;
+    const fx = -0.030 + t * 0.060;
+    const rBase = 0.0175 - Math.abs(t - 0.45) * 0.0045;
+    const len = 0.100 - Math.abs(t - 0.42) * 0.030;
+
+    const p0 = new THREE.Vector3(fx, -0.055, 0.006);
+    const p1 = new THREE.Vector3(
+      fx * 1.06,
+      -0.055 - len * 0.55 * Math.cos(curl * 0.5),
+      0.006 + len * 0.55 * Math.sin(curl * 0.5)
+    );
+    const p2 = new THREE.Vector3(
+      fx * 1.10,
+      -0.055 - len * 0.85 * Math.cos(curl),
+      0.006 + len * 0.95 * Math.sin(curl)
+    );
+    const finger = clayLimb([p0, p1, p2], rBase, rBase * 0.72, 7, {
+      material: furMatDark, seed: seed + 10 + i
+    });
+    g.add(finger);
+  }
+
+  // thumb, set low and to the side
+  const th0 = new THREE.Vector3(-0.042, -0.012, 0.020);
+  const th1 = new THREE.Vector3(-0.070, -0.040, 0.048);
+  const th2 = new THREE.Vector3(-0.078, -0.070, 0.070);
+  const thumb = clayLimb([th0, th1, th2], 0.019, 0.014, 6, {
+    material: furMatDark, seed: seed + 40
+  });
+  g.add(thumb);
+
+  return g;
+}
+
+// Right hand: hanging relaxed off the knee, fingers loosely hooked
+const handR = makeHand(120.5, 1.15);
+handR.position.copy(wristR).add(new THREE.Vector3(-0.008, -0.052, 0.012));
+handR.rotation.set(0.62, -0.22, -0.16);
+orangutan.add(handR);
+
+// Left hand: fingers folded, knuckles pressed up under the chin/cheek
+const handL = makeHand(140.2, 1.55);
+handL.position.copy(wristL).add(new THREE.Vector3(0.018, 0.052, 0.020));
+handL.rotation.set(-0.30, 0.30, 3.02);   // flipped, so the back of the hand faces out
+handL.scale.setScalar(0.98);
+orangutan.add(handL);
+
+/* ---- 10. Coat shag: dragged clay tags around the silhouette -------------- */
+/* Little pulled strands of clay give the long-haired orangutan coat.        */
+
+function addShag(anchor, count, spread, seedBase) {
+  for (let i = 0; i < count; i++) {
+    const a = rng() * Math.PI * 2;
+    const yy = rand(-1, 1);
+    const rr = Math.sqrt(Math.max(0, 1 - yy * yy));
+    const dir = new THREE.Vector3(Math.cos(a) * rr, yy * 0.55, Math.sin(a) * rr).normalize();
+    const len = rand(0.035, 0.085);
+    const rad = rand(0.010, 0.019);
+    const strand = meshOf(
+      clayBall(rad, 12, 9, {
+        amp: rad * 0.22, freq: 15, seed: seedBase + i,
+        squash: new THREE.Vector3(0.85, 1.0, 0.85)
+      }),
+      furMat
+    );
+    strand.scale.set(1, 1 + len / rad * 0.30, 1);
+    const p = anchor.clone().addScaledVector(dir, spread);
+    strand.position.copy(p);
+    // point the strand down-and-outward, as gravity drags wet clay
+    const target = p.clone().addScaledVector(dir, 0.06).add(new THREE.Vector3(0, -0.09, 0));
+    strand.lookAt(target);
+    strand.rotateX(Math.PI * 0.5);
+    orangutan.add(strand);
+  }
+}
+
+addShag(new THREE.Vector3(-0.010, 0.585, -0.010), 26, 0.245, 200);  // chest/back
+addShag(new THREE.Vector3(-0.005, 0.400, 0.000),  20, 0.255, 240);  // belly
+addShag(new THREE.Vector3(-0.010, 0.700, -0.030), 18, 0.215, 280);  // shoulders
+addShag(new THREE.Vector3(0.000,  0.215, -0.045), 16, 0.290, 320);  // rump
+
+// a few longer tags hanging from the upper arms
+for (const [sx, sd] of [[-1, 400], [1, 440]]) {
+  addShag(new THREE.Vector3(sx * 0.255, 0.620, 0.030), 9, 0.100, sd);
+}
+
+/* ---- 11. Base: a scrap of the sculptor's clay slab ---------------------- */
+
+const baseGeo = new THREE.CylinderGeometry(0.50, 0.535, 0.045, 56, 2);
+clayify(baseGeo, { amp: 0.010, freq: 5.5, seed: 500.3 });
+const base = meshOf(baseGeo, baseMat);
+base.position.y = 0.020;
+base.receiveShadow = true;
+base.castShadow = true;
+orangutan.add(base);
+
+/* ---- 12. Handmade wobble: the whole figure is a touch off-true ---------- */
+orangutan.rotation.y = -0.16;
+orangutan.position.y = 0.0;
+
+/* ============================================================================
+   GROUND (shadow catcher) + STUDIO SWEEP
+   ========================================================================== */
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0005;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// a very dark matte disc so the figure isn't floating in pure void
+const sweep = new THREE.Mesh(
+  new THREE.CircleGeometry(6, 64),
+  new THREE.MeshStandardMaterial({ color: 0x201e25, roughness: 1.0, metalness: 0.0 })
+);
+sweep.rotation.x = -Math.PI / 2;
+sweep.receiveShadow = true;
+scene.add(sweep);
+
+/* ============================================================================
+   LIGHTING — small-scale tabletop stop-motion rig
+   ========================================================================== */
+
+const hemi = new THREE.HemisphereLight(0x9fb4d0, 0x2a2016, 0.55);
+scene.add(hemi);
+
+scene.add(new THREE.AmbientLight(0xffe9d6, 0.10));
+
+// KEY — warm, high and camera-left
+const key = new THREE.DirectionalLight(0xfff0dc, 2.55);
+key.position.set(2.0, 3.0, 2.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -1.6;
+key.shadow.camera.right = 1.6;
+key.shadow.camera.top = 1.8;
+key.shadow.camera.bottom = -0.6;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 3;
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 0.55, 0);
+
+// FILL — cool, soft, camera-right and low
+const fill = new THREE.DirectionalLight(0xbcd2ef, 0.62);
+fill.position.set(-2.6, 1.2, 1.6);
+fill.castShadow = false;
+scene.add(fill);
+scene.add(fill.target);
+fill.target.position.set(0, 0.5, 0);
+
+// RIM — behind and above, separates the orange coat from the dark ground
+const rimLight = new THREE.DirectionalLight(0xffd7ae, 1.15);
+rimLight.position.set(-1.1, 2.2, -3.0);
+rimLight.castShadow = false;
+scene.add(rimLight);
+scene.add(rimLight.target);
+rimLight.target.position.set(0, 0.65, 0);
+
+// A tiny warm bounce right in front to open up the face pad
+const faceBounce = new THREE.PointLight(0xffd9b3, 0.55, 3.0, 2.0);
+faceBounce.position.set(0.35, 1.05, 1.05);
+scene.add(faceBounce);
+
+/* ============================================================================
+   RESIZE + RENDER LOOP
+   ========================================================================== */
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chrome Balloon Dog — Procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; }
+  body {
+    background: radial-gradient(circle at 50% 34%, #2b2b34 0%, #17171d 46%, #070709 100%);
+  }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 system-ui, sans-serif; color: rgba(255,255,255,0.35);
+    letter-spacing: 0.4px; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">Balloon Dog — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setClearColor(0x000000, 0);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ---------------------------------------------------------------------------
+   Scene & camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5.6, 2.9, 6.8);
+
+/* Procedural studio environment for the chrome reflections */
+const pmrem = new THREE.PMREMGenerator(renderer);
+const envRT = pmrem.fromScene(new RoomEnvironment(), 0.04);
+scene.environment = envRT.texture;
+pmrem.dispose();
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere fill + key / fill / rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xbfc6ff, 0x141018, 0.35);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.6);
+key.position.set(6, 9, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -7;
+key.shadow.camera.right = 7;
+key.shadow.camera.top = 7;
+key.shadow.camera.bottom = -7;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xa9c4ff, 0.7);
+fill.position.set(-7, 4, 5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xff9ad8, 1.4);
+rim.position.set(-4, 6, -7);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Chrome magenta material — mirror-like, near-zero roughness
+--------------------------------------------------------------------------- */
+const chrome = new THREE.MeshPhysicalMaterial({
+  color: 0xff2a9d,
+  metalness: 1.0,
+  roughness: 0.045,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  envMapIntensity: 1.4,
+  reflectivity: 1.0
+});
+
+/* ---------------------------------------------------------------------------
+   Procedural "balloon" tube: swept ring with link-bulge radius modulation
+--------------------------------------------------------------------------- */
+function balloonGeometry(points, opts) {
+  const o = Object.assign({
+    radius: 0.42, links: 1, pinch: 0.72,
+    tubularSegments: 200, radialSegments: 26
+  }, opts);
+
+  const curve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
+  const tSeg = o.tubularSegments, rSeg = o.radialSegments;
+  const frames = curve.computeFrenetFrames(tSeg, false);
+
+  const pos = [], nor = [], uv = [], idx = [];
+  const P = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+
+  for (let i = 0; i <= tSeg; i++) {
+    const t = i / tSeg;
+    curve.getPointAt(t, P);
+    const N = frames.normals[i];
+    const B = frames.binormals[i];
+
+    // link bulges: pinched at each twist, inflated between
+    const bulge = 0.5 - 0.5 * Math.cos(t * o.links * Math.PI * 2.0);
+    const rr = o.radius * (o.pinch + (1.0 - o.pinch) * bulge);
+
+    for (let j = 0; j <= rSeg; j++) {
+      const v = (j / rSeg) * Math.PI * 2.0;
+      const cx = Math.cos(v), sx = Math.sin(v);
+      nrm.set(
+        cx * N.x + sx * B.x,
+        cx * N.y + sx * B.y,
+        cx * N.z + sx * B.z
+      ).normalize();
+      pos.push(P.x + rr * nrm.x, P.y + rr * nrm.y, P.z + rr * nrm.z);
+      nor.push(nrm.x, nrm.y, nrm.z);
+      uv.push(t, j / rSeg);
+    }
+  }
+
+  for (let i = 1; i <= tSeg; i++) {
+    for (let j = 1; j <= rSeg; j++) {
+      const a = (rSeg + 1) * (i - 1) + (j - 1);
+      const b = (rSeg + 1) * i + (j - 1);
+      const c = (rSeg + 1) * i + j;
+      const d = (rSeg + 1) * (i - 1) + j;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setIndex(idx);
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  return g;
+}
+
+/* ---------------------------------------------------------------------------
+   Assemble ONE balloon-dog sculpture
+--------------------------------------------------------------------------- */
+const dog = new THREE.Group();
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+const R = 0.42;          // balloon tube radius
+const PINCH = 0.72;      // joint pinch factor
+const legZ = 0.62;       // lateral leg spread
+const hipY = 2.05;       // height of the leg arches (hips / shoulders)
+const xF = 1.15;         // front legs / shoulders
+const xB = -1.15;        // back legs / hips
+const capY = R * PINCH;  // rounded leg-ends rest on the floor
+
+function addSphere(x, y, z, r) {
+  const s = new THREE.Mesh(new THREE.SphereGeometry(r, 32, 24), chrome);
+  s.position.set(x, y, z);
+  s.castShadow = true; s.receiveShadow = true;
+  dog.add(s);
+  return s;
+}
+
+function addBalloon(pts, opts = {}) {
+  const o = Object.assign({ radius: R, links: 1, pinch: PINCH,
+    tubularSegments: 200, radialSegments: 26 }, opts);
+  const mesh = new THREE.Mesh(balloonGeometry(pts, o), chrome);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  dog.add(mesh);
+  // round the open ends so each looks like an inflated balloon tip
+  const capR = o.radius * o.pinch * 1.04;
+  const a = pts[0], b = pts[pts.length - 1];
+  addSphere(a.x, a.y, a.z, capR);
+  addSphere(b.x, b.y, b.z, capR);
+}
+
+/* Front legs — inverted-U (two legs joined by a twist at the top) */
+addBalloon([
+  V(xF, capY, legZ),
+  V(xF, hipY * 0.5, legZ),
+  V(xF, hipY, legZ * 0.45),
+  V(xF, hipY + 0.14, 0),
+  V(xF, hipY, -legZ * 0.45),
+  V(xF, hipY * 0.5, -legZ),
+  V(xF, capY, -legZ)
+], { links: 2 });
+
+/* Back legs — inverted-U */
+addBalloon([
+  V(xB, capY, legZ),
+  V(xB, hipY * 0.5, legZ),
+  V(xB, hipY, legZ * 0.45),
+  V(xB, hipY + 0.14, 0),
+  V(xB, hipY, -legZ * 0.45),
+  V(xB, hipY * 0.5, -legZ),
+  V(xB, capY, -legZ)
+], { links: 2 });
+
+/* Body / spine — connects shoulders to hips */
+addBalloon([
+  V(xF, hipY + 0.05, 0),
+  V(xF * 0.5, hipY + 0.30, 0),
+  V(0, hipY + 0.34, 0),
+  V(xB * 0.5, hipY + 0.30, 0),
+  V(xB, hipY + 0.05, 0)
+], { links: 2 });
+
+/* Neck rising to the head */
+const Hc = V(xF + 0.9, hipY + 1.0, 0);
+addBalloon([
+  V(xF, hipY + 0.05, 0),
+  V(xF + 0.40, hipY + 0.42, 0),
+  V(xF + 0.75, hipY + 0.82, 0),
+  Hc.clone()
+], { links: 1 });
+
+/* Head bulb */
+addSphere(Hc.x, Hc.y, Hc.z, R * 1.12);
+
+/* Two ears sweeping up and out */
+addBalloon([
+  Hc.clone(),
+  V(xF + 0.55, hipY + 1.45, 0.30),
+  V(xF + 0.35, hipY + 1.78, 0.52)
+], { links: 1, radius: R * 0.92 });
+
+addBalloon([
+  Hc.clone(),
+  V(xF + 0.55, hipY + 1.45, -0.30),
+  V(xF + 0.35, hipY + 1.78, -0.52)
+], { links: 1, radius: R * 0.92 });
+
+/* Nose ending in a knotted tip */
+const noseTip = V(xF + 1.70, hipY + 0.58, 0);
+addBalloon([
+  V(xF + 0.98, hipY + 0.85, 0),
+  V(xF + 1.40, hipY + 0.70, 0),
+  noseTip.clone()
+], { links: 1, radius: R * 0.9 });
+
+/* Tail */
+addBalloon([
+  V(xB, hipY + 0.05, 0),
+  V(xB - 0.35, hipY + 0.36, 0),
+  V(xB - 0.56, hipY + 0.52, 0)
+], { links: 1, radius: R * 0.9 });
+
+/* Joint "twist" knots that read as balloon pinches */
+addSphere(xF, hipY + 0.05, 0, R * 0.95);  // shoulders
+addSphere(xB, hipY + 0.05, 0, R * 0.95);  // hips
+
+/* Knotted nose detail */
+addSphere(noseTip.x, noseTip.y, noseTip.z, R * 0.62);
+const knot = new THREE.Mesh(new THREE.TorusGeometry(R * 0.34, R * 0.16, 20, 32), chrome);
+knot.position.set(noseTip.x + 0.16, noseTip.y - 0.02, 0);
+knot.rotation.y = Math.PI / 2;
+knot.castShadow = true; knot.receiveShadow = true;
+dog.add(knot);
+addSphere(noseTip.x + 0.30, noseTip.y - 0.04, 0, R * 0.34);
+
+/* Center the sculpture and rest it on the floor */
+const box = new THREE.Box3().setFromObject(dog);
+const center = box.getCenter(new THREE.Vector3());
+dog.position.x -= center.x;
+dog.position.z -= center.z;
+dog.position.y -= box.min.y;
+scene.add(dog);
+
+const size = box.getSize(new THREE.Vector3());
+const focusY = size.y * 0.46;
+
+/* ---------------------------------------------------------------------------
+   Ground plane that ONLY receives shadows
+--------------------------------------------------------------------------- */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = 0;
+floor.receiveShadow = true;
+scene.add(floor);
+
+/* ---------------------------------------------------------------------------
+   Orbit controls — damped, slowly auto-rotating
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 4;
+controls.maxDistance = 20;
+controls.maxPolarAngle = Math.PI * 0.5 - 0.02;
+controls.target.set(0, focusY, 0);
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

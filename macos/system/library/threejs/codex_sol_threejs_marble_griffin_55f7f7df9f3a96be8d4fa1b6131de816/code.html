@@ -1,0 +1,494 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Marble Griffin</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; overflow: hidden; }
+    body {
+      background: radial-gradient(circle at 50% 30%, #e4e0d7 0%, #aaa59c 58%, #77736d 100%);
+    }
+    canvas { display: block; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xbdb9b0);
+scene.fog = new THREE.FogExp2(0xbdb9b0, 0.022);
+
+const camera = new THREE.PerspectiveCamera(37, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(7.8, 5.2, 9.8);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.25, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.52;
+controls.minDistance = 7;
+controls.maxDistance = 17;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+const marble = new THREE.MeshPhysicalMaterial({
+  color: 0xf1eee7,
+  roughness: 0.32,
+  metalness: 0,
+  clearcoat: 0.16,
+  clearcoatRoughness: 0.42,
+  reflectivity: 0.35
+});
+
+marble.onBeforeCompile = shader => {
+  shader.vertexShader = shader.vertexShader.replace(
+    '#include <common>',
+    `#include <common>
+     varying vec3 vMarblePos;`
+  ).replace(
+    '#include <begin_vertex>',
+    `#include <begin_vertex>
+     vMarblePos = (modelMatrix * vec4(position, 1.0)).xyz;`
+  );
+  shader.fragmentShader = shader.fragmentShader.replace(
+    '#include <common>',
+    `#include <common>
+     varying vec3 vMarblePos;
+     float marbleHash(vec3 p) {
+       p = fract(p * 0.3183099 + vec3(0.11,0.17,0.13));
+       p *= 17.0;
+       return fract(p.x*p.y*p.z*(p.x+p.y+p.z));
+     }
+     float marbleNoise(vec3 p) {
+       vec3 i = floor(p);
+       vec3 f = fract(p);
+       f = f*f*(3.0-2.0*f);
+       return mix(
+         mix(mix(marbleHash(i), marbleHash(i+vec3(1,0,0)), f.x),
+             mix(marbleHash(i+vec3(0,1,0)), marbleHash(i+vec3(1,1,0)), f.x), f.y),
+         mix(mix(marbleHash(i+vec3(0,0,1)), marbleHash(i+vec3(1,0,1)), f.x),
+             mix(marbleHash(i+vec3(0,1,1)), marbleHash(i+vec3(1,1,1)), f.x), f.y), f.z);
+     }
+     float marbleFBM(vec3 p) {
+       float f = 0.0;
+       f += marbleNoise(p) * 0.55;
+       f += marbleNoise(p * 2.07 + 5.2) * 0.27;
+       f += marbleNoise(p * 4.13 + 9.7) * 0.12;
+       f += marbleNoise(p * 8.21 + 2.4) * 0.06;
+       return f;
+     }`
+  ).replace(
+    '#include <map_fragment>',
+    `#include <map_fragment>
+     vec3 mp = vMarblePos;
+     float warp = marbleFBM(mp * 0.78);
+     float major = abs(sin(mp.y * 1.52 + mp.x * 0.48 + mp.z * 0.72 + warp * 7.6));
+     float fine = abs(sin(mp.y * 4.2 - mp.x * 1.15 + mp.z * 1.7 + marbleFBM(mp * 2.0) * 5.0));
+     float vein = smoothstep(0.91, 0.995, major) * 0.34;
+     vein += smoothstep(0.965, 0.999, fine) * 0.16;
+     float cloudy = marbleFBM(mp * 0.52) * 0.075;
+     diffuseColor.rgb *= vec3(1.02 - cloudy);
+     diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.39,0.42,0.44), clamp(vein,0.0,0.48));`
+  );
+};
+marble.customProgramCacheKey = () => 'procedural-veined-marble-v1';
+
+const grooveMaterial = new THREE.MeshStandardMaterial({
+  color: 0x9c9a94,
+  roughness: 0.58,
+  metalness: 0
+});
+const eyeMaterial = new THREE.MeshStandardMaterial({
+  color: 0x555552,
+  roughness: 0.48
+});
+const baseMaterial = marble.clone();
+baseMaterial.roughness = 0.42;
+
+const griffin = new THREE.Group();
+griffin.rotation.y = -0.08;
+scene.add(griffin);
+
+function addMesh(geometry, material = marble, position = [0,0,0], rotation = [0,0,0], scale = [1,1,1], parent = griffin) {
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.set(...position);
+  mesh.rotation.set(...rotation);
+  mesh.scale.set(...scale);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parent.add(mesh);
+  return mesh;
+}
+
+function ellipsoid(position, scale, material = marble, parent = griffin, detail = 40) {
+  return addMesh(
+    new THREE.SphereGeometry(1, detail, Math.max(20, detail / 2)),
+    material,
+    position,
+    [0,0,0],
+    scale,
+    parent
+  );
+}
+
+function taperedCylinder(a, b, r1, r2, material = marble, parent = griffin, segments = 28) {
+  const direction = new THREE.Vector3().subVectors(b, a);
+  const length = direction.length();
+  const mesh = addMesh(
+    new THREE.CylinderGeometry(r2, r1, length, segments, 2, false),
+    material,
+    [0,0,0],
+    [0,0,0],
+    [1,1,1],
+    parent
+  );
+  mesh.position.copy(a).addScaledVector(direction, 0.5);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), direction.normalize());
+  return mesh;
+}
+
+function tube(points, radius, material = marble, parent = griffin, radial = 9) {
+  const curve = new THREE.CatmullRomCurve3(points);
+  return addMesh(new THREE.TubeGeometry(curve, 48, radius, radial, false), material, [0,0,0], [0,0,0], [1,1,1], parent);
+}
+
+function makeFeatherGeometry(length = 1, width = 0.3, depth = 0.08) {
+  const y0 = 0.5 * length;
+  const y1 = 0.10 * length;
+  const y2 = -0.46 * length;
+  const vertices = new Float32Array([
+     0,       y0,  depth,
+    -width,   y1,  0,
+     0,       y2,  depth * 0.35,
+     width,   y1,  0,
+     0,       y0, -depth,
+    -width,   y1,  0,
+     0,       y2, -depth * 0.35,
+     width,   y1,  0
+  ]);
+  const indices = [
+    0,1,2, 0,2,3,
+    4,6,1, 4,3,6,
+    0,4,1, 0,3,4,
+    1,6,2, 3,2,6
+  ];
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+function addFeather(parent, position, rotation, length, width, material = marble) {
+  const feather = addMesh(makeFeatherGeometry(length, width, width * 0.19), material, position, rotation, [1,1,1], parent);
+  const shaft = addMesh(
+    new THREE.CylinderGeometry(0.018, 0.028, length * 0.79, 7),
+    grooveMaterial,
+    [0, -length * 0.02, width * 0.055],
+    [0,0,0],
+    [1,1,1],
+    feather
+  );
+  shaft.castShadow = false;
+  return feather;
+}
+
+addMesh(new THREE.CylinderGeometry(2.15, 2.28, 0.32, 64), baseMaterial, [0,0.16,-0.08]);
+addMesh(new THREE.CylinderGeometry(1.92, 2.03, 0.19, 64), baseMaterial, [0,0.405,-0.08]);
+addMesh(new THREE.TorusGeometry(2.04, 0.075, 10, 64), grooveMaterial, [0,0.34,-0.08], [Math.PI/2,0,0]);
+
+ellipsoid([0,1.55,-0.48], [1.35,1.43,1.22]);
+ellipsoid([0,2.62,-0.22], [1.08,1.50,0.94]);
+ellipsoid([0,3.38,0.16], [0.76,0.86,0.69]);
+ellipsoid([0,3.98,0.47], [0.68,0.62,0.63]);
+
+ellipsoid([-0.85,1.35,-0.70], [0.88,0.98,0.94]);
+ellipsoid([0.85,1.35,-0.70], [0.88,0.98,0.94]);
+ellipsoid([-0.93,0.72,-0.86], [0.72,0.43,0.82]);
+ellipsoid([0.93,0.72,-0.86], [0.72,0.43,0.82]);
+
+taperedCylinder(new THREE.Vector3(-0.58,2.22,0.48), new THREE.Vector3(-0.67,0.72,0.62), 0.35, 0.25);
+taperedCylinder(new THREE.Vector3(0.58,2.22,0.48), new THREE.Vector3(0.67,0.72,0.62), 0.35, 0.25);
+ellipsoid([-0.68,0.53,0.82], [0.43,0.25,0.62]);
+ellipsoid([0.68,0.53,0.82], [0.43,0.25,0.62]);
+
+for (const side of [-1, 1]) {
+  for (let i = 0; i < 4; i++) {
+    const x = side * (0.47 + i * 0.13);
+    const z = 1.20 + Math.abs(i - 1.5) * 0.035;
+    const claw = taperedCylinder(
+      new THREE.Vector3(x,0.59,z),
+      new THREE.Vector3(x + side * 0.025,0.46,z + 0.38),
+      0.085,
+      0.018,
+      marble,
+      griffin,
+      14
+    );
+    claw.rotation.z += side * 0.02;
+  }
+  for (let i = 0; i < 4; i++) {
+    const y = 0.93 + i * 0.29;
+    addMesh(
+      new THREE.TorusGeometry(0.255,0.018,6,26,Math.PI*0.62),
+      grooveMaterial,
+      [side*0.675,y,0.78],
+      [Math.PI/2,0,side > 0 ? 0.46 : -0.46]
+    );
+  }
+}
+
+const head = new THREE.Group();
+head.position.set(0,3.98,0.47);
+griffin.add(head);
+
+ellipsoid([0,0.04,0.04], [0.68,0.60,0.61], marble, head);
+ellipsoid([-0.47,0.16,0.25], [0.30,0.20,0.31], marble, head);
+ellipsoid([0.47,0.16,0.25], [0.30,0.20,0.31], marble, head);
+
+const beakUpper = addMesh(
+  new THREE.ConeGeometry(0.39,1.15,4,2),
+  marble,
+  [0,-0.04,0.88],
+  [Math.PI/2,Math.PI/4,0],
+  [1.0,1.0,0.82],
+  head
+);
+beakUpper.geometry.computeVertexNormals();
+
+const hook = addMesh(
+  new THREE.ConeGeometry(0.25,0.65,18,2),
+  marble,
+  [0,-0.26,1.30],
+  [Math.PI*0.72,0,0],
+  [1,1,0.85],
+  head
+);
+ellipsoid([0,-0.12,0.69], [0.40,0.26,0.40], marble, head);
+
+for (const side of [-1,1]) {
+  ellipsoid([side*0.40,0.15,0.53], [0.115,0.095,0.075], eyeMaterial, head, 28);
+  addMesh(
+    new THREE.ConeGeometry(0.18,0.52,4),
+    marble,
+    [side*0.30,0.36,0.48],
+    [0,0,side*1.05],
+    [1,1,0.7],
+    head
+  );
+  for (let i = 0; i < 6; i++) {
+    const angle = -0.95 + i * 0.38;
+    addMesh(
+      new THREE.ConeGeometry(0.105,0.48,8),
+      marble,
+      [side*(0.30 + Math.cos(angle)*0.28), -0.23 + Math.sin(angle)*0.22, 0.20],
+      [0,0,side*(0.12 + angle*0.18)],
+      [1,1,0.72],
+      head
+    );
+  }
+}
+ellipsoid([-0.12,-0.02,1.03], [0.045,0.035,0.025], eyeMaterial, head, 20);
+ellipsoid([0.12,-0.02,1.03], [0.045,0.035,0.025], eyeMaterial, head, 20);
+
+for (let ring = 0; ring < 3; ring++) {
+  const count = 9 + ring * 2;
+  for (let i = 0; i < count; i++) {
+    const a = (i / count) * Math.PI * 2;
+    const r = 0.56 + ring * 0.08;
+    const px = Math.cos(a) * r;
+    const pz = Math.sin(a) * r * 0.42;
+    const py = -0.38 - ring * 0.17 + Math.sin(a) * 0.08;
+    addMesh(
+      new THREE.ConeGeometry(0.12 + ring*0.01,0.55 + ring*0.08,8),
+      marble,
+      [px,py,pz],
+      [0,0,-Math.cos(a)*0.32],
+      [1,1,0.7],
+      head
+    );
+  }
+}
+
+function createWing(side) {
+  const wing = new THREE.Group();
+  wing.position.set(side * 1.02, 2.78, -0.22);
+  wing.rotation.set(0, side * 0.13, side * -0.10);
+  griffin.add(wing);
+
+  ellipsoid([0,0,0], [0.30,1.23,0.72], marble, wing);
+  taperedCylinder(
+    new THREE.Vector3(0,0.72,0.02),
+    new THREE.Vector3(side*0.09,-0.76,-0.35),
+    0.25,
+    0.11,
+    marble,
+    wing
+  );
+
+  const rows = [
+    { y: 0.48, z: 0.18, n: 5, len: 1.15, width: 0.25 },
+    { y: 0.12, z: 0.34, n: 6, len: 1.38, width: 0.27 },
+    { y:-0.27, z: 0.42, n: 7, len: 1.58, width: 0.29 }
+  ];
+
+  rows.forEach((row, ri) => {
+    for (let i = 0; i < row.n; i++) {
+      const t = i / Math.max(1,row.n-1);
+      const feather = addFeather(
+        wing,
+        [
+          side * (0.03 + Math.sin(t*Math.PI)*0.11),
+          row.y - t*0.36,
+          row.z - t*0.58
+        ],
+        [
+          -0.16 - t*0.24,
+          side * (Math.PI/2 + 0.05),
+          side * (-0.08 + t*0.17)
+        ],
+        row.len + t*0.37 - ri*0.04,
+        row.width
+      );
+      feather.scale.x = 1.0 - ri*0.04;
+    }
+  });
+
+  for (let i = 0; i < 5; i++) {
+    addFeather(
+      wing,
+      [side*0.02,0.74-i*0.24,0.40-i*0.10],
+      [-0.18,side*Math.PI/2,side*(0.12-i*0.035)],
+      0.82+i*0.06,
+      0.22
+    );
+  }
+}
+createWing(-1);
+createWing(1);
+
+const tailPoints = [
+  new THREE.Vector3(0.72,1.12,-1.10),
+  new THREE.Vector3(1.55,1.05,-1.40),
+  new THREE.Vector3(1.82,0.72,-0.90),
+  new THREE.Vector3(1.65,0.58,-0.20),
+  new THREE.Vector3(1.37,0.65,0.15)
+];
+tube(tailPoints,0.18,marble);
+ellipsoid([1.31,0.69,0.24],[0.29,0.26,0.42]);
+for (let i=0;i<6;i++) {
+  const a = (i/6)*Math.PI*2;
+  addMesh(
+    new THREE.ConeGeometry(0.13,0.50,8),
+    marble,
+    [1.31+Math.cos(a)*0.21,0.69+Math.sin(a)*0.16,0.25],
+    [Math.sin(a)*0.45,0,Math.cos(a)*0.45]
+  );
+}
+
+for (const side of [-1,1]) {
+  for (let i=0;i<7;i++) {
+    const y = 2.1 + i*0.22;
+    addMesh(
+      new THREE.TorusGeometry(0.56-i*0.025,0.014,6,36,Math.PI*0.62),
+      grooveMaterial,
+      [side*0.02,y,0.58-i*0.04],
+      [Math.PI/2,0,side*0.04]
+    );
+  }
+}
+
+const toolMarkGroup = new THREE.Group();
+griffin.add(toolMarkGroup);
+for (let i=0;i<18;i++) {
+  const a = i * 2.39996;
+  const y = 1.05 + (i%6)*0.24;
+  const r = 1.04 - (y-1.05)*0.13;
+  const x = Math.cos(a)*r;
+  const z = -0.24 + Math.sin(a)*r*0.75;
+  if (Math.abs(x) < 0.72 && z > 0.15) continue;
+  addMesh(
+    new THREE.CapsuleGeometry(0.011,0.20,3,5),
+    grooveMaterial,
+    [x,y,z],
+    [0.2*Math.sin(a),a,-0.72],
+    [1,1,1],
+    toolMarkGroup
+  ).castShadow = false;
+}
+
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(18,96),
+  new THREE.MeshStandardMaterial({ color:0xaaa69e, roughness:0.9, metalness:0 })
+);
+floor.rotation.x = -Math.PI/2;
+floor.position.y = -0.015;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const ambient = new THREE.HemisphereLight(0xf5f1e8,0x55585d,2.0);
+scene.add(ambient);
+
+const key = new THREE.DirectionalLight(0xfff4df,4.1);
+key.position.set(5.5,8.5,6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048,2048);
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -3;
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 24;
+key.shadow.bias = -0.00025;
+key.shadow.normalBias = 0.025;
+scene.add(key);
+
+const rim = new THREE.DirectionalLight(0xc7d8ee,2.2);
+rim.position.set(-6,5,-5);
+scene.add(rim);
+
+const fill = new THREE.PointLight(0xffe6c9,1.6,16,2);
+fill.position.set(3,3.5,-4);
+scene.add(fill);
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  fill.intensity = 1.55 + Math.sin(t*0.42)*0.08;
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

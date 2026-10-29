@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Neon OPEN Sign</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #08090d; overflow: hidden; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(200,220,255,0.35); letter-spacing: 0.04em; user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---------- Renderer ----------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// ---------- Scene & Camera ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0b10);
+scene.fog = new THREE.FogExp2(0x0a0b10, 0.018);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0.2, 0.7, 9.8);
+
+// subtle environment for realistic reflections on metal/glass
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// ---------- Controls ----------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.target.set(0, 0, 0);
+controls.minDistance = 5;
+controls.maxDistance = 18;
+controls.maxPolarAngle = Math.PI * 0.9;
+
+// ---------- Palette ----------
+const CYAN = new THREE.Color(0x28e8ff);
+const PINK = new THREE.Color(0xff2e88);
+
+// ---------- Sign group (the single centered object) ----------
+const sign = new THREE.Group();
+scene.add(sign);
+
+const FRAME_W = 7.0, FRAME_H = 3.4;
+
+// ---- Frame (thin dark metal border) ----
+const frameMat = new THREE.MeshStandardMaterial({
+  color: 0x2a2d36, metalness: 0.95, roughness: 0.32, envMapIntensity: 0.9
+});
+const frame = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W, FRAME_H, 0.32), frameMat);
+frame.position.z = -0.16;
+frame.castShadow = true;
+frame.receiveShadow = true;
+sign.add(frame);
+
+// ---- Backing panel (dark, faintly reflective) ----
+const panelMat = new THREE.MeshStandardMaterial({
+  color: 0x0b0d13, metalness: 0.55, roughness: 0.42, envMapIntensity: 0.5
+});
+const panel = new THREE.Mesh(new THREE.BoxGeometry(FRAME_W - 0.55, FRAME_H - 0.55, 0.12), panelMat);
+panel.position.z = 0.02;
+panel.receiveShadow = true;
+panel.castShadow = false;
+sign.add(panel);
+
+// ---- Screw heads on the frame corners ----
+const screwMat = new THREE.MeshStandardMaterial({ color: 0x9aa2b0, metalness: 1.0, roughness: 0.35 });
+const screwGeo = new THREE.CylinderGeometry(0.07, 0.07, 0.05, 20);
+[[-1,-1],[1,-1],[-1,1],[1,1]].forEach(([sx, sy]) => {
+  const s = new THREE.Mesh(screwGeo, screwMat);
+  s.rotation.x = Math.PI / 2;
+  s.position.set(sx * (FRAME_W/2 - 0.28), sy * (FRAME_H/2 - 0.28), 0.03);
+  s.castShadow = true;
+  sign.add(s);
+});
+
+// ---- Mounting brackets (behind the frame) ----
+const bracketMat = new THREE.MeshStandardMaterial({ color: 0x3a3e48, metalness: 0.9, roughness: 0.5 });
+[[-1,1],[1,1],[-1,-1],[1,-1]].forEach(([bx, by]) => {
+  const g = new THREE.Group();
+  const plate = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.6, 0.14), bracketMat);
+  plate.castShadow = true;
+  const standoff = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.3, 16), bracketMat);
+  standoff.rotation.x = Math.PI / 2;
+  standoff.position.z = 0.2;
+  standoff.castShadow = true;
+  g.add(plate); g.add(standoff);
+  g.position.set(bx * (FRAME_W/2 - 0.35), by * (FRAME_H/2 - 0.45), -0.5);
+  sign.add(g);
+});
+
+// ---------- Neon tube builders ----------
+const neonCores = []; // for flicker
+const TUBE_R = 0.075;
+const Z_TUBE = 0.24;
+
+function neonMaterial(color) {
+  const m = new THREE.MeshStandardMaterial({
+    color: 0x0a0a0a,
+    emissive: color.clone(),
+    emissiveIntensity: 3.4,
+    roughness: 0.3,
+    metalness: 0.0
+  });
+  return m;
+}
+
+function glowMaterial(color) {
+  return new THREE.MeshBasicMaterial({
+    color: color.clone(),
+    transparent: true,
+    opacity: 0.13,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide
+  });
+}
+
+// Build one stroke (a poly-line/curve of 2D pts) into glowing tube geometry
+function buildStroke(pts2d, offsetX, closed, coreMat, glowMat) {
+  const vecs = pts2d.map(p => new THREE.Vector3(p[0] + offsetX, p[1], Z_TUBE));
+  const curve = new THREE.CatmullRomCurve3(vecs, closed, 'catmullrom', 0.5);
+  const seg = Math.max(28, pts2d.length * 10);
+
+  const coreGeo = new THREE.TubeGeometry(curve, seg, TUBE_R, 16, closed);
+  const core = new THREE.Mesh(coreGeo, coreMat);
+  core.castShadow = true;
+  sign.add(core);
+  neonCores.push({ mat: coreMat, base: coreMat.emissiveIntensity, phase: Math.random() * 6.28 });
+
+  const glowGeo = new THREE.TubeGeometry(curve, seg, TUBE_R * 2.6, 16, closed);
+  const glow = new THREE.Mesh(glowGeo, glowMat);
+  sign.add(glow);
+
+  // rounded end caps for open strokes
+  if (!closed) {
+    const capGeo = new THREE.SphereGeometry(TUBE_R, 16, 12);
+    [vecs[0], vecs[vecs.length - 1]].forEach(v => {
+      const cap = new THREE.Mesh(capGeo, coreMat);
+      cap.position.copy(v);
+      cap.castShadow = true;
+      sign.add(cap);
+    });
+  }
+}
+
+// ---------- Letter definitions (local cell coords) ----------
+const TOP = 0.92, BOT = -0.92;
+
+function ellipse(rx, ry, n) {
+  const pts = [];
+  for (let i = 0; i < n; i++) {
+    const t = (i / n) * Math.PI * 2;
+    pts.push([Math.cos(t) * rx, Math.sin(t) * ry]);
+  }
+  return pts;
+}
+
+function letterStrokes(ch) {
+  switch (ch) {
+    case 'O':
+      return [{ pts: ellipse(0.44, 0.92, 44), closed: true }];
+    case 'P':
+      return [
+        { pts: [[-0.34, BOT], [-0.34, 0.0], [-0.34, TOP]], closed: false },
+        { pts: [[-0.34, TOP], [0.14, TOP], [0.36, 0.55], [0.14, 0.12], [-0.34, 0.12]], closed: false }
+      ];
+    case 'E':
+      return [
+        { pts: [[-0.34, BOT], [-0.34, 0.0], [-0.34, TOP]], closed: false },
+        { pts: [[-0.34, TOP], [0.36, TOP]], closed: false },
+        { pts: [[-0.34, 0.0], [0.26, 0.0]], closed: false },
+        { pts: [[-0.34, BOT], [0.36, BOT]], closed: false }
+      ];
+    case 'N':
+      return [
+        { pts: [[-0.38, BOT], [-0.38, 0.0], [-0.38, TOP]], closed: false },
+        { pts: [[-0.38, TOP], [0.0, 0.0], [0.38, BOT]], closed: false },
+        { pts: [[0.38, BOT], [0.38, 0.0], [0.38, TOP]], closed: false }
+      ];
+  }
+  return [];
+}
+
+// ---------- Assemble "OPEN" ----------
+const word = 'OPEN';
+const colors = [CYAN, PINK, CYAN, PINK];
+const SPACING = 1.6;
+const start = -((word.length - 1) * SPACING) / 2;
+
+word.split('').forEach((ch, i) => {
+  const color = colors[i];
+  const coreMat = neonMaterial(color);
+  const glowMat = glowMaterial(color);
+  const offsetX = start + i * SPACING;
+  letterStrokes(ch).forEach(s => buildStroke(s.pts, offsetX, s.closed, coreMat, glowMat));
+
+  // colored point light per letter — spills tube glow / reflections onto the backing panel
+  const pl = new THREE.PointLight(color.getHex(), 6.0, 6.5, 2.0);
+  pl.position.set(offsetX, 0, 0.55);
+  pl.castShadow = false;
+  sign.add(pl);
+});
+
+// ---------- Studio lighting ----------
+const hemi = new THREE.HemisphereLight(0x3a4a6a, 0x0a0a0a, 0.35);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 1.15);
+key.position.set(4.5, 7, 6.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -8;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x88a8ff, 0.3);
+fill.position.set(-6, 2, 4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xff5aa0, 0.45);
+rim.position.set(-2, 1.5, -6);
+scene.add(rim);
+
+// ---------- Shadow-catching ground ----------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.45 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -2.35;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- Post-processing (bloom for the neon glow) ----------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.85, 0.55, 0.55
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// ---------- Resize ----------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+});
+
+// ---------- Animate ----------
+function animate() {
+  requestAnimationFrame(animate);
+  const t = performance.now() * 0.001;
+
+  // gentle neon flicker
+  for (const n of neonCores) {
+    n.mat.emissiveIntensity = n.base * (0.92 + 0.08 * Math.sin(t * 9 + n.phase));
+  }
+
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

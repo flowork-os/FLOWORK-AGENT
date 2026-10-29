@@ -1,0 +1,658 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Arctic Ice Floe Night</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #081221; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   1. CONFIG & PALETTE — Arctic Ice Floe Night (polar minimal realism)
+   ================================================================ */
+const TAU = Math.PI * 2;
+const CONFIG = {
+  seed: 77120415,
+  seaRadius: 44,
+  smallFloes: 13,        // drifting background floes
+  brashChunks: 30,       // tiny broken-ice pieces on the water
+  starCount: 340,
+};
+const PAL = {
+  fog: 0x0a1522, seaBase: 0x081221,
+  moon: 0xcfe0ff, hemiSky: 0x1c3350, hemiGround: 0x05070c,
+  auroraGreen: 0x3fe2a0, auroraViolet: 0x9a6ce8,
+  iceTop: 0xdce9f2, iceSide: 0x6fb0d8, bergDeep: 0x3f8fc4, bergTop: 0xeef7fc,
+  fur: 0xf2efe6, furShade: 0xd9d4c4, nose: 0x1c1a18,
+  seal: 0x77685a, sealBelly: 0xaf9d88,
+  igloo: 0xd8e6f0, doorGlow: 0xffb066, warmLight: 0xffa050,
+};
+
+/* ================================================================
+   2. SEEDED PRNG & SMALL HELPERS
+   ================================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CONFIG.seed);
+const rand = (lo, hi) => lo + rng() * (hi - lo);
+const randInt = (lo, hi) => Math.floor(rand(lo, hi + 1));
+// Deterministic position hash (keeps duplicated polyhedron verts welded)
+const hash3 = (x, y, z) => {
+  const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453;
+  return s - Math.floor(s);
+};
+
+/* ================================================================
+   3. CANVAS TEXTURES (procedural)
+   ================================================================ */
+function makeCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  return [c, c.getContext('2d')];
+}
+function asTexture(canvas, wrap) {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  if (wrap) tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+function seaTexture() {          // black water + star glints + aurora reflections
+  const [c, g] = makeCanvas(512);
+  g.fillStyle = '#081221'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 260; i++) {            // deep swell mottling
+    g.fillStyle = rng() < 0.5 ? '#0e2238' : '#050d18';
+    g.globalAlpha = rand(0.05, 0.14);
+    g.beginPath();
+    g.ellipse(rng() * 512, rng() * 512, rand(18, 70), rand(4, 12), rng() * TAU, 0, TAU);
+    g.fill();
+  }
+  for (let i = 0; i < 18; i++) {             // soft aurora streaks mirrored below
+    g.fillStyle = rng() < 0.6 ? 'rgba(63,226,160,1)' : 'rgba(154,108,232,1)';
+    g.globalAlpha = rand(0.04, 0.1);
+    g.fillRect(rng() * 512, rng() * 512 - 150, rand(8, 26), rand(120, 300));
+  }
+  for (let i = 0; i < 220; i++) {            // stars caught between the sheets
+    g.fillStyle = '#ffffff';
+    g.globalAlpha = rand(0.35, 0.9);
+    g.beginPath(); g.arc(rng() * 512, rng() * 512, rand(0.5, 1.5), 0, TAU); g.fill();
+  }
+  g.globalAlpha = 1;
+  return asTexture(c, true);
+}
+function iceTexture() {          // pale mottled floe surface with faint cracks
+  const [c, g] = makeCanvas(256);
+  g.fillStyle = '#dce9f2'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 240; i++) {
+    g.fillStyle = rng() < 0.5 ? '#c6dbec' : '#eff7fc';
+    g.globalAlpha = rand(0.15, 0.4);
+    g.beginPath();
+    g.ellipse(rng() * 256, rng() * 256, rand(6, 26), rand(4, 14), rng() * TAU, 0, TAU);
+    g.fill();
+  }
+  g.strokeStyle = '#9db8cc'; g.globalAlpha = 0.3; g.lineWidth = 1;
+  for (let i = 0; i < 22; i++) {
+    g.beginPath();
+    let x = rng() * 256, y = rng() * 256;
+    g.moveTo(x, y);
+    for (let k = 0; k < 3; k++) { x += rand(-40, 40); y += rand(-40, 40); g.lineTo(x, y); }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  return asTexture(c, true);
+}
+function iglooTexture() {        // snow-block courses with shadowed joints
+  const [c, g] = makeCanvas(256);
+  g.fillStyle = '#8fb0c8'; g.fillRect(0, 0, 256, 256);
+  const rows = 5;
+  for (let r = 0; r < rows; r++) {
+    let x = (r % 2) * -22;
+    while (x < 256) {
+      const w = rand(38, 64);
+      g.fillStyle = `hsl(${randInt(200, 212)},${randInt(28, 40)}%,${randInt(84, 92)}%)`;
+      g.fillRect(x + 2, r * (256 / rows) + 2, w - 4, 256 / rows - 4);
+      x += w;
+    }
+  }
+  return asTexture(c, true);
+}
+function skyTexture() {          // night gradient + pin-prick painted stars
+  const [c, g] = makeCanvas(512);
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0, '#020409'); grad.addColorStop(0.28, '#071224');
+  grad.addColorStop(0.46, '#102741'); grad.addColorStop(0.55, '#1a3a58');
+  grad.addColorStop(1, '#1a3a58');
+  g.fillStyle = grad; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 200; i++) {
+    g.fillStyle = '#dfeaff';
+    g.globalAlpha = rand(0.1, 0.4);
+    g.beginPath(); g.arc(rng() * 512, rng() * 512 * 0.5, rand(0.25, 0.7), 0, TAU); g.fill();
+  }
+  g.globalAlpha = 1;
+  return asTexture(c);
+}
+function auroraTexture() {       // green->violet curtain with vertical folds
+  const [c, g] = makeCanvas(256);
+  g.clearRect(0, 0, 256, 256);
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.02, 'rgba(160,90,235,0)');
+  grad.addColorStop(0.22, 'rgba(165,95,240,0.4)');
+  grad.addColorStop(0.44, 'rgba(120,110,235,0.42)');
+  grad.addColorStop(0.62, 'rgba(60,220,160,0.55)');
+  grad.addColorStop(0.9, 'rgba(90,255,180,0.8)');
+  grad.addColorStop(1, 'rgba(70,240,160,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  g.globalCompositeOperation = 'destination-out';   // carve vertical fold gaps
+  for (let i = 0; i < 40; i++) {
+    g.globalAlpha = rand(0.08, 0.35);
+    g.fillRect(rng() * 256, 0, rand(2, 9), 256);
+  }
+  g.globalCompositeOperation = 'source-over';
+  g.globalAlpha = 1;
+  return asTexture(c, true);
+}
+
+/* ================================================================
+   4. MATERIALS (single palette pass) & SHARED GEOMETRY
+   ================================================================ */
+const texSea = seaTexture();
+const texIce = iceTexture();
+texIce.repeat.set(0.09, 0.09);   // extrude-lid UVs are in world units
+const M = {
+  sea: new THREE.MeshStandardMaterial({ map: texSea, roughness: 0.18, metalness: 0.25,
+                                        emissive: 0xffffff, emissiveMap: texSea, emissiveIntensity: 0.32 }),
+  iceTop: new THREE.MeshStandardMaterial({ map: texIce, roughness: 0.85 }),
+  iceSide: new THREE.MeshStandardMaterial({ color: PAL.iceSide, roughness: 0.55 }),
+  berg: new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.45, flatShading: true }),
+  fur: new THREE.MeshStandardMaterial({ color: PAL.fur, roughness: 1 }),
+  furShade: new THREE.MeshStandardMaterial({ color: PAL.furShade, roughness: 1 }),
+  nose: new THREE.MeshStandardMaterial({ color: PAL.nose, roughness: 0.4 }),
+  seal: new THREE.MeshStandardMaterial({ color: PAL.seal, roughness: 0.9 }),
+  sealBelly: new THREE.MeshStandardMaterial({ color: PAL.sealBelly, roughness: 0.9 }),
+  igloo: new THREE.MeshStandardMaterial({ map: iglooTexture(), roughness: 0.9 }),
+  door: new THREE.MeshStandardMaterial({ color: 0x2a1608, emissive: PAL.doorGlow, emissiveIntensity: 2.2 }),
+  chunk: new THREE.MeshStandardMaterial({ color: 0x9fb9cc, roughness: 1, flatShading: true }),
+  moon: new THREE.MeshBasicMaterial({ color: 0xeaf2ff, fog: false }),
+  halo: new THREE.MeshBasicMaterial({ color: 0x9fc0ff, transparent: true, opacity: 0.22,
+                                      blending: THREE.AdditiveBlending, depthWrite: false, fog: false }),
+};
+const G = {
+  sphere: new THREE.SphereGeometry(1, 12, 9),
+  chunk: new THREE.DodecahedronGeometry(0.3, 0),
+};
+
+/* ================================================================
+   5. RENDERER / SCENE / CAMERA / CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 32, 95);
+scene.background = new THREE.Color(PAL.fog);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 240);
+camera.position.set(17, 7.5, 19);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.0, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.minDistance = 9; controls.maxDistance = 40;
+controls.maxPolarAngle = 1.45;
+
+/* ================================================================
+   6. BUILDER FUNCTIONS (each returns a THREE.Group)
+   ================================================================ */
+function floeShape(r, holeAt) {                // irregular slab outline (+ optional breathing hole)
+  const n = randInt(7, 10), s = new THREE.Shape();
+  for (let i = 0; i < n; i++) {
+    const a = (i / n) * TAU, rr = r * rand(0.72, 1.15);
+    const x = Math.cos(a) * rr, y = Math.sin(a) * rr;
+    if (i === 0) s.moveTo(x, y); else s.lineTo(x, y);
+  }
+  s.closePath();
+  if (holeAt) {
+    const hole = new THREE.Path();
+    hole.absarc(holeAt[0], holeAt[1], holeAt[2], 0, TAU, true);
+    s.holes.push(hole);
+  }
+  return s;
+}
+function buildFloe(r, hw, thick, holeAt) {     // hw = freeboard above waterline
+  const g = new THREE.Group();
+  const geo = new THREE.ExtrudeGeometry(floeShape(r, holeAt), { depth: thick, bevelEnabled: false });
+  const slab = new THREE.Mesh(geo, [M.iceTop, M.iceSide]);   // white lid, blue underside
+  slab.rotation.x = -Math.PI / 2;
+  slab.position.y = hw - thick;
+  slab.castShadow = slab.receiveShadow = true;
+  g.add(slab);
+  g.userData.topY = hw;
+  return g;
+}
+
+function buildIceberg(sx, sy, sz, seedShift) { // sculpted berg, white crown / blue base
+  const g = new THREE.Group();
+  const white = new THREE.Color(PAL.bergTop), blue = new THREE.Color(PAL.bergDeep);
+  const makePeak = (px, pz, k) => {
+    const geo = new THREE.IcosahedronGeometry(1, 1);
+    const pos = geo.getAttribute('position');
+    const colors = new Float32Array(pos.count * 3);
+    const v = new THREE.Vector3(), col = new THREE.Color();
+    for (let i = 0; i < pos.count; i++) {
+      v.fromBufferAttribute(pos, i);
+      const rr = 1 + (hash3(v.x + seedShift, v.y, v.z + k) - 0.5) * 0.6;
+      pos.setXYZ(i, v.x * rr, v.y * rr, v.z * rr);
+      const t = THREE.MathUtils.clamp((v.y * rr + 1.1) / 2.1, 0, 1);
+      col.lerpColors(blue, white, Math.pow(t, 1.3));
+      colors.set([col.r, col.g, col.b], i * 3);
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    const m = new THREE.Mesh(geo, M.berg);
+    m.scale.set(sx * k, sy * k, sz * k);
+    m.position.set(px, sy * k * 0.52, pz);
+    m.castShadow = m.receiveShadow = true;
+    g.add(m);
+  };
+  makePeak(0, 0, 1);                           // main summit + lower shoulder
+  makePeak(sx * rand(0.7, 1.0), sz * rand(-0.6, 0.6), rand(0.45, 0.6));
+  return g;
+}
+
+function buildPolarBear(scale) {               // standing bear, facing +z
+  const g = new THREE.Group();
+  const part = (mat, sx, sy, sz, x, y, z) => {
+    const p = new THREE.Mesh(G.sphere, mat);
+    p.scale.set(sx, sy, sz); p.position.set(x, y, z);
+    g.add(p); return p;
+  };
+  part(M.fur, 0.62, 0.5, 0.95, 0, 0.74, 0);              // torso
+  part(M.fur, 0.5, 0.44, 0.5, 0, 0.9, 0.42);             // shoulder hump
+  part(M.furShade, 0.52, 0.44, 0.55, 0, 0.76, -0.5);     // rump
+  part(M.fur, 0.09, 0.09, 0.09, 0, 0.82, -0.95);         // stub tail
+  const head = new THREE.Group();
+  head.position.set(0, 1.06, 0.9);
+  g.add(head);
+  const hp = (mat, sx, sy, sz, x, y, z) => {
+    const p = new THREE.Mesh(G.sphere, mat);
+    p.scale.set(sx, sy, sz); p.position.set(x, y, z);
+    head.add(p); return p;
+  };
+  hp(M.fur, 0.27, 0.24, 0.3, 0, 0, 0);                   // skull
+  hp(M.fur, 0.12, 0.1, 0.17, 0, -0.05, 0.26);            // muzzle
+  hp(M.nose, 0.045, 0.04, 0.05, 0, -0.03, 0.42);         // nose
+  hp(M.fur, 0.075, 0.08, 0.05, -0.15, 0.17, -0.02);      // ears
+  hp(M.fur, 0.075, 0.08, 0.05, 0.15, 0.17, -0.02);
+  const legGeo = new THREE.CylinderGeometry(0.11, 0.14, 0.62, 8);
+  for (const [lx, lz] of [[-0.3, 0.5], [0.3, 0.5], [-0.32, -0.5], [0.32, -0.5]]) {
+    const leg = new THREE.Mesh(legGeo, M.fur);
+    leg.position.set(lx, 0.31, lz);
+    g.add(leg);
+    part(M.furShade, 0.15, 0.08, 0.18, lx, 0.06, lz + 0.04);   // paw
+  }
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.scale.setScalar(scale);
+  g.userData.head = head;
+  return g;
+}
+
+function buildSeal(scale) {                    // hauled-out seal, facing +z
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(G.sphere, M.seal);
+  body.scale.set(0.3, 0.24, 0.62); body.position.y = 0.2;
+  const belly = new THREE.Mesh(G.sphere, M.sealBelly);
+  belly.scale.set(0.24, 0.16, 0.5); belly.position.y = 0.12;
+  g.add(body, belly);
+  const head = new THREE.Group();
+  head.position.set(0, 0.3, 0.52);
+  const skull = new THREE.Mesh(G.sphere, M.seal);
+  skull.scale.set(0.14, 0.13, 0.16);
+  const muzzle = new THREE.Mesh(G.sphere, M.sealBelly);
+  muzzle.scale.set(0.07, 0.06, 0.08); muzzle.position.set(0, -0.03, 0.13);
+  head.add(skull, muzzle);
+  g.add(head);
+  const flipGeo = new THREE.ConeGeometry(0.09, 0.3, 6);
+  for (const s of [-1, 1]) {
+    const fl = new THREE.Mesh(flipGeo, M.seal);
+    fl.scale.set(1, 1, 0.35);
+    fl.position.set(s * 0.09, 0.16, -0.66);
+    fl.rotation.x = -1.9; fl.rotation.z = s * 0.5;
+    g.add(fl);
+    const side = new THREE.Mesh(flipGeo, M.seal);
+    side.scale.set(0.8, 0.8, 0.3);
+    side.position.set(s * 0.28, 0.1, 0.15);
+    side.rotation.z = s * 1.9;
+    g.add(side);
+  }
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  g.scale.setScalar(scale);
+  g.userData.head = head;
+  return g;
+}
+
+function buildIgloo() {                        // distant snow-block dome, warm doorway
+  const g = new THREE.Group();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(2.1, 14, 8, 0, TAU, 0, Math.PI / 2), M.igloo);
+  dome.castShadow = dome.receiveShadow = true;
+  const porch = new THREE.Mesh(new THREE.SphereGeometry(0.95, 10, 6, 0, TAU, 0, Math.PI / 2), M.igloo);
+  porch.position.set(0, 0, 1.7);
+  porch.castShadow = true;
+  const door = new THREE.Mesh(new THREE.CircleGeometry(0.46, 14), M.door);
+  door.position.set(0, 0.4, 2.62);             // just proud of the porch dome
+  const glow = new THREE.PointLight(PAL.warmLight, 9, 13, 2);
+  glow.position.set(0, 0.8, 2.9);
+  g.add(dome, porch, door, glow);
+  g.userData.glow = glow;
+  return g;
+}
+
+function buildAurora() {                       // three waving additive curtains
+  const g = new THREE.Group();
+  const curtains = [];
+  for (let i = 0; i < 3; i++) {
+    const geo = new THREE.PlaneGeometry(46 + i * 6, 8.5 + i * 1.6, 80, 1);
+    const pos = geo.getAttribute('position');
+    const ph = rand(0, TAU);
+    for (let k = 0; k < pos.count; k++) {      // serpentine plan-view path
+      const x = pos.getX(k);
+      pos.setZ(k, Math.sin(x * 0.16 + ph) * 3.4 + Math.sin(x * 0.37 + ph * 2) * 1.3);
+    }
+    const mat = new THREE.MeshBasicMaterial({
+      map: auroraTexture(), transparent: true, opacity: 0.5 + i * 0.06,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false, fog: false,
+    });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.y = 14.5 + i * 2.4;
+    mesh.rotation.y = i * 1.05 + 0.4;
+    g.add(mesh);
+    curtains.push({ mesh, mat, phase: ph, baseRot: mesh.rotation.y, baseOp: mat.opacity });
+  }
+  g.userData.curtains = curtains;
+  return g;
+}
+
+function buildStars() {                        // two point clouds for twinkling
+  const g = new THREE.Group();
+  const clouds = [];
+  for (let c = 0; c < 2; c++) {
+    const pts = new Float32Array(Math.floor(CONFIG.starCount / 2) * 3);
+    for (let i = 0; i < pts.length; i += 3) {
+      const az = rng() * TAU, el = Math.asin(rand(0.06, 1));
+      pts[i] = Math.cos(az) * Math.cos(el) * 66;
+      pts[i + 1] = Math.sin(el) * 66;
+      pts[i + 2] = Math.sin(az) * Math.cos(el) * 66;
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+    const mat = new THREE.PointsMaterial({ color: 0xeaf2ff, size: 0.5, sizeAttenuation: true,
+                                          transparent: true, opacity: 0.8, depthWrite: false, fog: false });
+    g.add(new THREE.Points(geo, mat));
+    clouds.push(mat);
+  }
+  g.userData.clouds = clouds;
+  return g;
+}
+
+function buildPressureRidge(radius, a0, a1, count) {   // shoved-up ice shards along a floe edge
+  const g = new THREE.Group();
+  const im = new THREE.InstancedMesh(G.chunk, M.chunk, count);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < count; i++) {
+    const a = a0 + (i / (count - 1)) * (a1 - a0) + rand(-0.05, 0.05);
+    d.position.set(Math.cos(a) * radius, rand(0.05, 0.25), Math.sin(a) * radius * 0.92);
+    d.rotation.set(rng() * TAU, rng() * TAU, rng() * TAU);
+    d.scale.set(rand(0.8, 1.8), rand(0.9, 2.2), rand(0.8, 1.8));
+    d.updateMatrix(); im.setMatrixAt(i, d.matrix);
+  }
+  im.castShadow = true;
+  g.add(im);
+  return g;
+}
+
+function buildSnowfall() {                     // sparse polar snow drifting down
+  const n = 260;
+  const pts = new Float32Array(n * 3), drift = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const a = rng() * TAU, r = Math.sqrt(rng()) * 30;
+    pts[i * 3] = Math.cos(a) * r;
+    pts[i * 3 + 1] = rand(0.2, 14);
+    pts[i * 3 + 2] = Math.sin(a) * r;
+    drift[i] = rand(0.25, 0.6);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pts, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xdbe7f4, size: 0.09, transparent: true,
+                                        opacity: 0.75, depthWrite: false });
+  const cloud = new THREE.Points(geo, mat);
+  cloud.userData = { pts, drift };
+  return cloud;
+}
+
+function buildMoon() {                         // low gibbous moon + soft halo
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(2.6, 24), M.moon);
+  const halo = new THREE.Mesh(new THREE.CircleGeometry(5.2, 24), M.halo);
+  halo.position.z = -0.5;
+  g.add(disc, halo);
+  g.position.set(-40.7, 47, -21.9);            // along the moonlight direction
+  g.lookAt(0, 0, 0);
+  return g;
+}
+
+/* ================================================================
+   7. ASSEMBLY & LAYOUT
+   ================================================================ */
+// Dark sea, night dome, stars, moon, aurora
+const sea = new THREE.Mesh(new THREE.CircleGeometry(CONFIG.seaRadius, 64), M.sea);
+sea.rotation.x = -Math.PI / 2;
+sea.receiveShadow = true; scene.add(sea);
+
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(78, 24, 12),
+  new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false })));
+const stars = buildStars();
+scene.add(stars, buildMoon());
+const aurora = buildAurora();
+const snow = buildSnowfall();
+scene.add(aurora, snow);
+
+// Largest floe: the polar bear and her cub ride it near centre stage
+const bearFloe = buildFloe(4.6, 0.42, 0.7);
+const bearMother = buildPolarBear(1);
+bearMother.position.set(-0.9, 0.42, 0.3);
+bearMother.rotation.y = 0.55;
+const bearCub = buildPolarBear(0.55);
+bearCub.position.set(0.9, 0.42, -0.6);
+bearCub.rotation.y = -0.5;
+const ridge = buildPressureRidge(3.6, 2.2, 3.9, 12);   // shard wall on the far rim
+ridge.position.y = 0.42;
+bearFloe.add(bearMother, bearCub, ridge);
+scene.add(bearFloe);
+
+// Seal floe with a breathing hole
+const sealFloe = buildFloe(3.3, 0.26, 0.5, [0.9, 0.3, 0.72]);
+sealFloe.position.set(9.0, 0, 4.8);
+sealFloe.rotation.y = 0.7;
+const sealA = buildSeal(1);
+sealA.position.set(-1.2, 0.26, 0.5);
+sealA.rotation.y = 2.1;
+const sealB = buildSeal(0.8);
+sealB.position.set(0.4, 0.26, -1.5);
+sealB.rotation.y = -2.6;
+sealFloe.add(sealA, sealB);
+scene.add(sealFloe);
+// Breathing-hole ripple rings (world-space, re-anchored to the drifting hole)
+const holeLocal = new THREE.Vector3(0.9, 0, -0.3);
+const holeWorld = new THREE.Vector3();
+const ripples = [];
+for (let i = 0; i < 2; i++) {
+  const mat = new THREE.MeshBasicMaterial({ color: 0x9fd4e8, transparent: true, opacity: 0.4,
+                                            side: THREE.DoubleSide, depthWrite: false, fog: false });
+  const ring = new THREE.Mesh(new THREE.RingGeometry(0.42, 0.5, 24), mat);
+  ring.rotation.x = -Math.PI / 2;
+  scene.add(ring);
+  ripples.push({ ring, mat, phase: i * 0.5 });
+}
+
+// Distant shelf carrying the glowing igloo
+const iglooShelf = buildFloe(6.4, 0.5, 0.8);
+iglooShelf.position.set(-16.5, 0, -11);
+const igloo = buildIgloo();
+igloo.position.y = 0.5;
+igloo.rotation.y = 0.95;                       // door faces the open water
+iglooShelf.add(igloo);
+scene.add(iglooShelf);
+
+// Sculpted icebergs ringing the bay
+const bergSpots = [[-9.5, 14.5, 2.6, 3.4, 2.2], [17, -7.5, 2.2, 2.6, 1.9],
+                   [11.5, 18.5, 3.0, 2.4, 2.4], [-22, 5.5, 2.4, 2.6, 2.0], [3.5, -19, 1.8, 2.1, 1.6]];
+const occupied = [[0, 0, 6], [9, 4.8, 5], [-16.5, -11, 8]];
+bergSpots.forEach(([x, z, sx, sy, sz], i) => {
+  const berg = buildIceberg(sx, sy, sz, i * 7.1);
+  berg.position.set(x, 0, z);
+  berg.rotation.y = rng() * TAU;
+  scene.add(berg);
+  occupied.push([x, z, Math.max(sx, sz) + 2]);
+});
+
+// Small drifting floes + brash ice between the sheets
+const drifters = [{ node: bearFloe, x: 0, z: 0, ph: rng() * TAU, rr: 0.3, r0: 0 },
+                  { node: sealFloe, x: 9.0, z: 4.8, ph: rng() * TAU, rr: 0.25, r0: 0.7 }];
+let guard = 0;
+while (drifters.length < CONFIG.smallFloes + 2 && guard++ < 300) {
+  const a = rng() * TAU, r = rand(7, 30);
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  if (occupied.some(([ox, oz, or]) => Math.hypot(x - ox, z - oz) < or + 3)) continue;
+  const f = buildFloe(rand(1.1, 2.6), rand(0.14, 0.3), rand(0.35, 0.5));
+  f.position.set(x, 0, z);
+  f.rotation.y = rng() * TAU;
+  scene.add(f);
+  drifters.push({ node: f, x, z, ph: rng() * TAU, rr: rand(0.3, 0.55), r0: f.rotation.y });
+  occupied.push([x, z, 3]);
+}
+{
+  const brash = new THREE.InstancedMesh(G.chunk, M.chunk, CONFIG.brashChunks);
+  const d = new THREE.Object3D();
+  let placed = 0; guard = 0;
+  while (placed < CONFIG.brashChunks && guard++ < 400) {
+    const a = rng() * TAU, r = rand(5, 32);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (occupied.some(([ox, oz, or]) => Math.hypot(x - ox, z - oz) < or)) continue;
+    d.position.set(x, 0.04, z);
+    d.rotation.set(rng() * TAU, rng() * TAU, rng() * TAU);
+    d.scale.set(rand(0.4, 1.2), rand(0.22, 0.4), rand(0.4, 1.2));
+    d.updateMatrix(); brash.setMatrixAt(placed, d.matrix);
+    placed++;
+  }
+  brash.count = placed;
+  brash.castShadow = true;
+  scene.add(brash);
+}
+
+/* ================================================================
+   8. LIGHTING RIG — moonlight, sky fill, aurora wash, igloo warmth
+   ================================================================ */
+const moonLight = new THREE.DirectionalLight(PAL.moon, 2.2);
+moonLight.position.set(-26, 30, -14);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.near = 2; moonLight.shadow.camera.far = 100;
+moonLight.shadow.camera.left = moonLight.shadow.camera.bottom = -30;
+moonLight.shadow.camera.right = moonLight.shadow.camera.top = 30;
+moonLight.shadow.bias = -0.0006;
+scene.add(moonLight, moonLight.target);
+
+const auroraWash = new THREE.DirectionalLight(PAL.auroraGreen, 0.12);  // faint green from above
+auroraWash.position.set(6, 40, 8);
+const rim = new THREE.DirectionalLight(0x4a6a9c, 0.75);                // cool horizon fill
+rim.position.set(22, 10, 26);
+scene.add(new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.65), auroraWash, rim);
+const iglooGlow = igloo.userData.glow;
+
+/* ================================================================
+   9. ANIMATION LOOP
+   ================================================================ */
+const clock = new THREE.Clock();
+const curtains = aurora.userData.curtains;
+const starMats = stars.userData.clouds;
+let tPrev = 0;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = Math.min(t - tPrev, 0.05);
+  tPrev = t;
+  for (const c of curtains) {                  // 1) aurora curtains ripple and breathe
+    c.mat.map.offset.x = t * 0.014 + c.phase;
+    c.mat.opacity = c.baseOp + Math.sin(t * 0.33 + c.phase) * 0.13;
+    c.mesh.rotation.y = c.baseRot + Math.sin(t * 0.09 + c.phase) * 0.05;
+  }
+  for (const f of drifters) {                  // 2) floes drift, bob and slowly yaw
+    f.node.position.x = f.x + Math.cos(t * 0.05 + f.ph) * f.rr;
+    f.node.position.z = f.z + Math.sin(t * 0.05 + f.ph) * f.rr;
+    f.node.position.y = Math.sin(t * 0.5 + f.ph) * 0.045;
+    f.node.rotation.y = f.r0 + Math.sin(t * 0.06 + f.ph) * 0.06;
+  }
+  texSea.offset.set(t * 0.004, Math.sin(t * 0.09) * 0.008);   // 3) sea shimmer
+  starMats[0].opacity = 0.55 + Math.sin(t * 1.3) * 0.3;       // 4) counter-phase twinkle
+  starMats[1].opacity = 0.55 + Math.cos(t * 1.1) * 0.3;
+  sealA.userData.head.rotation.x = -0.3 + Math.sin(t * 0.7) * 0.18;    // 5) seal lifts its head
+  sealB.userData.head.rotation.x = -0.2 + Math.sin(t * 0.55 + 2) * 0.12;
+  bearCub.userData.head.rotation.y = Math.sin(t * 0.45) * 0.22;        // 6) cub looks around
+  bearMother.userData.head.rotation.y = Math.sin(t * 0.3 + 1.2) * 0.14;
+  iglooGlow.intensity = 9 + Math.sin(t * 9.7) * 0.7 + Math.sin(t * 4.3) * 0.4;   // 7) hearth flicker
+  M.door.emissiveIntensity = 2.2 + Math.sin(t * 9.7) * 0.25;
+  const sp = snow.userData;                    // 8) sparse snowfall sifting down
+  for (let i = 0; i < sp.drift.length; i++) {
+    let y = sp.pts[i * 3 + 1] - sp.drift[i] * dt;
+    if (y < 0.15) y += 13.7;
+    sp.pts[i * 3 + 1] = y;
+    sp.pts[i * 3] += Math.sin(t * 0.6 + i) * 0.0016;
+  }
+  snow.geometry.attributes.position.needsUpdate = true;
+  holeWorld.copy(holeLocal);                   // 9) ripples at the breathing hole
+  sealFloe.localToWorld(holeWorld);
+  for (const rp of ripples) {
+    const p = (t * 0.22 + rp.phase) % 1;
+    rp.ring.position.set(holeWorld.x, 0.02, holeWorld.z);
+    rp.ring.scale.setScalar(0.25 + p * 0.85);
+    rp.mat.opacity = 0.45 * (1 - p);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   10. RESIZE
+   ================================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

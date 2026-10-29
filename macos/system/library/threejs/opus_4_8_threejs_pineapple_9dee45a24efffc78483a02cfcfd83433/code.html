@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Ripe Pineapple — Procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #dedede; }
+  #app { width: 100vw; height: 100vh; display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #444; opacity: 0.6;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+<div id="hint">Drag to orbit · scroll to zoom · auto-rotating</div>
+
+<!-- three.js + OrbitControls via ES-module import map (jsDelivr CDN) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// =============================================================================
+// Renderer / Scene / Camera
+// =============================================================================
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdedede); // neutral studio backdrop
+
+const fov = 40;
+const camera = new THREE.PerspectiveCamera(fov, window.innerWidth / window.innerHeight, 0.01, 100);
+
+// =============================================================================
+// Lighting — hemisphere fill + directional key (shadows) + subtle fill
+// =============================================================================
+const hemi = new THREE.HemisphereLight(0xffffff, 0x585044, 0.65);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e2, 2.4);
+key.position.set(0.35, 0.70, 0.42);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 5;
+key.shadow.bias = -0.0004;
+const sc = key.shadow.camera;
+sc.near = 0.02; sc.far = 3;
+sc.left = -0.35; sc.right = 0.35; sc.top = 0.4; sc.bottom = -0.05;
+sc.updateProjectionMatrix();
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 0.09, 0);
+
+const fill = new THREE.DirectionalLight(0xdfe8ff, 0.55); // cool subtle fill, no shadow
+fill.position.set(-0.5, 0.35, -0.35);
+scene.add(fill);
+
+// =============================================================================
+// Ground / contact-shadow plane
+// =============================================================================
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.MeshStandardMaterial({ color: 0xdadada, roughness: 0.95, metalness: 0.0 })
+);
+ground.name = 'ground';
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// =============================================================================
+// The pineapple group (built at real-world scale, in metres)
+// =============================================================================
+const pineapple = new THREE.Group();
+pineapple.name = 'pineapple';
+scene.add(pineapple);
+
+const H = 0.150; // body height (~15 cm)
+
+// -----------------------------------------------------------------------------
+// Body silhouette — an ovoid profile (radius, height) used both for the lathe
+// surface and for placing the raised "eyes". Widest in the lower-middle.
+// -----------------------------------------------------------------------------
+const profile = [
+  new THREE.Vector2(0.006, 0.000),
+  new THREE.Vector2(0.030, 0.005),
+  new THREE.Vector2(0.043, 0.014),
+  new THREE.Vector2(0.051, 0.028),
+  new THREE.Vector2(0.056, 0.045),
+  new THREE.Vector2(0.0585, 0.066), // widest bulge (~44% up)
+  new THREE.Vector2(0.057, 0.086),
+  new THREE.Vector2(0.052, 0.106),
+  new THREE.Vector2(0.044, 0.123),
+  new THREE.Vector2(0.034, 0.137),
+  new THREE.Vector2(0.026, 0.146),
+  new THREE.Vector2(0.020, 0.150),
+];
+
+// Linear sample of the profile: returns radius and dr/dy at a given height.
+function sampleProfile(y) {
+  y = THREE.MathUtils.clamp(y, 0, H);
+  for (let i = 1; i < profile.length; i++) {
+    if (y <= profile[i].y) {
+      const a = profile[i - 1], b = profile[i];
+      const f = (y - a.y) / (b.y - a.y);
+      return { r: a.x + (b.x - a.x) * f, dr: (b.x - a.x) / (b.y - a.y) };
+    }
+  }
+  const last = profile[profile.length - 1];
+  return { r: last.x, dr: 0 };
+}
+
+// -----------------------------------------------------------------------------
+// Procedural skin texture — golden-brown with a darker diamond lattice + the
+// characteristic little central dot at each eye. Aligned to the 3D eye layout.
+// -----------------------------------------------------------------------------
+const ROWS = 11;
+const PER_ROW = 15;
+
+// Generate the eye layout once; reused for both texture and 3D bumps.
+const eyes = [];
+for (let j = 0; j < ROWS; j++) {
+  const y = 0.022 + (0.138 - 0.022) * (j / (ROWS - 1));
+  const { r, dr } = sampleProfile(y);
+  const rowOffset = (j % 2) * (Math.PI / PER_ROW); // half-step -> diamond interlock
+  for (let k = 0; k < PER_ROW; k++) {
+    const theta = rowOffset + k * (2 * Math.PI / PER_ROW);
+    eyes.push({ y, theta, r, dr, row: j });
+  }
+}
+
+function makeBodyTexture() {
+  const W = 1200, Hpx = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = W; cv.height = Hpx;
+  const ctx = cv.getContext('2d');
+
+  // Vertical golden gradient (canvas top = pineapple top).
+  const g = ctx.createLinearGradient(0, 0, 0, Hpx);
+  g.addColorStop(0.00, '#9c6a24');
+  g.addColorStop(0.18, '#c49a44');
+  g.addColorStop(0.50, '#d0a84e');
+  g.addColorStop(0.82, '#be8c38');
+  g.addColorStop(1.00, '#9a6824');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, Hpx);
+
+  // Mottled speckle for organic surface variation.
+  for (let i = 0; i < 6000; i++) {
+    const x = Math.random() * W, y = Math.random() * Hpx;
+    const shade = Math.random() < 0.5;
+    ctx.fillStyle = shade ? 'rgba(90,60,20,0.10)' : 'rgba(235,205,120,0.10)';
+    const rr = 1 + Math.random() * 2.5;
+    ctx.beginPath(); ctx.arc(x, y, rr, 0, Math.PI * 2); ctx.fill();
+  }
+
+  const dx = (W / PER_ROW) * 0.5;   // diamond half-width
+  const dy = Hpx * 0.052;           // diamond half-height
+
+  // Draw one diamond "cell" + central dot for every eye (wrap-safe at seam).
+  function diamond(cx, cy) {
+    ctx.beginPath();
+    ctx.moveTo(cx, cy - dy);
+    ctx.lineTo(cx + dx, cy);
+    ctx.lineTo(cx, cy + dy);
+    ctx.lineTo(cx - dx, cy);
+    ctx.closePath();
+    ctx.fillStyle = 'rgba(214,170,80,0.55)';
+    ctx.fill();
+    ctx.lineWidth = 3.5;
+    ctx.strokeStyle = 'rgba(96,64,24,0.55)';
+    ctx.stroke();
+    // little brown bract dot
+    ctx.beginPath();
+    ctx.arc(cx, cy - dy * 0.15, 3.4, 0, Math.PI * 2);
+    ctx.fillStyle = 'rgba(70,46,18,0.75)';
+    ctx.fill();
+  }
+
+  for (const e of eyes) {
+    const cx = (e.theta / (2 * Math.PI)) * W;
+    const cy = (1 - e.y / H) * Hpx;
+    diamond(cx, cy);
+    diamond(cx - W, cy); // wrap left
+    diamond(cx + W, cy); // wrap right
+  }
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+const bodyTexture = makeBodyTexture();
+
+// -----------------------------------------------------------------------------
+// Body — lathe surface of the ovoid profile.  A subtle non-uniform scale on the
+// body group gives the "slightly asymmetric" look and carries the eyes with it.
+// -----------------------------------------------------------------------------
+const bodyGroup = new THREE.Group();
+bodyGroup.name = 'bodyGroup';
+bodyGroup.scale.set(1.04, 1.0, 0.955); // gentle asymmetry
+pineapple.add(bodyGroup);
+
+const bodyGeo = new THREE.LatheGeometry(profile, 96);
+const bodyMat = new THREE.MeshStandardMaterial({
+  map: bodyTexture,
+  color: 0xffffff,
+  roughness: 0.62,
+  metalness: 0.0,
+});
+const body = new THREE.Mesh(bodyGeo, bodyMat);
+body.name = 'body';
+body.castShadow = true;
+body.receiveShadow = true;
+bodyGroup.add(body);
+
+// Caps closing the open lathe ends (bottom hidden on ground, top under crown).
+const capMat = new THREE.MeshStandardMaterial({ color: 0xa9772f, roughness: 0.7, metalness: 0.0 });
+const bottomCap = new THREE.Mesh(new THREE.CircleGeometry(0.007, 24), capMat);
+bottomCap.name = 'bottomCap';
+bottomCap.rotation.x = Math.PI / 2;
+bottomCap.position.y = 0.0005;
+bottomCap.receiveShadow = true;
+bodyGroup.add(bottomCap);
+
+const topCap = new THREE.Mesh(new THREE.CircleGeometry(0.021, 24), capMat);
+topCap.name = 'topCap';
+topCap.rotation.x = -Math.PI / 2;
+topCap.position.y = H;
+bodyGroup.add(topCap);
+
+// -----------------------------------------------------------------------------
+// Raised hexagonal "eyes" + little dried bract tufts, placed with InstancedMesh.
+// -----------------------------------------------------------------------------
+const eyeR = 0.0095, eyeHt = 0.010;
+const eyeGeo = new THREE.ConeGeometry(eyeR, eyeHt, 6); // hexagonal raised bump
+const eyeMat = new THREE.MeshStandardMaterial({ color: 0xc79338, roughness: 0.58, metalness: 0.0 });
+const eyeMesh = new THREE.InstancedMesh(eyeGeo, eyeMat, eyes.length);
+eyeMesh.name = 'eyes';
+eyeMesh.castShadow = true;
+eyeMesh.receiveShadow = true;
+
+const tuftGeo = new THREE.ConeGeometry(0.0024, 0.0075, 5);
+const tuftMat = new THREE.MeshStandardMaterial({ color: 0x4a3016, roughness: 0.9, metalness: 0.0 });
+const tuftMesh = new THREE.InstancedMesh(tuftGeo, tuftMat, eyes.length);
+tuftMesh.name = 'eyeTufts';
+tuftMesh.castShadow = true;
+
+// Scratch objects for building instance matrices.
+const _pos = new THREE.Vector3();
+const _up = new THREE.Vector3();
+const _ref = new THREE.Vector3();
+const _side = new THREE.Vector3();
+const _fwd = new THREE.Vector3();
+const _basis = new THREE.Matrix4();
+const _mat = new THREE.Matrix4();
+const _scl = new THREE.Vector3();
+const worldUp = new THREE.Vector3(0, 1, 0);
+const worldX = new THREE.Vector3(1, 0, 0);
+
+eyes.forEach((e, i) => {
+  const cos = Math.cos(e.theta), sin = Math.sin(e.theta);
+
+  // Surface point and outward normal (from the profile slope).
+  const surf = new THREE.Vector3(e.r * cos, e.y, e.r * sin);
+  const n2 = new THREE.Vector2(1, -e.dr).normalize(); // 2D outward normal in (r,y)
+  _up.set(n2.x * cos, n2.y, n2.x * sin).normalize();
+
+  // Build a stable tangent-plane basis, then roll alternate rows for the
+  // interlocking diamond arrangement.
+  _ref.copy(Math.abs(_up.dot(worldUp)) > 0.98 ? worldX : worldUp);
+  _side.copy(_ref).cross(_up).normalize();
+  _fwd.copy(_up).cross(_side).normalize();
+  const roll = (e.row % 2) * (Math.PI / 6);
+  const cr = Math.cos(roll), srr = Math.sin(roll);
+  const sx = _side.x * cr + _fwd.x * srr, sy = _side.y * cr + _fwd.y * srr, sz = _side.z * cr + _fwd.z * srr;
+  const fx = -_side.x * srr + _fwd.x * cr, fy = -_side.y * srr + _fwd.y * cr, fz = -_side.z * srr + _fwd.z * cr;
+  _side.set(sx, sy, sz);
+  _fwd.set(fx, fy, fz);
+  _basis.makeBasis(_side, _up, _fwd);
+
+  // Organic per-eye size variation (deterministic-ish).
+  const s = 0.85 + 0.28 * Math.abs(Math.sin(i * 12.9898));
+  _scl.set(s, s, s);
+
+  // Eye bump: base sits just under the skin, apex raised outward.
+  _pos.copy(surf).addScaledVector(_up, eyeHt * 0.35 * s);
+  _mat.copy(_basis).scale(_scl).setPosition(_pos);
+  eyeMesh.setMatrixAt(i, _mat);
+
+  // Tuft: tiny spike at the eye apex.
+  _pos.copy(surf).addScaledVector(_up, eyeHt * 0.9 * s);
+  _mat.copy(_basis).scale(_scl.set(s, s, s)).setPosition(_pos);
+  tuftMesh.setMatrixAt(i, _mat);
+});
+eyeMesh.instanceMatrix.needsUpdate = true;
+tuftMesh.instanceMatrix.needsUpdate = true;
+bodyGroup.add(eyeMesh);
+bodyGroup.add(tuftMesh);
+
+// =============================================================================
+// Crown — spreading rosette of stiff, pointed, serrated green leaves.
+// =============================================================================
+const crown = new THREE.Group();
+crown.name = 'crown';
+crown.position.y = H - 0.006; // emerge just below the top rim
+crown.rotation.z = 0.04;      // slight lean for character
+pineapple.add(crown);
+
+// Build a single leaf: arched blade with a central keel (fold) and serrated
+// silhouette, tapering to a sharp point.  Coloured base->tip via vertex colors.
+function makeLeafGeometry(L, W, keel, teeth) {
+  const segs = 18;
+  const positions = [], colors = [], indices = [];
+  const base = new THREE.Color(0x2f6d29);
+  const tip = new THREE.Color(0xa6cf46);
+  const c = new THREE.Color();
+
+  for (let i = 0; i <= segs; i++) {
+    const s = i / segs;
+    const y = L * (s * 1.02 - 0.02 * s * s);   // up the leaf
+    const z = L * (0.24 * s * s);              // arch forward (outward)
+    let w = W * (1 - s) * (0.55 + 0.8 * Math.sin(Math.PI * s)); // widest in lower third
+    if (w < 0) w = 0;
+    w *= 1 + 0.12 * Math.sign(Math.sin(s * Math.PI * teeth));   // serration
+    const zc = z + keel * w;                   // keel raises the centreline
+
+    c.copy(base).lerp(tip, Math.pow(s, 0.8));
+    // left edge (darker), centre (bright), right edge (darker)
+    positions.push(-w, y, z);  colors.push(c.r * 0.82, c.g * 0.82, c.b * 0.82);
+    positions.push(0, y, zc);  colors.push(c.r, c.g, c.b);
+    positions.push(w, y, z);   colors.push(c.r * 0.82, c.g * 0.82, c.b * 0.82);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 3, b = (i + 1) * 3;
+    indices.push(a, a + 1, b, a + 1, b + 1, b);           // left strip
+    indices.push(a + 1, a + 2, b + 1, a + 2, b + 2, b + 1); // right strip
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const leafMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.55,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+});
+
+// Rings from outer/spreading (bottom) to inner/upright (top).
+const rings = [
+  { count: 9, tilt: 1.35, L: 0.115, W: 0.017 },
+  { count: 8, tilt: 1.05, L: 0.135, W: 0.018 },
+  { count: 8, tilt: 0.78, L: 0.130, W: 0.017 },
+  { count: 7, tilt: 0.52, L: 0.110, W: 0.015 },
+  { count: 6, tilt: 0.30, L: 0.090, W: 0.013 },
+  { count: 5, tilt: 0.14, L: 0.070, W: 0.011 },
+  { count: 3, tilt: 0.04, L: 0.052, W: 0.009 },
+];
+
+const GOLDEN = 2.399963; // golden angle for natural spiral distribution
+let leafIndex = 0;
+rings.forEach((ring, ri) => {
+  for (let k = 0; k < ring.count; k++) {
+    // Deterministic pseudo-random jitter for a natural, slightly irregular crown.
+    const jr = Math.sin(leafIndex * 78.233) * 0.5;
+    const jr2 = Math.sin(leafIndex * 12.9898) * 0.5;
+
+    const geo = makeLeafGeometry(
+      ring.L * (1 + jr * 0.18),
+      ring.W * (1 + jr2 * 0.12),
+      0.5,
+      13 + (leafIndex % 3)
+    );
+    const leaf = new THREE.Mesh(geo, leafMat);
+    leaf.name = `leaf_${ri}_${k}`;
+    leaf.castShadow = true;
+
+    // Lean outward (+Z), then spin around the crown by the golden angle.
+    leaf.rotation.x = ring.tilt + jr * 0.12;
+    const pivot = new THREE.Group();
+    pivot.rotation.y = GOLDEN * leafIndex + ri * 0.6 + jr2 * 0.15;
+    pivot.add(leaf);
+    crown.add(pivot);
+    leafIndex++;
+  }
+});
+
+// Small dark-green collar hiding the leaf/body junction.
+const collar = new THREE.Mesh(
+  new THREE.ConeGeometry(0.022, 0.02, 20, 1, true),
+  new THREE.MeshStandardMaterial({ color: 0x2f5d24, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide })
+);
+collar.name = 'collar';
+collar.position.y = 0.006;
+collar.castShadow = true;
+crown.add(collar);
+
+// =============================================================================
+// Auto-frame the camera to the model's bounding box
+// =============================================================================
+const box = new THREE.Box3().setFromObject(pineapple);
+const size = box.getSize(new THREE.Vector3());
+const center = box.getCenter(new THREE.Vector3());
+const maxDim = Math.max(size.x, size.y, size.z);
+const fitDist = (maxDim / 2) / Math.tan(THREE.MathUtils.degToRad(fov / 2));
+const dist = fitDist * 1.55;
+
+camera.position.set(center.x + dist * 0.55, center.y + dist * 0.40, center.z + dist * 0.92);
+camera.near = dist / 60;
+camera.far = dist * 12;
+camera.updateProjectionMatrix();
+
+// =============================================================================
+// Controls
+// =============================================================================
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.copy(center);
+controls.minDistance = dist * 0.4;
+controls.maxDistance = dist * 3.0;
+controls.maxPolarAngle = Math.PI * 0.52; // keep camera above the ground
+controls.update();
+
+// =============================================================================
+// Resize + render loop
+// =============================================================================
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

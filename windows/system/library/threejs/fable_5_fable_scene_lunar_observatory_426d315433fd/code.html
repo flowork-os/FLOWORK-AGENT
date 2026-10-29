@@ -1,0 +1,641 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Lunar Observatory Outpost</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#05060a}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= CONFIG / PALETTE ================= */
+const CFG = {
+  seed: 20260815,
+  groundSize: 240, groundSegs: 120,
+  flatRadius: 42,          // structures + trails sit on this flat apron
+  rimDistance: 78,         // crater rim ridge behind the outpost
+  skyRadius: 380,
+  autoRotateSpeed: 1.1
+};
+const PAL = {
+  regolithHi: '#8d8d92', regolithLo: '#5c5c62',
+  hullWhite: 0xd8d8d2, hullGray: 0x8f939b, metalDark: 0x3a3d44,
+  dishWhite: 0xe4e6e8, goldFoil: 0xc08a2c, panelBlue: 0x16264d,
+  glassDark: 0x0d1420, rockGray: 0x77767c,
+  portholeGlow: 0xffa844, beaconRed: 0xff3524, beaconGreen: 0x37ff8a,
+  earthOcean: '#1c62d8', sunColor: 0xfff2e0, earthLight: 0x86a9ff
+};
+
+/* ================= PRNG / MATH HELPERS ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rng = mulberry32(CFG.seed);
+const rr  = (a,b)=>a+rng()*(b-a);                 // random in range
+const ri  = (a,b)=>Math.floor(rr(a,b+1));         // random int inclusive
+const pick= arr=>arr[Math.floor(rng()*arr.length)];
+function hash2(i,j){const s=Math.sin(i*127.1+j*311.7)*43758.5453;return s-Math.floor(s);}
+function vnoise(x,y){                              // deterministic value noise
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hash2(xi,yi),b=hash2(xi+1,yi),c=hash2(xi,yi+1),d=hash2(xi+1,yi+1);
+  return a+(b-a)*u+(c-a)*v+(a-b-c+d)*u*v;
+}
+const sstep=(e0,e1,x)=>{const t=Math.min(1,Math.max(0,(x-e0)/(e1-e0)));return t*t*(3-2*t);};
+
+/* Terrain height: flat apron, rolling regolith, big crater-rim ridge behind (-Z) */
+function terrainHeight(x,z){
+  const r=Math.hypot(x,z);
+  const roll=(vnoise(x*0.05+9,z*0.05+4)-0.5)*3.2+(vnoise(x*0.16,z*0.16)-0.5)*0.9;
+  const mask=sstep(CFG.flatRadius,CFG.flatRadius+14,r);
+  const ang=Math.atan2(x,-z);                      // 0 rad looks toward -Z (behind base)
+  const band=1-sstep(0.9,1.55,Math.abs(ang));
+  const ridge=Math.exp(-Math.pow((r-CFG.rimDistance)/13,2))*(9.5+vnoise(x*0.045,z*0.045)*4)*band;
+  const bowl=-Math.exp(-Math.pow((r-CFG.rimDistance+22)/10,2))*2.2*band;   // inner crater dip
+  const falloff=-sstep(100,120,r)*5;
+  return roll*mask+ridge+bowl*mask+falloff;
+}
+
+/* ================= PROCEDURAL CANVAS TEXTURES ================= */
+function canvas2d(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return[c,c.getContext('2d')];}
+function makeRegolithTexture(){
+  const [c,g]=canvas2d(1024,1024);
+  g.fillStyle=PAL.regolithHi;g.fillRect(0,0,1024,1024);
+  for(let i=0;i<5200;i++){                          // fine speckle grain
+    const v=ri(70,155);g.fillStyle=`rgba(${v},${v},${v+4},${rr(0.15,0.5).toFixed(2)})`;
+    g.fillRect(rr(0,1024),rr(0,1024),rr(1,2.6),rr(1,2.6));
+  }
+  for(let i=0;i<70;i++){                            // micro-craters with lit/shadow rims
+    const x=rr(0,1024),y=rr(0,1024),rad=rr(6,34);
+    const grd=g.createRadialGradient(x,y,rad*0.2,x,y,rad);
+    grd.addColorStop(0,'rgba(70,70,76,0.55)');grd.addColorStop(0.8,'rgba(90,90,96,0.25)');
+    grd.addColorStop(1,'rgba(160,160,166,0)');
+    g.fillStyle=grd;g.beginPath();g.arc(x,y,rad,0,7);g.fill();
+    g.strokeStyle='rgba(190,190,196,0.35)';g.lineWidth=rad*0.14;
+    g.beginPath();g.arc(x,y,rad*0.86,Math.PI*1.1,Math.PI*1.9);g.stroke();
+  }
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(5,5);return t;
+}
+function makeStarTexture(){
+  const [c,g]=canvas2d(2048,1024);
+  g.fillStyle='#05060a';g.fillRect(0,0,2048,1024);
+  for(let i=0;i<220;i++){                           // faint galactic dust band
+    const t=i/220,x=t*2048,y=380+Math.sin(t*6.3)*90+rr(-70,70);
+    g.fillStyle=`rgba(150,160,190,${rr(0.01,0.045).toFixed(3)})`;
+    g.beginPath();g.arc(x,y,rr(18,60),0,7);g.fill();
+  }
+  for(let i=0;i<900;i++){
+    const x=rr(0,2048),y=rr(0,1024),s=rr(0.4,1.7),a=rr(0.35,1);
+    const tint=pick(['255,255,255','255,244,222','205,220,255']);
+    g.fillStyle=`rgba(${tint},${a.toFixed(2)})`;g.beginPath();g.arc(x,y,s,0,7);g.fill();
+  }
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;
+}
+function makeEarthTexture(){
+  const [c,g]=canvas2d(512,256);
+  const oc=g.createLinearGradient(0,0,0,256);
+  oc.addColorStop(0,'#2f74e8');oc.addColorStop(0.5,PAL.earthOcean);oc.addColorStop(1,'#123f9e');
+  g.fillStyle=oc;g.fillRect(0,0,512,256);
+  for(let i=0;i<16;i++){                            // continent blobs
+    const cx=rr(0,512),cy=rr(45,210),col=pick(['#3c7a44','#4b8348','#9d8a5c']);
+    g.fillStyle=col;
+    for(let k=0;k<9;k++){g.beginPath();
+      g.ellipse(cx+rr(-34,34),cy+rr(-16,16),rr(8,30),rr(6,18),rr(0,3.1),0,7);g.fill();}
+  }
+  g.fillStyle='rgba(240,248,255,0.9)';              // polar ice caps
+  for(let x=0;x<512;x+=8){g.fillRect(x,0,8,14+vnoise(x*0.05,3)*14);
+    g.fillRect(x,256-(12+vnoise(x*0.06,9)*14),8,30);}
+  for(let i=0;i<42;i++){                            // cloud streaks
+    g.fillStyle=`rgba(255,255,255,${rr(0.25,0.55).toFixed(2)})`;g.beginPath();
+    g.ellipse(rr(0,512),rr(20,236),rr(16,52),rr(3,8),rr(-0.4,0.4),0,7);g.fill();
+  }
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;
+}
+function makeGlowTexture(){
+  const [c,g]=canvas2d(256,256);
+  const grd=g.createRadialGradient(128,128,10,128,128,128);
+  grd.addColorStop(0,'rgba(150,190,255,0.85)');grd.addColorStop(0.35,'rgba(90,140,255,0.28)');
+  grd.addColorStop(1,'rgba(40,80,255,0)');
+  g.fillStyle=grd;g.fillRect(0,0,256,256);
+  return new THREE.CanvasTexture(c);
+}
+function makeSolarTexture(){
+  const [c,g]=canvas2d(256,128);
+  g.fillStyle='#101d3d';g.fillRect(0,0,256,128);
+  g.strokeStyle='#3752a0';g.lineWidth=3;
+  for(let x=0;x<=256;x+=32){g.beginPath();g.moveTo(x,0);g.lineTo(x,128);g.stroke();}
+  for(let y=0;y<=128;y+=32){g.beginPath();g.moveTo(0,y);g.lineTo(256,y);g.stroke();}
+  g.fillStyle='rgba(140,180,255,0.16)';
+  for(let i=0;i<20;i++)g.fillRect(rr(0,240),rr(0,112),rr(6,20),rr(4,12));
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;
+}
+
+/* ================= MATERIALS ================= */
+const MAT = {
+  regolith:new THREE.MeshStandardMaterial({map:makeRegolithTexture(),roughness:1,metalness:0}),
+  rock:new THREE.MeshStandardMaterial({color:PAL.rockGray,roughness:1,flatShading:true}),
+  hullWhite:new THREE.MeshStandardMaterial({color:PAL.hullWhite,roughness:0.55,metalness:0.25}),
+  hullGray:new THREE.MeshStandardMaterial({color:PAL.hullGray,roughness:0.5,metalness:0.5}),
+  metalDark:new THREE.MeshStandardMaterial({color:PAL.metalDark,roughness:0.45,metalness:0.7}),
+  dish:new THREE.MeshStandardMaterial({color:PAL.dishWhite,roughness:0.35,metalness:0.55,side:THREE.DoubleSide}),
+  gold:new THREE.MeshStandardMaterial({color:PAL.goldFoil,roughness:0.32,metalness:0.9}),
+  solar:new THREE.MeshStandardMaterial({map:makeSolarTexture(),roughness:0.3,metalness:0.6}),
+  glass:new THREE.MeshStandardMaterial({color:PAL.glassDark,roughness:0.1,metalness:0.9}),
+  porthole:new THREE.MeshStandardMaterial({color:0x000000,emissive:PAL.portholeGlow,emissiveIntensity:2.6}),
+  domeSlit:new THREE.MeshStandardMaterial({color:0x05070c,emissive:0x1a2b4a,emissiveIntensity:0.8,side:THREE.DoubleSide}),
+  track:new THREE.MeshStandardMaterial({color:0x4b4b52,roughness:1}),
+  print:new THREE.MeshStandardMaterial({color:0x54545a,roughness:1}),
+  earth:new THREE.MeshBasicMaterial({map:makeEarthTexture()}),
+  sky:new THREE.MeshBasicMaterial({map:makeStarTexture(),side:THREE.BackSide,fog:false})
+};
+
+/* ================= RENDERER / SCENE / CAMERA ================= */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x05060a);
+
+const camera=new THREE.PerspectiveCamera(50,innerWidth/innerHeight,0.1,900);
+camera.position.set(33,17,38);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(-1.5,3.5,-1);
+controls.enableDamping=true;controls.dampingFactor=0.06;
+controls.autoRotate=true;controls.autoRotateSpeed=CFG.autoRotateSpeed;
+controls.minDistance=18;controls.maxDistance=70;
+controls.maxPolarAngle=Math.PI*0.462;
+
+/* ================= BUILDERS ================= */
+/* --- terrain: displaced regolith plane + instanced boulders --- */
+function buildTerrain(){
+  const grp=new THREE.Group();
+  const geo=new THREE.PlaneGeometry(CFG.groundSize,CFG.groundSize,CFG.groundSegs,CFG.groundSegs);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    pos.setY(i,terrainHeight(pos.getX(i),pos.getZ(i)));
+  }
+  geo.computeVertexNormals();
+  const ground=new THREE.Mesh(geo,MAT.regolith);
+  ground.receiveShadow=true;grp.add(ground);
+
+  const rockGeo=new THREE.IcosahedronGeometry(1,1);
+  const rocks=new THREE.InstancedMesh(rockGeo,MAT.rock,150);
+  const m=new THREE.Matrix4(),q=new THREE.Quaternion(),e=new THREE.Euler(),s=new THREE.Vector3();
+  let n=0;
+  while(n<150){
+    const a=rr(0,Math.PI*2),d=rr(16,105),x=Math.sin(a)*d,z=Math.cos(a)*d;
+    if(d<26&&Math.abs(x)<20&&z>-16&&z<20)continue;          // keep the work yard clear
+    const sc=rr(0.22,0.9)+sstep(58,86,d)*rr(0.4,2.6);       // bigger boulders near the rim
+    e.set(rr(-0.25,0.25),rr(0,6.28),rr(-0.25,0.25));q.setFromEuler(e);
+    s.set(sc*rr(0.85,1.3),sc*rr(0.5,0.85),sc*rr(0.85,1.3));
+    m.compose(new THREE.Vector3(x,terrainHeight(x,z)-sc*0.22,z),q,s);  // settled into regolith
+    rocks.setMatrixAt(n++,m);
+  }
+  rocks.castShadow=rocks.receiveShadow=true;grp.add(rocks);
+  return grp;
+}
+
+/* --- sky dome, brilliant Earthrise + glow sprite --- */
+function buildSky(){
+  const grp=new THREE.Group();
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(CFG.skyRadius,48,32),MAT.sky);
+  grp.add(dome);grp.userData.dome=dome;
+  const earth=new THREE.Mesh(new THREE.SphereGeometry(21,48,32),MAT.earth);
+  earth.position.set(-88,56,-262);earth.rotation.z=0.41;
+  grp.add(earth);grp.userData.earth=earth;
+  const glow=new THREE.Sprite(new THREE.SpriteMaterial({map:makeGlowTexture(),
+    blending:THREE.AdditiveBlending,depthWrite:false,transparent:true}));
+  glow.position.copy(earth.position);glow.scale.set(86,86,1);
+  grp.add(glow);
+  return grp;
+}
+
+/* --- radio telescope dish (parabolic lathe + yoke + feed) --- */
+function buildRadioDish(size){
+  const grp=new THREE.Group();
+  const ped=new THREE.Mesh(new THREE.CylinderGeometry(0.55*size,0.8*size,2.6*size,10),MAT.hullGray);
+  ped.position.y=1.3*size;grp.add(ped);
+  const base=new THREE.Mesh(new THREE.CylinderGeometry(1.15*size,1.3*size,0.35*size,12),MAT.metalDark);
+  base.position.y=0.18*size;grp.add(base);
+  const head=new THREE.Group();head.position.y=2.7*size;grp.add(head);
+  const fork=new THREE.Mesh(new THREE.BoxGeometry(0.35*size,0.9*size,1.6*size),MAT.metalDark);
+  fork.position.y=0.3*size;head.add(fork);
+  const tilt=new THREE.Group();tilt.position.y=0.75*size;head.add(tilt);
+  const pts=[];const R=2.5*size,depth=0.85*size;
+  for(let i=0;i<=14;i++){const r=(i/14)*R;pts.push(new THREE.Vector2(r,(r*r)/(R*R)*depth));}
+  const dish=new THREE.Mesh(new THREE.LatheGeometry(pts,26),MAT.dish);
+  tilt.add(dish);
+  const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.22*size,0.3*size,0.5*size,8),MAT.metalDark);
+  hub.position.y=0.1*size;tilt.add(hub);
+  const focus=new THREE.Vector3(0,depth+1.55*size,0),up=new THREE.Vector3(0,1,0);
+  for(let i=0;i<3;i++){                              // feed tripod struts
+    const a=i/3*Math.PI*2;
+    const rim=new THREE.Vector3(Math.cos(a)*R*0.82,depth*0.72,Math.sin(a)*R*0.82);
+    const dir=focus.clone().sub(rim);
+    const strut=new THREE.Mesh(new THREE.CylinderGeometry(0.03*size,0.03*size,dir.length(),6),MAT.metalDark);
+    strut.position.copy(rim).lerp(focus,0.5);
+    strut.quaternion.setFromUnitVectors(up,dir.normalize());
+    tilt.add(strut);
+  }
+  const feed=new THREE.Mesh(new THREE.ConeGeometry(0.22*size,0.5*size,8),MAT.gold);
+  feed.position.y=depth+1.7*size;feed.rotation.x=Math.PI;tilt.add(feed);
+  tilt.rotation.x=-0.75;                             // aim up at the sky
+  grp.userData={head,tilt,phase:rr(0,6.28)};
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- domed optical telescope, shutter slit open to the stars --- */
+function buildObservatory(){
+  const grp=new THREE.Group();
+  const drum=new THREE.Mesh(new THREE.CylinderGeometry(4.3,4.6,4.2,24),MAT.hullWhite);
+  drum.position.y=2.1;grp.add(drum);
+  const band=new THREE.Mesh(new THREE.CylinderGeometry(4.42,4.42,0.5,24),MAT.metalDark);
+  band.position.y=4.05;grp.add(band);
+  const domeGrp=new THREE.Group();domeGrp.position.y=4.3;grp.add(domeGrp);
+  const slit=0.8;                                    // shutter opening width (radians)
+  const shell=new THREE.Mesh(
+    new THREE.SphereGeometry(4.25,36,18,slit/2,Math.PI*2-slit,0,Math.PI/2),MAT.hullWhite);
+  domeGrp.add(shell);
+  const interior=new THREE.Mesh(new THREE.SphereGeometry(4.05,24,12,0,Math.PI*2,0,Math.PI/2),MAT.domeSlit);
+  domeGrp.add(interior);
+  for(const sgn of[-1,1]){                           // slid-open shutter leaves beside the gap
+    const leaf=new THREE.Mesh(
+      new THREE.SphereGeometry(4.4,14,12,sgn>0?slit/2:Math.PI*2-slit/2-0.55,0.55,0.06,Math.PI/2-0.06),
+      MAT.hullGray);
+    domeGrp.add(leaf);
+    const rail=new THREE.Mesh(new THREE.TorusGeometry(4.3,0.09,8,20,Math.PI/2),MAT.metalDark);
+    rail.rotation.y=Math.PI-sgn*slit*0.62;domeGrp.add(rail);   // meridian arcs beside the gap
+  }
+  const scopePivot=new THREE.Group();scopePivot.position.y=0.4;domeGrp.add(scopePivot);
+  const tube=new THREE.Mesh(new THREE.CylinderGeometry(0.5,0.62,5.2,18),MAT.hullGray);
+  tube.position.y=2.2;scopePivot.add(tube);
+  const lens=new THREE.Mesh(new THREE.CircleGeometry(0.46,18),
+    new THREE.MeshStandardMaterial({color:0x000000,emissive:0x9fd0ff,emissiveIntensity:1.6}));
+  lens.position.y=4.81;lens.rotation.x=-Math.PI/2;scopePivot.add(lens);
+  scopePivot.rotation.z=0.85;                        // lean toward -X, out through the open slit
+  const door=new THREE.Mesh(new THREE.BoxGeometry(1.5,2.3,0.25),MAT.metalDark);
+  door.position.set(0,1.15,4.5);grp.add(door);
+  const doorGlow=new THREE.Mesh(new THREE.PlaneGeometry(1.1,0.25),MAT.porthole);
+  doorGlow.position.set(0,2.5,4.64);grp.add(doorGlow);
+  for(let i=0;i<8;i++){                              // drum panel ribs
+    const rib=new THREE.Mesh(new THREE.BoxGeometry(0.16,4.0,0.16),MAT.hullGray);
+    const a=i/8*Math.PI*2+0.2;
+    rib.position.set(Math.sin(a)*4.5,2.1,Math.cos(a)*4.5);rib.rotation.y=a;grp.add(rib);
+  }
+  grp.userData.domeGrp=domeGrp;
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- low habitat module with lit portholes, airlock and roof gear --- */
+function buildHabitat(){
+  const grp=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.CapsuleGeometry(2.3,7.5,8,20),MAT.hullWhite);
+  body.rotation.z=Math.PI/2;body.position.y=2.15;grp.add(body);
+  const skirt=new THREE.Mesh(new THREE.BoxGeometry(9.6,1.15,4.4),MAT.metalDark);
+  skirt.position.y=0.55;grp.add(skirt);
+  for(const sz of[-1,1])for(let i=0;i<4;i++){        // glowing portholes, both flanks
+    const x=-3+i*2;
+    const rim=new THREE.Mesh(new THREE.TorusGeometry(0.42,0.09,8,18),MAT.metalDark);
+    rim.position.set(x,2.45,sz*2.28);rim.rotation.x=sz*0.18;grp.add(rim);
+    const glass=new THREE.Mesh(new THREE.CircleGeometry(0.38,18),MAT.porthole);
+    glass.position.set(x,2.45,sz*2.31);glass.rotation.y=sz>0?0:Math.PI;
+    glass.rotation.x=sz*0.18;grp.add(glass);
+  }
+  const lock=new THREE.Mesh(new THREE.CylinderGeometry(1.25,1.25,2.4,14),MAT.hullGray);
+  lock.rotation.x=Math.PI/2;lock.position.set(5.4,1.6,0);lock.rotation.z=Math.PI/2;grp.add(lock);
+  const hatch=new THREE.Mesh(new THREE.CircleGeometry(0.85,16),MAT.metalDark);
+  hatch.position.set(6.62,1.6,0);hatch.rotation.y=Math.PI/2;grp.add(hatch);
+  const ramp=new THREE.Mesh(new THREE.BoxGeometry(2.6,0.14,1.9),MAT.hullGray);
+  ramp.position.set(8.05,0.42,0);ramp.rotation.z=-0.32;grp.add(ramp);
+  for(let i=0;i<3;i++){                              // roof vents + pipes
+    const vent=new THREE.Mesh(new THREE.CylinderGeometry(0.24,0.3,0.8,10),MAT.hullGray);
+    vent.position.set(-2.6+i*2.2,4.55,rr(-0.5,0.5));grp.add(vent);
+  }
+  const pipe=new THREE.Mesh(new THREE.CylinderGeometry(0.12,0.12,8.6,8),MAT.gold);
+  pipe.rotation.z=Math.PI/2;pipe.position.set(0,3.9,1.55);grp.add(pipe);
+  const beacon=new THREE.Mesh(new THREE.SphereGeometry(0.18,10,8),
+    new THREE.MeshStandardMaterial({color:0x220000,emissive:PAL.beaconRed,emissiveIntensity:2}));
+  const bpost=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1.1,6),MAT.metalDark);
+  bpost.position.set(-4.4,4.9,0);beacon.position.set(-4.4,5.5,0);
+  grp.add(bpost,beacon);grp.userData.beacon=beacon;
+  const tank=new THREE.Mesh(new THREE.CapsuleGeometry(0.7,1.8,6,12),MAT.hullGray);
+  tank.rotation.z=Math.PI/2;tank.position.set(-1.5,0.85,-3.4);grp.add(tank);
+  const tank2=tank.clone();tank2.position.set(1.6,0.85,-3.4);grp.add(tank2);
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- parked rover with open-wire wheels --- */
+function buildRoverWheel(){
+  const w=new THREE.Group();
+  const tire=new THREE.Mesh(new THREE.TorusGeometry(0.62,0.085,10,22),MAT.metalDark);
+  w.add(tire);
+  for(let i=0;i<6;i++){                              // wire spokes straight through hub
+    const sp=new THREE.Mesh(new THREE.CylinderGeometry(0.022,0.022,1.22,5),MAT.hullGray);
+    sp.rotation.z=i/6*Math.PI;w.add(sp);
+  }
+  const hub=new THREE.Mesh(new THREE.CylinderGeometry(0.14,0.14,0.2,10),MAT.gold);
+  hub.rotation.x=Math.PI/2;w.add(hub);
+  return w;
+}
+function buildRover(){
+  const grp=new THREE.Group();
+  const deck=new THREE.Mesh(new THREE.BoxGeometry(3.6,0.16,1.9),MAT.hullGray);
+  deck.position.y=0.95;grp.add(deck);
+  for(const [fx,fz] of[[1.35,0.95],[1.35,-0.95],[-1.35,0.95],[-1.35,-0.95]]){
+    const arm=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.1,0.34),MAT.metalDark);
+    arm.position.set(fx,0.82,fz*0.82);arm.rotation.x=fz>0?0.5:-0.5;grp.add(arm);
+    const wheel=buildRoverWheel();
+    wheel.position.set(fx,0.62,fz);wheel.rotation.y=fx>0?0.22:0;   // front wheels steered
+    grp.add(wheel);
+    const fender=new THREE.Mesh(new THREE.TorusGeometry(0.8,0.1,8,14,Math.PI),MAT.gold);
+    fender.position.set(fx,0.62,fz);grp.add(fender); // gold arc over each wire wheel
+  }
+  for(const sx of[-0.55,0.35]){                      // two mesh seats
+    const seat=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.1,0.9),MAT.metalDark);
+    seat.position.set(sx,1.12,0);grp.add(seat);
+    const back=new THREE.Mesh(new THREE.BoxGeometry(0.7,0.75,0.08),MAT.metalDark);
+    back.position.set(sx-0.32,1.5,0);back.rotation.z=0.16;grp.add(back);
+  }
+  const console_=new THREE.Mesh(new THREE.BoxGeometry(0.3,0.5,1.1),MAT.hullWhite);
+  console_.position.set(1.35,1.3,0);console_.rotation.z=-0.35;grp.add(console_);
+  const screen=new THREE.Mesh(new THREE.PlaneGeometry(0.3,0.5),
+    new THREE.MeshStandardMaterial({color:0x000000,emissive:PAL.beaconGreen,emissiveIntensity:0.9}));
+  screen.position.set(1.5,1.42,0);screen.rotation.y=Math.PI/2;screen.rotation.x=0;grp.add(screen);
+  const dishPts=[];for(let i=0;i<=8;i++){const r=i/8*0.55;dishPts.push(new THREE.Vector2(r,r*r*0.9));}
+  const hg=new THREE.Mesh(new THREE.LatheGeometry(dishPts,16),MAT.gold);
+  hg.position.set(-1.5,1.9,0.55);hg.rotation.x=0.8;grp.add(hg);
+  const hgPost=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,0.85,6),MAT.metalDark);
+  hgPost.position.set(-1.5,1.4,0.55);grp.add(hgPost);
+  const whip=new THREE.Mesh(new THREE.CylinderGeometry(0.015,0.008,1.6,5),MAT.hullGray);
+  whip.position.set(-1.6,1.9,-0.6);grp.add(whip);grp.userData.whip=whip;
+  for(const hz of[-0.55,0.55]){
+    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.09,8,8),
+      new THREE.MeshStandardMaterial({color:0x111111,emissive:0xfff2cc,emissiveIntensity:1.8}));
+    lamp.position.set(1.85,1.0,hz);grp.add(lamp);
+  }
+  const box=new THREE.Mesh(new THREE.BoxGeometry(0.8,0.5,1.5),MAT.hullWhite);
+  box.position.set(-1.2,1.28,0);grp.add(box);
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- comm antenna mast with blinking tip --- */
+function buildAntennaMast(h){
+  const grp=new THREE.Group();
+  for(let i=0;i<3;i++){                              // tripod feet
+    const a=i/3*Math.PI*2;
+    const leg=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,2.2,6),MAT.metalDark);
+    leg.position.set(Math.cos(a)*0.75,0.95,Math.sin(a)*0.75);
+    leg.rotation.z=Math.cos(a)*0.6;leg.rotation.x=-Math.sin(a)*0.6;grp.add(leg);
+  }
+  const mast=new THREE.Mesh(new THREE.CylinderGeometry(0.07,0.11,h,8),MAT.hullGray);
+  mast.position.y=h/2+0.4;grp.add(mast);
+  for(let i=1;i<=3;i++){                             // dipole crossbars
+    const bar=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.03,1.5-(i*0.3),6),MAT.metalDark);
+    bar.rotation.z=Math.PI/2;bar.rotation.y=i*0.7;bar.position.y=h*0.3*i+0.6;grp.add(bar);
+  }
+  const tip=new THREE.Mesh(new THREE.SphereGeometry(0.14,10,8),
+    new THREE.MeshStandardMaterial({color:0x220000,emissive:PAL.beaconRed,emissiveIntensity:2.5}));
+  tip.position.y=h+0.5;grp.add(tip);
+  grp.userData={tip,phase:rr(0,6.28)};
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- tilted solar array wing --- */
+function buildSolarArray(){
+  const grp=new THREE.Group();
+  for(const px of[-2.1,2.1]){
+    const post=new THREE.Mesh(new THREE.CylinderGeometry(0.09,0.12,1.5,8),MAT.metalDark);
+    post.position.set(px,0.75,0);grp.add(post);
+  }
+  const wing=new THREE.Group();wing.position.y=1.9;wing.rotation.x=-0.62;grp.add(wing);
+  const panel=new THREE.Mesh(new THREE.BoxGeometry(5.6,0.1,2.8),MAT.hullGray);
+  wing.add(panel);
+  const cells=new THREE.Mesh(new THREE.PlaneGeometry(5.4,2.6),MAT.solar);
+  cells.rotation.x=-Math.PI/2;cells.position.y=0.056;wing.add(cells);
+  const cells2=cells.clone();cells2.rotation.x=Math.PI/2;cells2.position.y=-0.056;wing.add(cells2);
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- supply depot: crates, gold-foil canisters --- */
+function buildCargoDepot(){
+  const grp=new THREE.Group();
+  const crateGeo=new THREE.BoxGeometry(1,1,1);
+  const layout=[[0,0.45,0,0.9,0],[1.1,0.4,0.2,0.8,0.4],[0.5,1.25,0.1,0.7,0.2],
+                [-1.2,0.35,0.5,0.7,0.9],[-0.3,0.3,1.3,0.6,1.2]];
+  for(const [x,y,z,s,ry] of layout){
+    const crate=new THREE.Mesh(crateGeo,pick([MAT.hullWhite,MAT.hullGray,MAT.gold]));
+    crate.position.set(x,y,z);crate.scale.setScalar(s);crate.rotation.y=ry;grp.add(crate);
+  }
+  for(let i=0;i<3;i++){
+    const can=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.32,1.0,12),MAT.gold);
+    can.position.set(2.1,0.5,-0.7+i*0.75);grp.add(can);
+  }
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- deployed science package: seismometer, retroreflector, sensor mast --- */
+function buildSciencePack(){
+  const grp=new THREE.Group();
+  const plate=new THREE.Mesh(new THREE.CylinderGeometry(0.9,1.0,0.12,10),MAT.metalDark);
+  plate.position.y=0.06;grp.add(plate);
+  const seismo=new THREE.Mesh(new THREE.SphereGeometry(0.5,16,10,0,Math.PI*2,0,Math.PI/2),MAT.gold);
+  seismo.position.y=0.12;grp.add(seismo);
+  const retro=new THREE.Mesh(new THREE.BoxGeometry(0.9,0.65,0.1),MAT.hullWhite);
+  retro.position.set(1.6,0.55,0.2);retro.rotation.x=-0.5;retro.rotation.y=0.4;grp.add(retro);
+  const facets=new THREE.Mesh(new THREE.PlaneGeometry(0.8,0.55),
+    new THREE.MeshStandardMaterial({color:0x111122,metalness:1,roughness:0.05,emissive:0x24304a,emissiveIntensity:0.5}));
+  facets.position.set(1.6,0.575,0.253);facets.rotation.x=-0.5;facets.rotation.y=0.4;grp.add(facets);
+  const legs=new THREE.Mesh(new THREE.ConeGeometry(0.42,0.5,4,1,true),MAT.metalDark);
+  legs.position.set(1.6,0.25,0.2);grp.add(legs);
+  const sensor=new THREE.Mesh(new THREE.CylinderGeometry(0.03,0.05,1.6,6),MAT.hullGray);
+  sensor.position.set(-1.2,0.8,-0.4);grp.add(sensor);
+  const sensorTip=new THREE.Mesh(new THREE.BoxGeometry(0.22,0.22,0.22),MAT.gold);
+  sensorTip.position.set(-1.2,1.65,-0.4);grp.add(sensorTip);
+  grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+  return grp;
+}
+
+/* --- octagonal landing pad, chase-blinking perimeter beacons --- */
+function buildLandingPad(){
+  const grp=new THREE.Group();
+  const pad=new THREE.Mesh(new THREE.CylinderGeometry(6.2,6.8,0.35,8),MAT.metalDark);
+  pad.position.y=0.17;grp.add(pad);
+  const scorch=new THREE.Mesh(new THREE.CircleGeometry(3.1,20),
+    new THREE.MeshStandardMaterial({color:0x17171a,roughness:1}));
+  scorch.rotation.x=-Math.PI/2;scorch.position.y=0.36;grp.add(scorch);
+  for(const a of[0.35,-0.35]){                       // painted touchdown cross
+    const bar=new THREE.Mesh(new THREE.BoxGeometry(4.6,0.03,0.5),MAT.hullWhite);
+    bar.position.y=0.365;bar.rotation.y=a+Math.PI/4;grp.add(bar);
+  }
+  const lights=[];
+  for(let i=0;i<8;i++){
+    const a=i/8*Math.PI*2+Math.PI/8;
+    const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.16,8,8),
+      new THREE.MeshStandardMaterial({color:0x001100,emissive:PAL.beaconGreen,emissiveIntensity:1.5}));
+    lamp.position.set(Math.cos(a)*5.7,0.5,Math.sin(a)*5.7);grp.add(lamp);lights.push(lamp);
+  }
+  grp.userData.lights=lights;
+  pad.castShadow=pad.receiveShadow=true;
+  return grp;
+}
+
+/* --- sagging power cable strung between two world points --- */
+function addCableRun(ax,az,bx,bz,lift){
+  const a=new THREE.Vector3(ax,lift,az),b=new THREE.Vector3(bx,lift,bz);
+  const mid=a.clone().lerp(b,0.5);mid.y=Math.max(0.25,lift-0.55);
+  const curve=new THREE.QuadraticBezierCurve3(a,mid,b);
+  const cable=new THREE.Mesh(new THREE.TubeGeometry(curve,16,0.05,6),MAT.metalDark);
+  cable.castShadow=true;scene.add(cable);
+}
+
+/* --- disturbed regolith: rover tracks + boot prints (instanced decals) --- */
+function buildTrails(){
+  const grp=new THREE.Group();
+  const m=new THREE.Matrix4(),q=new THREE.Quaternion(),e=new THREE.Euler();
+  const bez=(a,b,c,t)=>{const u=1-t;return[u*u*a[0]+2*u*t*b[0]+t*t*c[0],u*u*a[1]+2*u*t*b[1]+t*t*c[1]];};
+  const A=[9.5,17],B=[16,30],C=[30,32];              // rover drove in from the east
+  const dashes=new THREE.InstancedMesh(new THREE.PlaneGeometry(0.62,0.4),MAT.track,120);
+  let di=0;
+  for(let i=0;i<60;i++){
+    const t=i/59,[x,z]=bez(A,B,C,t),[x2,z2]=bez(A,B,C,Math.min(1,t+0.02));
+    const angY=Math.atan2(x2-x,z2-z);
+    for(const side of[-1,1]){
+      const ox=Math.cos(angY)*0.95*side,oz=-Math.sin(angY)*0.95*side;
+      e.set(-Math.PI/2,angY,0,'YXZ');q.setFromEuler(e);
+      m.compose(new THREE.Vector3(x+ox,0.025,z+oz),q,new THREE.Vector3(1,1,1));
+      dashes.setMatrixAt(di++,m);
+    }
+  }
+  dashes.receiveShadow=true;grp.add(dashes);
+  const prints=new THREE.InstancedMesh(new THREE.CircleGeometry(0.26,10),MAT.print,96);
+  let pi=0;
+  const walk=(x0,z0,x1,z1,steps)=>{
+    for(let i=0;i<steps&&pi<96;i++){
+      const t=i/(steps-1),x=x0+(x1-x0)*t+rr(-0.15,0.15),z=z0+(z1-z0)*t+rr(-0.15,0.15);
+      const angY=Math.atan2(x1-x0,z1-z0),side=(i%2?1:-1);
+      e.set(-Math.PI/2,angY,0,'YXZ');q.setFromEuler(e);
+      m.compose(new THREE.Vector3(x+Math.cos(angY)*0.24*side,0.03,z-Math.sin(angY)*0.24*side),
+        q,new THREE.Vector3(1,0.5,1));
+      prints.setMatrixAt(pi++,m);
+    }
+  };
+  walk(6.2,2.5,13,-6.5,26);                          // habitat -> observatory
+  walk(-1.5,2.5,-15.5,-4,30);                        // habitat -> dish farm
+  walk(4,4.5,8.2,12.5,20);                           // habitat -> rover
+  prints.count=pi;prints.receiveShadow=true;grp.add(prints);
+  return grp;
+}
+
+/* ================= ASSEMBLY / LAYOUT ================= */
+scene.add(buildTerrain());
+const sky=buildSky();scene.add(sky);
+
+const dishes=[];
+const dishSpots=[[-17,-9,1.15],[-24,2,1.0],[-13.5,3.5,0.82]];
+for(const [x,z,s] of dishSpots){
+  const d=buildRadioDish(s);d.position.set(x,0,z);d.rotation.y=rr(0,6.28);
+  scene.add(d);dishes.push(d);
+}
+const observatory=buildObservatory();
+observatory.position.set(14.5,0,-11);observatory.rotation.y=1.9;scene.add(observatory);
+
+const habitat=buildHabitat();
+habitat.position.set(0,0,5.5);habitat.rotation.y=0.12;scene.add(habitat);
+
+const rover=buildRover();
+rover.position.set(8.6,0,14);rover.rotation.y=2.35;scene.add(rover);
+
+const masts=[];
+const mastSpots=[[-6,-16,6.5],[22,4,5],[-26,-14,7.5]];
+for(const [x,z,h] of mastSpots){
+  const mst=buildAntennaMast(h);mst.position.set(x,0,z);mst.rotation.y=rr(0,6.28);
+  scene.add(mst);masts.push(mst);
+}
+const arrayA=buildSolarArray();arrayA.position.set(-3,0,-9);arrayA.rotation.y=0.15;scene.add(arrayA);
+const arrayB=buildSolarArray();arrayB.position.set(3.6,0,-9.6);arrayB.rotation.y=0.1;scene.add(arrayB);
+
+const depot=buildCargoDepot();depot.position.set(-8.5,0,10.5);depot.rotation.y=0.5;scene.add(depot);
+const science=buildSciencePack();science.position.set(-9,0,-17);science.rotation.y=1.1;scene.add(science);
+const pad=buildLandingPad();pad.position.set(28,0,-22);scene.add(pad);
+addCableRun(-3,-7.2,-1.5,1.2,1.6);                   // solar arrays -> habitat bus
+addCableRun(3.6,-7.8,1.5,1.2,1.6);
+addCableRun(-13.5,3.5,-4.6,4.6,1.2);                 // dish farm -> habitat
+addCableRun(14.5,-11,4.8,3.2,1.3);                   // observatory -> habitat
+scene.add(buildTrails());
+
+/* ================= LIGHTING RIG ================= */
+const sun=new THREE.DirectionalLight(PAL.sunColor,3.2);   // harsh airless key light
+sun.position.set(58,34,26);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left=-52;sun.shadow.camera.right=52;
+sun.shadow.camera.top=52;sun.shadow.camera.bottom=-52;
+sun.shadow.camera.near=5;sun.shadow.camera.far=200;
+sun.shadow.bias=-0.0006;
+scene.add(sun);
+const earthFill=new THREE.DirectionalLight(PAL.earthLight,0.55);   // cool blue Earthlight
+earthFill.position.set(-88,84,-268);
+scene.add(earthFill);
+const hemi=new THREE.HemisphereLight(0x2c3350,0x0b0b0d,0.4);       // starlit fill
+scene.add(hemi);
+const yardLamp=new THREE.PointLight(0xffd9a0,10,26,2);             // warm spill from habitat
+yardLamp.position.set(0,4,5.5);
+scene.add(yardLamp);
+
+/* ================= ANIMATION LOOP ================= */
+const clock=new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t=clock.getElapsedTime();
+  for(let i=0;i<dishes.length;i++){                  // slow sky-survey sweep
+    const u=dishes[i].userData;
+    u.head.rotation.y=Math.sin(t*0.07+u.phase)*0.7;
+    u.tilt.rotation.x=-0.75+Math.sin(t*0.05+u.phase*1.7)*0.14;
+  }
+  for(const mst of masts){                           // blinking antenna tips
+    const u=mst.userData;
+    u.tip.material.emissiveIntensity=1.2+Math.max(0,Math.sin(t*2.2+u.phase))**8*3.5;
+  }
+  habitat.userData.beacon.material.emissiveIntensity=1+Math.max(0,Math.sin(t*1.6))**6*3;
+  const padLights=pad.userData.lights;               // perimeter chase sequence
+  for(let i=0;i<padLights.length;i++){
+    padLights[i].material.emissiveIntensity=0.6+Math.max(0,Math.sin(t*2-i*0.785))**4*2.6;
+  }
+  observatory.userData.domeGrp.rotation.y=Math.sin(t*0.03)*0.5-0.2;  // dome tracking creep
+  sky.userData.earth.rotation.y=t*0.012;             // Earth turning, sky drifting
+  sky.userData.dome.rotation.y=t*0.0015;
+  rover.userData.whip.rotation.z=Math.sin(t*1.3)*0.06;
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ================= RESIZE ================= */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

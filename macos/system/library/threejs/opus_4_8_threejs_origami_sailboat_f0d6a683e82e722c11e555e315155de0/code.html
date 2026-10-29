@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Origami Sailboat</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #16181c; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #8a93a3; letter-spacing: .04em; pointer-events: none; user-select: none;
+    opacity: .75;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">drag to orbit · scroll to zoom · one sheet, folded</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const V3 = THREE.Vector3;
+
+/* ---------------------------------------------------------------- Renderer */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* -------------------------------------------------------------------- Scene */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181c);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------- Camera */
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.6, 2.7, 5.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 3;
+controls.maxDistance = 20;
+controls.target.set(0, 0.55, 0);
+
+/* ----------------------------------------------------------------- Lighting */
+const hemi = new THREE.HemisphereLight(0xbcd6ff, 0x2a2a2a, 0.40);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff5e6, 1.7);
+key.position.set(5, 8, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -4;
+key.shadow.camera.right = 4;
+key.shadow.camera.top = 4;
+key.shadow.camera.bottom = -4;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8ff, 0.35);
+fill.position.set(-6, 3, -2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 0.6);
+rim.position.set(-3, 4, -6);
+scene.add(rim);
+
+/* -------------------------------------------------------- Paper gradient */
+const Y_LOW = -0.34, Y_HIGH = 1.95;
+const cLow = new THREE.Color(0xffffff);   // white (bottom)
+const cHigh = new THREE.Color(0x86c5f0);  // sky-blue (top)
+function gradAt(y) {
+  let t = (y - Y_LOW) / (Y_HIGH - Y_LOW);
+  t = Math.min(1, Math.max(0, t));
+  return cLow.clone().lerp(cHigh, t);
+}
+
+const boat = new THREE.Group();
+
+/* ---------------------------------------------------------------- Hull body
+   An angular, folded-paper hull: a bottom keel ridge, a mid-side chine
+   crease, and an open gunwale rim, pinched to sharp raised points fore/aft. */
+const stations = [
+  { tip: true,  z:  1.65, tipY: 0.60 },
+  { z:  1.05, keelY: -0.16, chineY: -0.02, gunY: 0.30, halfW: 0.42, chineW: 0.26 },
+  { z:  0.45, keelY: -0.28, chineY: -0.10, gunY: 0.16, halfW: 0.62, chineW: 0.42 },
+  { z: -0.20, keelY: -0.30, chineY: -0.10, gunY: 0.14, halfW: 0.66, chineW: 0.44 },
+  { z: -0.85, keelY: -0.22, chineY: -0.02, gunY: 0.24, halfW: 0.55, chineW: 0.36 },
+  { z: -1.45, keelY: -0.10, chineY:  0.08, gunY: 0.40, halfW: 0.34, chineW: 0.20 },
+  { tip: true,  z: -1.85, tipY: 0.66 },
+];
+
+const P = stations.map(s => {
+  if (s.tip) return { tip: true, pt: new V3(0, s.tipY, s.z) };
+  return {
+    tip: false,
+    keel:   new V3(0, s.keelY, s.z),
+    chineP: new V3(-s.chineW, s.chineY, s.z),
+    chineS: new V3( s.chineW, s.chineY, s.z),
+    gunP:   new V3(-s.halfW, s.gunY, s.z),
+    gunS:   new V3( s.halfW, s.gunY, s.z),
+  };
+});
+
+const hPos = [], hCol = [];
+function pushV(v) {
+  hPos.push(v.x, v.y, v.z);
+  const c = gradAt(v.y);
+  hCol.push(c.r, c.g, c.b);
+}
+function tri(a, b, c) { pushV(a); pushV(b); pushV(c); }
+function quad(a, b, c, d) { tri(a, b, c); tri(a, c, d); }
+
+for (let i = 0; i < P.length - 1; i++) {
+  const s0 = P[i], s1 = P[i + 1];
+  if (!s0.tip && !s1.tip) {
+    // port panels
+    quad(s0.keel,   s0.chineP, s1.chineP, s1.keel);
+    quad(s0.chineP, s0.gunP,   s1.gunP,   s1.chineP);
+    // starboard panels
+    quad(s0.keel,   s1.keel,   s1.chineS, s0.chineS);
+    quad(s0.chineS, s1.chineS, s1.gunS,   s0.gunS);
+  } else if (s0.tip && !s1.tip) {
+    const t = s0.pt;
+    tri(t, s1.chineP, s1.keel);
+    tri(t, s1.gunP,   s1.chineP);
+    tri(t, s1.keel,   s1.chineS);
+    tri(t, s1.chineS, s1.gunS);
+  } else if (!s0.tip && s1.tip) {
+    const t = s1.pt;
+    tri(t, s0.keel,   s0.chineP);
+    tri(t, s0.chineP, s0.gunP);
+    tri(t, s0.chineS, s0.keel);
+    tri(t, s0.gunS,   s0.chineS);
+  }
+}
+
+const hullGeo = new THREE.BufferGeometry();
+hullGeo.setAttribute('position', new THREE.Float32BufferAttribute(hPos, 3));
+hullGeo.setAttribute('color', new THREE.Float32BufferAttribute(hCol, 3));
+hullGeo.computeVertexNormals();
+
+const paperMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.9,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  flatShading: true,
+  envMapIntensity: 0.5,
+  polygonOffset: true,
+  polygonOffsetFactor: 1,
+  polygonOffsetUnits: 1,
+});
+
+const hull = new THREE.Mesh(hullGeo, paperMat);
+hull.castShadow = true;
+hull.receiveShadow = true;
+boat.add(hull);
+
+/* ------------------------------------------------------- Hull crease lines
+   thin dark seams sinking into every mountain/valley fold. */
+const linePos = [];
+function seg(a, b) { linePos.push(a.x, a.y, a.z, b.x, b.y, b.z); }
+
+// longitudinal ridge / chine / gunwale lines
+const longKeys = ['keel', 'chineP', 'chineS', 'gunP', 'gunS'];
+for (const k of longKeys) {
+  for (let i = 0; i < P.length - 1; i++) {
+    const a = P[i].tip   ? P[i].pt   : P[i][k];
+    const b = P[i + 1].tip ? P[i + 1].pt : P[i + 1][k];
+    seg(a, b);
+  }
+}
+// per-station transverse fold lines (the facet seams)
+for (const s of P) {
+  if (s.tip) continue;
+  seg(s.keel, s.chineP);
+  seg(s.chineP, s.gunP);
+  seg(s.keel, s.chineS);
+  seg(s.chineS, s.gunS);
+  seg(s.gunP, s.gunS); // thwart fold across the open top
+}
+
+const creaseMat = new THREE.LineBasicMaterial({
+  color: 0x2f4258, transparent: true, opacity: 0.55,
+});
+const creaseGeo = new THREE.BufferGeometry();
+creaseGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
+boat.add(new THREE.LineSegments(creaseGeo, creaseMat));
+
+/* -------------------------------------------------------- Mast and boom
+   slim rolled-paper spars supporting the sail. */
+function makeStrut(a, b, r0, r1, mat) {
+  const dir = new V3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(r1, r0, len, 14);
+  geo.translate(0, len / 2, 0);
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(a);
+  m.quaternion.setFromUnitVectors(new V3(0, 1, 0), dir.clone().normalize());
+  m.castShadow = true;
+  return m;
+}
+
+const sparMat = new THREE.MeshStandardMaterial({
+  color: 0xe4dcc9, roughness: 0.75, metalness: 0.0, envMapIntensity: 0.4,
+});
+
+const mastBottom = new V3(0, -0.14, 0.15);
+const mastTop    = new V3(0,  1.98, 0.15);
+const boomStart  = new V3(0,  0.12, 0.15);
+const clew       = new V3(0,  0.18, -1.18);
+
+boat.add(makeStrut(mastBottom, mastTop, 0.028, 0.014, sparMat));
+boat.add(makeStrut(boomStart, clew, 0.020, 0.014, sparMat));
+
+/* ------------------------------------------------------- Billowing sail
+   a triangular sheet, luff along the mast, filling with wind toward +X. */
+const head = new V3(0, 1.92, 0.15);
+const tack = new V3(0, 0.05, 0.15);
+const NU = 28, NW = 20, AMP = 0.36;
+
+const sPos = [], sCol = [];
+for (let i = 0; i <= NU; i++) {
+  const u = i / NU;
+  const luff  = tack.clone().lerp(head, u);
+  const leech = clew.clone().lerp(head, u);
+  for (let j = 0; j <= NW; j++) {
+    const w = j / NW;
+    const p = luff.clone().lerp(leech, w);
+    const bulge = AMP * Math.sin(Math.PI * w) * Math.cos(u * Math.PI * 0.5);
+    p.x += bulge;
+    sPos.push(p.x, p.y, p.z);
+    const c = gradAt(p.y);
+    sCol.push(c.r, c.g, c.b);
+  }
+}
+const sIdx = [];
+const rw = NW + 1;
+for (let i = 0; i < NU; i++) {
+  for (let j = 0; j < NW; j++) {
+    const a = i * rw + j, b = a + 1, c = a + rw, d = c + 1;
+    sIdx.push(a, c, b, b, c, d);
+  }
+}
+const sailGeo = new THREE.BufferGeometry();
+sailGeo.setAttribute('position', new THREE.Float32BufferAttribute(sPos, 3));
+sailGeo.setAttribute('color', new THREE.Float32BufferAttribute(sCol, 3));
+sailGeo.setIndex(sIdx);
+sailGeo.computeVertexNormals();
+
+const sailMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.85,
+  metalness: 0.0,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.55,
+  polygonOffset: true,
+  polygonOffsetFactor: 1,
+  polygonOffsetUnits: 1,
+});
+const sail = new THREE.Mesh(sailGeo, sailMat);
+sail.castShadow = true;
+boat.add(sail);
+
+/* crisp sail edges (luff, leech, billowed foot) */
+const sailEdge = [];
+function edgePt(i, j) {
+  const idx = (i * rw + j) * 3;
+  return new V3(sPos[idx], sPos[idx + 1], sPos[idx + 2]);
+}
+for (let i = 0; i < NU; i++) { seg(edgePt(i, 0), edgePt(i + 1, 0)); }        // luff
+for (let i = 0; i < NU; i++) { seg(edgePt(i, NW), edgePt(i + 1, NW)); }      // leech
+for (let j = 0; j < NW; j++) { seg(edgePt(0, j), edgePt(0, j + 1)); }        // foot
+// push the freshly-added edge points into their own line object
+const sailEdgeGeo = new THREE.BufferGeometry();
+sailEdgeGeo.setAttribute('position',
+  new THREE.Float32BufferAttribute(linePos.slice(-(NU * 2 + NU * 2 + NW * 2) * 3), 3));
+boat.add(new THREE.LineSegments(sailEdgeGeo, creaseMat.clone()));
+
+scene.add(boat);
+
+/* ------------------------------------------------------- Shadow-only ground */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.32 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.34;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* -------------------------------------------------------------------- Loop */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

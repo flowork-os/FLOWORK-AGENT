@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Sky Pirate Airship Deck</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#f3a06a}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ===== 1. CONFIG & PALETTE  —  swashbuckling fantasy ================================= */
+const CFG = {
+  seed: 51720,
+  L: 13.0, B: 3.7, D: 4.4,                  // hull half-length, half-beam, draught
+  sheer: 1.5, bulwark: 1.0, deckFrac: 0.85, // rail height and where the deck meets the hull
+  balloon: new THREE.Vector3(0, 15.2, 0),
+  cloudY: -30, cloudR: 260
+};
+const PAL = {
+  woodTrim: 0x8c5a2e, brass: 0xd7a441, iron: 0x37323c, rope: 0xc9a878,
+  lantern: 0xffc46b, cloud: 0xffd9c2, crate: 0xd8b98a
+};
+
+/* ===== 2. PRNG & GEOMETRY HELPERS  (all randomness is seeded) ======================== */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(CFG.seed);
+const rr = (a, b) => a + (b - a) * rnd();
+const ri = (a, b) => Math.floor(a + (b - a + 1) * rnd());
+const TAU = Math.PI * 2;
+
+/* Lofted quad grid — used for the hull, the deck, the bulwarks and the flag. */
+function gridGeometry(nu, nv, fn) {
+  const g = new THREE.BufferGeometry();
+  const n = (nu + 1) * (nv + 1);
+  const pos = new Float32Array(n * 3), uv = new Float32Array(n * 2), idx = [];
+  for (let i = 0; i <= nu; i++) for (let j = 0; j <= nv; j++) {
+    const k = i * (nv + 1) + j, p = fn(i / nu, j / nv);
+    pos[k * 3] = p.x; pos[k * 3 + 1] = p.y; pos[k * 3 + 2] = p.z;
+    uv[k * 2] = i / nu; uv[k * 2 + 1] = j / nv;
+    if (i < nu && j < nv) idx.push(k, k + 1, k + nv + 2, k, k + nv + 2, k + nv + 1);
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+}
+
+/* Hull surface of revolution-free loft: u runs stern->bow, s runs port->keel->starboard. */
+const taper = u => Math.max(Math.pow(Math.max(0.001, 1 - u * u), 0.45),
+                            u < 0 ? 0.9 * (1 + u * 0.36) : 0);   // full stern, sharp bow
+const sheerY = u => CFG.sheer * u * u * (u > 0 ? 1.35 : 0.8);
+const deckHalf = u => CFG.B * taper(u) * 0.9;
+function hullPoint(u, s) {
+  const a = -1 + 2 * s, t = Math.abs(a), d = CFG.deckFrac, sg = a < 0 ? -1 : 1;
+  const inner = t <= d;
+  const k = inner ? t / d : (t - d) / (1 - d);
+  const w = CFG.B * taper(u) * (inner ? Math.pow(k, 0.62) * 0.9 : 0.9 + 0.1 * k);
+  const y = inner ? -CFG.D * (1 - Math.pow(k, 1.7)) + sheerY(u) : sheerY(u) + CFG.bulwark * k;
+  return new THREE.Vector3(u * CFG.L, y, sg * w);
+}
+
+/* Thin cylinder stretched between two points — ropes, shrouds, spars. */
+function strut(a, b, radius, mat) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = Math.max(0.01, dir.length());
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, len, 6), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
+}
+
+/* ===== 3. PROCEDURAL CANVAS TEXTURES ================================================= */
+const canvas2d = (w, h) => {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return [c, c.getContext('2d')]; };
+
+/* Planking with grain, knots and nail heads; reused for hull, deck, crates. */
+function makeWoodTexture(base, plank, rows) {
+  const [c, g] = canvas2d(512, 512), h = 512 / rows;
+  g.fillStyle = base; g.fillRect(0, 0, 512, 512);
+  for (let r = 0; r < rows; r++) {
+    g.fillStyle = plank[r % plank.length];
+    g.fillRect(0, r * h + 1, 512, h - 2);
+    for (let i = 0; i < 34; i++) {                 // grain streaks
+      g.strokeStyle = `rgba(40,22,10,${rr(0.05, 0.16).toFixed(2)})`;
+      g.lineWidth = rr(0.5, 1.8); g.beginPath();
+      const y = r * h + rr(2, h - 2); g.moveTo(0, y);
+      for (let x = 0; x <= 512; x += 64) g.lineTo(x, y + rr(-2.5, 2.5));
+      g.stroke();
+    }
+    for (let i = 0; i < 3; i++) {                  // knots
+      const kx = rr(20, 492), ky = r * h + h * 0.5;
+      const kg = g.createRadialGradient(kx, ky, 0, kx, ky, rr(4, 9));
+      kg.addColorStop(0, 'rgba(48,26,12,0.65)'); kg.addColorStop(1, 'rgba(48,26,12,0)');
+      g.fillStyle = kg; g.beginPath(); g.arc(kx, ky, 9, 0, TAU); g.fill();
+    }
+    g.fillStyle = 'rgba(30,18,10,0.5)';
+    for (let x = 26; x < 512; x += 84) g.fillRect(x, r * h + 4, 3, 3);   // nail heads
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* Sun-bleached balloon canvas: broad gores, stitched patches, rope seams. */
+function makeBalloonTexture() {
+  const [c, g] = canvas2d(512, 256);
+  g.fillStyle = '#ba4a3e'; g.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 10; i++) {                   // vertical gore panels
+    g.fillStyle = i % 2 ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.10)';
+    g.fillRect(i * 51.2, 0, 51.2, 256);
+  }
+  for (let i = 0; i < 22; i++) {                   // mismatched sail-cloth patches
+    const x = rr(0, 480), y = rr(10, 210), w = rr(26, 74), h = rr(20, 52);
+    g.fillStyle = ['#d8b483', '#a8552f', '#c98a53', '#8f6a4a'][ri(0, 3)];
+    g.globalAlpha = rr(0.55, 0.9); g.fillRect(x, y, w, h); g.globalAlpha = 1;
+    g.strokeStyle = 'rgba(50,28,16,0.75)'; g.setLineDash([5, 5]); g.lineWidth = 1.6;
+    g.strokeRect(x + 2, y + 2, w - 4, h - 4); g.setLineDash([]);
+  }
+  g.fillStyle = 'rgba(60,36,18,0.55)';             // horizontal rope bands
+  for (let i = 0; i < 5; i++) g.fillRect(0, 26 + i * 46, 512, 5);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* Jolly roger: skull and crossed bones on weather-beaten black cloth. */
+function makeJollyRoger() {
+  const [c, g] = canvas2d(256, 160);
+  g.fillStyle = '#141118'; g.fillRect(0, 0, 256, 160);
+  for (let i = 0; i < 60; i++) {
+    g.fillStyle = `rgba(255,255,255,${rr(0.02, 0.07).toFixed(2)})`;
+    g.fillRect(rr(0, 256), rr(0, 160), rr(6, 40), rr(1, 3));
+  }
+  g.save(); g.translate(128, 78);
+  g.strokeStyle = '#efe6d6'; g.lineWidth = 12; g.lineCap = 'round';
+  for (const a of [-0.62, 0.62]) {                 // crossed bones
+    g.save(); g.rotate(a);
+    g.beginPath(); g.moveTo(-64, 26); g.lineTo(64, 26); g.stroke();
+    for (const sx of [-1, 1]) for (const sy of [-1, 1]) {
+      g.beginPath(); g.arc(sx * 68, 26 + sy * 8, 8, 0, TAU); g.fillStyle = '#efe6d6'; g.fill();
+    }
+    g.restore();
+  }
+  g.fillStyle = '#efe6d6';                         // skull
+  g.beginPath(); g.ellipse(0, -12, 40, 36, 0, 0, TAU); g.fill();
+  g.fillRect(-20, 16, 40, 20);
+  g.fillStyle = '#141118';
+  g.beginPath(); g.ellipse(-15, -14, 11, 13, 0, 0, TAU); g.fill();
+  g.beginPath(); g.ellipse(15, -14, 11, 13, 0, 0, TAU); g.fill();
+  g.beginPath(); g.moveTo(0, 2); g.lineTo(-7, 14); g.lineTo(7, 14); g.fill();
+  for (let i = -2; i <= 2; i++) g.fillRect(i * 8 - 2, 20, 4, 14);
+  g.restore();
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* Sunset gradient used for the sky dome and (via PMREM) the brass reflections. */
+function makeSkyTexture() {
+  const [c, g] = canvas2d(64, 256);
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0.00, '#241d5e'); grd.addColorStop(0.30, '#7a3b7a');
+  grd.addColorStop(0.52, '#d4633f'); grd.addColorStop(0.68, '#f7a25c');
+  grd.addColorStop(0.82, '#ffd79a'); grd.addColorStop(1.00, '#c9825f');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function makeGlowSprite() {
+  const [c, g] = canvas2d(64, 64);
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,240,200,1)');
+  grd.addColorStop(0.3, 'rgba(255,190,110,0.6)');
+  grd.addColorStop(1, 'rgba(255,150,80,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* ===== 4. RENDERER / SCENE / CAMERA / CONTROLS ======================================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xf0a878, 0.0042);
+
+const skyTex = makeSkyTexture();
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromEquirectangular(skyTex).texture;
+pmrem.dispose();
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 900);
+camera.position.set(29.3, 22.5, 37.5);           // 3/4 view onto the starboard deck
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 7, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.minDistance = 24; controls.maxDistance = 70;
+controls.minPolarAngle = 0.35; controls.maxPolarAngle = 1.46;
+controls.update();
+
+/* ===== 5. MATERIAL LIBRARY ========================================================== */
+const hullTex = makeWoodTexture('#4a2c17', ['#6d4426', '#5c3820', '#79502e'], 9);
+const deckTex = makeWoodTexture('#8a6136', ['#b8834c', '#a97540', '#c08b52'], 14);
+const balloonTex = makeBalloonTexture();
+const flagTex = makeJollyRoger();
+const glowTex = makeGlowSprite();
+hullTex.repeat.set(4, 2); deckTex.repeat.set(6, 3);
+
+const MAT = {
+  hull: new THREE.MeshStandardMaterial({ map: hullTex, color: 0xffffff, roughness: 0.82,
+    metalness: 0.04, side: THREE.DoubleSide, envMapIntensity: 0.5 }),
+  deck: new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.78, metalness: 0.03,
+    side: THREE.DoubleSide, envMapIntensity: 0.5 }),
+  trim: new THREE.MeshStandardMaterial({ color: PAL.woodTrim, roughness: 0.7, metalness: 0.05 }),
+  timber: new THREE.MeshStandardMaterial({ map: hullTex, roughness: 0.75, metalness: 0.05 }),
+  crate: new THREE.MeshStandardMaterial({ map: deckTex, color: PAL.crate, roughness: 0.85 }),
+  brass: new THREE.MeshStandardMaterial({ color: PAL.brass, roughness: 0.24, metalness: 0.92,
+    envMapIntensity: 1.5 }),
+  iron: new THREE.MeshStandardMaterial({ color: PAL.iron, roughness: 0.5, metalness: 0.75,
+    envMapIntensity: 1.0 }),
+  rope: new THREE.MeshStandardMaterial({ color: PAL.rope, roughness: 0.95, metalness: 0 }),
+  balloon: new THREE.MeshStandardMaterial({ map: balloonTex, roughness: 0.88, metalness: 0.02,
+    envMapIntensity: 0.6 }),
+  flag: new THREE.MeshStandardMaterial({ map: flagTex, roughness: 0.9, side: THREE.DoubleSide }),
+  cloud: new THREE.MeshStandardMaterial({ color: PAL.cloud, roughness: 1, metalness: 0,
+    flatShading: true, emissive: 0x5a2f52, emissiveIntensity: 0.35 }),
+  glass: new THREE.MeshBasicMaterial({ color: 0xffd68a, transparent: true, opacity: 0.92 }),
+  halo: new THREE.SpriteMaterial({ map: glowTex, color: 0xffc070, transparent: true,
+    opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false, fog: false })
+};
+
+/* ===== 6. BUILDERS ================================================================== */
+/* -- wooden hull: lofted planking, deck, transom, stem post, keel fin -- */
+function buildHull() {
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(gridGeometry(56, 26, (u, s) => hullPoint(-1 + 2 * u, s)), MAT.hull);
+  const centre = new THREE.Vector3(-CFG.L - 0.5, sheerY(-1) - CFG.D * 0.5, 0);
+  const transom = new THREE.Mesh(gridGeometry(20, 5, (p, q) =>
+    hullPoint(-1, p).lerp(centre, q * 0.96)), MAT.hull);
+  hull.castShadow = hull.receiveShadow = true;
+  transom.castShadow = transom.receiveShadow = true;
+  g.add(hull);
+  const deck = new THREE.Mesh(gridGeometry(52, 12, (u, v) => {
+    const uu = -0.985 + 1.97 * u;
+    return new THREE.Vector3(uu * CFG.L, sheerY(uu) + 0.04, (-1 + 2 * v) * deckHalf(uu));
+  }), MAT.deck);
+  deck.receiveShadow = true;
+  g.add(transom, deck);
+  const stem = new THREE.Mesh(new THREE.BoxGeometry(0.42, 3.4, 0.34), MAT.timber);
+  stem.position.set(CFG.L - 0.15, sheerY(1) - 1.2, 0);
+  stem.rotation.z = -0.22;
+  const keel = new THREE.Mesh(gridGeometry(28, 1, (u, v) => {  // fin hugging the keel line
+    const uu = -0.94 + 1.88 * u;
+    return new THREE.Vector3(uu * CFG.L, -CFG.D + sheerY(uu) * 0.9 - v * 0.8, 0);
+  }), MAT.hull);
+  const rudder = new THREE.Mesh(new THREE.BoxGeometry(0.3, 2.8, 1.9), MAT.timber);
+  rudder.position.set(-CFG.L - 0.35, -CFG.D + sheerY(-1) + 0.2, 0);
+  for (const m of [stem, keel, rudder]) m.castShadow = true;
+  g.add(stem, keel, rudder);
+  for (let i = 0; i < 9; i++) {                    // rib bands wrapping the hull outside
+    const u = -0.9 + 1.75 * (i / 8);
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(1, 0.05, 5, 20, Math.PI), MAT.trim);
+    rib.scale.set(CFG.B * taper(u) * 1.03, CFG.D * 0.99, 1);
+    rib.position.set(u * CFG.L, sheerY(u), 0);
+    rib.rotation.set(Math.PI, Math.PI / 2, 0);     // half hoop standing in the YZ plane
+    rib.castShadow = true;
+    g.add(rib);
+  }
+  const bowsprit = strut(new THREE.Vector3(CFG.L - 0.4, sheerY(1) + 0.4, 0),
+                         new THREE.Vector3(CFG.L + 4.6, sheerY(1) + 1.8, 0), 0.16, MAT.timber);
+  bowsprit.castShadow = true;
+  g.add(bowsprit);
+  return g;
+}
+
+/* -- patched gas envelope with rib bands, tail fins and suspension rigging -- */
+function buildBalloon() {
+  const g = new THREE.Group();
+  const env = new THREE.Mesh(new THREE.SphereGeometry(1, 44, 28), MAT.balloon);
+  env.scale.set(11.2, 5.4, 5.4);
+  env.castShadow = env.receiveShadow = true;
+  g.add(env);
+  const nose = new THREE.Mesh(new THREE.ConeGeometry(0.9, 2.6, 14), MAT.trim);
+  nose.position.set(12.1, 0, 0); nose.rotation.z = -Math.PI / 2;
+  nose.castShadow = true;
+  g.add(nose);
+  for (let i = 0; i < 5; i++) {                    // reinforcing hoops
+    const x = -7.5 + i * 3.75;
+    const k = Math.sqrt(Math.max(0.02, 1 - (x / 11.2) ** 2));
+    const hoop = new THREE.Mesh(new THREE.TorusGeometry(5.42 * k, 0.11, 6, 30), MAT.trim);
+    hoop.position.x = x; hoop.rotation.y = Math.PI / 2;
+    hoop.castShadow = true;
+    g.add(hoop);
+  }
+  for (let i = 0; i < 3; i++) {                    // canvas tail fins on the taper
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(3.6, 2.4, 0.18), MAT.trim);
+    fin.position.set(-9.2, 0, 0);
+    fin.rotation.x = (i / 3) * TAU + 0.5;
+    fin.translateY(3.4);
+    fin.castShadow = true;
+    g.add(fin);
+  }
+  return g;
+}
+
+/* -- shrouds, suspension ropes and a boarding rope ladder -- */
+function buildRigging() {
+  const g = new THREE.Group();
+  const B = CFG.balloon;
+  for (let i = 0; i < 12; i++) {                   // envelope-to-hull suspension
+    const u = -0.78 + 1.56 * (i % 6) / 5, side = i < 6 ? 1 : -1;
+    const top = new THREE.Vector3(u * 9.4 + B.x, B.y - 4.4, side * 3.4);
+    const bot = new THREE.Vector3(u * CFG.L * 0.94, sheerY(u) + CFG.bulwark,
+                                  side * CFG.B * taper(u) * 0.99);
+    g.add(strut(top, bot, 0.055, MAT.rope));
+  }
+  for (let i = 0; i < 4; i++) {                    // fore and aft stays
+    const fore = i < 2;
+    const a = new THREE.Vector3(fore ? B.x + 10.2 : B.x - 10.2, B.y - 1.4, 0);
+    const b = new THREE.Vector3(fore ? CFG.L + 4.2 : -CFG.L - 0.3,
+                                fore ? sheerY(1) + 1.7 : sheerY(-1) + 2.4, (i % 2 ? 1 : -1) * 0.9);
+    g.add(strut(a, b, 0.05, MAT.rope));
+  }
+  const lx = -3.2, lz = CFG.B * taper(lx / CFG.L) * 0.98;   // rope ladder to the envelope
+  for (const off of [-0.55, 0.55]) {
+    g.add(strut(new THREE.Vector3(lx + off * 0.2, sheerY(0) + 0.9, lz),
+                new THREE.Vector3(lx + off, B.y - 4.9, lz + 0.5), 0.045, MAT.rope));
+  }
+  for (let i = 0; i < 11; i++) {
+    const f = i / 11;
+    const rung = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.16, 5), MAT.rope);
+    rung.position.set(lx + f * 0.35, sheerY(0) + 1.4 + f * 8.2, lz + f * 0.5);
+    rung.rotation.z = Math.PI / 2;
+    g.add(rung);
+  }
+  return g;
+}
+
+/* -- spoked helm wheel on its binnacle, raised on the quarterdeck -- */
+function buildHelm() {
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.6, 1.7, 0.6), MAT.timber);
+  post.position.y = 0.85; post.castShadow = true;
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.9, 1.1), MAT.timber);
+  box.position.y = 0.45; box.castShadow = true;
+  g.add(post, box);
+  const wheel = new THREE.Group();
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.92, 0.1, 8, 28), MAT.timber);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.32, 12), MAT.brass);
+  hub.rotation.x = Math.PI / 2;
+  wheel.add(rim, hub);
+  for (let i = 0; i < 8; i++) {                    // spokes and grip handles
+    const a = (i / 8) * TAU;
+    const spoke = new THREE.Mesh(new THREE.BoxGeometry(0.11, 1.62, 0.11), MAT.timber);
+    spoke.rotation.z = a;
+    const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.075, 0.06, 0.55, 7), MAT.timber);
+    handle.position.set(Math.sin(a) * 1.18, Math.cos(a) * 1.18, 0);
+    handle.rotation.z = a;
+    spoke.castShadow = handle.castShadow = true;
+    wheel.add(spoke, handle);
+  }
+  wheel.position.set(0, 1.95, 0); wheel.rotation.y = Math.PI / 2;
+  g.add(wheel);
+  helmWheel = wheel;
+  return g;
+}
+
+/* -- brass cannon on a wheeled truck carriage -- */
+function buildCannon() {
+  const g = new THREE.Group();
+  const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.29, 2.5, 16), MAT.brass);
+  barrel.rotation.z = Math.PI / 2; barrel.position.set(0.15, 0.72, 0);
+  const muzzle = new THREE.Mesh(new THREE.TorusGeometry(0.21, 0.055, 6, 14), MAT.brass);
+  muzzle.position.set(1.38, 0.72, 0); muzzle.rotation.y = Math.PI / 2;
+  const breech = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 10), MAT.brass);
+  breech.position.set(-1.14, 0.72, 0);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.12, 10, 8), MAT.brass);
+  knob.position.set(-1.46, 0.72, 0);
+  for (const m of [barrel, muzzle, breech, knob]) { m.castShadow = true; g.add(m); }
+  for (const side of [-1, 1]) {
+    const cheek = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.62, 0.14), MAT.timber);
+    cheek.position.set(-0.15, 0.38, side * 0.3);
+    cheek.castShadow = true;
+    g.add(cheek);
+    for (const dx of [-0.55, 0.5]) {               // truck wheels
+      const w = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 0.12, 12), MAT.iron);
+      w.position.set(dx, 0.22, side * 0.36);
+      w.rotation.x = Math.PI / 2; w.castShadow = true;
+      g.add(w);
+    }
+  }
+  const bed = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.16, 0.78), MAT.timber);
+  bed.position.set(-0.15, 0.14, 0); bed.castShadow = true;
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.17, 10, 8), MAT.iron);
+  ball.position.set(-1.0, 0.17, 0.62); ball.castShadow = true;
+  g.add(bed, ball);
+  return g;
+}
+
+/* -- rum barrels, crates, coiled rope and a strongbox on the deck -- */
+function buildCargo() {
+  const g = new THREE.Group();
+  const barrel = (x, z, s, rot) => {
+    const b = new THREE.Group();
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.4, 1.05, 16), MAT.timber);
+    body.castShadow = body.receiveShadow = true;
+    b.add(body);
+    for (const y of [-0.3, 0.0, 0.3]) {            // iron hoops
+      const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.455, 0.035, 5, 18), MAT.iron);
+      hoop.position.y = y; hoop.rotation.x = Math.PI / 2;
+      b.add(hoop);
+    }
+    b.position.set(x, sheerY(x / CFG.L) + 0.55 * s, z);
+    b.scale.setScalar(s); b.rotation.y = rot;
+    return b;
+  };
+  g.add(barrel(-1.2, 1.9, 1, 0.4), barrel(-2.3, 1.6, 0.92, 1.1), barrel(-1.8, 2.6, 0.86, 2.2));
+  const lying = barrel(3.4, -2.0, 0.95, 0);
+  lying.rotation.set(Math.PI / 2, 0, 0.3);
+  lying.position.y = sheerY(3.4 / CFG.L) + 0.44;
+  g.add(lying);
+  for (const [x, z, s, r] of [[5.4, 1.8, 1.0, 0.3], [6.4, 2.3, 0.75, -0.5],
+                              [5.8, 1.4, 0.62, 0.9], [-5.0, -2.0, 0.9, 2.4]]) {
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(1.25 * s, 1.05 * s, 1.15 * s), MAT.crate);
+    crate.position.set(x, sheerY(x / CFG.L) + 0.55 * s, z);
+    crate.rotation.y = r; crate.castShadow = crate.receiveShadow = true;
+    g.add(crate);
+  }
+  const chest = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.7, 0.9), MAT.timber);
+  chest.position.set(-4.4, sheerY(-4.4 / CFG.L) + 0.4, 1.6); chest.rotation.y = -0.35;
+  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 0.45, 1.4, 12, 1, false, 0, Math.PI),
+    MAT.brass);
+  lid.position.copy(chest.position).setY(chest.position.y + 0.34);
+  lid.rotation.set(0, -0.35, Math.PI / 2);
+  chest.castShadow = lid.castShadow = true;
+  g.add(chest, lid);
+  for (let i = 0; i < 2; i++) {                    // coiled rope
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.36 - i * 0.09, 0.075, 6, 18), MAT.rope);
+    coil.position.set(1.8, sheerY(1.8 / CFG.L) + 0.09 + i * 0.14, -2.3);
+    coil.rotation.x = Math.PI / 2; coil.castShadow = true;
+    g.add(coil);
+  }
+  return g;
+}
+
+/* -- brass spyglass resting in a cradle on the starboard rail -- */
+function buildSpyglass() {
+  const g = new THREE.Group();
+  for (const [r, len, off] of [[0.16, 1.0, 0], [0.13, 0.8, 0.85], [0.1, 0.62, 1.55]]) {
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 14), MAT.brass);
+    t.position.x = off; t.rotation.z = Math.PI / 2; t.castShadow = true;
+    g.add(t);
+  }
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.035, 6, 14), MAT.iron);
+  ring.position.x = 0.5; ring.rotation.y = Math.PI / 2;
+  const cradle = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.14, 0.5), MAT.timber);
+  cradle.position.set(0.6, -0.22, 0);
+  g.add(ring, cradle);
+  return g;
+}
+
+/* -- swinging storm lantern: iron cage, glowing pane, halo sprite -- */
+function buildLantern() {
+  const g = new THREE.Group();
+  const hook = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.028, 5, 12), MAT.iron);
+  hook.position.y = -0.06; hook.rotation.x = Math.PI / 2;
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.28, 0.24, 8), MAT.iron);
+  cap.position.y = -0.42;
+  const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.21, 0.44, 8), MAT.glass);
+  glass.position.y = -0.74;
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.19, 0.12, 8), MAT.iron);
+  base.position.y = -1.0;
+  for (let i = 0; i < 4; i++) {                    // cage bars
+    const a = (i / 4) * TAU;
+    const bar = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.5, 0.035), MAT.iron);
+    bar.position.set(Math.cos(a) * 0.19, -0.74, Math.sin(a) * 0.19);
+    g.add(bar);
+  }
+  const halo = new THREE.Sprite(MAT.halo);
+  halo.scale.setScalar(2.4); halo.position.y = -0.74;
+  cap.castShadow = true;
+  g.add(hook, cap, glass, base, halo);
+  return g;
+}
+
+/* -- jolly roger on a stern pole, its cloth animated every frame -- */
+function buildFlag() {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 6.4, 8), MAT.timber);
+  pole.position.y = 3.2; pole.castShadow = true;
+  const finial = new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), MAT.brass);
+  finial.position.y = 6.45;
+  g.add(pole, finial);
+  const geo = gridGeometry(20, 12, (u, v) =>
+    new THREE.Vector3(u * 3.6, 5.0 + (0.5 - v) * 2.2, 0));
+  flagMesh = new THREE.Mesh(geo, MAT.flag);
+  flagMesh.castShadow = true;
+  flagBase = geo.attributes.position.array.slice();
+  g.add(flagMesh);
+  return g;
+}
+
+/* -- raised quarterdeck with steps and a rail, carrying the helm -- */
+function buildQuarterdeck() {
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(gridGeometry(16, 10, (u, v) => {
+    const uu = -0.97 + 0.42 * u;
+    return new THREE.Vector3(uu * CFG.L, sheerY(uu) + 1.15, (-1 + 2 * v) * deckHalf(uu) * 0.99);
+  }), MAT.deck);
+  floor.castShadow = floor.receiveShadow = true;
+  g.add(floor);
+  for (let i = 0; i < 3; i++) {                    // companion steps down to the waist
+    const step = new THREE.Mesh(new THREE.BoxGeometry(0.52, 0.2, 2.2), MAT.timber);
+    step.position.set(-7.4 + i * 0.55, sheerY(-0.55) + 0.95 - i * 0.32, 0);
+    step.castShadow = step.receiveShadow = true;
+    g.add(step);
+  }
+  for (let i = 0; i < 8; i++) {                    // rail posts along the quarterdeck edge
+    const u = -0.96 + 0.4 * (i / 7);
+    for (const side of [-1, 1]) {
+      const p = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.8, 6), MAT.timber);
+      p.position.set(u * CFG.L, sheerY(u) + 1.55, side * deckHalf(u) * 0.96);
+      p.castShadow = true; g.add(p);
+    }
+  }
+  return g;
+}
+
+/* -- the sea of sunset clouds streaming past beneath the hull -- */
+function buildCloudSea() {
+  const im = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 1), MAT.cloud, 220);
+  im.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  cloudData = [];
+  for (let i = 0; i < 220; i++) {
+    const a = rr(0, TAU), rad = 40 + Math.sqrt(rr(0, 1)) * (CFG.cloudR - 40);
+    const d = { x: Math.cos(a) * rad, z: Math.sin(a) * rad,
+                y: CFG.cloudY + rr(-6, 5), s: rr(8, 20), sp: rr(1.4, 3.6), ph: rr(0, TAU) };
+    cloudData.push(d);
+    q.setFromEuler(new THREE.Euler(rr(0, TAU), rr(0, TAU), rr(0, TAU)));
+    m.compose(new THREE.Vector3(d.x, d.y, d.z), q, new THREE.Vector3(d.s, d.s * 0.32, d.s * 0.78));
+    im.setMatrixAt(i, m);
+  }
+  return im;
+}
+
+/* -- gradient sky dome enclosing the whole flight -- */
+function buildSkyDome() {
+  return new THREE.Mesh(new THREE.SphereGeometry(420, 40, 26),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+}
+
+/* ===== 7. ASSEMBLY ================================================================== */
+let helmWheel, flagMesh, flagBase, cloudData;
+const lanterns = [], lanternLights = [];
+
+const clouds = buildCloudSea();
+scene.add(buildSkyDome(), clouds);
+
+const ship = new THREE.Group();
+ship.add(buildHull(), buildQuarterdeck(), buildCargo(), buildRigging());
+
+const balloon = buildBalloon();
+balloon.position.copy(CFG.balloon);
+const helm = buildHelm();
+helm.position.set(-9.4, sheerY(-0.72) + 1.19, 0);
+ship.add(balloon, helm);
+
+for (const [x, side] of [[4.2, 1], [0.4, 1], [4.2, -1], [0.4, -1]]) {
+  const c = buildCannon();
+  const u = x / CFG.L;
+  c.position.set(x, sheerY(u) + 0.05, side * (deckHalf(u) - 0.95));
+  c.rotation.y = side > 0 ? -Math.PI / 2 : Math.PI / 2;   // muzzles point outboard
+  ship.add(c);
+}
+
+const spyglass = buildSpyglass();
+spyglass.position.set(8.6, sheerY(0.66) + CFG.bulwark + 0.2, deckHalf(0.66) - 0.15);
+spyglass.rotation.y = -0.5;
+const flag = buildFlag();
+flag.position.set(-CFG.L - 0.1, sheerY(-1) + 1.4, 0);
+ship.add(spyglass, flag);
+
+for (const [x, y, z] of [[-6.4, 3.9, 2.5], [7.2, 3.6, -2.4], [-11.4, 4.2, 1.6]]) {
+  const l = buildLantern();
+  l.position.set(x, y, z);
+  ship.add(l, strut(new THREE.Vector3(x, y, z),
+                    new THREE.Vector3(x + 0.2, y + 2.4, z - 0.2), 0.04, MAT.rope));
+  lanterns.push({ obj: l, ph: rr(0, TAU) });
+  if (lanternLights.length < 2) {
+    const pl = new THREE.PointLight(PAL.lantern, 16, 16, 2);
+    pl.position.set(x, y - 0.75, z);
+    ship.add(pl); lanternLights.push(pl);
+  }
+}
+scene.add(ship);
+
+/* ===== 8. LIGHTING RIG ============================================================== */
+/* Key: the low sun, set slightly to camera-right so the deck stays fully readable. */
+const sun = new THREE.DirectionalLight(0xffb877, 3.0);
+sun.position.set(48, 26, 30); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -24; sun.shadow.camera.right = 24;
+sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -20;
+sun.shadow.camera.near = 20; sun.shadow.camera.far = 130;
+sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.04;
+sun.target.position.set(0, 4, 0); scene.add(sun, sun.target);
+
+const rim = new THREE.DirectionalLight(0x9ab4ff, 0.8);      // cool sky bounce from behind
+rim.position.set(-40, 14, -34);
+scene.add(rim, new THREE.HemisphereLight(0xffd0a0, 0x6c5aa8, 1.0),
+          new THREE.AmbientLight(0xffe0c0, 0.25));
+
+/* ===== 9. ANIMATION LOOP ============================================================ */
+const clock = new THREE.Clock();
+const cm = new THREE.Matrix4(), cq = new THREE.Quaternion();
+const cv = new THREE.Vector3(), cs = new THREE.Vector3();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  /* 1. the whole ship rides the air: gentle roll, pitch and heave */
+  ship.rotation.z = Math.sin(t * 0.42) * 0.035;
+  ship.rotation.x = Math.sin(t * 0.31 + 1.2) * 0.022;
+  ship.position.y = Math.sin(t * 0.55) * 0.42;
+  ship.rotation.y = Math.sin(t * 0.24) * 0.018;
+
+  /* 2. the cloud sea streams past below the hull and recycles */
+  for (let i = 0; i < cloudData.length; i++) {
+    const d = cloudData[i];
+    d.x -= d.sp * 0.06;
+    if (d.x < -CFG.cloudR) d.x += CFG.cloudR * 2;
+    cv.set(d.x, d.y + Math.sin(t * 0.2 + d.ph) * 0.8, d.z);
+    cq.setFromEuler(new THREE.Euler(d.ph * 0.3, d.ph, d.ph * 0.7));
+    cs.set(d.s, d.s * 0.32, d.s * 0.78);
+    cm.compose(cv, cq, cs);
+    clouds.setMatrixAt(i, cm);
+  }
+  clouds.instanceMatrix.needsUpdate = true;
+
+  /* 3. the jolly roger snaps in the slipstream */
+  const pos = flagMesh.geometry.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = flagBase[i * 3], y = flagBase[i * 3 + 1], f = x / 3.6;
+    pos.setXYZ(i, x, y + Math.sin(x * 1.7 - t * 3.4) * 0.16 * f,
+               Math.sin(x * 2.1 - t * 4.2 + y * 0.6) * 0.62 * f * f);
+  }
+  pos.needsUpdate = true; flagMesh.geometry.computeVertexNormals();
+
+  /* 4. lanterns swing on their hooks and their flames breathe */
+  for (const l of lanterns) {
+    l.obj.rotation.z = Math.sin(t * 1.05 + l.ph) * 0.16;
+    l.obj.rotation.x = Math.sin(t * 0.83 + l.ph * 1.7) * 0.1;
+  }
+  const flicker = 13 + 4 * Math.sin(t * 7.3) + 2.5 * Math.sin(t * 3.1 + 1.4);
+  for (const pl of lanternLights) pl.intensity = flicker;
+  MAT.halo.opacity = 0.62 + 0.16 * Math.sin(t * 5.1);
+
+  /* 5. the helm creeps back and forth as the ship holds its course */
+  helmWheel.rotation.z = Math.sin(t * 0.37) * 0.55;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ===== 10. RESIZE =================================================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

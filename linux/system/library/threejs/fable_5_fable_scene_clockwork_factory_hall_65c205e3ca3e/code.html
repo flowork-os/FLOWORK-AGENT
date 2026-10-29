@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Clockwork Factory Hall</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#160f09}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================= CONFIG / PALETTE ================= */
+const HALL = { w: 84, d: 64, wallH: 34, ridgeH: 42 };      // cathedral hall envelope
+const SHAFT_Y = 17;                                        // overhead line-shaft height
+const PAL = {
+  fog: 0x241a10, bg: 0x160f09,
+  brass: 0xb98f3e, brassDark: 0x6f5423, copper: 0x8a4f2c,
+  iron: 0x453d33, ironDark: 0x241f1a, steel: 0x5a5248,
+  leather: 0x4a2c17, wood: 0x66452a, brick: 0x4a3527,
+  flame: 0xff7a22, lamp: 0xffc36a, sun: 0xffd9a8
+};
+
+/* ================= PRNG / HELPERS ================= */
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a); t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+const rng = mulberry32(0xC10C0917);
+const R = (a,b)=> a + rng()*(b-a);
+function M(geo, mat, x=0, y=0, z=0){ const m=new THREE.Mesh(geo,mat); m.position.set(x,y,z); m.castShadow=true; m.receiveShadow=true; return m; }
+const spins=[], needles=[], steams=[], swayers=[], rivetPts=[];
+const rivet=(x,y,z)=>rivetPts.push(x,y,z);
+
+/* ================= CANVAS TEXTURES ================= */
+function canvasTex(w,h,draw,rx=1,ry=1){
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  draw(c.getContext('2d'),w,h);
+  const t=new THREE.CanvasTexture(c); t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.repeat.set(rx,ry); t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=4; return t;
+}
+const floorTex = canvasTex(256,256,(g)=>{                  // riveted steel deck plates
+  g.fillStyle='#2c2925'; g.fillRect(0,0,256,256);
+  for(let px=0;px<2;px++) for(let py=0;py<2;py++){
+    const v=R(-7,7)|0; g.fillStyle=`rgb(${46+v},${42+v},${37+v})`;
+    g.fillRect(px*128+3,py*128+3,122,122);
+    g.strokeStyle='#1a1713'; g.lineWidth=4; g.strokeRect(px*128+2,py*128+2,124,124);
+    for(const [cx,cy] of [[16,16],[112,16],[16,112],[112,112]]){
+      g.fillStyle='#4c453b'; g.beginPath(); g.arc(px*128+cx,py*128+cy,4,0,7); g.fill();
+      g.fillStyle='#171310'; g.beginPath(); g.arc(px*128+cx+1.4,py*128+cy+1.6,2,0,7); g.fill();
+    }
+  }
+  g.strokeStyle='rgba(180,150,90,0.05)';
+  for(let i=0;i<26;i++){ g.beginPath(); g.moveTo(R(0,256),R(0,256)); g.lineTo(R(0,256),R(0,256)); g.stroke(); }
+},8,6);
+const wallTex = canvasTex(256,256,(g)=>{                   // sooty brick
+  g.fillStyle='#221a12'; g.fillRect(0,0,256,256);
+  for(let row=0;row<8;row++) for(let col=0;col<5;col++){
+    const off=(row%2)*26, v=R(0,1);
+    g.fillStyle=v<0.75?`rgb(${58+R(-9,9)|0},${44+R(-7,7)|0},${31+R(-5,5)|0})`:'#33261a';
+    g.fillRect(col*52+off-26+2,row*32+2,48,28);
+  }
+  g.fillStyle='rgba(8,5,3,0.28)';
+  for(let i=0;i<40;i++){ g.beginPath(); g.arc(R(0,256),R(0,110),R(6,26),0,7); g.fill(); }
+},7,3);
+const windowTex = canvasTex(160,256,(g,w,h)=>{             // tall arched sooty window
+  g.fillStyle='#0d0906'; g.fillRect(0,0,w,h);
+  g.save(); g.beginPath(); g.moveTo(14,h-8); g.lineTo(14,86); g.arc(w/2,86,w/2-14,Math.PI,0); g.lineTo(w-14,h-8); g.closePath(); g.clip();
+  const gr=g.createLinearGradient(0,0,0,h); gr.addColorStop(0,'#ffe9bb'); gr.addColorStop(0.55,'#e7b878'); gr.addColorStop(1,'#8a5c33');
+  g.fillStyle=gr; g.fillRect(0,0,w,h);
+  for(let i=0;i<14;i++){ g.fillStyle=`rgba(30,20,10,${R(0.05,0.4)})`; g.fillRect(R(8,120),R(20,220),R(10,34),R(8,30)); }
+  g.strokeStyle='#171008'; g.lineWidth=6;
+  for(let i=1;i<4;i++){ g.beginPath(); g.moveTo(14+i*(w-28)/4,80); g.lineTo(14+i*(w-28)/4,h); g.stroke(); }
+  for(let j=0;j<5;j++){ g.beginPath(); g.moveTo(0,96+j*34); g.lineTo(w,96+j*34); g.stroke(); }
+  g.beginPath(); g.moveTo(w/2,86); g.lineTo(30,40); g.moveTo(w/2,86); g.lineTo(w-30,40); g.moveTo(w/2,86); g.lineTo(w/2,18); g.stroke();
+  g.fillStyle='rgba(10,6,3,0.5)';
+  for(let i=0;i<10;i++){ g.beginPath(); g.arc(R(0,w),R(180,h),R(8,20),0,7); g.fill(); }
+  g.restore();
+  g.strokeStyle='#241a10'; g.lineWidth=10;
+  g.beginPath(); g.moveTo(14,h); g.lineTo(14,86); g.arc(w/2,86,w/2-14,Math.PI,0); g.lineTo(w-14,h); g.stroke();
+});
+const roseTex = canvasTex(256,256,(g)=>{                   // round gear-rosette window
+  g.fillStyle='#0d0906'; g.fillRect(0,0,256,256);
+  const rad=g.createRadialGradient(128,128,8,128,128,116);
+  rad.addColorStop(0,'#fff0c8'); rad.addColorStop(0.5,'#e8a95c'); rad.addColorStop(1,'#5c3a1c');
+  g.save(); g.beginPath(); g.arc(128,128,112,0,7); g.clip();
+  g.fillStyle=rad; g.fillRect(0,0,256,256);
+  g.strokeStyle='#1c130a'; g.lineWidth=8;
+  for(let i=0;i<12;i++){ const a=i/12*Math.PI*2; g.beginPath(); g.moveTo(128,128); g.lineTo(128+Math.cos(a)*112,128+Math.sin(a)*112); g.stroke(); }
+  g.beginPath(); g.arc(128,128,64,0,7); g.stroke(); g.beginPath(); g.arc(128,128,26,0,7); g.stroke();
+  g.restore(); g.lineWidth=14; g.beginPath(); g.arc(128,128,110,0,7); g.stroke();
+});
+const gaugeTex = canvasTex(128,128,(g)=>{                  // pressure gauge face
+  g.fillStyle='#e6d8b8'; g.beginPath(); g.arc(64,64,62,0,7); g.fill();
+  g.strokeStyle='#20180e'; g.lineWidth=3;
+  for(let i=0;i<=24;i++){ const a=Math.PI*0.75+i/24*Math.PI*1.5, l=i%4?5:10;
+    g.beginPath(); g.moveTo(64+Math.cos(a)*(58-l),64+Math.sin(a)*(58-l)); g.lineTo(64+Math.cos(a)*56,64+Math.sin(a)*56); g.stroke(); }
+  g.strokeStyle='#a02214'; g.lineWidth=7; g.beginPath(); g.arc(64,64,50,Math.PI*1.95,Math.PI*2.25); g.stroke();
+  g.fillStyle='#20180e'; g.font='bold 13px serif'; g.textAlign='center'; g.fillText('STEAM',64,90); g.fillText('P.S.I.',64,46);
+});
+const steamTex = canvasTex(64,64,(g)=>{
+  const rad=g.createRadialGradient(32,32,2,32,32,30);
+  rad.addColorStop(0,'rgba(255,252,246,0.9)'); rad.addColorStop(0.5,'rgba(230,224,214,0.34)'); rad.addColorStop(1,'rgba(220,214,206,0)');
+  g.fillStyle=rad; g.fillRect(0,0,64,64);
+});
+
+/* ================= MATERIALS ================= */
+const std=(c,rough,metal,e)=>new THREE.MeshStandardMaterial(Object.assign({color:c,roughness:rough,metalness:metal,envMapIntensity:0.55},e||{}));
+const MAT = {
+  brass: std(PAL.brass,0.32,0.9,{envMapIntensity:0.85}),
+  brassDark: std(PAL.brassDark,0.42,0.85),
+  copper: std(PAL.copper,0.4,0.85),
+  iron: std(PAL.iron,0.62,0.65),
+  ironDark: std(PAL.ironDark,0.7,0.55),
+  steel: std(PAL.steel,0.5,0.8),
+  leather: std(PAL.leather,0.92,0.05),
+  wood: std(PAL.wood,0.85,0.02),
+  brick: std(PAL.brick,0.95,0.0),
+  floor: std(0xffffff,0.82,0.35,{map:floorTex}),
+  wall: std(0xffffff,0.95,0.05,{map:wallTex}),
+  roof: std(0x1c1712,0.9,0.2,{side:THREE.DoubleSide}),
+  gauge: std(0xffffff,0.55,0.1,{map:gaugeTex,emissive:0xffe9c0,emissiveMap:gaugeTex,emissiveIntensity:0.22}),
+  windowGlow: new THREE.MeshBasicMaterial({map:windowTex}),
+  roseGlow: new THREE.MeshBasicMaterial({map:roseTex}),
+  mouth: new THREE.MeshStandardMaterial({color:0x1a0a04,emissive:PAL.flame,emissiveIntensity:2.4,roughness:1}),
+  ember: new THREE.MeshStandardMaterial({color:0x220a02,emissive:0xff5510,emissiveIntensity:1.6,roughness:1}),
+  shaft: new THREE.MeshBasicMaterial({color:0xffddA0,transparent:true,opacity:0.055,depthWrite:false,blending:THREE.AdditiveBlending,fog:false,side:THREE.DoubleSide})
+};
+
+/* ================= GEAR / BELT GEOMETRY HELPERS ================= */
+function gearGeo(r,teeth,depth,holeR){
+  const td=Math.min(0.5,r*0.17), rv=r-td, s=new THREE.Shape();
+  for(let i=0;i<teeth;i++){
+    const a=i/teeth*Math.PI*2, w=Math.PI*2/teeth;
+    const p=(f,rad)=>{ const t=a+w*f, x=Math.cos(t)*rad, y=Math.sin(t)*rad; (i===0&&f===0)?s.moveTo(x,y):s.lineTo(x,y); };
+    p(0,rv); p(0.18,rv); p(0.3,r); p(0.52,r); p(0.64,rv);
+  }
+  s.closePath();
+  const h=new THREE.Path(); h.absarc(0,0,holeR,0,Math.PI*2,true); s.holes.push(h);
+  const g=new THREE.ExtrudeGeometry(s,{depth,bevelEnabled:false,curveSegments:24});
+  g.translate(0,0,-depth/2); return g;
+}
+function makeGear(r,teeth,depth,speed,phase,mat=MAT.brass){
+  const g=new THREE.Group();
+  const big=r>1.35, holeR=big?r*0.55:r*0.14;
+  g.add(M(gearGeo(r,teeth,depth,holeR),mat));
+  g.add(M(new THREE.CylinderGeometry(r*0.17,r*0.17,depth+0.16,14).rotateX(Math.PI/2),MAT.brassDark));
+  if(big) for(let i=0;i<3;i++){ const s=M(new THREE.BoxGeometry(r*1.28,r*0.15,depth*0.55),mat); s.rotation.z=i*Math.PI/3; g.add(s); }
+  g.rotation.z=phase;
+  if(speed) spins.push({o:g,s:speed,ax:'z'});
+  return g;
+}
+function beltShape(r1,r2,d,t){
+  const mk=(R1,R2)=>{ const b=Math.acos(THREE.MathUtils.clamp((R1-R2)/d,-1,1)), p=new THREE.Shape();
+    p.absarc(0,0,R1,b,Math.PI*2-b,false); p.absarc(d,0,R2,-b,b,false); p.closePath(); return p; };
+  const s=mk(r1+t,r2+t); s.holes.push(mk(r1,r2)); return s;
+}
+function makeBelt(x,y1,z1,y2,z2,r1,r2,w=0.5){
+  const dy=y2-y1, dz=z2-z1, d=Math.hypot(dy,dz);
+  const geo=new THREE.ExtrudeGeometry(beltShape(r1,r2,d,0.16),{depth:w,bevelEnabled:false,curveSegments:22});
+  geo.translate(0,0,-w/2);
+  const m=M(geo,MAT.leather); m.rotation.y=Math.PI/2;
+  const wrap=new THREE.Group(); wrap.add(m);
+  wrap.position.set(x,y1,z1); wrap.rotation.x=Math.atan2(dy,-dz);
+  return wrap;
+}
+const pulley=(r,w)=>M(new THREE.CylinderGeometry(r,r,w,20).rotateZ(Math.PI/2),MAT.steel);
+
+/* ================= BUILDERS : HALL SHELL ================= */
+function buildHall(){
+  const g=new THREE.Group(), hw=HALL.w/2, hd=HALL.d/2;
+  const floor=M(new THREE.PlaneGeometry(HALL.w,HALL.d).rotateX(-Math.PI/2),MAT.floor); floor.castShadow=false; g.add(floor);
+  const mkWall=(w,h,x,y,z,ry)=>{ const m=M(new THREE.PlaneGeometry(w,h),MAT.wall,x,y,z); m.rotation.y=ry; m.castShadow=false; g.add(m); };
+  mkWall(HALL.w,HALL.wallH, 0,HALL.wallH/2,-hd, 0);
+  mkWall(HALL.w,HALL.wallH, 0,HALL.wallH/2, hd, Math.PI);
+  mkWall(HALL.d,HALL.ridgeH,-hw,HALL.ridgeH/2,0, Math.PI/2);
+  mkWall(HALL.d,HALL.ridgeH, hw,HALL.ridgeH/2,0,-Math.PI/2);
+  const slope=Math.hypot(hd,HALL.ridgeH-HALL.wallH)+1;
+  for(const s of [-1,1]){
+    const r=M(new THREE.PlaneGeometry(HALL.w,slope),MAT.roof,0,(HALL.wallH+HALL.ridgeH)/2,s*hd/2);
+    r.rotation.x=s>0?Math.PI/2-Math.atan2(HALL.ridgeH-HALL.wallH,hd):-(Math.PI/2-Math.atan2(HALL.ridgeH-HALL.wallH,hd));
+    if(s>0) r.rotation.y=Math.PI;
+    r.castShadow=false; g.add(r);
+  }
+  // trusses: tie beams + kingposts + sloped rafters
+  for(const tx of [-28,-9,9,28]){
+    g.add(M(new THREE.BoxGeometry(0.9,0.9,HALL.d-2),MAT.ironDark,tx,30,0));
+    g.add(M(new THREE.BoxGeometry(0.7,HALL.ridgeH-30.9,0.7),MAT.ironDark,tx,(30+HALL.ridgeH)/2-0.4,0));
+    for(const s of [-1,1]){ const raf=M(new THREE.BoxGeometry(0.6,0.6,32.8),MAT.ironDark,tx,36.1,s*15.5);
+      raf.rotation.x=s*Math.atan2(11,31); g.add(raf); }
+  }
+  g.add(M(new THREE.BoxGeometry(HALL.w-2,0.8,0.8),MAT.ironDark,0,HALL.ridgeH-0.8,0));
+  // tall arched windows, both long walls
+  const winGeo=new THREE.PlaneGeometry(7,12);
+  for(const wx of [-30,-10,10,30]){
+    const s=M(winGeo,MAT.windowGlow,wx,23,hd-0.25); s.rotation.y=Math.PI; s.castShadow=s.receiveShadow=false; g.add(s);
+    const n=M(winGeo,MAT.windowGlow,wx,23,-hd+0.25); n.castShadow=n.receiveShadow=false; g.add(n);
+  }
+  const rose=M(new THREE.CircleGeometry(5.2,40),MAT.roseGlow,hw-0.3,25,0); rose.rotation.y=-Math.PI/2; rose.castShadow=rose.receiveShadow=false; g.add(rose);
+  // volumetric light shafts angling down from the south windows
+  for(const wx of [-30,-10,10,30]){
+    const c=M(new THREE.CylinderGeometry(2.6,6,38,14,1,true),MAT.shaft,wx-1,12,hd-16);
+    c.rotation.x=0.93; c.castShadow=c.receiveShadow=false; g.add(c);
+  }
+  return g;
+}
+
+/* ================= BUILDERS : FOCAL STRUCTURES ================= */
+function buildGearWall(){                                  // interlocking brass gear train
+  const g=new THREE.Group(); g.position.set(4,13,-30.2);
+  const plate=M(new THREE.BoxGeometry(34,20,0.7),MAT.ironDark,0,0,-0.9); g.add(plate);
+  g.add(M(new THREE.BoxGeometry(35.4,1.1,1.0),MAT.iron,0,10.2,-0.8));
+  g.add(M(new THREE.BoxGeometry(35.4,1.1,1.0),MAT.iron,0,-10.2,-0.8));
+  for(let i=0;i<14;i++){ rivet(4-16.2+i*2.5,13+9.6,-30.6); rivet(4-16.2+i*2.5,13-9.6,-30.6); }
+  const mod=0.17, train=[[26,0],[12,-24],[22,18],[10,58],[24,-6],[13,42],[18,-38],[9,80]];
+  let px=-11.5,py=-2.5,pr=0,pw=0.5,pt=1;
+  train.forEach((c,i)=>{
+    const r=c[0]*mod;
+    if(i>0){ const a=c[1]*Math.PI/180; px+=(pr+r-0.13)*Math.cos(a); py+=(pr+r-0.13)*Math.sin(a); pw=-pw*pt/c[0]; }
+    else pw=0.5/26*26;
+    const gear=makeGear(r,c[0],0.55,pw,R(0,6));
+    gear.position.set(px,py,(i%2)*0.34-0.1); g.add(gear);
+    g.add(M(new THREE.CylinderGeometry(0.16,0.16,1.4,10).rotateX(Math.PI/2),MAT.brassDark,px,py,-0.45));
+    pr=r; pt=c[0];
+  });
+  return g;
+}
+function buildFurnace(){                                   // glowing furnace mouth, west wall
+  const g=new THREE.Group(); g.position.set(-38.2,0,-8);
+  g.add(M(new THREE.BoxGeometry(6.5,10,11),MAT.brick,-0.8,5,0));
+  g.add(M(new THREE.BoxGeometry(7.5,1.2,12),MAT.ironDark,-0.6,0.6,0));
+  g.add(M(new THREE.BoxGeometry(7.5,0.9,12),MAT.ironDark,-0.6,10.4,0));
+  const face=new THREE.Shape(); face.moveTo(-4.5,0); face.lineTo(4.5,0); face.lineTo(4.5,9); face.lineTo(-4.5,9); face.closePath();
+  const hole=new THREE.Path(); hole.moveTo(-2.1,0.9); hole.lineTo(2.1,0.9); hole.lineTo(2.1,3.6); hole.absarc(0,3.6,2.1,0,Math.PI,false); hole.closePath();
+  face.holes.push(hole);
+  const fp=M(new THREE.ExtrudeGeometry(face,{depth:0.7,bevelEnabled:false,curveSegments:20}),MAT.iron);
+  fp.rotation.y=Math.PI/2; fp.position.set(2.55,0.4,4.5); g.add(fp);
+  const mouth=M(new THREE.PlaneGeometry(4.4,5),MAT.mouth,2.2,3.2,0); mouth.rotation.y=Math.PI/2; mouth.castShadow=false; g.add(mouth);
+  for(let i=0;i<10;i++) g.add(M(new THREE.SphereGeometry(R(0.16,0.3),7,6),MAT.ember,R(2.4,3.4),R(0.45,0.8),R(-1.7,1.7)));
+  for(let i=0;i<5;i++) g.add(M(new THREE.BoxGeometry(0.16,0.16,4.4),MAT.ironDark,2.95,1.05+i*0.0,R(0,0)+0,));
+  for(let i=0;i<5;i++){ const b=g.children[g.children.length-1-i]; b.position.set(2.95,1.02,-1.6+i*0.8); }
+  g.add(M(new THREE.CylinderGeometry(1.25,1.45,29,16),MAT.brick,-0.8,10+14.5,0));
+  g.add(M(new THREE.TorusGeometry(1.45,0.14,8,20).rotateX(Math.PI/2),MAT.ironDark,-0.8,11.4,0));
+  g.add(M(new THREE.TorusGeometry(1.4,0.12,8,20).rotateX(Math.PI/2),MAT.ironDark,-0.8,24,0));
+  const wheel=M(new THREE.TorusGeometry(0.85,0.1,8,18),MAT.brass,3.1,6.9,4.6); wheel.rotation.y=Math.PI/2; g.add(wheel);
+  g.add(M(new THREE.CylinderGeometry(0.07,0.07,1.6,8).rotateZ(Math.PI/2),MAT.brass,3.1,6.9,4.6));
+  spins.push({o:wheel,s:0.25,ax:'z'});
+  g.add(M(new THREE.ConeGeometry(2.6,1.7,18),MAT.ironDark,2.4,0.85,7.6));   // coal heap
+  for(let i=0;i<8;i++) rivet(-38.2+2.95,R(1.2,9.2),-8+(i<4?4.9:-4.9)*R(0.9,1));
+  const gauge=makeGauge(0.62); gauge.position.set(2.7,8.3,2.8); gauge.rotation.y=Math.PI/2; g.add(gauge);
+  return g;
+}
+function makeGauge(s){                                     // brass gauge, trembling needle
+  const g=new THREE.Group();
+  g.add(M(new THREE.CylinderGeometry(s,s,0.16*s,24).rotateX(Math.PI/2),MAT.brassDark,0,0,-0.05*s));
+  g.add(M(new THREE.TorusGeometry(s*0.94,s*0.1,8,26),MAT.brass));
+  const face=M(new THREE.CircleGeometry(s*0.86,24),MAT.gauge,0,0,0.06*s); face.castShadow=false; g.add(face);
+  const nd=new THREE.Mesh(new THREE.BoxGeometry(0.07*s,1.15*s,0.03).translate(0,0.32*s,0),std(0x8a1c10,0.5,0.3));
+  nd.position.z=0.1*s; g.add(nd);
+  g.add(M(new THREE.SphereGeometry(0.1*s,10,8),MAT.brassDark,0,0,0.1*s));
+  needles.push({o:nd,base:R(-0.6,-2.2),amp:R(0.05,0.12),f:R(5,9),ph:R(0,6)});
+  g.add(M(new THREE.CylinderGeometry(0.09*s,0.09*s,0.5*s,8),MAT.brass,0,-1.1*s,-0.02));
+  return g;
+}
+function buildEngine(){                                    // great flywheel + crank + piston
+  const g=new THREE.Group(); g.position.set(-24,0,10);
+  g.add(M(new THREE.BoxGeometry(9,1,12),MAT.ironDark,1,0.5,4));
+  const fly=new THREE.Group(); fly.position.set(0,6,0);
+  const rim=M(new THREE.TorusGeometry(5.5,0.48,12,42).rotateY(Math.PI/2),MAT.iron); fly.add(rim);
+  for(let i=0;i<6;i++){ const sp=M(new THREE.BoxGeometry(0.3,10.4,0.34),MAT.iron); sp.rotation.x=i*Math.PI/6; fly.add(sp); }
+  fly.add(M(new THREE.CylinderGeometry(0.9,0.9,1.2,16).rotateZ(Math.PI/2),MAT.brassDark));
+  fly.rotation.y=Math.PI/2; spins.push({o:fly,s:-0.9,ax:'x'}); g.add(fly);
+  g.add(M(new THREE.CylinderGeometry(0.34,0.34,6.4,12).rotateZ(Math.PI/2),MAT.steel,1.4,6,0));
+  for(const px of [-1.6,3.4]){ g.add(M(new THREE.BoxGeometry(0.9,5,1.6),MAT.iron,px,3,0)); rivet(-24+px,3.2,10+0.9); rivet(-24+px,1.6,10+0.9); }
+  const crank=new THREE.Group(); crank.position.set(2.4,6,0);
+  crank.add(M(new THREE.CylinderGeometry(1.5,1.5,0.5,20).rotateZ(Math.PI/2),MAT.iron));
+  crank.add(M(new THREE.CylinderGeometry(0.18,0.18,1.1,10).rotateZ(Math.PI/2),MAT.steel,0.55,0,1.05));
+  g.add(crank);
+  const cyl=M(new THREE.CylinderGeometry(1.25,1.25,4.6,18).rotateX(Math.PI/2),MAT.brassDark,2.4,6,7.6); g.add(cyl);
+  g.add(M(new THREE.TorusGeometry(1.32,0.14,8,20).rotateX(0),MAT.brass,2.4,6,5.4));
+  g.add(M(new THREE.TorusGeometry(1.32,0.14,8,20),MAT.brass,2.4,6,9.8));
+  g.add(M(new THREE.BoxGeometry(2.4,0.7,3.4),MAT.iron,2.4,4.6,7.6));
+  for(const gy of [5.5,6.5]) g.add(M(new THREE.BoxGeometry(0.24,0.16,3.2),MAT.steel,2.4,gy,3.9));
+  const rod=M(new THREE.BoxGeometry(0.3,0.3,4.5),MAT.steel), cross=M(new THREE.BoxGeometry(0.7,0.6,0.8),MAT.brassDark), prod=M(new THREE.CylinderGeometry(0.14,0.14,3.2,10).rotateX(Math.PI/2),MAT.steel);
+  g.add(rod,cross,prod);
+  // spinning ball governor atop the cylinder
+  const gov=new THREE.Group(); gov.position.set(2.4,7.6,8.8);
+  gov.add(M(new THREE.CylinderGeometry(0.08,0.08,1.6,8),MAT.brass,0,0.8,0));
+  for(const s of [-1,1]){ const arm=M(new THREE.CylinderGeometry(0.04,0.04,1.1,6),MAT.brass,s*0.38,1.25,0);
+    arm.rotation.z=s*0.7; gov.add(arm); gov.add(M(new THREE.SphereGeometry(0.19,10,8),MAT.brass,s*0.72,0.95,0)); }
+  spins.push({o:gov,s:3.2,ax:'y'}); g.add(gov);
+  g.add(makeBelt(-24,6,10, SHAFT_Y,10, 6.05,1.2, 0.55));   // leather belt up to the line shaft
+  return Object.assign(g,{userData:{crank,rod,cross,prod}});
+}
+function buildLineShaft(z,len,pulleyXs){                   // overhead spinning drive shaft
+  const g=new THREE.Group(); g.position.set(0,SHAFT_Y,z);
+  const sh=M(new THREE.CylinderGeometry(0.26,0.26,len,12).rotateZ(Math.PI/2),MAT.steel);
+  spins.push({o:sh,s:-1.5,ax:'x'}); g.add(sh);
+  g.add(M(new THREE.BoxGeometry(len+4,0.5,0.9),MAT.wood,0,2.6,0));
+  for(const hx of [-len/2+3,-len/6,len/6,len/2-3]){
+    g.add(M(new THREE.CylinderGeometry(0.09,0.09,10.2,8),MAT.ironDark,hx,7.9,0));
+    g.add(M(new THREE.BoxGeometry(0.55,2.6,0.55),MAT.ironDark,hx,1.35,0));
+  }
+  for(const px of pulleyXs){ const p=pulley(1.2,0.62); p.position.x=px; spins.push({o:p,s:-1.5,ax:'x'}); g.add(p); }
+  return g;
+}
+function buildWorkbench(x,z,kind){                         // belt-driven machine bench
+  const g=new THREE.Group(); g.position.set(x,0,z);
+  g.add(M(new THREE.BoxGeometry(4.6,0.34,2.3),MAT.wood,0,2.1,0));
+  for(const s of [[-2,-0.9],[2,-0.9],[-2,0.9],[2,0.9]]) g.add(M(new THREE.BoxGeometry(0.3,2.1,0.3),MAT.ironDark,s[0],1.05,s[1]));
+  g.add(M(new THREE.BoxGeometry(1.5,1,1.5),MAT.iron,-1.2,2.8,0));
+  const wheel = kind? M(new THREE.CylinderGeometry(0.85,0.85,0.35,20).rotateZ(Math.PI/2),MAT.steel)
+                    : M(new THREE.CylinderGeometry(0.55,0.55,0.9,14).rotateZ(Math.PI/2),MAT.brassDark);
+  wheel.position.set(0.4,3.1,0); spins.push({o:wheel,s:3.4,ax:'x'}); g.add(wheel);
+  const mp=pulley(0.55,0.5); mp.position.set(1.5,3.1,0); spins.push({o:mp,s:3.4,ax:'x'}); g.add(mp);
+  g.add(M(new THREE.BoxGeometry(0.5,0.8,0.5),MAT.ironDark,1.5,2.5,0));
+  g.add(makeBelt(x+1.5,SHAFT_Y,z, 3.1,z, 1.2,0.55, 0.45));
+  g.add(M(new THREE.CylinderGeometry(0.22,0.16,0.5,10),MAT.copper,-2,2.5,0.7));   // oil can
+  return g;
+}
+function buildColumn(x,z){                                 // riveted iron column
+  const g=new THREE.Group(); g.position.set(x,0,z);
+  g.add(M(new THREE.CylinderGeometry(0.72,0.85,28,14),MAT.iron,0,14,0));
+  g.add(M(new THREE.CylinderGeometry(1.5,1.7,1.1,14),MAT.ironDark,0,0.55,0));
+  g.add(M(new THREE.CylinderGeometry(1.15,0.85,1.2,14),MAT.ironDark,0,28.4,0));
+  for(const fy of [7,14,21]){ g.add(M(new THREE.TorusGeometry(0.88,0.14,8,18).rotateX(Math.PI/2),MAT.ironDark,0,fy,0));
+    for(let i=0;i<7;i++){ const a=i/7*Math.PI*2; rivet(x+Math.cos(a)*1.0,fy,z+Math.sin(a)*1.0); } }
+  return g;
+}
+function buildCatwalk(){                                   // riveted catwalk + stairs, south wall
+  const g=new THREE.Group(); const y=10, z=26.5;
+  g.add(M(new THREE.BoxGeometry(60,0.35,3.2),MAT.iron,0,y,z));
+  g.add(M(new THREE.BoxGeometry(60,0.5,0.14),MAT.ironDark,0,y+0.35,z-1.55));
+  const postGeo=new THREE.BoxGeometry(0.1,1.4,0.1);
+  for(let i=0;i<=15;i++) g.add(M(postGeo,MAT.ironDark,-30+i*4,y+0.85,z-1.5));
+  g.add(M(new THREE.CylinderGeometry(0.06,0.06,60,8).rotateZ(Math.PI/2),MAT.brass,0,y+1.55,z-1.5));
+  g.add(M(new THREE.CylinderGeometry(0.045,0.045,60,8).rotateZ(Math.PI/2),MAT.ironDark,0,y+0.9,z-1.5));
+  for(let i=0;i<6;i++){ const b=M(new THREE.BoxGeometry(0.4,0.4,4.4),MAT.ironDark,-27+i*10.8,y-1.6,z+0.6); b.rotation.x=0.75; g.add(b);
+    rivet(-27+i*10.8,y-0.2,z+1.2); }
+  for(let i=0;i<10;i++){ g.add(M(new THREE.BoxGeometry(1.1,0.16,3),MAT.iron,30.6+i*0.95,y-0.55-i*1.02,z)); }
+  for(const s of [-1,1]){ const st=M(new THREE.BoxGeometry(11,0.22,0.3),MAT.ironDark,34.9,y-5.1,z+s*1.5); st.rotation.z=0.75; g.add(st); }
+  const hr=M(new THREE.CylinderGeometry(0.05,0.05,11,8).rotateZ(Math.PI/2),MAT.brass,34.9,y-3.9,z-1.5); hr.rotation.z=0.75; g.add(hr);
+  return g;
+}
+function buildGaugePanel(){                                // instrument board with lamps
+  const g=new THREE.Group(); g.position.set(-6,0,-26);
+  g.add(M(new THREE.BoxGeometry(6,3.8,0.35),MAT.wood,0,3.4,0));
+  g.add(M(new THREE.BoxGeometry(6.6,0.3,0.5),MAT.brassDark,0,5.35,0));
+  for(const s of [-2.6,2.6]) g.add(M(new THREE.BoxGeometry(0.4,5.4,0.4),MAT.ironDark,s,2.7,0));
+  for(let i=0;i<3;i++){ const q=makeGauge(0.72); q.position.set(-1.9+i*1.9,3.7,0.28); g.add(q); }
+  for(let i=0;i<4;i++) g.add(M(new THREE.CylinderGeometry(0.06,0.06,1.5,8),MAT.copper,-1+i*0.66,1.1,0.1));
+  const shade=M(new THREE.ConeGeometry(0.55,0.4,14,1,true),std(0x27331e,0.5,0.7),0,6.1,0.5); g.add(shade);
+  const bulb=M(new THREE.SphereGeometry(0.14,10,8),new THREE.MeshBasicMaterial({color:0xffd9a0}),0,5.95,0.5); bulb.castShadow=false; g.add(bulb);
+  return g;
+}
+function buildChainHoist(x,drop,load){                     // swaying chain hoist on runway
+  const g=new THREE.Group(); g.position.set(x,29.3,2);
+  g.add(M(new THREE.BoxGeometry(1.3,0.7,0.9),MAT.ironDark,0,-0.3,0));
+  g.add(M(new THREE.CylinderGeometry(0.55,0.55,0.7,14),MAT.iron,0,-1,0));
+  const n=Math.round(drop/0.3), link=new THREE.InstancedMesh(new THREE.TorusGeometry(0.13,0.045,6,10),MAT.steel,n), d=new THREE.Object3D();
+  for(let i=0;i<n;i++){ d.position.set(0,-1.3-i*0.3,0); d.rotation.set(0,(i%2)*Math.PI/2,0); d.scale.set(1,1.4,1); d.updateMatrix(); link.setMatrixAt(i,d.matrix); }
+  link.castShadow=true; g.add(link);
+  const hy=-1.3-n*0.3;
+  g.add(M(new THREE.TorusGeometry(0.4,0.11,8,14,Math.PI*1.6).rotateZ(-Math.PI*0.85),MAT.steel,0,hy-0.35,0));
+  if(load==='gear'){ const spare=makeGear(2.3,18,0.5,0,0.4,MAT.brassDark); spare.position.set(0,hy-3.2,0); g.add(spare);
+    g.add(M(new THREE.CylinderGeometry(0.05,0.05,2.6,6),MAT.steel,0,hy-1.7,0)); }
+  else { g.add(M(new THREE.BoxGeometry(2.3,2,2.3),MAT.wood,0,hy-3.4,0));
+    for(const s of [-1,1]){ const sl=M(new THREE.CylinderGeometry(0.04,0.04,1.9,6),MAT.steel,s*0.75,hy-1.6,0); sl.rotation.z=s*0.6; g.add(sl); } }
+  swayers.push({o:g,ph:R(0,6),amp:R(0.025,0.05)});
+  return g;
+}
+function buildSteamManifold(){                             // east-wall pipes + relief valves
+  const g=new THREE.Group(); g.position.set(40,0,0);
+  g.add(M(new THREE.CylinderGeometry(0.62,0.62,38,14).rotateX(Math.PI/2),MAT.copper,0,3.2,0));
+  for(const fz of [-14,-4.66,4.66,14]) g.add(M(new THREE.TorusGeometry(0.68,0.12,8,16),MAT.brassDark,0,3.2,fz));
+  for(const sz of [-16,0,16]) g.add(M(new THREE.BoxGeometry(0.5,3.2,0.5),MAT.ironDark,0,1.6,sz));
+  for(const rz of [-10,2,12]){
+    g.add(M(new THREE.CylinderGeometry(0.4,0.4,11,12),MAT.copper,0,8.7,rz));
+    g.add(M(new THREE.TorusGeometry(0.46,0.1,8,14).rotateX(Math.PI/2),MAT.brassDark,0,5.2,rz));
+    g.add(M(new THREE.CylinderGeometry(0.55,0.7,1.1,10),MAT.brass,0,14.6,rz));           // relief valve body
+    g.add(M(new THREE.CylinderGeometry(0.1,0.1,1.5,8).rotateZ(1.2),MAT.brass,-0.5,15.4,rz));
+  }
+  const q=makeGauge(0.6); q.position.set(-0.75,8.5,2); q.rotation.y=-Math.PI/2; g.add(q);
+  // long overhead steam main from the furnace, along the north clerestory
+  const main=M(new THREE.CylinderGeometry(0.5,0.5,72,12).rotateZ(Math.PI/2),MAT.copper,-40,26,-28); g.add(main);
+  for(let i=0;i<5;i++) g.add(M(new THREE.TorusGeometry(0.56,0.1,8,14).rotateZ(Math.PI/2),MAT.brassDark,-70+i*15,26,-28));
+  for(let i=0;i<4;i++) g.add(M(new THREE.CylinderGeometry(0.08,0.08,3.2,8),MAT.ironDark,-64+i*17,27.8,-28));
+  return g;
+}
+function buildGearStand(){                                 // free-standing meshed gear pair
+  const g=new THREE.Group(); g.position.set(-4,0,18);
+  for(const s of [-1,1]){ const leg=M(new THREE.BoxGeometry(0.45,6.4,0.45),MAT.ironDark,0,3,s*1.1); leg.rotation.x=s*0.3; g.add(leg); }
+  g.add(M(new THREE.BoxGeometry(3.6,0.4,2.8),MAT.ironDark,0,0.2,0));
+  const g1=makeGear(2.1,16,0.5,0.7,0.15); g1.position.set(-1.1,5.2,0); g1.rotation.y=Math.PI/2;
+  const g2=makeGear(1.15,9,0.5,-0.7*16/9,0.5); g2.position.set(-1.1,5.2+2.1+1.15-0.12,0); g2.rotation.y=Math.PI/2;
+  g.add(g1,g2);
+  g.add(M(new THREE.CylinderGeometry(0.14,0.14,1.5,8).rotateZ(Math.PI/2),MAT.steel,-0.7,5.2,0));
+  return g;
+}
+function buildProps(){                                     // crates, barrels, spare gear pile
+  const g=new THREE.Group();
+  const crate=(x,z,s,ry)=>{ const c=M(new THREE.BoxGeometry(s,s,s),MAT.wood,x,s/2,z); c.rotation.y=ry;
+    const lid=M(new THREE.BoxGeometry(s*1.04,s*0.12,s*1.04),std(0x543a22,0.9,0),x,s-0.02,z); lid.rotation.y=ry; g.add(c,lid); };
+  crate(12,20,2.1,0.3); crate(15.1,21.3,1.7,0.9); crate(13.2,22.6,1.4,0.1); crate(-16,22,2.3,0.5);
+  const pts=[]; for(const p of [[0.52,0],[0.63,0.28],[0.68,0.62],[0.63,0.96],[0.52,1.22]]) pts.push(new THREE.Vector2(p[0],p[1]));
+  const barrelGeo=new THREE.LatheGeometry(pts,14);
+  for(const b of [[34,-18],[35.4,-16.2],[33.2,-15.6]]){
+    g.add(M(barrelGeo,MAT.wood,b[0],0,b[1]));
+    g.add(M(new THREE.TorusGeometry(0.66,0.035,6,16).rotateX(Math.PI/2),MAT.ironDark,b[0],0.32,b[1]));
+    g.add(M(new THREE.TorusGeometry(0.66,0.035,6,16).rotateX(Math.PI/2),MAT.ironDark,b[0],0.94,b[1]));
+  }
+  for(let i=0;i<3;i++){ const sp=makeGear(R(1.4,2.4),12+i*4,0.5,0,R(0,6),MAT.brassDark);
+    sp.position.set(-31+i*2.6,1.6+i*0.2,-27.5+i*0.7); sp.rotation.x=R(-0.25,0.05); sp.rotation.y=R(-0.3,0.3); g.add(sp); }
+  return g;
+}
+function buildRivets(){
+  const n=rivetPts.length/3, im=new THREE.InstancedMesh(new THREE.SphereGeometry(0.1,6,5),MAT.brassDark,n), d=new THREE.Object3D();
+  for(let i=0;i<n;i++){ d.position.set(rivetPts[3*i],rivetPts[3*i+1],rivetPts[3*i+2]); d.updateMatrix(); im.setMatrixAt(i,d.matrix); }
+  return im;
+}
+
+/* ================= RENDERER / SCENE / ASSEMBLY ================= */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true; renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping; renderer.toneMappingExposure=1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(PAL.bg);
+scene.fog=new THREE.FogExp2(PAL.fog,0.011);
+scene.environment=new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(),0.04).texture;
+
+const camera=new THREE.PerspectiveCamera(55,innerWidth/innerHeight,0.1,300);
+camera.position.set(20,17,18);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,9,0);
+controls.enableDamping=true; controls.autoRotate=true; controls.autoRotateSpeed=0.9;
+controls.minDistance=14; controls.maxDistance=30;
+controls.minPolarAngle=0.55; controls.maxPolarAngle=1.42;
+
+scene.add(buildHall());
+scene.add(buildGearWall());
+scene.add(buildFurnace());
+const engine=buildEngine(); scene.add(engine);
+scene.add(buildLineShaft(-6,48,[-14,2,16]));
+scene.add(buildLineShaft(10,48,[-24,-6,12]));
+scene.add(buildWorkbench(-14,-6,0)); scene.add(buildWorkbench(2,-6,1)); scene.add(buildWorkbench(16,-6,0));
+scene.add(buildWorkbench(-6,10,1)); scene.add(buildWorkbench(12,10,0));
+for(const cx of [-28,-9,9,28]){ scene.add(buildColumn(cx,-16)); scene.add(buildColumn(cx,16)); }
+scene.add(buildCatwalk());
+scene.add(buildGaugePanel());
+scene.add(M(new THREE.BoxGeometry(24,0.9,0.7),MAT.ironDark,19,29.6,2));       // hoist runway beam
+scene.add(buildChainHoist(16,19,'gear'));
+scene.add(buildChainHoist(25,17,'crate'));
+scene.add(buildSteamManifold());
+scene.add(buildGearStand());
+scene.add(buildProps());
+scene.add(buildRivets());
+
+/* ================= LIGHTING RIG ================= */
+const hemi=new THREE.HemisphereLight(0x8a6f4a,0x241a10,0.5); scene.add(hemi);
+const sun=new THREE.DirectionalLight(PAL.sun,2.6);
+sun.position.set(12,46,44); sun.target.position.set(-2,0,-10);
+sun.castShadow=true; sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-50,right:50,top:48,bottom:-40,near:4,far:140});
+sun.shadow.bias=-0.0004; scene.add(sun,sun.target);
+const furnaceLight=new THREE.PointLight(PAL.flame,110,52,2); furnaceLight.position.set(-33,5,-8); scene.add(furnaceLight);
+const panelLamp=new THREE.PointLight(PAL.lamp,20,18,2); panelLamp.position.set(-6,5.6,-24.6); scene.add(panelLamp);
+const eastLamp=new THREE.PointLight(PAL.lamp,16,22,2); eastLamp.position.set(37,9,2); scene.add(eastLamp);
+
+/* ================= STEAM + DUST PARTICLES ================= */
+function makeSteam(x,y,z,h,count,size,spd){
+  const geo=new THREE.BufferGeometry(), pos=new Float32Array(count*3), seed=[];
+  for(let i=0;i<count;i++) seed.push({ph:R(0,h),v:R(0.8,1.3)*spd,a:R(0,Math.PI*2),r:R(0.05,0.4)});
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  const mat=new THREE.PointsMaterial({size,map:steamTex,transparent:true,opacity:0.34,depthWrite:false,color:0xdad4cc});
+  const pts=new THREE.Points(geo,mat); pts.frustumCulled=false;
+  steams.push({geo,seed,x,y,z,h,count}); scene.add(pts);
+}
+makeSteam(40,15.6,-10,9,50,2.2,1.1);
+makeSteam(40,15.6,12,9,50,2.2,1.3);
+makeSteam(-21.6,8.4,19.6,7,40,1.7,0.9);
+const dustGeo=new THREE.BufferGeometry(), dustPos=new Float32Array(160*3);
+for(let i=0;i<160;i++){ dustPos[3*i]=R(-26,26); dustPos[3*i+1]=R(2,26); dustPos[3*i+2]=R(-22,26); }
+dustGeo.setAttribute('position',new THREE.BufferAttribute(dustPos,3));
+const dust=new THREE.Points(dustGeo,new THREE.PointsMaterial({size:0.16,color:0xffe0aa,transparent:true,opacity:0.5,depthWrite:false}));
+scene.add(dust);
+
+/* ================= ANIMATION LOOP ================= */
+const clock=new THREE.Clock();
+const ENG={x:-21.6,y:6,z:12.4,rc:1.05,L:4.5};
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05), t=clock.elapsedTime;
+  for(const s of spins) s.o.rotation[s.ax]+=s.s*dt;
+  for(const n of needles) n.o.rotation.z=n.base+Math.sin(t*n.f+n.ph)*n.amp+Math.sin(t*13.7+n.ph*2)*n.amp*0.45;
+  for(const w of swayers){ w.o.rotation.x=Math.sin(t*0.6+w.ph)*w.amp; w.o.rotation.z=Math.cos(t*0.47+w.ph)*w.amp*0.7; }
+  // crank / connecting rod / piston kinematics
+  const th=t*0.9, u=engine.userData;
+  u.crank.rotation.x=-th;
+  const pinY=ENG.y+ENG.rc*Math.sin(th), pinZ=ENG.z-2.4+ENG.rc*Math.cos(th)+0;
+  const crossZ=ENG.z-2.4+ENG.rc*Math.cos(th)+Math.sqrt(ENG.L*ENG.L-(ENG.rc*Math.sin(th))**2);
+  u.cross.position.set(ENG.x+0.4,ENG.y,crossZ);
+  u.prod.position.set(ENG.x+0.4,ENG.y,crossZ+1.7);
+  u.rod.position.set(ENG.x+0.55,(pinY+ENG.y)/2,(pinZ+crossZ)/2);
+  u.rod.rotation.x=Math.atan2(-(pinY-ENG.y),pinZ-crossZ)+Math.PI;
+  // furnace breathing glow
+  const fl=0.72+0.2*Math.sin(t*9.7)*Math.sin(t*3.1)+0.08*Math.sin(t*23.3);
+  furnaceLight.intensity=110*fl; MAT.mouth.emissiveIntensity=1.7+1.5*fl; MAT.ember.emissiveIntensity=1.1+1.1*fl;
+  MAT.shaft.opacity=0.05+0.014*Math.sin(t*0.5);
+  // hissing steam plumes
+  for(const s of steams){ const p=s.geo.attributes.position;
+    for(let i=0;i<s.count;i++){ const q=s.seed[i], y=(q.ph+t*q.v)%s.h, f=y/s.h;
+      p.setXYZ(i, s.x+Math.cos(q.a+t*0.4)*q.r*(0.4+f*2.2), s.y+y, s.z+Math.sin(q.a+t*0.4)*q.r*(0.4+f*2.2)); }
+    p.needsUpdate=true; }
+  dust.rotation.y=t*0.012;
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ================= RESIZE ================= */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

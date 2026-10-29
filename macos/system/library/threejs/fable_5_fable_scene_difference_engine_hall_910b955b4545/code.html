@@ -1,0 +1,702 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Difference Engine Hall</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #241c12; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   1. CONFIG & PALETTE — one place for tuning the whole hall
+   ============================================================ */
+const CFG = {
+  seed: 20260816,
+  hall: { w: 64, d: 44, h: 15.5 },          // interior extents
+  columns: 11,                               // calculation wheel columns
+  wheelsPerColumn: 8,
+  colPitch: 1.24,                            // spacing between columns
+  wheelPitch: 0.42, wheelR: 0.56, wheelH: 0.30,
+  tickRate: 0.85,                            // engine ticks per second
+  desks: 3,
+  chandeliers: 3
+};
+const PAL = {
+  brass:      0xc9973c, brassDark: 0x8a6426, iron: 0x55504a,
+  ironDark:   0x36332e, woodDark:  0x4a3220, woodMid: 0x6d4c2c,
+  marbleA:    '#e8e2d4', marbleB:   '#33312e',
+  wallGreen:  '#3d4f42', wainscot:  '#3a2a1a',
+  paper:      0xf0e6cc, card:      0xe8d9ac,
+  flame:      0xffc76a, lampGreen: 0x2f8f5a,
+  fogCol:     0x241c12
+};
+
+/* ============================================================
+   2. SEEDED PRNG & SMALL HELPERS
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rrange = (a, b) => a + (b - a) * rand();
+const animators = [];                        // fns(t) run every frame
+const deskGlows = [];                        // banker-lamp lights (breathe softly)
+function box(w, h, d, mat, x = 0, y = 0, z = 0, shadow = true){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = shadow; m.receiveShadow = true;
+  return m;
+}
+function cyl(rT, rB, h, seg, mat, x = 0, y = 0, z = 0){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rT, rB, h, seg), mat);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+// Flat ribbon following a 3D curve (used for the printout paper run)
+function ribbon(curve, width, segs, mat){
+  const pts = curve.getSpacedPoints(segs);
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i <= segs; i++){
+    const p = pts[i];
+    pos.push(p.x, p.y, p.z - width / 2, p.x, p.y, p.z + width / 2);
+    uv.push(0, i / segs, 1, i / segs);
+  }
+  for (let i = 0; i < segs; i++){
+    const a = i * 2;
+    idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.castShadow = true;
+  return mesh;
+}
+
+/* ============================================================
+   3. RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.fogCol);
+scene.fog = new THREE.Fog(PAL.fogCol, 26, 84);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(14.5, 12.4, 12.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.5, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 12;
+controls.maxDistance = 22;
+controls.maxPolarAngle = 1.32;
+
+/* ============================================================
+   4. PROCEDURAL CANVAS TEXTURES
+   ============================================================ */
+function canvasTex(w, h, draw, repX = 1, repY = 1){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX, repY);
+  t.anisotropy = 8; t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+// Checkered marble floor with soft veins
+const floorTex = canvasTex(1024, 1024, (g, w, h) => {
+  const cells = 8, s = w / cells;
+  for (let y = 0; y < cells; y++) for (let x = 0; x < cells; x++){
+    g.fillStyle = (x + y) % 2 ? PAL.marbleB : PAL.marbleA;
+    g.fillRect(x * s, y * s, s, s);
+    g.strokeStyle = 'rgba(0,0,0,0.35)'; g.lineWidth = 3;
+    g.strokeRect(x * s + 1, y * s + 1, s - 2, s - 2);
+  }
+  for (let i = 0; i < 260; i++){                       // veins
+    g.strokeStyle = `rgba(${rand() < 0.5 ? '255,255,255' : '90,90,90'},${rrange(0.05, 0.16)})`;
+    g.lineWidth = rrange(0.6, 2.2);
+    g.beginPath();
+    let vx = rand() * w, vy = rand() * h;
+    g.moveTo(vx, vy);
+    for (let k = 0; k < 5; k++){ vx += rrange(-60, 60); vy += rrange(-60, 60); g.lineTo(vx, vy); }
+    g.stroke();
+  }
+}, 5, 3.5);
+// Deep-green paneled wall with wainscot band
+const wallTex = canvasTex(512, 512, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#46584a'); grad.addColorStop(0.62, PAL.wallGreen);
+  grad.addColorStop(0.63, '#8a6a33'); grad.addColorStop(0.66, PAL.wainscot);
+  grad.addColorStop(1, '#2c2013');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(201,151,60,0.5)'; g.lineWidth = 4;
+  g.strokeRect(40, 50, w - 80, h * 0.42);              // gilt panel frame
+  g.strokeStyle = 'rgba(0,0,0,0.3)';
+  for (let y = h * 0.68; y < h; y += 34){ g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+}, 6, 1);
+// Tall arched window: dusk-blue panes behind glazing bars
+const windowTex = canvasTex(256, 512, (g, w, h) => {
+  g.fillStyle = '#1a140c'; g.fillRect(0, 0, w, h);
+  g.save();
+  g.beginPath(); g.moveTo(18, h); g.lineTo(18, w / 2 + 30);
+  g.arc(w / 2, w / 2 + 30, w / 2 - 18, Math.PI, 0);
+  g.lineTo(w - 18, h); g.closePath(); g.clip();
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#9db8d8'); grad.addColorStop(0.5, '#5c76a4'); grad.addColorStop(1, '#2c3a5e');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#241c12'; g.lineWidth = 9;
+  for (let x = w / 2 - 66; x <= w / 2 + 66; x += 44){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  for (let y = 90; y < h; y += 84){ g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  g.restore();
+});
+// Brass digit wheel wrap: engraved 0-9 band between machined grooves
+const digitTex = canvasTex(512, 128, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#7e5a20'); grad.addColorStop(0.28, '#d8a94e');
+  grad.addColorStop(0.5, '#b98d3f'); grad.addColorStop(0.72, '#d8a94e'); grad.addColorStop(1, '#6d4d1b');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(40,26,8,0.85)'; g.fillRect(0, 6, w, 4); g.fillRect(0, h - 10, w, 4);
+  g.font = 'bold 52px Georgia'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  for (let i = 0; i < 10; i++){
+    const cx = (i + 0.5) * w / 10;
+    g.fillStyle = 'rgba(30,18,4,0.9)'; g.fillText(String((i * 3) % 10), cx, h / 2 + 2);
+    g.strokeStyle = 'rgba(50,32,10,0.7)'; g.lineWidth = 3;
+    g.beginPath(); g.moveTo(cx + w / 20, 14); g.lineTo(cx + w / 20, h - 14); g.stroke();
+  }
+});
+// Printout paper: columns of computed figures
+const paperTex = canvasTex(256, 512, (g, w, h) => {
+  g.fillStyle = '#f2e8cf'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(140,60,40,0.5)';
+  g.beginPath(); g.moveTo(26, 0); g.lineTo(26, h); g.moveTo(w - 26, 0); g.lineTo(w - 26, h); g.stroke();
+  g.font = '13px monospace'; g.fillStyle = 'rgba(45,40,60,0.85)';
+  for (let y = 16; y < h; y += 22){
+    let row = '';
+    for (let c = 0; c < 4; c++) row += String(Math.floor(rand() * 9000) + 1000) + ' ';
+    g.fillText(row, 34, y);
+  }
+}, 1, 2);
+// Punch card face: index rows of rectangular holes
+const cardTex = canvasTex(256, 128, (g, w, h) => {
+  g.fillStyle = '#e8d9ac'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(120,90,40,0.7)'; g.strokeRect(3, 3, w - 6, h - 6);
+  g.fillStyle = '#2a2116';
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 14; c++)
+    if (rand() < 0.4) g.fillRect(14 + c * 17, 16 + r * 21, 8, 13);
+});
+
+/* ============================================================
+   5. SHARED MATERIALS
+   ============================================================ */
+const MAT = {
+  brass:   new THREE.MeshStandardMaterial({ color: PAL.brass, metalness: 0.85, roughness: 0.32 }),
+  brassDk: new THREE.MeshStandardMaterial({ color: PAL.brassDark, metalness: 0.8, roughness: 0.42 }),
+  iron:    new THREE.MeshStandardMaterial({ color: PAL.iron, metalness: 0.7, roughness: 0.55 }),
+  ironDk:  new THREE.MeshStandardMaterial({ color: PAL.ironDark, metalness: 0.6, roughness: 0.62 }),
+  wood:    new THREE.MeshStandardMaterial({ color: PAL.woodDark, roughness: 0.8 }),
+  woodMid: new THREE.MeshStandardMaterial({ color: PAL.woodMid, roughness: 0.75 }),
+  wheel:   new THREE.MeshStandardMaterial({ map: digitTex, metalness: 0.78, roughness: 0.35 }),
+  floor:   new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.5, metalness: 0.1 }),
+  wall:    new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.9 }),
+  ceil:    new THREE.MeshStandardMaterial({ color: 0x483826, roughness: 0.95 }),
+  window:  new THREE.MeshStandardMaterial({ map: windowTex, emissive: 0xbcd0ee, emissiveMap: windowTex, emissiveIntensity: 0.85, color: 0x111111 }),
+  paper:   new THREE.MeshStandardMaterial({ map: paperTex, roughness: 0.9, side: THREE.DoubleSide }),
+  card:    new THREE.MeshStandardMaterial({ map: cardTex, roughness: 0.85 }),
+  cardEdge:new THREE.MeshStandardMaterial({ color: PAL.card, roughness: 0.9 }),
+  get cardBox(){ return [this.cardEdge, this.cardEdge, this.card, this.cardEdge, this.cardEdge, this.cardEdge]; },
+  glassGr: new THREE.MeshStandardMaterial({ color: PAL.lampGreen, emissive: 0x2fae62, emissiveIntensity: 1.3, roughness: 0.3 }),
+  flame:   new THREE.MeshBasicMaterial({ color: PAL.flame }),
+  globe:   new THREE.MeshStandardMaterial({ color: 0xfff2cf, emissive: 0xffca70, emissiveIntensity: 1.5, roughness: 0.4 }),
+  basket:  new THREE.MeshStandardMaterial({ color: 0x8a6a3c, roughness: 0.95 })
+};
+
+/* ============================================================
+   6. BUILDERS — each returns a THREE.Group
+   ============================================================ */
+// ---- 6a. The hall: floor, walls, windows, pilasters, ceiling
+function buildHall(){
+  const g = new THREE.Group();
+  const { w, d, h } = CFG.hall;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(w, d), MAT.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  g.add(floor);
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(w, d), MAT.ceil);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = h;
+  g.add(ceil);
+  const mkWall = (len, x, z, ry) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(len, h), MAT.wall);
+    m.position.set(x, h / 2, z); m.rotation.y = ry; m.receiveShadow = true;
+    g.add(m);
+  };
+  mkWall(w, 0, -d / 2, 0); mkWall(w, 0, d / 2, Math.PI);
+  mkWall(d, -w / 2, 0, Math.PI / 2); mkWall(d, w / 2, 0, -Math.PI / 2);
+  // arched windows along both long walls
+  const winGeo = new THREE.PlaneGeometry(3.4, 8.2);
+  for (let i = -2; i <= 2; i++) for (const sz of [-1, 1]){
+    const win = new THREE.Mesh(winGeo, MAT.window);
+    win.position.set(i * 11, 7.4, sz * (d / 2 - 0.08));
+    win.rotation.y = sz > 0 ? Math.PI : 0;
+    g.add(win);
+  }
+  // pilasters + cornice
+  const pilGeo = new THREE.BoxGeometry(0.9, h - 1.6, 0.55);
+  const pil = new THREE.InstancedMesh(pilGeo, MAT.wall, 14);
+  const dum = new THREE.Object3D(); let pi = 0;
+  for (let i = -2.5; i <= 2.5; i++) for (const sz of [-1, 1]){
+    dum.position.set(i * 11, (h - 1.6) / 2, sz * (d / 2 - 0.3));
+    dum.rotation.set(0, 0, 0); dum.updateMatrix(); pil.setMatrixAt(pi++, dum.matrix);
+  }
+  for (const sx of [-1, 1]){
+    dum.position.set(sx * (w / 2 - 0.3), (h - 1.6) / 2, 0);
+    dum.updateMatrix(); pil.setMatrixAt(pi++, dum.matrix);
+  }
+  pil.castShadow = true; g.add(pil);
+  g.add(box(w, 0.7, 0.8, MAT.brassDk, 0, h - 1.1, -d / 2 + 0.4, false));
+  g.add(box(w, 0.7, 0.8, MAT.brassDk, 0, h - 1.1, d / 2 - 0.4, false));
+  // arched doorway on the west end wall
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(5, 9), new THREE.MeshStandardMaterial({ color: 0x17120a, roughness: 1 }));
+  door.position.set(-w / 2 + 0.05, 4.5, 0); door.rotation.y = Math.PI / 2;
+  g.add(door);
+  const arch = cyl(2.9, 2.9, 0.2, 24, MAT.brassDk, -w / 2 + 0.12, 9, 0);
+  arch.rotation.z = Math.PI / 2;
+  g.add(arch);
+  return g;
+}
+// ---- 6b. One column of stacked calculation wheels (ticks in the wave)
+function buildWheelColumn(colIndex){
+  const g = new THREE.Group();
+  const wheels = [];
+  const geo = new THREE.CylinderGeometry(CFG.wheelR, CFG.wheelR, CFG.wheelH, 22);
+  for (let i = 0; i < CFG.wheelsPerColumn; i++){
+    const wme = new THREE.Mesh(geo, MAT.wheel);
+    wme.position.y = 1.12 + i * CFG.wheelPitch;
+    wme.castShadow = true;
+    wheels.push(wme); g.add(wme);
+  }
+  g.userData = { colIndex, wheels };
+  return g;
+}
+// ---- 6c. The room-sized difference engine (frame, columns, camshaft)
+function buildEngine(){
+  const g = new THREE.Group();
+  const n = CFG.columns, pitch = CFG.colPitch;
+  const halfSpan = ((n - 1) / 2) * pitch;
+  const colX = i => (i - (n - 1) / 2) * pitch;
+  g.add(box(halfSpan * 2 + 3.4, 0.55, 3.4, MAT.ironDk, 0, 0.28, 0));       // plinth
+  g.add(box(halfSpan * 2 + 2.6, 0.35, 2.6, MAT.iron, 0, 0.72, 0));
+  const columns = [];
+  for (let c = 0; c < n; c++){
+    const col = buildWheelColumn(c);
+    col.position.x = colX(c);
+    columns.push(col); g.add(col);
+  }
+  // shared static hardware: axle rods, spacer shelves, follower rods
+  const dum = new THREE.Object3D();
+  const rods = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.09, 4.6, 10), MAT.brassDk, n);
+  const shelves = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.68, 0.68, 0.07, 20), MAT.ironDk, n * (CFG.wheelsPerColumn + 1));
+  const followers = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.05, 0.05, 1.15, 8), MAT.brass, n);
+  let si = 0;
+  for (let c = 0; c < n; c++){
+    dum.position.set(colX(c), 3.1, 0); dum.updateMatrix(); rods.setMatrixAt(c, dum.matrix);
+    dum.position.set(colX(c), 5.02, 0); dum.updateMatrix(); followers.setMatrixAt(c, dum.matrix);
+    for (let i = 0; i <= CFG.wheelsPerColumn; i++){
+      dum.position.set(colX(c), 0.92 + i * CFG.wheelPitch, 0); dum.updateMatrix();
+      shelves.setMatrixAt(si++, dum.matrix);
+    }
+  }
+  rods.castShadow = shelves.castShadow = true;
+  g.add(rods, shelves, followers);
+  // frame: end plates, top beam, tie rails, corner finials
+  for (const sx of [-1, 1]){
+    g.add(box(0.45, 5.3, 2.9, MAT.iron, sx * (halfSpan + 1.35), 3.05, 0));
+    for (const sz of [-1, 1])
+      g.add(cyl(0.14, 0.2, 0.55, 10, MAT.brass, sx * (halfSpan + 1.35), 6.15, sz * 1.0));
+  }
+  g.add(box(halfSpan * 2 + 3.2, 0.3, 1.35, MAT.ironDk, 0, 5.8, 0));
+  g.add(box(halfSpan * 2 + 3.3, 0.08, 1.45, MAT.brassDk, 0, 5.99, 0, false));
+  for (const sz of [-1, 1]) for (const ry of [2.1, 4.2])
+    g.add(box(halfSpan * 2 + 2.7, 0.14, 0.14, MAT.brassDk, 0, ry, sz * 1.15, false));
+  // camshaft along the top with one elongated cam per column
+  const camGroup = new THREE.Group();
+  camGroup.position.set(0, 5.5, 1.62);
+  const shaft = cyl(0.11, 0.11, halfSpan * 2 + 6, 12, MAT.brass);
+  shaft.rotation.z = Math.PI / 2;
+  camGroup.add(shaft);
+  const camGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.12, 16);
+  camGeo.rotateZ(Math.PI / 2);
+  const cams = new THREE.InstancedMesh(camGeo, MAT.brass, n);
+  for (let c = 0; c < n; c++){
+    dum.position.set(colX(c), 0, 0);
+    dum.rotation.set(c * 0.52, 0, 0); dum.scale.set(1, 1.7, 1);
+    dum.updateMatrix(); cams.setMatrixAt(c, dum.matrix);
+  }
+  dum.rotation.set(0, 0, 0); dum.scale.set(1, 1, 1);
+  cams.castShadow = true;
+  camGroup.add(cams);
+  g.add(camGroup);
+  // animation: ticking wave rippling along the columns + camshaft turn
+  animators.push(t => {
+    const p = t * CFG.tickRate;
+    for (const col of columns){
+      for (const wme of col.userData.wheels){
+        const ph = p - col.userData.colIndex * 0.42 - wme.position.y * 0.22;
+        const f = ph - Math.floor(ph);
+        const step = Math.floor(ph) + THREE.MathUtils.smoothstep(f, 0.55, 0.92);
+        wme.rotation.y = step * (Math.PI * 2 / 10) * (col.userData.colIndex % 2 ? -1 : 1);
+      }
+    }
+    camGroup.rotation.x = p * Math.PI * 0.5;
+  });
+  return g;
+}
+// ---- 6d. Crank tower: flywheel, crank arm, piston link at each end
+function buildCrankTower(side){
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.4, 2.2, MAT.ironDk, 0, 0.2, 0));
+  for (const sz of [-1, 1]) g.add(box(0.32, 4.6, 0.32, MAT.iron, 0, 2.6, sz * 0.85));
+  g.add(box(0.4, 0.4, 2.1, MAT.iron, 0, 4.9, 0));
+  const wheelGrp = new THREE.Group();
+  wheelGrp.position.set(0, 3.4, 0);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.25, 0.12, 10, 28), MAT.brass);
+  rim.castShadow = true;
+  const hub = cyl(0.18, 0.18, 0.5, 12, MAT.brassDk);
+  hub.rotation.x = Math.PI / 2;
+  wheelGrp.add(rim, hub);
+  for (let s = 0; s < 3; s++){
+    const spoke = box(0.1, 2.3, 0.09, MAT.brassDk, 0, 0, 0);
+    spoke.rotation.z = s * Math.PI / 3;
+    wheelGrp.add(spoke);
+  }
+  const pin = cyl(0.07, 0.07, 0.5, 8, MAT.brass, 0.9, 0, 0);
+  pin.rotation.x = Math.PI / 2;
+  wheelGrp.add(pin);
+  g.add(wheelGrp);
+  // connecting rod down to a steam cylinder on the base
+  const rod = new THREE.Mesh(new THREE.BoxGeometry(0.09, 2.4, 0.09), MAT.iron);
+  rod.geometry.translate(0, -1.2, 0); rod.castShadow = true;
+  g.add(rod);
+  g.add(cyl(0.42, 0.48, 1.1, 14, MAT.brassDk, 0.9, 0.95, 0));
+  animators.push(t => {
+    const a = t * 1.9 * side;
+    wheelGrp.rotation.z = a;
+    const px = Math.cos(a) * 0.9, py = 3.4 + Math.sin(a) * 0.9;
+    rod.position.set(px, py, 0);
+    rod.rotation.z = Math.atan2(px - 0.9, py - 1.5);
+  });
+  return g;
+}
+// ---- 6e. Punch-card reader with hopper stack and oscillating feed arm
+function buildCardReader(){
+  const g = new THREE.Group();
+  g.add(box(1.7, 1.05, 1.2, MAT.ironDk, 0, 0.55, 0));
+  g.add(box(1.9, 0.12, 1.4, MAT.brassDk, 0, 1.13, 0));
+  // sloped hopper holding a stack of punch cards
+  const hopper = new THREE.Group();
+  hopper.position.set(-0.35, 1.2, 0); hopper.rotation.z = 0.3;
+  hopper.add(box(1.0, 0.08, 1.05, MAT.iron, 0, 0, 0));
+  hopper.add(box(0.08, 0.55, 1.05, MAT.iron, -0.52, 0.25, 0));
+  const stack = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.4, 0.92), MAT.cardBox);
+  stack.position.set(0, 0.26, 0); stack.castShadow = true;
+  hopper.add(stack);
+  g.add(hopper);
+  // brass reader arch + feed arm
+  g.add(box(0.14, 0.85, 1.15, MAT.brass, 0.55, 1.55, 0));
+  g.add(box(0.5, 0.14, 1.15, MAT.brass, 0.4, 1.95, 0));
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.85, 0.07, 0.16), MAT.brassDk);
+  arm.geometry.translate(-0.4, 0, 0);
+  arm.position.set(0.5, 1.86, 0); arm.castShadow = true;
+  g.add(arm);
+  // output tray with a few read cards slid out
+  g.add(box(0.9, 0.07, 1.1, MAT.iron, 1.15, 1.0, 0));
+  for (let i = 0; i < 3; i++){
+    const c = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.02, 0.85), MAT.card);
+    c.position.set(1.1 + rrange(-0.1, 0.1), 1.05 + i * 0.02, rrange(-0.1, 0.1));
+    c.rotation.y = rrange(-0.2, 0.2); g.add(c);
+  }
+  const crank = cyl(0.05, 0.05, 0.5, 8, MAT.brass, 0.9, 0.7, 0.68);
+  crank.rotation.x = Math.PI / 2.6; g.add(crank);
+  animators.push(t => { arm.rotation.z = Math.sin(t * 3.1) * 0.28 - 0.1; });
+  return g;
+}
+// ---- 6f. Printer table: rollers, flowing printout, wicker basket
+function buildPrinterStation(){
+  const g = new THREE.Group();
+  g.add(box(2.1, 0.12, 1.3, MAT.wood, 0, 1.05, 0));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    g.add(box(0.12, 1.0, 0.12, MAT.wood, sx * 0.92, 0.5, sz * 0.55));
+  g.add(box(1.2, 0.5, 1.0, MAT.iron, -0.35, 1.36, 0));
+  const roller = cyl(0.16, 0.16, 1.0, 12, MAT.brass, 0.25, 1.62, 0);
+  roller.rotation.x = Math.PI / 2;
+  const pinch = cyl(0.09, 0.09, 1.0, 10, MAT.brassDk, 0.5, 1.5, 0);
+  pinch.rotation.x = Math.PI / 2;
+  g.add(roller, pinch);
+  // paper runs from the platen, over, and down into the basket
+  const curve = new THREE.CatmullRomCurve3([[0.1, 1.66], [0.45, 1.86], [0.95, 1.55],
+    [1.35, 0.95], [1.5, 0.55]].map(p => new THREE.Vector3(p[0], p[1], 0)));
+  const paper = ribbon(curve, 0.72, 26, MAT.paper);
+  g.add(paper);
+  // wicker basket with a coiled heap of printed scroll inside
+  const basket = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.45, 0.75, 14, 1, true), MAT.basket);
+  basket.position.set(1.5, 0.38, 0);
+  basket.material.side = THREE.DoubleSide; basket.castShadow = true;
+  g.add(basket);
+  g.add(cyl(0.63, 0.63, 0.06, 14, MAT.brassDk, 1.5, 0.76, 0));
+  const coil = cyl(0.34, 0.4, 0.4, 12, MAT.paper, 1.5, 0.55, 0);
+  g.add(coil);
+  animators.push(t => {
+    roller.rotation.y = t * 1.6;
+    paperTex.offset.y = (-t * 0.07) % 1;
+    coil.rotation.y = t * 0.25;
+  });
+  return g;
+}
+// ---- 6g. Clerk's high desk with glowing green banker's lamp + stool
+function buildClerkDesk(){
+  const g = new THREE.Group();
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    g.add(box(0.1, 1.25, 0.1, MAT.wood, sx * 0.72, 0.62, sz * 0.42));
+  g.add(box(1.65, 0.34, 1.0, MAT.woodMid, 0, 1.4, 0));
+  const top = box(1.65, 0.08, 1.06, MAT.wood, 0, 1.62, 0.04);
+  top.rotation.x = -0.24;
+  g.add(top);
+  g.add(box(1.65, 0.1, 0.12, MAT.wood, 0, 1.5, 0.55));                    // pen ledge
+  const ledger = box(0.6, 0.05, 0.8, MAT.paper, rrange(-0.3, 0.3), 1.68, 0);
+  ledger.rotation.x = -0.24; ledger.rotation.y = rrange(-0.25, 0.25);
+  g.add(ledger);
+  // banker's lamp: brass stem, green glass shade, warm-green glow
+  const lamp = new THREE.Group();
+  lamp.position.set(0.55, 1.78, -0.28); lamp.rotation.x = -0.24;
+  lamp.add(cyl(0.09, 0.12, 0.05, 10, MAT.brass, 0, 0, 0), cyl(0.02, 0.02, 0.4, 8, MAT.brass, 0, 0.2, 0));
+  const shade = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.24, 0.16, 12, 1, true, Math.PI, Math.PI * 2), MAT.glassGr);
+  shade.position.y = 0.42; shade.material.side = THREE.DoubleSide;
+  lamp.add(shade);
+  const glow = new THREE.PointLight(0xbfffd0, 4.5, 5.5, 2);
+  glow.position.y = 0.36;
+  lamp.add(glow);
+  g.add(lamp);
+  deskGlows.push(glow);
+  // tall stool
+  g.add(cyl(0.26, 0.3, 0.07, 12, MAT.woodMid, 0, 1.02, 0.95));
+  for (let i = 0; i < 4; i++){
+    const a = i * Math.PI / 2 + 0.78;
+    const leg = cyl(0.035, 0.05, 1.0, 8, MAT.wood, Math.cos(a) * 0.2, 0.5, 0.95 + Math.sin(a) * 0.2);
+    leg.rotation.z = Math.cos(a) * -0.1;
+    g.add(leg);
+  }
+  return g;
+}
+// ---- 6h. Gas chandelier: brass ring, glowing globes, live flames
+function buildChandelier(){
+  const g = new THREE.Group();
+  g.add(cyl(0.05, 0.05, 4.9, 8, MAT.brassDk, 0, 2.45, 0), cyl(0.3, 0.42, 0.5, 12, MAT.brass, 0, 0.1, 0));
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(1.45, 0.09, 10, 26), MAT.brass);
+  ring.rotation.x = Math.PI / 2; ring.position.y = -0.5; ring.castShadow = true;
+  g.add(ring);
+  const nG = 6;
+  const globes = new THREE.InstancedMesh(new THREE.SphereGeometry(0.21, 12, 10), MAT.globe, nG);
+  const dum = new THREE.Object3D();
+  const flames = [];
+  for (let i = 0; i < nG; i++){
+    const a = i * Math.PI * 2 / nG;
+    const px = Math.cos(a) * 1.45, pz = Math.sin(a) * 1.45;
+    dum.position.set(px, -0.22, pz); dum.updateMatrix();
+    globes.setMatrixAt(i, dum.matrix);
+    const arm = cyl(0.04, 0.04, 0.75, 6, MAT.brassDk, px * 0.75, -0.4, pz * 0.75);
+    arm.rotation.set(Math.sin(a) * 0.9, 0, -Math.cos(a) * 0.9);
+    g.add(arm);
+    const fl = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.3, 7), MAT.flame);
+    fl.position.set(px, 0.08, pz);
+    fl.userData.phase = rrange(0, Math.PI * 2);
+    flames.push(fl); g.add(fl);
+  }
+  g.add(globes);
+  const light = new THREE.PointLight(0xffc27a, 55, 30, 2);
+  light.position.y = -0.2;
+  g.add(light);
+  animators.push(t => {
+    let flick = 0.86 + 0.14 * Math.sin(t * 9 + g.position.x) * Math.sin(t * 6.3 + 1.7);
+    light.intensity = 55 * flick;
+    for (const fl of flames){
+      const s = 0.85 + 0.3 * Math.sin(t * 11 + fl.userData.phase);
+      fl.scale.set(1, s, 1);
+    }
+  });
+  return g;
+}
+// ---- 6i. Brass railing run separating public floor from the engine
+function buildRailing(len){
+  const g = new THREE.Group();
+  const n = Math.round(len / 1.6) + 1;
+  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.045, 0.06, 0.95, 8), MAT.brass, n);
+  const dum = new THREE.Object3D();
+  for (let i = 0; i < n; i++){
+    dum.position.set(-len / 2 + i * len / (n - 1), 0.48, 0); dum.updateMatrix();
+    posts.setMatrixAt(i, dum.matrix);
+  }
+  posts.castShadow = true; g.add(posts);
+  g.add(box(len, 0.06, 0.06, MAT.brass, 0, 0.95, 0, false));
+  g.add(box(len, 0.04, 0.04, MAT.brassDk, 0, 0.55, 0, false));
+  return g;
+}
+// ---- 6j. Wall clock over the east door (hands keep hall time)
+function buildWallClock(){
+  const g = new THREE.Group();
+  g.add(cyl(1.5, 1.5, 0.18, 26, MAT.brassDk, 0, 0, 0));
+  const face = cyl(1.32, 1.32, 0.2, 26, new THREE.MeshStandardMaterial({ color: 0xefe6d0, roughness: 0.8 }), 0, 0, 0);
+  g.add(face);
+  const hourHand = box(0.09, 0.02, 0.75, MAT.ironDk, 0, 0.12, 0);
+  hourHand.geometry.translate(0, 0, -0.3);
+  const minHand = box(0.06, 0.02, 1.05, MAT.ironDk, 0, 0.14, 0);
+  minHand.geometry.translate(0, 0, -0.42);
+  g.add(hourHand, minHand);
+  const ticks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.06, 0.03, 0.22), MAT.ironDk, 12);
+  const dum = new THREE.Object3D();
+  for (let i = 0; i < 12; i++){
+    const a = i * Math.PI / 6;
+    dum.position.set(Math.sin(a) * 1.12, 0.11, Math.cos(a) * 1.12);
+    dum.rotation.set(0, a, 0); dum.updateMatrix(); ticks.setMatrixAt(i, dum.matrix);
+  }
+  g.add(ticks);
+  g.rotation.z = Math.PI / 2;                            // face out from wall
+  animators.push(t => {
+    minHand.rotation.y = -t * 0.12;
+    hourHand.rotation.y = -t * 0.01 - 2.1;
+  });
+  return g;
+}
+
+/* ============================================================
+   7. ASSEMBLY / LAYOUT
+   ============================================================ */
+scene.add(buildHall());
+const engine = buildEngine();
+scene.add(engine);
+const towerL = buildCrankTower(1);  towerL.position.set(-9.3, 0, 0);
+const towerR = buildCrankTower(-1); towerR.position.set(9.3, 0, 0); towerR.rotation.y = Math.PI;
+scene.add(towerL, towerR);
+for (const [x, z, ry] of [[-12.0, 5.9, 0.6], [-12.0, -5.9, 2.6]]){
+  const reader = buildCardReader();
+  reader.position.set(x, 0, z); reader.rotation.y = ry;
+  scene.add(reader);
+}
+for (const [z, ry] of [[5.9, Math.PI + 0.5], [-5.9, Math.PI - 0.6]]){
+  const printer = buildPrinterStation();
+  printer.position.set(12.0, 0, z); printer.rotation.y = ry;
+  scene.add(printer);
+}
+for (let i = 0; i < CFG.desks; i++){
+  const desk = buildClerkDesk();
+  desk.position.set(-6 + i * 6, 0, -7.9 + rrange(-0.3, 0.3));
+  desk.rotation.y = rrange(-0.12, 0.12);
+  scene.add(desk);
+}
+const inspectorDesk = buildClerkDesk();          // front-row inspector's post
+inspectorDesk.position.set(4.8, 0, 7.9); inspectorDesk.rotation.y = Math.PI + 0.1;
+scene.add(inspectorDesk);
+const chandeliers = [];
+for (let i = 0; i < CFG.chandeliers; i++){
+  const ch = buildChandelier();
+  ch.position.set(-11 + i * 11, 10.6, 0);
+  chandeliers.push(ch); scene.add(ch);
+}
+const railFront = buildRailing(26); railFront.position.set(0, 0, 4.4);
+const railBack = buildRailing(26);  railBack.position.set(0, 0, -4.4);
+scene.add(railFront, railBack);
+for (const sz of [-1, 1]){
+  const ret = buildRailing(8.8);
+  ret.position.set(sz * 13, 0, 0); ret.rotation.y = Math.PI / 2;
+  scene.add(ret);
+}
+const clock = buildWallClock();
+clock.position.set(CFG.hall.w / 2 - 0.35, 10.5, 0);
+scene.add(clock);
+// scattered spare card crates near the readers (coherent extra props)
+for (let i = 0; i < 4; i++){
+  const crate = box(1.1, 0.7, 0.8, MAT.woodMid, -15.5 + rrange(-0.5, 0.5), 0.35, -2.5 + i * 1.8 + rrange(-0.2, 0.2));
+  crate.rotation.y = rrange(-0.3, 0.3); scene.add(crate);
+  const lid = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.12, 0.65), MAT.cardBox);
+  lid.position.copy(crate.position).y = 0.76;
+  lid.rotation.y = crate.rotation.y; scene.add(lid);
+}
+
+/* ============================================================
+   8. LIGHTING RIG
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x94846a, 0x2c2118, 0.55);
+scene.add(hemi);
+const key = new THREE.DirectionalLight(0xffe2b8, 2.4);
+key.position.set(10, 20, 12);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -24; key.shadow.camera.right = 24;
+key.shadow.camera.top = 22; key.shadow.camera.bottom = -22;
+key.shadow.camera.near = 4; key.shadow.camera.far = 55;
+key.shadow.bias = -0.0004;
+scene.add(key);
+const engineSpot = new THREE.SpotLight(0xffd9a0, 200, 40, 0.66, 0.55, 2);
+engineSpot.position.set(0, 9.5, 14.5);
+engineSpot.target.position.set(0, 2.6, 0);
+scene.add(engineSpot, engineSpot.target);
+const duskFill = new THREE.DirectionalLight(0x8ea2c8, 0.5);
+duskFill.position.set(-14, 10, -18);
+scene.add(duskFill);
+
+/* ============================================================
+   9. ANIMATION LOOP
+   ============================================================ */
+// desk lamps breathe very slightly, registered here as one animator
+animators.push(t => {
+  for (let i = 0; i < deskGlows.length; i++)
+    deskGlows[i].intensity = 4.5 * (0.92 + 0.08 * Math.sin(t * 4 + i * 2.1));
+});
+const clockRef = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clockRef.getElapsedTime();
+  for (const fn of animators) fn(t);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   10. RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

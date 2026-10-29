@@ -1,0 +1,659 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Pad-Mounted Transformer Kiosk</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17191c; }
+  #app { width: 100vw; height: 100vh; display: block; }
+  #label {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: #9aa0a6; letter-spacing: 0.04em; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,0.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="app"></canvas>
+<div id="label">Pad-Mounted Distribution Transformer &middot; drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+// ---------------------------------------------------------------------------
+// Scene & camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181b);
+scene.fog = new THREE.Fog(0x16181b, 14, 42);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(4.6, 3.0, 6.2);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambient + directional key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcd0e6, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e0, 2.4);
+key.position.set(6.5, 9.0, 5.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -8;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8d6, 0.7);
+fill.position.set(-6.0, 4.0, 3.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdfeaff, 1.1);
+rim.position.set(-4.0, 5.5, -6.5);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const UTILITY_GREEN = 0x3a5a40;       // classic utility "meter scale" green
+const UTILITY_GREEN_DK = 0x2c4632;
+
+const steelBody = new THREE.MeshStandardMaterial({
+  color: UTILITY_GREEN, roughness: 0.55, metalness: 0.55
+});
+const steelBodyDark = new THREE.MeshStandardMaterial({
+  color: UTILITY_GREEN_DK, roughness: 0.6, metalness: 0.5
+});
+const steelTrim = new THREE.MeshStandardMaterial({
+  color: 0x25382b, roughness: 0.5, metalness: 0.65
+});
+const hardware = new THREE.MeshStandardMaterial({
+  color: 0x6a6f73, roughness: 0.4, metalness: 0.85
+});
+const boltMat = new THREE.MeshStandardMaterial({
+  color: 0x9aa0a4, roughness: 0.35, metalness: 0.9
+});
+const hingeMat = new THREE.MeshStandardMaterial({
+  color: 0x3d4247, roughness: 0.45, metalness: 0.8
+});
+const concreteMat = new THREE.MeshStandardMaterial({
+  color: 0x9a978f, roughness: 0.95, metalness: 0.02
+});
+const concreteDarker = new THREE.MeshStandardMaterial({
+  color: 0x817e77, roughness: 0.97, metalness: 0.02
+});
+const porcelainMat = new THREE.MeshStandardMaterial({
+  color: 0x8f5a2a, roughness: 0.35, metalness: 0.05
+});
+const conduitMat = new THREE.MeshStandardMaterial({
+  color: 0x4a4d50, roughness: 0.5, metalness: 0.7
+});
+const copperMat = new THREE.MeshStandardMaterial({
+  color: 0xb87333, roughness: 0.4, metalness: 0.9
+});
+
+// Canvas-drawn label textures ----------------------------------------------
+function makeLabelTexture(draw, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  draw(ctx, w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+const dangerTex = makeLabelTexture((ctx, w, h) => {
+  ctx.fillStyle = '#f2c200'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#111'; ctx.fillRect(0, 0, w, h * 0.30);
+  ctx.fillStyle = '#f2c200';
+  ctx.font = 'bold ' + (h * 0.20) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('DANGER', w / 2, h * 0.15);
+  ctx.fillStyle = '#111';
+  ctx.font = 'bold ' + (h * 0.12) + 'px sans-serif';
+  ctx.fillText('HIGH VOLTAGE', w / 2, h * 0.47);
+  ctx.font = (h * 0.085) + 'px sans-serif';
+  ctx.fillText('KEEP OUT', w / 2, h * 0.66);
+  ctx.fillText('AUTHORIZED PERSONNEL ONLY', w / 2, h * 0.82);
+  ctx.strokeStyle = '#111'; ctx.lineWidth = h * 0.03;
+  ctx.strokeRect(ctx.lineWidth / 2, ctx.lineWidth / 2, w - ctx.lineWidth, h - ctx.lineWidth);
+}, 512, 384);
+
+const ratingTex = makeLabelTexture((ctx, w, h) => {
+  ctx.fillStyle = '#c9ccce'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#4a4d50'; ctx.lineWidth = 6;
+  ctx.strokeRect(6, 6, w - 12, h - 12);
+  ctx.fillStyle = '#1c1f22';
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold ' + (h * 0.11) + 'px monospace';
+  ctx.fillText('DISTRIBUTION TRANSFORMER', w * 0.08, h * 0.16);
+  ctx.font = (h * 0.082) + 'px monospace';
+  const rows = [
+    'KVA  500       PHASE  3',
+    'HV   13800V    LV  480/277V',
+    'FREQ 60Hz      Z%   5.75',
+    'TYPE ONAN      OIL  MINERAL',
+    'SER# PT-500-2231-A'
+  ];
+  rows.forEach((r, i) => ctx.fillText(r, w * 0.08, h * (0.34 + i * 0.128)));
+}, 512, 384);
+
+const groundTex = makeLabelTexture((ctx, w, h) => {
+  ctx.fillStyle = '#0f7a3a'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#eafff0';
+  ctx.font = 'bold ' + (h * 0.22) + 'px sans-serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('GROUND', w / 2, h * 0.32);
+  ctx.fillText('CONNECTION', w / 2, h * 0.62);
+  ctx.strokeStyle = '#eafff0'; ctx.lineWidth = 8;
+  ctx.strokeRect(8, 8, w - 16, h - 16);
+}, 512, 200);
+
+// ---------------------------------------------------------------------------
+// Root group (the single centered object)
+// ---------------------------------------------------------------------------
+const kiosk = new THREE.Group();
+scene.add(kiosk);
+
+// Overall dimensions (metres) -----------------------------------------------
+const PAD_W = 3.2, PAD_D = 2.6, PAD_H = 0.35;
+const BODY_W = 2.6, BODY_D = 2.0, BODY_H = 2.05;
+const bodyBaseY = PAD_H;                 // body sits on top of pad
+const bodyCenterY = bodyBaseY + BODY_H / 2;
+const frontZ = BODY_D / 2;               // +Z is the front (doors)
+
+// ---------------------------------------------------------------------------
+// Concrete pad (two-tier plinth)
+// ---------------------------------------------------------------------------
+const padGroup = new THREE.Group();
+kiosk.add(padGroup);
+
+const padBase = new THREE.Mesh(new THREE.BoxGeometry(PAD_W + 0.5, 0.18, PAD_D + 0.5), concreteDarker);
+padBase.position.y = 0.09;
+padBase.castShadow = true; padBase.receiveShadow = true;
+padGroup.add(padBase);
+
+const pad = new THREE.Mesh(new THREE.BoxGeometry(PAD_W, PAD_H, PAD_D), concreteMat);
+pad.position.y = 0.18 + PAD_H / 2;
+pad.castShadow = true; pad.receiveShadow = true;
+padGroup.add(pad);
+
+// Recompute body base to rest on the pad top
+const padTopY = 0.18 + PAD_H;
+const bodyY0 = padTopY;
+const bodyCY = bodyY0 + BODY_H / 2;
+
+// Chamfered top edge on pad (thin lip)
+const padLip = new THREE.Mesh(new THREE.BoxGeometry(PAD_W - 0.12, 0.04, PAD_D - 0.12), concreteDarker);
+padLip.position.y = padTopY - 0.02;
+padLip.receiveShadow = true; padLip.castShadow = true;
+padGroup.add(padLip);
+
+// ---------------------------------------------------------------------------
+// Main steel enclosure
+// ---------------------------------------------------------------------------
+const enclosure = new THREE.Group();
+enclosure.position.y = bodyCY;
+kiosk.add(enclosure);
+
+const body = new THREE.Mesh(new THREE.BoxGeometry(BODY_W, BODY_H, BODY_D), steelBody);
+body.castShadow = true; body.receiveShadow = true;
+enclosure.add(body);
+
+// Sloped / peaked roof (a slightly larger cap that sheds water)
+const roofBase = new THREE.Mesh(new THREE.BoxGeometry(BODY_W + 0.10, 0.10, BODY_D + 0.10), steelBodyDark);
+roofBase.position.y = BODY_H / 2 + 0.05;
+roofBase.castShadow = true; roofBase.receiveShadow = true;
+enclosure.add(roofBase);
+
+// Gentle single-slope roof (higher at back, lower at front for drainage)
+const roofSlope = new THREE.Mesh(new THREE.BoxGeometry(BODY_W + 0.06, 0.14, BODY_D + 0.06), steelBodyDark);
+roofSlope.position.y = BODY_H / 2 + 0.14;
+roofSlope.rotation.x = THREE.MathUtils.degToRad(3.2);
+roofSlope.castShadow = true; roofSlope.receiveShadow = true;
+enclosure.add(roofSlope);
+
+// Roof drip edge trim
+const dripEdge = new THREE.Mesh(new THREE.BoxGeometry(BODY_W + 0.14, 0.03, BODY_D + 0.14), steelTrim);
+dripEdge.position.y = BODY_H / 2 + 0.005;
+dripEdge.castShadow = true;
+enclosure.add(dripEdge);
+
+// ---------------------------------------------------------------------------
+// Helper builders
+// ---------------------------------------------------------------------------
+function addBolt(parent, x, y, z, r = 0.02, depth = 0.02) {
+  const b = new THREE.Mesh(new THREE.CylinderGeometry(r, r, depth, 6), boltMat);
+  b.rotation.x = Math.PI / 2;
+  b.position.set(x, y, z);
+  b.castShadow = true;
+  parent.add(b);
+  return b;
+}
+
+// A raised panel seam (thin proud rib) on the front face
+function addVerticalSeam(parent, x, halfH, z) {
+  const seam = new THREE.Mesh(new THREE.BoxGeometry(0.03, halfH * 2, 0.025), steelTrim);
+  seam.position.set(x, 0, z + 0.005);
+  seam.castShadow = true; seam.receiveShadow = true;
+  parent.add(seam);
+}
+function addHorizontalSeam(parent, y, halfW, z) {
+  const seam = new THREE.Mesh(new THREE.BoxGeometry(halfW * 2, 0.03, 0.025), steelTrim);
+  seam.position.set(0, y, z + 0.005);
+  seam.castShadow = true; seam.receiveShadow = true;
+  parent.add(seam);
+}
+
+// Louvered vent panel -------------------------------------------------------
+function makeLouverPanel(width, height, count) {
+  const g = new THREE.Group();
+  // recessed backing plate
+  const back = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.02), steelBodyDark);
+  back.receiveShadow = true;
+  g.add(back);
+  const gap = height / (count + 1);
+  const slatW = width - 0.06;
+  for (let i = 0; i < count; i++) {
+    const slat = new THREE.Mesh(new THREE.BoxGeometry(slatW, gap * 0.72, 0.05), steelTrim);
+    slat.position.y = height / 2 - gap * (i + 1);
+    slat.position.z = 0.02;
+    slat.rotation.x = THREE.MathUtils.degToRad(-32); // angled down-and-out
+    slat.castShadow = true; slat.receiveShadow = true;
+    g.add(slat);
+  }
+  // frame
+  const frameMat = steelTrim;
+  const fT = 0.03;
+  const top = new THREE.Mesh(new THREE.BoxGeometry(width + fT, fT, 0.06), frameMat);
+  top.position.set(0, height / 2 + fT / 2, 0.02);
+  const bot = top.clone(); bot.position.y = -height / 2 - fT / 2;
+  const left = new THREE.Mesh(new THREE.BoxGeometry(fT, height + fT * 2, 0.06), frameMat);
+  left.position.set(-width / 2 - fT / 2, 0, 0.02);
+  const right = left.clone(); right.position.x = width / 2 + fT / 2;
+  [top, bot, left, right].forEach(m => { m.castShadow = true; g.add(m); });
+  return g;
+}
+
+// A hinged access door with recessed panel, handle & hinges -----------------
+function makeDoor(width, height, hingeSide) {
+  const door = new THREE.Group();
+
+  const doorSlab = new THREE.Mesh(new THREE.BoxGeometry(width, height, 0.05), steelBody);
+  doorSlab.castShadow = true; doorSlab.receiveShadow = true;
+  door.add(doorSlab);
+
+  // recessed inner panel
+  const inset = new THREE.Mesh(new THREE.BoxGeometry(width - 0.14, height - 0.14, 0.02), steelBodyDark);
+  inset.position.z = 0.028;
+  inset.castShadow = true; inset.receiveShadow = true;
+  door.add(inset);
+
+  // raised inner-panel frame border
+  const bMat = steelTrim, bt = 0.035;
+  const bw = width - 0.10, bh = height - 0.10;
+  const btop = new THREE.Mesh(new THREE.BoxGeometry(bw, bt, 0.03), bMat);
+  btop.position.set(0, bh / 2, 0.03);
+  const bbot = btop.clone(); bbot.position.y = -bh / 2;
+  const bleft = new THREE.Mesh(new THREE.BoxGeometry(bt, bh, 0.03), bMat);
+  bleft.position.set(-bw / 2, 0, 0.03);
+  const bright = bleft.clone(); bright.position.x = bw / 2;
+  [btop, bbot, bleft, bright].forEach(m => { m.castShadow = true; door.add(m); });
+
+  // hinges on hinge side
+  const hx = hingeSide * (width / 2 - 0.02);
+  [-1, 1].forEach(s => {
+    const hy = s * (height / 2 - 0.22);
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.16, 12), hingeMat);
+    barrel.position.set(hx + hingeSide * 0.035, hy, 0.03);
+    barrel.castShadow = true;
+    door.add(barrel);
+    const leaf = new THREE.Mesh(new THREE.BoxGeometry(0.10, 0.14, 0.02), hingeMat);
+    leaf.position.set(hx - hingeSide * 0.04, hy, 0.04);
+    leaf.castShadow = true;
+    door.add(leaf);
+  });
+
+  // handle / recessed padlock hasp on the latch side
+  const lx = -hingeSide * (width / 2 - 0.16);
+  const handleBase = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.26, 0.04), hardware);
+  handleBase.position.set(lx, 0, 0.035);
+  handleBase.castShadow = true;
+  door.add(handleBase);
+  const handleBar = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.22, 12), boltMat);
+  handleBar.position.set(lx - 0.03, 0, 0.075);
+  handleBar.castShadow = true;
+  door.add(handleBar);
+  // padlock hasp loop
+  const hasp = new THREE.Mesh(new THREE.TorusGeometry(0.03, 0.008, 8, 16, Math.PI), boltMat);
+  hasp.position.set(lx, -0.16, 0.08);
+  hasp.rotation.x = Math.PI / 2;
+  hasp.castShadow = true;
+  door.add(hasp);
+
+  // corner bolts on the slab
+  [-1, 1].forEach(sx => [-1, 1].forEach(sy => {
+    addBolt(door, sx * (width / 2 - 0.05), sy * (height / 2 - 0.05), 0.026, 0.016, 0.02);
+  }));
+
+  return door;
+}
+
+// ---------------------------------------------------------------------------
+// FRONT FACE: two hinged doors, seams, vents, labels
+// ---------------------------------------------------------------------------
+const front = new THREE.Group();
+front.position.z = frontZ;
+enclosure.add(front);
+
+const halfH = BODY_H / 2;
+
+// perimeter frame of the front opening
+const frameMat = steelTrim;
+const frameT = 0.06;
+const fTop = new THREE.Mesh(new THREE.BoxGeometry(BODY_W, frameT, 0.04), frameMat);
+fTop.position.set(0, halfH - frameT / 2, 0.01);
+const fBot = fTop.clone(); fBot.position.y = -halfH + frameT / 2;
+const fLeft = new THREE.Mesh(new THREE.BoxGeometry(frameT, BODY_H, 0.04), frameMat);
+fLeft.position.set(-BODY_W / 2 + frameT / 2, 0, 0.01);
+const fRight = fLeft.clone(); fRight.position.x = BODY_W / 2 - frameT / 2;
+[fTop, fBot, fLeft, fRight].forEach(m => { m.castShadow = true; m.receiveShadow = true; front.add(m); });
+
+// central mullion between the two doors
+const mullion = new THREE.Mesh(new THREE.BoxGeometry(0.08, BODY_H - 0.12, 0.05), steelTrim);
+mullion.position.set(0, 0, 0.015);
+mullion.castShadow = true; mullion.receiveShadow = true;
+front.add(mullion);
+
+// Two doors, hinged on outer edges
+const doorW = (BODY_W - 0.20) / 2;
+const doorH = BODY_H - 0.16;
+
+const leftDoor = makeDoor(doorW, doorH, -1);   // hinge on left
+leftDoor.position.set(-BODY_W / 4 - 0.01, 0, 0.03);
+front.add(leftDoor);
+
+const rightDoor = makeDoor(doorW, doorH, 1);    // hinge on right
+rightDoor.position.set(BODY_W / 4 + 0.01, 0, 0.03);
+front.add(rightDoor);
+
+// Louvered vents low on each door (cooling)
+const ventL = makeLouverPanel(doorW * 0.62, 0.42, 6);
+ventL.position.set(-BODY_W / 4 - 0.01, -doorH / 2 + 0.34, 0.075);
+front.add(ventL);
+const ventR = makeLouverPanel(doorW * 0.62, 0.42, 6);
+ventR.position.set(BODY_W / 4 + 0.01, -doorH / 2 + 0.34, 0.075);
+front.add(ventR);
+
+// DANGER label plate on the left door (upper)
+function addPlate(parent, tex, w, h, x, y, z) {
+  const backing = new THREE.Mesh(new THREE.BoxGeometry(w + 0.03, h + 0.03, 0.012), hardware);
+  backing.position.set(x, y, z - 0.004);
+  backing.castShadow = true;
+  parent.add(backing);
+  const plate = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({ map: tex, roughness: 0.6, metalness: 0.1 })
+  );
+  plate.position.set(x, y, z + 0.004);
+  parent.add(plate);
+  // corner rivets
+  [-1, 1].forEach(sx => [-1, 1].forEach(sy => {
+    addBolt(parent, x + sx * (w / 2 - 0.02), y + sy * (h / 2 - 0.02), z + 0.006, 0.01, 0.012);
+  }));
+}
+
+addPlate(front, dangerTex, 0.52, 0.40, -BODY_W / 4 - 0.01, doorH / 2 - 0.42, 0.085);
+addPlate(front, ratingTex, 0.52, 0.40, BODY_W / 4 + 0.01, doorH / 2 - 0.42, 0.085);
+
+// A couple of horizontal panel seams across the front frame area
+addHorizontalSeam(front, halfH - 0.02, BODY_W / 2 - 0.03, 0.02);
+addHorizontalSeam(front, -halfH + 0.02, BODY_W / 2 - 0.03, 0.02);
+
+// ---------------------------------------------------------------------------
+// SIDE FACES: panel seams + louvered vents + rating repeat
+// ---------------------------------------------------------------------------
+function buildSide(sign) {
+  const side = new THREE.Group();
+  side.position.x = sign * (BODY_W / 2);
+  side.rotation.y = sign * Math.PI / 2;   // local +Z now faces outward
+  enclosure.add(side);
+
+  // vertical seams dividing the side into panels
+  [-BODY_D / 4, 0, BODY_D / 4].forEach(x => addVerticalSeam(side, x, halfH - 0.06, 0.0));
+  addHorizontalSeam(side, halfH - 0.06, BODY_D / 2 - 0.06, 0.0);
+  addHorizontalSeam(side, -halfH + 0.10, BODY_D / 2 - 0.06, 0.0);
+
+  // louvered vent high up
+  const vent = makeLouverPanel(0.66, 0.5, 7);
+  vent.position.set(0, halfH - 0.5, 0.02);
+  side.add(vent);
+
+  // bolt column near each edge
+  for (let i = 0; i < 5; i++) {
+    const y = -halfH + 0.25 + i * ((BODY_H - 0.5) / 4);
+    addBolt(side, -BODY_D / 2 + 0.08, y, 0.02, 0.016, 0.02);
+    addBolt(side, BODY_D / 2 - 0.08, y, 0.02, 0.016, 0.02);
+  }
+  return side;
+}
+buildSide(1);
+buildSide(-1);
+
+// Back face: simple seams + ground label
+const back = new THREE.Group();
+back.position.z = -BODY_D / 2;
+back.rotation.y = Math.PI;
+enclosure.add(back);
+[-BODY_W / 4, 0, BODY_W / 4].forEach(x => addVerticalSeam(back, x, halfH - 0.06, 0.0));
+addHorizontalSeam(back, 0, BODY_W / 2 - 0.06, 0.0);
+addPlate(back, groundTex, 0.5, 0.2, BODY_W / 4, -halfH + 0.5, 0.03);
+
+// ---------------------------------------------------------------------------
+// TOP: HV/LV bushings (porcelain), conduit stubs, lifting lugs
+// ---------------------------------------------------------------------------
+const topY = BODY_H / 2 + 0.22;   // above sloped roof
+
+function makeBushing(height, insulRadius, ribCount) {
+  const g = new THREE.Group();
+  // base flange
+  const flange = new THREE.Mesh(new THREE.CylinderGeometry(insulRadius * 1.7, insulRadius * 1.9, 0.06, 20), hardware);
+  flange.castShadow = true;
+  g.add(flange);
+  // porcelain insulator with ribs (skirts)
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(insulRadius * 0.7, insulRadius * 0.8, height, 20), porcelainMat);
+  core.position.y = height / 2 + 0.04;
+  core.castShadow = true;
+  g.add(core);
+  for (let i = 0; i < ribCount; i++) {
+    const t = (i + 0.5) / ribCount;
+    const skirt = new THREE.Mesh(new THREE.CylinderGeometry(insulRadius * 1.25, insulRadius * 0.75, 0.05, 20), porcelainMat);
+    skirt.position.y = 0.05 + t * height;
+    skirt.castShadow = true;
+    g.add(skirt);
+  }
+  // conductor terminal on top
+  const term = new THREE.Mesh(new THREE.CylinderGeometry(insulRadius * 0.35, insulRadius * 0.35, 0.12, 12), copperMat);
+  term.position.y = height + 0.1;
+  term.castShadow = true;
+  g.add(term);
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(insulRadius * 0.5, 16, 12), copperMat);
+  cap.position.y = height + 0.16;
+  cap.castShadow = true;
+  g.add(cap);
+  return g;
+}
+
+// HV bushings (taller) toward back, LV bushings (shorter) toward front
+const bushGroup = new THREE.Group();
+bushGroup.position.y = topY;
+enclosure.add(bushGroup);
+
+[-0.7, 0, 0.7].forEach(x => {
+  const hv = makeBushing(0.55, 0.09, 4);
+  hv.position.set(x, 0, -0.5);
+  bushGroup.add(hv);
+});
+[-0.75, -0.25, 0.25, 0.75].forEach(x => {
+  const lv = makeBushing(0.34, 0.07, 3);
+  lv.position.set(x, 0, 0.55);
+  bushGroup.add(lv);
+});
+
+// Lifting lugs at the four top corners
+[[-1, -1], [1, -1], [-1, 1], [1, 1]].forEach(([sx, sz]) => {
+  const lug = new THREE.Mesh(new THREE.TorusGeometry(0.06, 0.018, 8, 16), hardware);
+  lug.position.set(sx * (BODY_W / 2 - 0.18), topY - 0.15, sz * (BODY_D / 2 - 0.18));
+  lug.rotation.x = Math.PI / 2;
+  lug.castShadow = true;
+  bushGroup.add(lug);
+});
+
+// Pressure-relief / breather valve on roof
+const breather = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.18, 14), hardware);
+breather.position.set(0.85, topY - 0.02, 0.0);
+breather.castShadow = true;
+bushGroup.add(breather);
+const breatherCap = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.04, 14), steelTrim);
+breatherCap.position.set(0.85, topY + 0.09, 0.0);
+breatherCap.castShadow = true;
+bushGroup.add(breatherCap);
+
+// ---------------------------------------------------------------------------
+// CONDUIT / cable stubs emerging from the pad at the base
+// ---------------------------------------------------------------------------
+function makeConduit(radius, height, x, z) {
+  const g = new THREE.Group();
+  const pipe = new THREE.Mesh(new THREE.CylinderGeometry(radius, radius, height, 16), conduitMat);
+  pipe.position.y = height / 2;
+  pipe.castShadow = true; pipe.receiveShadow = true;
+  g.add(pipe);
+  // sweep elbow into the enclosure (a torus quarter)
+  const elbow = new THREE.Mesh(new THREE.TorusGeometry(radius * 2.2, radius, 10, 16, Math.PI / 2), conduitMat);
+  elbow.position.set(0, height, 0);
+  elbow.rotation.set(0, 0, 0);
+  elbow.castShadow = true;
+  g.add(elbow);
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.25, radius * 1.25, 0.05, 16), hardware);
+  collar.position.y = height * 0.4;
+  collar.castShadow = true;
+  g.add(collar);
+  g.position.set(x, padTopY, z);
+  return g;
+}
+
+// Conduit stubs at the front-base of the enclosure (cable entry)
+kiosk.add(makeConduit(0.06, 0.55, -0.6, frontZ + 0.05));
+kiosk.add(makeConduit(0.06, 0.42, -0.2, frontZ + 0.05));
+kiosk.add(makeConduit(0.08, 0.7, 0.55, frontZ + 0.05));
+
+// Ground conductor: copper strap down one corner into pad
+const groundStrap = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, BODY_H * 0.8, 8), copperMat);
+groundStrap.position.set(BODY_W / 2 + 0.02, bodyCY - 0.1, BODY_D / 2 - 0.15);
+groundStrap.castShadow = true;
+kiosk.add(groundStrap);
+const groundRod = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.4, 8), copperMat);
+groundRod.position.set(BODY_W / 2 + 0.02, padTopY - 0.1, BODY_D / 2 - 0.15);
+kiosk.add(groundRod);
+
+// ---------------------------------------------------------------------------
+// Shadow-catcher ground plane
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// subtle reflective disc under object for grounding contrast
+const discMat = new THREE.MeshStandardMaterial({ color: 0x1d1f22, roughness: 0.9, metalness: 0.1 });
+const disc = new THREE.Mesh(new THREE.CircleGeometry(6, 48), discMat);
+disc.rotation.x = -Math.PI / 2;
+disc.position.y = -0.002;
+disc.receiveShadow = true;
+scene.add(disc);
+
+// ---------------------------------------------------------------------------
+// Center the whole object at origin (vertically grounded on y=0)
+// ---------------------------------------------------------------------------
+const bbox = new THREE.Box3().setFromObject(kiosk);
+const center = new THREE.Vector3();
+bbox.getCenter(center);
+kiosk.position.x -= center.x;
+kiosk.position.z -= center.z;
+
+// Frame camera target roughly at mid-height
+const targetY = (bbox.min.y + bbox.max.y) * 0.42;
+
+// ---------------------------------------------------------------------------
+// Orbit controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 4.5;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.5;
+controls.target.set(0, targetY, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize handling
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

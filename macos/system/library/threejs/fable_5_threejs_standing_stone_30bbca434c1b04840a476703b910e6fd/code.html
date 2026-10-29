@@ -1,0 +1,236 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Standing Stone</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0e12; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- Renderer / Scene / Camera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9db4c6);
+scene.fog = new THREE.Fog(0x9db4c6, 18, 45);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(5.2, 2.6, 6.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.5, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 3;
+controls.maxDistance = 20;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+// ---------- Deterministic noise helpers ----------
+function hash3(x, y, z) {
+  let n = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return n - Math.floor(n);
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function noise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  let v = 0;
+  for (let i = 0; i < 2; i++) for (let j = 0; j < 2; j++) for (let k = 0; k < 2; k++) {
+    v += hash3(xi + i, yi + j, zi + k) *
+      (i ? smooth(xf) : 1 - smooth(xf)) *
+      (j ? smooth(yf) : 1 - smooth(yf)) *
+      (k ? smooth(zf) : 1 - smooth(zf));
+  }
+  return v;
+}
+function fbm(x, y, z, oct = 4) {
+  let v = 0, a = 0.5, f = 1;
+  for (let o = 0; o < oct; o++) { v += a * noise3(x * f, y * f, z * f); a *= 0.5; f *= 2.1; }
+  return v;
+}
+
+// ---------- Monolith: ~2.8 m tall rough-hewn menhir ----------
+const H = 2.8;               // height above ground (real menhir scale)
+const geo = new THREE.CylinderGeometry(0.42, 0.62, H, 48, 60, false);
+geo.translate(0, H / 2, 0);
+const pos = geo.attributes.position;
+const v = new THREE.Vector3();
+for (let i = 0; i < pos.count; i++) {
+  v.fromBufferAttribute(pos, i);
+  const t = v.y / H;
+  // Non-circular cross-section: flatten one axis, slight twist
+  const ang = Math.atan2(v.z, v.x) + t * 0.25;
+  const r = Math.hypot(v.x, v.z);
+  let nx = Math.cos(ang) * r * 1.0;
+  let nz = Math.sin(ang) * r * 0.68;
+  // Taper toward a rounded irregular top
+  const taper = 1 - 0.35 * Math.pow(t, 2.2);
+  nx *= taper; nz *= taper;
+  // Large-scale hewn facets + fine weathering
+  const big = (fbm(nx * 1.4 + 7, v.y * 0.9, nz * 1.4 + 3, 3) - 0.5) * 0.22;
+  const fine = (fbm(nx * 6, v.y * 4.5, nz * 6, 4) - 0.5) * 0.06;
+  const rr = Math.hypot(nx, nz);
+  if (rr > 1e-4) {
+    const s = (rr + big + fine) / rr;
+    nx *= s; nz *= s;
+  }
+  // Irregular domed top
+  let ny = v.y;
+  if (t > 0.96) ny += (fbm(nx * 3 + 11, 5, nz * 3 + 17, 3) - 0.55) * 0.25;
+  pos.setXYZ(i, nx, ny, nz);
+}
+geo.computeVertexNormals();
+
+// Vertex colors: weathered granite + lichen patches
+const colors = new Float32Array(pos.count * 3);
+const stoneA = new THREE.Color(0x8a8578), stoneB = new THREE.Color(0x6f6d66);
+const lichenG = new THREE.Color(0x93a34f), lichenW = new THREE.Color(0xc9c4a3), moss = new THREE.Color(0x4f6b3a);
+const c = new THREE.Color();
+for (let i = 0; i < pos.count; i++) {
+  v.fromBufferAttribute(pos, i);
+  const base = fbm(v.x * 3.5, v.y * 2.2, v.z * 3.5, 4);
+  c.copy(stoneA).lerp(stoneB, THREE.MathUtils.clamp(base * 1.4 - 0.15, 0, 1));
+  // Green lichen blotches
+  const l1 = fbm(v.x * 4.2 + 31, v.y * 3.1 + 5, v.z * 4.2 + 9, 4);
+  if (l1 > 0.62) c.lerp(lichenG, Math.min((l1 - 0.62) * 5, 0.75));
+  // Pale crustose lichen
+  const l2 = fbm(v.x * 5.5 + 90, v.y * 4.0 + 40, v.z * 5.5 + 60, 4);
+  if (l2 > 0.66) c.lerp(lichenW, Math.min((l2 - 0.66) * 6, 0.65));
+  // Moss creeping up from the base
+  const mossAmt = Math.max(0, 1 - v.y / 0.55) * fbm(v.x * 5 + 3, v.y * 5, v.z * 5 + 8, 3);
+  if (mossAmt > 0.18) c.lerp(moss, Math.min((mossAmt - 0.18) * 2.2, 0.8));
+  colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+}
+geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+const stoneMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.93, metalness: 0.0, flatShading: false
+});
+const stone = new THREE.Mesh(geo, stoneMat);
+stone.castShadow = true;
+stone.receiveShadow = true;
+stone.position.y = -0.15;                 // set into the earth
+stone.rotation.z = THREE.MathUtils.degToRad(4);   // subtle lean
+stone.rotation.x = THREE.MathUtils.degToRad(-1.5);
+scene.add(stone);
+
+// ---------- Grassy ground mound ----------
+const groundGeo = new THREE.CircleGeometry(14, 96);
+groundGeo.rotateX(-Math.PI / 2);
+const gp = groundGeo.attributes.position;
+const gcol = new Float32Array(gp.count * 3);
+const grassA = new THREE.Color(0x5a7a3c), grassB = new THREE.Color(0x46632f), earth = new THREE.Color(0x6b5c42);
+for (let i = 0; i < gp.count; i++) {
+  v.fromBufferAttribute(gp, i);
+  const d = Math.hypot(v.x, v.z);
+  // Gentle mound around the stone + rolling undulation
+  let y = Math.max(0, 0.28 * Math.exp(-d * d / 1.6));
+  y += (fbm(v.x * 0.5 + 20, 0, v.z * 0.5 + 20, 3) - 0.5) * 0.22 * Math.min(d / 3, 1);
+  gp.setY(i, y);
+  const gN = fbm(v.x * 1.6 + 5, 0, v.z * 1.6 + 5, 4);
+  c.copy(grassA).lerp(grassB, gN);
+  if (d < 1.1) c.lerp(earth, (1.1 - d) * 0.5);   // worn earth at the foot
+  gcol[i * 3] = c.r; gcol[i * 3 + 1] = c.g; gcol[i * 3 + 2] = c.b;
+}
+groundGeo.computeVertexNormals();
+groundGeo.setAttribute('color', new THREE.BufferAttribute(gcol, 3));
+const ground = new THREE.Mesh(groundGeo, new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 1.0, metalness: 0.0
+}));
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Few small packing stones at the base
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2 + hash3(i, 2, 3) * 1.2;
+  const rGeo = new THREE.IcosahedronGeometry(0.10 + hash3(i, 5, 1) * 0.09, 1);
+  const rp = rGeo.attributes.position;
+  for (let j = 0; j < rp.count; j++) {
+    v.fromBufferAttribute(rp, j);
+    v.multiplyScalar(0.8 + hash3(j + i * 40, 1, 7) * 0.45);
+    rp.setXYZ(j, v.x, v.y, v.z);
+  }
+  rGeo.computeVertexNormals();
+  const rock = new THREE.Mesh(rGeo, new THREE.MeshStandardMaterial({
+    color: new THREE.Color(0x7d7a70).offsetHSL(0, 0, (hash3(i, 9, 4) - 0.5) * 0.08),
+    roughness: 0.95
+  }));
+  const rd = 0.62 + hash3(i, 3, 8) * 0.25;
+  rock.position.set(Math.cos(a) * rd, 0.22, Math.sin(a) * rd);
+  rock.rotation.set(hash3(i, 1, 1) * 3, hash3(i, 2, 2) * 3, hash3(i, 3, 3) * 3);
+  rock.castShadow = rock.receiveShadow = true;
+  scene.add(rock);
+}
+
+// ---------- Lighting ----------
+scene.add(new THREE.HemisphereLight(0xbfd4e6, 0x54613e, 0.75));
+
+const sun = new THREE.DirectionalLight(0xfff0dc, 2.2);
+sun.position.set(6, 8, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -6; sun.shadow.camera.right = 6;
+sun.shadow.camera.top = 6; sun.shadow.camera.bottom = -6;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 25;
+sun.shadow.radius = 6;
+sun.shadow.bias = -0.0004;
+scene.add(sun);
+
+const fill = new THREE.DirectionalLight(0xa8c0d8, 0.5);
+fill.position.set(-5, 3, -4);
+scene.add(fill);
+
+// Soft contact-shadow disc under the stone
+const shadowCanvas = document.createElement('canvas');
+shadowCanvas.width = shadowCanvas.height = 128;
+const sctx = shadowCanvas.getContext('2d');
+const grad = sctx.createRadialGradient(64, 64, 8, 64, 64, 64);
+grad.addColorStop(0, 'rgba(0,0,0,0.35)');
+grad.addColorStop(1, 'rgba(0,0,0,0)');
+sctx.fillStyle = grad;
+sctx.fillRect(0, 0, 128, 128);
+const contact = new THREE.Mesh(
+  new THREE.PlaneGeometry(2.6, 2.2),
+  new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shadowCanvas), transparent: true, depthWrite: false })
+);
+contact.rotation.x = -Math.PI / 2;
+contact.position.y = 0.29;
+scene.add(contact);
+
+// ---------- Resize / Loop ----------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

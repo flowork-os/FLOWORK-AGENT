@@ -1,0 +1,607 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Observatory Dome Interior</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#060a14}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= CONFIG / PALETTE ================= */
+const R_DRUM = 7.2, H_DRUM = 3.2;          // drum wall radius / height (dome sits on top)
+const SLIT_AZ = Math.PI * 210 / 180;       // azimuth the dome slit (and telescope) faces
+const SLIT_GAP = 0.5;                      // angular width of the open slit
+const PAL = {
+  night:    0x060a14,
+  fog:      0x0d1220,
+  drum:     0x8e8478,   // plastered drum wall
+  dome:     0x5c646e,   // riveted steel dome panels
+  rib:      0x3c434c,
+  floor:    '#6b4a2e',  // plank base tone
+  steel:    0x9aa3ab,
+  steelBlue:0x46586e,   // mount castings
+  concrete: 0xa39a8c,
+  tube:     0xe8e2d4,   // refractor tube enamel
+  brass:    0xc9a45a,
+  wood:     0x5d4126,
+  paper:    0xe9ddbd,
+  ledGreen: 0x3dff88,
+  ledAmber: 0xffb347,
+  safeRed:  0xff2d1e,
+  moon:     0x9db8ff,
+  deskGlow: 0xffc880
+};
+
+/* ================= PRNG / HELPERS ================= */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(18890417);
+const rand = (a, b) => a + (b - a) * rng();
+
+function makeCanvas(w, h, draw){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h; draw(c.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 8; tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function box(w, h, d, mat, x = 0, y = 0, z = 0){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+function cyl(rt, rb, h, mat, x = 0, y = 0, z = 0, seg = 20){
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+// place an object at azimuth `a`, radius `r`, facing the room centre
+function atWall(obj, a, r, y = 0){
+  obj.position.set(Math.sin(a) * r, y, Math.cos(a) * r);
+  obj.rotation.y = a + Math.PI;
+  return obj;
+}
+
+/* ================= PROCEDURAL TEXTURES ================= */
+const skyTex = makeCanvas(2048, 1024, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#050916'); grad.addColorStop(0.5, '#0a1226'); grad.addColorStop(1, '#050916');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  const r2 = mulberry32(9021);
+  // Milky Way: a soft tilted band of layered glow blobs and dense faint stars
+  const bandY = x => h * 0.5 + (x - w / 2) * 0.22 + Math.sin(x * 0.004) * 40;
+  for (let i = 0; i < 420; i++){
+    const x = r2() * w, y = bandY(x) + (r2() - 0.5) * 170;
+    const rad = 14 + r2() * 60;
+    const cg = g.createRadialGradient(x, y, 0, x, y, rad);
+    const warm = r2() < 0.2;
+    cg.addColorStop(0, warm ? 'rgba(255,225,190,0.05)' : 'rgba(190,205,255,0.05)');
+    cg.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = cg; g.beginPath(); g.arc(x, y, rad, 0, 6.29); g.fill();
+  }
+  for (let i = 0; i < 1500; i++){       // dense band stars
+    const x = r2() * w, y = bandY(x) + (r2() - 0.5) * 150;
+    g.fillStyle = `rgba(255,255,255,${0.25 + r2() * 0.5})`;
+    g.fillRect(x, y, 1.3, 1.3);
+  }
+  for (let i = 0; i < 900; i++){        // field stars
+    const s = r2() < 0.06 ? 2.6 : 1.4;
+    g.fillStyle = `rgba(${220 + r2() * 35 | 0},${220 + r2() * 35 | 0},255,${0.3 + r2() * 0.6})`;
+    g.fillRect(r2() * w, r2() * h, s, s);
+  }
+  for (let i = 0; i < 26; i++){         // a few bright stars with glow
+    const x = r2() * w, y = r2() * h;
+    const cg = g.createRadialGradient(x, y, 0, x, y, 7);
+    cg.addColorStop(0, 'rgba(255,255,255,0.95)'); cg.addColorStop(1, 'rgba(120,160,255,0)');
+    g.fillStyle = cg; g.beginPath(); g.arc(x, y, 7, 0, 6.29); g.fill();
+  }
+});
+
+const plankTex = makeCanvas(1024, 1024, (g, w, h) => {
+  g.fillStyle = PAL.floor; g.fillRect(0, 0, w, h);
+  const r2 = mulberry32(311);
+  for (let y = 0; y < h; y += 64){
+    for (let x = 0; x < w; ){
+      const len = 180 + r2() * 220;
+      const tone = 90 + r2() * 50 | 0;
+      g.fillStyle = `rgb(${tone},${tone * 0.66 | 0},${tone * 0.4 | 0})`;
+      g.fillRect(x, y, len - 3, 60);
+      g.strokeStyle = 'rgba(30,18,8,0.5)';
+      for (let k = 0; k < 5; k++){
+        g.beginPath(); g.moveTo(x + 4, y + 8 + r2() * 46);
+        g.bezierCurveTo(x + len * 0.3, y + r2() * 60, x + len * 0.6, y + r2() * 60, x + len - 6, y + 8 + r2() * 46);
+        g.stroke();
+      }
+      x += len;
+    }
+  }
+  g.strokeStyle = 'rgba(200,170,120,0.5)'; g.lineWidth = 8;
+  g.beginPath(); g.arc(w / 2, h / 2, 300, 0, 6.29); g.stroke();   // painted pier circle
+});
+
+function chartTex(seed, name){
+  return makeCanvas(256, 200, (g, w, h) => {
+    g.fillStyle = PAL.paper; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#5a4a30'; g.lineWidth = 5; g.strokeRect(6, 6, w - 12, h - 12);
+    const r2 = mulberry32(seed);
+    const pts = [];
+    for (let i = 0; i < 9; i++) pts.push([25 + r2() * (w - 50), 35 + r2() * (h - 70)]);
+    g.strokeStyle = '#2a3a55'; g.lineWidth = 1.6; g.beginPath();
+    g.moveTo(pts[0][0], pts[0][1]);
+    for (const p of pts) g.lineTo(p[0], p[1]);
+    g.stroke();
+    for (const [x, y] of pts){
+      g.fillStyle = '#1c2a40'; g.beginPath(); g.arc(x, y, 2.5 + r2() * 2, 0, 6.29); g.fill();
+    }
+    g.strokeStyle = 'rgba(120,60,40,0.85)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(pts[3][0], pts[3][1], 11, 0, 6.29); g.stroke();  // observer's mark
+    g.fillStyle = '#3a2c18'; g.font = 'bold 20px Georgia'; g.textAlign = 'center';
+    g.fillText(name, w / 2, 28);
+  });
+}
+
+const dialTex = makeCanvas(512, 256, (g, w, h) => {
+  g.fillStyle = '#161d26'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#2c3a4a'; g.lineWidth = 4; g.strokeRect(8, 8, w - 16, h - 16);
+  const gauge = (cx, cy, col, val) => {
+    g.strokeStyle = '#4a5a6a'; g.lineWidth = 3;
+    g.beginPath(); g.arc(cx, cy, 40, 0, 6.29); g.stroke();
+    g.strokeStyle = '#22303e';
+    for (let i = 0; i < 12; i++){
+      const a = i / 12 * 6.283;
+      g.beginPath(); g.moveTo(cx + Math.cos(a) * 33, cy + Math.sin(a) * 33);
+      g.lineTo(cx + Math.cos(a) * 39, cy + Math.sin(a) * 39); g.stroke();
+    }
+    g.shadowColor = col; g.shadowBlur = 12; g.strokeStyle = col; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(cx, cy);
+    g.lineTo(cx + Math.cos(val) * 30, cy + Math.sin(val) * 30); g.stroke();
+    g.shadowBlur = 0;
+  };
+  gauge(90, 92, '#3dff88', -1.0); gauge(200, 92, '#ffb347', 2.4); gauge(310, 92, '#59c8ff', 0.6);
+  g.shadowColor = '#3dff88'; g.shadowBlur = 8;
+  g.fillStyle = '#8affc0'; g.font = 'bold 24px monospace'; g.textAlign = 'left';
+  g.fillText('RA 05h34m12s', 60, 190); g.fillText('DEC +22° 00′', 60, 224);
+  g.fillStyle = '#ffd28a'; g.fillText('TRACKING', 320, 190);
+  g.fillText('DOME  210°', 320, 224); g.shadowBlur = 0;
+  g.fillStyle = '#101820'; g.fillRect(390, 30, 96, 120);
+  g.strokeStyle = '#59c8ff'; g.strokeRect(390, 30, 96, 120);   // small scope camera view
+  g.fillStyle = '#bfe4ff';
+  const r2 = mulberry32(5);
+  for (let i = 0; i < 40; i++) g.fillRect(394 + r2() * 88, 34 + r2() * 112, 2, 2);
+});
+
+const globeTex = makeCanvas(256, 128, (g, w, h) => {
+  g.fillStyle = '#1a2c4e'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(200,180,120,0.5)';
+  for (let i = 1; i < 4; i++){ g.beginPath(); g.moveTo(0, i * h / 4); g.lineTo(w, i * h / 4); g.stroke(); }
+  for (let i = 1; i < 8; i++){ g.beginPath(); g.moveTo(i * w / 8, 0); g.lineTo(i * w / 8, h); g.stroke(); }
+  const r2 = mulberry32(88);
+  g.fillStyle = '#ffe9b0';
+  for (let i = 0; i < 90; i++) g.fillRect(r2() * w, r2() * h, 1.6, 1.6);
+});
+
+const moteTex = makeCanvas(64, 64, (g) => {
+  const cg = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  cg.addColorStop(0, 'rgba(220,230,255,0.5)'); cg.addColorStop(1, 'rgba(220,230,255,0)');
+  g.fillStyle = cg; g.fillRect(0, 0, 64, 64);
+});
+
+/* ================= MATERIALS ================= */
+const MAT = {
+  floor:   new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.75 }),
+  drum:    new THREE.MeshStandardMaterial({ color: PAL.drum, roughness: 0.92, side: THREE.DoubleSide }),
+  dome:    new THREE.MeshStandardMaterial({ color: PAL.dome, roughness: 0.55, metalness: 0.5, side: THREE.DoubleSide }),
+  rib:     new THREE.MeshStandardMaterial({ color: PAL.rib, roughness: 0.5, metalness: 0.6 }),
+  steel:   new THREE.MeshStandardMaterial({ color: PAL.steel, roughness: 0.35, metalness: 0.85 }),
+  steelBlue:new THREE.MeshStandardMaterial({ color: PAL.steelBlue, roughness: 0.42, metalness: 0.7 }),
+  concrete:new THREE.MeshStandardMaterial({ color: PAL.concrete, roughness: 0.95 }),
+  tube:    new THREE.MeshStandardMaterial({ color: PAL.tube, roughness: 0.32, metalness: 0.15 }),
+  brass:   new THREE.MeshStandardMaterial({ color: PAL.brass, roughness: 0.28, metalness: 0.9 }),
+  wood:    new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.8 }),
+  woodDark:new THREE.MeshStandardMaterial({ color: 0x3e2b18, roughness: 0.85 }),
+  paper:   new THREE.MeshStandardMaterial({ color: PAL.paper, roughness: 0.9 }),
+  grate:   new THREE.MeshStandardMaterial({ color: 0x333a41, roughness: 0.6, metalness: 0.55, side: THREE.DoubleSide }),
+  black:   new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.5 }),
+  ledG:    new THREE.MeshStandardMaterial({ color: PAL.ledGreen, emissive: PAL.ledGreen, emissiveIntensity: 2 }),
+  ledA:    new THREE.MeshStandardMaterial({ color: PAL.ledAmber, emissive: PAL.ledAmber, emissiveIntensity: 2 }),
+  red:     new THREE.MeshStandardMaterial({ color: PAL.safeRed, emissive: PAL.safeRed, emissiveIntensity: 1.8 })
+};
+
+/* ================= RENDERER / SCENE / CAMERA ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.night);
+scene.fog = new THREE.Fog(PAL.fog, 12, 48);
+
+const camera = new THREE.PerspectiveCamera(60, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(4.1, 2.5, 2.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.55, 0);
+controls.enableDamping = true;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.9;
+controls.minDistance = 2.8; controls.maxDistance = 6.0;
+controls.maxPolarAngle = 1.66; controls.minPolarAngle = 0.85;
+
+/* ================= BUILDER: DRUM WALL + SLIT DOME ================= */
+function buildDomeShell(){
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(R_DRUM, 64), MAT.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  const drum = new THREE.Mesh(new THREE.CylinderGeometry(R_DRUM, R_DRUM, H_DRUM, 64, 1, true), MAT.drum);
+  drum.position.y = H_DRUM / 2; drum.receiveShadow = true;
+  const skirt = new THREE.Mesh(new THREE.TorusGeometry(R_DRUM - 0.04, 0.07, 10, 64), MAT.rib);
+  skirt.rotation.x = Math.PI / 2; skirt.position.y = H_DRUM;
+  g.add(floor, drum, skirt);
+  // dome with an open slit wedge (gap centred on local -X, then aimed at SLIT_AZ)
+  const domeG = new THREE.Group();
+  const half = SLIT_GAP / 2;
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(R_DRUM, 72, 24, Math.PI + half, Math.PI * 2 - SLIT_GAP, 0, Math.PI / 2), MAT.dome);
+  dome.receiveShadow = true;
+  domeG.add(dome);
+  for (const s of [-1, 1]){                       // slit edge rails, horizon to zenith
+    const rail = new THREE.Mesh(new THREE.TorusGeometry(R_DRUM - 0.05, 0.07, 8, 40, Math.PI * 0.52), MAT.rib);
+    rail.rotation.y = -Math.PI + s * half;
+    domeG.add(rail);
+  }
+  for (let i = 0; i < 7; i++){                    // interior meridian ribs
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(R_DRUM - 0.06, 0.045, 8, 40, Math.PI * 0.5), MAT.rib);
+    rib.rotation.y = -Math.PI - half - (i + 1) * (Math.PI * 2 - SLIT_GAP) / 8;
+    domeG.add(rib);
+  }
+  domeG.position.y = H_DRUM;
+  domeG.rotation.y = SLIT_AZ + Math.PI / 2;       // local -X gap now faces SLIT_AZ
+  g.add(domeG);
+  return g;
+}
+
+/* ================= BUILDER: STARRY SKY (Milky Way through the slit) ================= */
+function buildSky(){
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(34, 48, 32),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+  sky.rotation.z = 0.35;
+  return sky;
+}
+
+/* ================= BUILDER: REFRACTOR ON EQUATORIAL MOUNT ================= */
+function buildTelescope(){
+  const g = new THREE.Group();
+  g.add(cyl(0.62, 0.78, 0.22, MAT.steelBlue, 0, 0.11, 0, 28),    // base flange
+        cyl(0.42, 0.5, 1.05, MAT.concrete, 0, 0.75, 0, 24),      // concrete pier
+        cyl(0.5, 0.42, 0.14, MAT.steelBlue, 0, 1.34, 0, 24));
+  const yaw = new THREE.Group();
+  yaw.position.y = 1.41; yaw.rotation.y = SLIT_AZ;
+  const raTilt = new THREE.Group();
+  raTilt.rotation.x = 0.87;                                      // polar axis at site latitude
+  raTilt.add(cyl(0.17, 0.22, 0.85, MAT.steelBlue, 0, 0.18, 0, 18));
+  const raSpin = new THREE.Group();
+  raSpin.position.y = 0.62; raSpin.name = 'raSpin';
+  const dec = cyl(0.14, 0.14, 0.62, MAT.steelBlue, 0, 0, 0, 18);
+  dec.rotation.z = Math.PI / 2;
+  const cwShaft = cyl(0.035, 0.035, 1.15, MAT.steel, -0.75, 0, 0, 12);
+  cwShaft.rotation.z = Math.PI / 2;
+  raSpin.add(dec, cwShaft,
+             cyl(0.2, 0.2, 0.1, MAT.black, -0.95, 0, 0, 20),     // counterweights
+             cyl(0.17, 0.17, 0.09, MAT.black, -1.18, 0, 0, 20));
+  for (const w of raSpin.children.slice(2)) w.rotation.z = Math.PI / 2;
+  // tube assembly, pitched a little further toward the slit
+  const tubeG = new THREE.Group();
+  tubeG.position.set(0.4, 0.12, 0); tubeG.rotation.x = -0.32;
+  const zcyl = (rt, rb, len, mat, z, seg = 24) => {
+    const m = cyl(rt, rb, len, mat, 0, 0, 0, seg);
+    m.rotation.x = Math.PI / 2; m.position.z = z;
+    return m;
+  };
+  tubeG.add(zcyl(0.24, 0.26, 3.2, MAT.tube, 0),                  // main tube
+            zcyl(0.3, 0.27, 0.75, MAT.tube, 1.85),               // dew shield
+            zcyl(0.305, 0.305, 0.06, MAT.brass, 2.24, 24),       // objective ring
+            zcyl(0.24, 0.15, 0.45, MAT.tube, -1.8),              // rear taper
+            zcyl(0.07, 0.07, 0.5, MAT.brass, -2.2, 12),          // focuser
+            zcyl(0.04, 0.05, 0.18, MAT.black, -2.5, 10),         // eyepiece
+            zcyl(0.055, 0.06, 0.7, MAT.brass, -1.25, 12));       // finder scope body
+  tubeG.children[6].position.y = 0.33;
+  tubeG.add(box(0.05, 0.12, 0.3, MAT.steelBlue, 0, 0.26, -1.25));
+  for (const z of [-0.55, 0.55]){                                // brass cradle rings
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.27, 0.035, 10, 26), MAT.brass);
+    ring.position.z = z; ring.castShadow = true;
+    tubeG.add(ring);
+  }
+  tubeG.add(box(0.14, 0.22, 1.3, MAT.steelBlue, 0, -0.3, 0));    // saddle bar
+  raSpin.add(tubeG);
+  raTilt.add(raSpin); yaw.add(raTilt); g.add(yaw);
+  return g;
+}
+
+/* ================= BUILDER: CATWALK RING + LADDER ================= */
+function buildCatwalk(){
+  const g = new THREE.Group();
+  const deck = new THREE.Mesh(new THREE.RingGeometry(5.9, 6.9, 72), MAT.grate);
+  deck.rotation.x = -Math.PI / 2; deck.position.y = 2.35; deck.receiveShadow = true;
+  const trims = [];
+  for (const [rr, ty] of [[5.92, 2.35], [5.95, 2.72], [5.95, 3.12]]){
+    const t = new THREE.Mesh(new THREE.TorusGeometry(rr, ty === 2.35 ? 0.05 : 0.028, 8, 72), MAT.steel);
+    t.rotation.x = Math.PI / 2; t.position.y = ty;
+    trims.push(t);
+  }
+  g.add(deck, ...trims);
+  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.025, 0.025, 0.78, 8), MAT.steel, 36);
+  const brackets = new THREE.InstancedMesh(new THREE.BoxGeometry(0.08, 0.5, 0.34), MAT.rib, 18);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 36; i++){
+    const a = i / 36 * Math.PI * 2;
+    d.position.set(Math.sin(a) * 5.95, 2.74, Math.cos(a) * 5.95);
+    d.rotation.set(0, a, 0); d.updateMatrix();
+    posts.setMatrixAt(i, d.matrix);
+    if (i % 2 === 0){
+      d.position.set(Math.sin(a) * 6.85, 2.1, Math.cos(a) * 6.85);
+      d.rotation.set(0.35, a, 0); d.updateMatrix();
+      brackets.setMatrixAt(i / 2, d.matrix);
+    }
+  }
+  posts.castShadow = brackets.castShadow = true;
+  g.add(posts, brackets);
+  return g;
+}
+function buildLadder(){
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) g.add(box(0.06, 2.75, 0.05, MAT.wood, s * 0.24, 1.375, 0));
+  const rungs = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.022, 0.022, 0.48, 8), MAT.wood, 9);
+  const d = new THREE.Object3D();
+  d.rotation.z = Math.PI / 2;
+  for (let i = 0; i < 9; i++){
+    d.position.set(0, 0.28 + i * 0.29, 0); d.updateMatrix();
+    rungs.setMatrixAt(i, d.matrix);
+  }
+  rungs.castShadow = true;
+  g.add(rungs);
+  return g;
+}
+
+/* ================= BUILDER: CONTROL DESK WITH GLOWING DIALS ================= */
+const blinkLeds = [];
+let consoleMat;
+function buildControlDesk(){
+  const g = new THREE.Group();
+  g.add(box(1.9, 0.08, 0.85, MAT.wood, 0, 0.78, 0),              // desktop
+        box(1.78, 0.7, 0.7, MAT.woodDark, 0, 0.4, 0.02));        // cabinet body
+  for (const s of [-1, 1]) g.add(box(0.06, 0.76, 0.8, MAT.wood, s * 0.92, 0.38, 0));
+  // sloped console with the glowing dial panel
+  const consoleBody = box(1.7, 0.55, 0.16, MAT.black, 0, 1.12, -0.28);
+  consoleBody.rotation.x = -0.42;
+  consoleMat = new THREE.MeshStandardMaterial({ map: dialTex, emissive: 0xffffff, emissiveMap: dialTex, emissiveIntensity: 0.9, roughness: 0.6 });
+  const panel = new THREE.Mesh(new THREE.PlaneGeometry(1.6, 0.48), consoleMat);
+  panel.position.set(0, 1.145, -0.192); panel.rotation.x = -0.42;
+  g.add(consoleBody, panel);
+  for (let i = 0; i < 4; i++){                                   // blinking status LEDs
+    const led = new THREE.Mesh(new THREE.SphereGeometry(0.02, 8, 6), (i % 2 ? MAT.ledA : MAT.ledG).clone());
+    led.position.set(-0.6 + i * 0.4, 1.35, -0.31);
+    blinkLeds.push(led); g.add(led);
+  }
+  // red observing lamp, logbook and mug
+  const lamp = new THREE.Group();
+  lamp.add(cyl(0.07, 0.09, 0.03, MAT.black, 0, 0.015, 0, 12),
+           cyl(0.012, 0.012, 0.34, MAT.steel, 0.04, 0.19, 0, 8),
+           cyl(0.05, 0.08, 0.1, MAT.red, 0.09, 0.36, 0, 12));
+  lamp.children[1].rotation.z = -0.25; lamp.children[2].rotation.z = 0.7;
+  lamp.position.set(0.75, 0.82, 0.05);
+  const book = box(0.34, 0.04, 0.26, MAT.paper, -0.45, 0.84, 0.14);
+  book.rotation.y = 0.3;
+  g.add(lamp, book, cyl(0.045, 0.04, 0.09, MAT.red, 0.28, 0.865, 0.22, 12));
+  // stool for the astronomer
+  const stool = new THREE.Group();
+  stool.add(cyl(0.19, 0.19, 0.05, MAT.wood, 0, 0.55, 0, 16));
+  for (let i = 0; i < 3; i++){
+    const leg = cyl(0.02, 0.025, 0.56, MAT.woodDark, Math.sin(i * 2.09) * 0.13, 0.27, Math.cos(i * 2.09) * 0.13, 8);
+    leg.rotation.z = Math.sin(i * 2.09) * -0.12; leg.rotation.x = Math.cos(i * 2.09) * 0.12;
+    stool.add(leg);
+  }
+  stool.position.set(-0.3, 0, 0.85);
+  g.add(stool);
+  return g;
+}
+
+/* ================= BUILDER: BOOKCASE / STAR CHART / GLOBE / PROPS ================= */
+function buildBookcase(){
+  const g = new THREE.Group();
+  g.add(box(1.5, 2.1, 0.06, MAT.woodDark, 0, 1.05, -0.17),       // back
+        box(0.06, 2.1, 0.4, MAT.wood, -0.72, 1.05, 0),
+        box(0.06, 2.1, 0.4, MAT.wood, 0.72, 1.05, 0),
+        box(1.5, 0.06, 0.4, MAT.wood, 0, 2.08, 0));
+  for (const sy of [0.08, 0.6, 1.12, 1.64]) g.add(box(1.38, 0.05, 0.38, MAT.wood, 0, sy, 0));
+  const books = new THREE.InstancedMesh(new THREE.BoxGeometry(0.09, 0.4, 0.26), MAT.paper.clone(), 40);
+  const d = new THREE.Object3D(), col = new THREE.Color();
+  let n = 0;
+  for (const sy of [0.08, 0.6, 1.12, 1.64]){
+    let x = -0.62;
+    while (x < 0.55 && n < 40){
+      const hh = rand(0.72, 1.0);
+      d.position.set(x, sy + 0.03 + 0.2 * hh, 0); d.scale.set(1, hh, 1);
+      d.rotation.set(0, 0, rng() < 0.12 ? -0.12 : 0); d.updateMatrix();
+      books.setMatrixAt(n, d.matrix);
+      books.setColorAt(n, col.setHSL(rand(0, 1), 0.35, rand(0.25, 0.5)));
+      x += 0.105; n++;
+    }
+  }
+  books.castShadow = true;
+  g.add(books);
+  return g;
+}
+function buildStarChart(seed, name, w = 1.1){
+  const g = new THREE.Group();
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(w, w * 0.78),
+    new THREE.MeshStandardMaterial({ map: chartTex(seed, name), roughness: 0.9 }));
+  sheet.rotation.z = rand(-0.05, 0.05);
+  g.add(sheet);
+  for (const [px, py] of [[-w / 2 + 0.06, w * 0.33], [w / 2 - 0.06, w * 0.35], [0, -w * 0.34]]){
+    const pin = new THREE.Mesh(new THREE.SphereGeometry(0.022, 8, 6), MAT.red);
+    pin.position.set(px, py, 0.015);
+    g.add(pin);
+  }
+  return g;
+}
+function buildGlobe(){
+  const g = new THREE.Group();
+  const ball = new THREE.Mesh(new THREE.SphereGeometry(0.26, 24, 16),
+    new THREE.MeshStandardMaterial({ map: globeTex, roughness: 0.55 }));
+  ball.position.y = 0.98; ball.rotation.z = 0.4; ball.castShadow = true; ball.name = 'globeBall';
+  const meridian = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.014, 8, 32), MAT.brass);
+  meridian.position.y = 0.98; meridian.rotation.y = Math.PI / 2;
+  g.add(cyl(0.22, 0.28, 0.05, MAT.woodDark, 0, 0.025, 0, 18),
+        cyl(0.03, 0.04, 0.62, MAT.wood, 0, 0.36, 0, 10),
+        cyl(0.16, 0.03, 0.06, MAT.woodDark, 0, 0.68, 0, 14), ball, meridian);
+  return g;
+}
+function buildCrates(){
+  const g = new THREE.Group();
+  g.add(box(0.62, 0.5, 0.62, MAT.wood, 0, 0.25, 0),
+        box(0.5, 0.42, 0.5, MAT.woodDark, 0.12, 0.96, 0.05),
+        box(0.66, 0.04, 0.66, MAT.woodDark, 0, 0.52, 0));
+  g.children[1].rotation.y = 0.4;
+  return g;
+}
+function buildSafeLight(){
+  const g = new THREE.Group();
+  g.add(box(0.16, 0.22, 0.06, MAT.black, 0, 0, 0));
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.06, 12, 8), MAT.red.clone());
+  bulb.position.z = 0.05; bulb.name = 'bulb';
+  g.add(bulb);
+  return g;
+}
+
+/* ================= ASSEMBLY / LAYOUT ================= */
+scene.add(buildDomeShell(), buildCatwalk());
+const sky = buildSky();
+scene.add(sky);
+
+const telescope = buildTelescope();
+scene.add(telescope);
+const raSpin = telescope.getObjectByName('raSpin');
+
+const desk = atWall(buildControlDesk(), Math.PI * 195 / 180, 5.75);
+const globe = atWall(buildGlobe(), Math.PI * 208 / 180, 4.55);
+const crates = atWall(buildCrates(), Math.PI * 100 / 180, 5.9);
+scene.add(desk, globe, crates);
+
+for (const az of [145, 243]) scene.add(atWall(buildBookcase(), Math.PI * az / 180, 6.72));
+
+const chartDefs = [[11, 'LYRA', 190, 2.78], [23, 'CYGNUS', 226, 2.72], [37, 'ORION', 160, 1.7],
+                   [51, 'URSA MAJOR', 258, 1.75], [67, 'PERSEUS', 318, 2.2]];
+for (const [seed, name, az, cy] of chartDefs)
+  scene.add(atWall(buildStarChart(seed, name), Math.PI * az / 180, 7.05, cy));
+
+const ladder = atWall(buildLadder(), Math.PI * 128 / 180, 6.35);
+ladder.rotation.x = -0.16;                       // leant back against the catwalk
+scene.add(ladder);
+
+const safeBulbs = [];
+for (const az of [30, 100, 170, 240, 310]){
+  const s = atWall(buildSafeLight(), Math.PI * az / 180, 7.08, 2.9);
+  safeBulbs.push(s.getObjectByName('bulb'));
+  scene.add(s);
+}
+
+// dust motes drifting in the moonbeam under the slit
+const motes = [];
+for (let i = 0; i < 24; i++){
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: moteTex, transparent: true, opacity: 0.16, depthWrite: false }));
+  const a = rand(0, 6.28), r = rand(0.3, 2.1);
+  sp.position.set(Math.sin(a) * r - 1.0, rand(0.6, 4.6), Math.cos(a) * r - 1.6);
+  sp.scale.setScalar(rand(0.05, 0.14));
+  sp.userData = { phase: rand(0, 6.28), speed: rand(0.1, 0.25) };
+  motes.push(sp); scene.add(sp);
+}
+
+/* ================= LIGHTING RIG ================= */
+scene.add(new THREE.HemisphereLight(0x3d4c6a, 0x241a12, 0.5),
+          new THREE.AmbientLight(0x2a3348, 0.5));
+
+// cool starlight beam falling through the open slit
+const moon = new THREE.DirectionalLight(PAL.moon, 2.2);
+moon.position.set(Math.sin(SLIT_AZ) * 10, 17, Math.cos(SLIT_AZ) * 10);
+moon.castShadow = true; moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -9; moon.shadow.camera.right = 9;
+moon.shadow.camera.top = 9; moon.shadow.camera.bottom = -9;
+moon.shadow.camera.near = 2; moon.shadow.camera.far = 40; moon.shadow.bias = -0.0004;
+scene.add(moon, moon.target);
+
+const deskLight = new THREE.PointLight(PAL.deskGlow, 7, 5.5, 2); // warm pool over the console
+deskLight.position.copy(desk.position).y = 1.9;
+const centreFill = new THREE.PointLight(0xbfd0ff, 5, 13, 2);     // faint fill so the mount reads
+centreFill.position.set(0, 3.4, 0);
+const redA = new THREE.PointLight(PAL.safeRed, 4, 6, 2);
+redA.position.set(Math.sin(Math.PI * 170 / 180) * 6.4, 2.8, Math.cos(Math.PI * 170 / 180) * 6.4);
+const redB = new THREE.PointLight(PAL.safeRed, 4, 6, 2);
+redB.position.set(Math.sin(Math.PI * 310 / 180) * 6.4, 2.8, Math.cos(Math.PI * 310 / 180) * 6.4);
+scene.add(deskLight, centreFill, redA, redB);
+
+/* ================= ANIMATION LOOP ================= */
+const clock = new THREE.Clock();
+const globeBall = globe.getObjectByName('globeBall');
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 1) the telescope slowly tracks about its polar axis
+  raSpin.rotation.y = Math.sin(t * 0.11) * 0.14;
+
+  // 2) the star field drifts past the slit
+  sky.rotation.y = t * 0.006;
+
+  // 3) console LEDs blink and the dial panel breathes
+  for (let i = 0; i < blinkLeds.length; i++)
+    blinkLeds[i].material.emissiveIntensity = 1.2 + Math.sin(t * 2.2 + i * 1.7) * 1.0;
+  consoleMat.emissiveIntensity = 0.85 + 0.1 * Math.sin(t * 1.3);
+
+  // 4) red safe lights pulse gently around the wall
+  const pulse = 1.5 + Math.sin(t * 1.1) * 0.5;
+  for (const b of safeBulbs) b.material.emissiveIntensity = pulse;
+  redA.intensity = 3.4 + Math.sin(t * 1.1) * 1.1;
+  redB.intensity = 3.4 + Math.sin(t * 1.1 + 1.3) * 1.1;
+
+  // 5) dust motes drift in the beam; the celestial globe turns
+  for (const sp of motes){
+    sp.position.y += Math.sin(t * sp.userData.speed + sp.userData.phase) * 0.0016;
+    sp.material.opacity = 0.11 + 0.07 * Math.sin(t * 0.5 + sp.userData.phase);
+  }
+  globeBall.rotation.y = t * 0.15;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================= RESIZE ================= */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

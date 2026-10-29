@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Victorian Gaslamp Street</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #10141d; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================= 1. config & palette ============================ */
+const CFG = {
+  seed: 1888,
+  streetLen: 80,          // paved run along Z, centred on z = -6
+  streetHalf: 4.5,        // half width of the cobbled carriageway
+  walkW: 3.2,             // sidewalk width each side
+  lampGap: 11,            // spacing between gas lamps
+  fogColor: 0x151b28,
+  fogNear: 16,
+  fogFar: 108
+};
+const PAL = {
+  brickTints: ['#8a6a5c', '#93705e', '#7d5f52', '#9a7868'],
+  doors:      ['#2e4634', '#4a2730', '#25384d', '#4d3a22'],
+  stone:  '#8d8778',  slate: '#2c313a',  iron: '#23262c',
+  brass:  '#b08d4a',  wood:  '#4c3826',  post: '#a41c22',
+  horse:  '#3a2b21',  cab:   '#23262d',  grass: '#26301d',
+  flame:  '#ffb45f',  moon:  '#dfe8f4'
+};
+
+/* ============================ 2. seeded prng & helpers ======================== */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rr   = (a, b) => a + (b - a) * rand();
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+function mesh(geo, mat, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+const box = (w, h, d, mat, x, y, z) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, seg, mat, x, y, z) => mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat, x, y, z);
+
+function rrect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+
+/* ================================ 3. textures ================================= */
+function canvasTex(w, h, painter, srgb = true) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  painter(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.anisotropy = 4;
+  return t;
+}
+function texClone(t, rx, ry) {
+  const c = t.clone();
+  c.repeat.set(rx, ry);
+  c.needsUpdate = true;
+  return c;
+}
+
+const TEX = {};
+// wet cobblestones (albedo) -- rounded setts with a pale sheen on the crown
+TEX.cobble = canvasTex(512, 512, (ctx, s) => {
+  ctx.fillStyle = '#191d24'; ctx.fillRect(0, 0, s, s);
+  const rows = 11, cols = 8, rh = s / rows, cw = s / cols;
+  for (let r = 0; r < rows; r++) {
+    const off = (r % 2) * 0.5;
+    for (let c = -1; c < cols; c++) {
+      const x = (c + off) * cw, y = r * rh, l = rr(34, 58), b = rr(6, 16);
+      ctx.fillStyle = `rgb(${l + 46},${l + 52},${l + 60 + b})`;
+      rrect(ctx, x + 3, y + 3, cw - 6, rh - 6, 9); ctx.fill();
+      ctx.fillStyle = 'rgba(215,225,240,0.13)';           // wet highlight
+      rrect(ctx, x + 6, y + 5, cw - 12, rh * 0.34, 7); ctx.fill();
+    }
+  }
+});
+// roughness map: setts fairly rough, mortar + random puddles glass-smooth
+TEX.cobbleRough = canvasTex(512, 512, (ctx, s) => {
+  ctx.fillStyle = '#8c8c8c'; ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 26; i++) {
+    const g = ctx.createRadialGradient(rr(0, s), rr(0, s), 4, rr(0, s), rr(0, s), rr(30, 90));
+    g.addColorStop(0, 'rgba(18,18,18,0.95)'); g.addColorStop(1, 'rgba(18,18,18,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+  }
+}, false);
+// sooty Victorian brick
+TEX.brick = canvasTex(512, 512, (ctx, s) => {
+  ctx.fillStyle = '#3a3029'; ctx.fillRect(0, 0, s, s);
+  const rows = 16, bw = s / 5.5, bh = s / rows;
+  for (let r = 0; r < rows; r++) {
+    const off = (r % 2) * 0.5;
+    for (let c = -1; c < 6; c++) {
+      const v = rr(-16, 18);
+      ctx.fillStyle = `rgb(${112 + v},${78 + v * 0.7},${64 + v * 0.5})`;
+      ctx.fillRect((c + off) * bw + 2, r * bh + 2, bw - 4, bh - 4);
+    }
+  }
+  for (let i = 0; i < 14; i++) {                          // soot stains
+    const g = ctx.createRadialGradient(rr(0, s), rr(0, s), 2, rr(0, s), rr(0, s), rr(24, 70));
+    g.addColorStop(0, 'rgba(15,12,10,0.4)'); g.addColorStop(1, 'rgba(15,12,10,0)');
+    ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+  }
+});
+// paving flags for the sidewalks
+TEX.flag = canvasTex(256, 256, (ctx, s) => {
+  ctx.fillStyle = '#22262d'; ctx.fillRect(0, 0, s, s);
+  const n = 4, f = s / n;
+  for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) {
+    const l = rr(52, 70);
+    ctx.fillStyle = `rgb(${l},${l + 4},${l + 10})`;
+    ctx.fillRect(i * f + 2, j * f + 2, f - 4, f - 4);
+  }
+});
+// warm gas-lit sash window (frame + glowing panes drawn in)
+TEX.winLit = canvasTex(128, 160, (ctx, w, h) => {
+  ctx.fillStyle = '#241d16'; ctx.fillRect(0, 0, w, h);
+  const g = ctx.createLinearGradient(0, 8, 0, h - 8);
+  g.addColorStop(0, '#ffe1a4'); g.addColorStop(0.55, '#f5b45f'); g.addColorStop(1, '#c67f33');
+  ctx.fillStyle = g; ctx.fillRect(10, 10, w - 20, h - 20);
+  ctx.strokeStyle = '#241d16'; ctx.lineWidth = 6;
+  ctx.strokeRect(10, 10, w - 20, h - 20);
+  ctx.beginPath(); ctx.moveTo(w / 2, 10); ctx.lineTo(w / 2, h - 10);
+  ctx.moveTo(10, h * 0.38); ctx.lineTo(w - 10, h * 0.38);
+  ctx.moveTo(10, h * 0.69); ctx.lineTo(w - 10, h * 0.69); ctx.stroke();
+});
+// dark unlit window with a faint cool reflection
+TEX.winDim = canvasTex(128, 160, (ctx, w, h) => {
+  ctx.fillStyle = '#241d16'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#2b3644'; ctx.fillRect(10, 10, w - 20, h - 20);
+  ctx.strokeStyle = 'rgba(190,205,225,0.16)'; ctx.lineWidth = 9;
+  ctx.beginPath(); ctx.moveTo(24, h - 16); ctx.lineTo(w - 30, 18); ctx.stroke();
+  ctx.strokeStyle = '#241d16'; ctx.lineWidth = 6;
+  ctx.beginPath(); ctx.moveTo(w / 2, 10); ctx.lineTo(w / 2, h - 10);
+  ctx.moveTo(10, h * 0.5); ctx.lineTo(w - 10, h * 0.5); ctx.stroke();
+});
+// lit clock face with roman numerals
+TEX.clock = canvasTex(256, 256, (ctx, s) => {
+  const c = s / 2;
+  ctx.fillStyle = '#141210'; ctx.fillRect(0, 0, s, s);
+  ctx.fillStyle = '#0c0b09'; ctx.beginPath(); ctx.arc(c, c, 122, 0, 7); ctx.fill();
+  const g = ctx.createRadialGradient(c, c, 10, c, c, 110);
+  g.addColorStop(0, '#fff3cf'); g.addColorStop(1, '#e2c98e');
+  ctx.fillStyle = g; ctx.beginPath(); ctx.arc(c, c, 110, 0, 7); ctx.fill();
+  ctx.strokeStyle = '#332c1e';
+  for (let i = 0; i < 60; i++) {
+    const a = i * Math.PI / 30, maj = i % 5 === 0;
+    ctx.lineWidth = maj ? 5 : 2;
+    ctx.beginPath();
+    ctx.moveTo(c + Math.cos(a) * (maj ? 88 : 98), c + Math.sin(a) * (maj ? 88 : 98));
+    ctx.lineTo(c + Math.cos(a) * 105, c + Math.sin(a) * 105); ctx.stroke();
+  }
+  ctx.fillStyle = '#2c2517'; ctx.font = 'bold 26px Georgia, serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  const R = ['XII', 'I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX', 'X', 'XI'];
+  R.forEach((n, i) => {
+    const a = -Math.PI / 2 + i * Math.PI / 6;
+    ctx.fillText(n, c + Math.cos(a) * 72, c + Math.sin(a) * 72);
+  });
+  ctx.beginPath(); ctx.arc(c, c, 7, 0, 7); ctx.fill();
+});
+// soft fog puff for the drifting mist sprites
+TEX.puff = canvasTex(128, 128, (ctx, s) => {
+  const g = ctx.createRadialGradient(s / 2, s / 2, 4, s / 2, s / 2, s / 2);
+  g.addColorStop(0, 'rgba(205,215,232,0.5)');
+  g.addColorStop(0.55, 'rgba(190,203,224,0.2)');
+  g.addColorStop(1, 'rgba(180,195,215,0)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+});
+// dark winter lawn
+TEX.grass = canvasTex(256, 256, (ctx, s) => {
+  ctx.fillStyle = PAL.grass; ctx.fillRect(0, 0, s, s);
+  for (let i = 0; i < 900; i++) {
+    ctx.fillStyle = `rgba(${rr(40, 70)},${rr(60, 92)},${rr(30, 48)},0.5)`;
+    ctx.fillRect(rr(0, s), rr(0, s), 2, rr(2, 5));
+  }
+});
+// night sky gradient for the backdrop dome
+TEX.sky = canvasTex(64, 256, (ctx, w, h) => {
+  const g = ctx.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, '#05070d'); g.addColorStop(0.5, '#0d1320');
+  g.addColorStop(0.72, '#1a2334'); g.addColorStop(1, '#28324a');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, w, h);
+});
+
+/* ================================ 4. materials ================================ */
+const MAT = {
+  cobble: new THREE.MeshStandardMaterial({
+    map: texClone(TEX.cobble, 3, 26), roughnessMap: texClone(TEX.cobbleRough, 3, 26),
+    roughness: 1, metalness: 0.12
+  }),
+  flag:  new THREE.MeshStandardMaterial({ map: texClone(TEX.flag, 2, 44), roughness: 0.55, metalness: 0.05 }),
+  brick: new THREE.MeshStandardMaterial({ map: TEX.brick, roughness: 0.92 }),
+  stone: new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.85 }),
+  slate: new THREE.MeshStandardMaterial({ color: PAL.slate, roughness: 0.6, metalness: 0.1 }),
+  iron:  new THREE.MeshStandardMaterial({ color: PAL.iron, roughness: 0.5, metalness: 0.75 }),
+  brass: new THREE.MeshStandardMaterial({ color: PAL.brass, roughness: 0.35, metalness: 0.9 }),
+  wood:  new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.8 }),
+  post:  new THREE.MeshStandardMaterial({ color: PAL.post, roughness: 0.42, metalness: 0.1 }),
+  horse: new THREE.MeshStandardMaterial({ color: PAL.horse, roughness: 0.85 }),
+  cab:   new THREE.MeshStandardMaterial({ color: PAL.cab, roughness: 0.35, metalness: 0.25 }),
+  grass: new THREE.MeshStandardMaterial({ map: texClone(TEX.grass, 4, 6), roughness: 0.95 }),
+  glass: new THREE.MeshStandardMaterial({
+    color: '#3a2410', emissive: PAL.flame, emissiveIntensity: 2.6, roughness: 0.3
+  }),
+  winLit: new THREE.MeshBasicMaterial({ map: TEX.winLit }),
+  winDim: new THREE.MeshBasicMaterial({ map: TEX.winDim }),
+  clock:  new THREE.MeshBasicMaterial({ map: TEX.clock, fog: false }),
+  moon:   new THREE.MeshBasicMaterial({ color: PAL.moon, fog: false })
+};
+const PYR = new THREE.ConeGeometry(Math.SQRT1_2, 1, 4, 1);   // unit pyramid roof
+PYR.rotateY(Math.PI / 4);
+
+/* ============================ 5. builder functions ============================ */
+// ---- street: cobbled carriageway, raised flag sidewalks, granite curbs -------
+function buildStreet() {
+  const g = new THREE.Group(), L = CFG.streetLen, hw = CFG.streetHalf;
+  const road = mesh(new THREE.PlaneGeometry(hw * 2, L), MAT.cobble, 0, 0.02, 0);
+  road.rotation.x = -Math.PI / 2; road.castShadow = false;
+  g.add(road);
+  for (const s of [-1, 1]) {
+    g.add(box(CFG.walkW, 0.16, L, MAT.flag, s * (hw + CFG.walkW / 2 + 0.24), 0.08, 0));
+    g.add(box(0.26, 0.2, L, MAT.stone, s * (hw + 0.12), 0.1, 0));       // curb
+  }
+  return g;
+}
+
+// ---- brick townhouse with sash windows, bay, arched door, chimney stacks -----
+function buildTownhouse(width, floors) {
+  const g = new THREE.Group(), d = 6.5, fh = 3.0, h = floors * fh + 0.7;
+  const bm = MAT.brick.clone();
+  bm.map = texClone(TEX.brick, width / 3, h / 3.2);
+  bm.color = new THREE.Color(pick(PAL.brickTints));
+  g.add(box(width, h, d, bm, 0, h / 2, 0));
+  g.add(box(width + 0.35, 0.3, d + 0.35, MAT.stone, 0, h + 0.15, 0));   // cornice
+  const roof = mesh(PYR, MAT.slate, 0, h + 0.3 + 0.85, 0);
+  roof.scale.set(width + 0.5, 1.7, d + 0.5);
+  g.add(roof);
+  // chimney stacks with clay pots
+  const nStacks = 1 + (rand() < 0.55 ? 1 : 0);
+  for (let i = 0; i < nStacks; i++) {
+    const cx = (i - (nStacks - 1) / 2) * width * 0.42;
+    g.add(box(0.85, 1.6, 0.85, bm, cx, h + 1.55, 0));
+    g.add(cyl(0.12, 0.15, 0.5, 8, MAT.stone, cx - 0.2, h + 2.55, 0));
+    g.add(cyl(0.12, 0.15, 0.5, 8, MAT.stone, cx + 0.2, h + 2.55, 0));
+  }
+  // window grid (door in col 0, two-storey bay in the last column)
+  const cols = Math.max(2, Math.round(width / 2.6));
+  const colX = (i) => -width / 2 + (i + 0.5) * (width / cols);
+  const zf = d / 2;
+  for (let f = 0; f < floors; f++) {
+    for (let c = 0; c < cols; c++) {
+      if (f === 0 && c === 0) continue;                    // door slot
+      if (f <= 1 && c === cols - 1) continue;              // bay slot
+      const wm = rand() < 0.62 ? MAT.winLit : MAT.winDim;
+      const win = mesh(new THREE.PlaneGeometry(1.15, 1.7), wm, colX(c), f * fh + 1.95, zf + 0.03);
+      win.castShadow = false;
+      g.add(win);
+      g.add(box(1.35, 0.12, 0.16, MAT.stone, colX(c), f * fh + 1.02, zf + 0.05)); // sill
+    }
+  }
+  // protruding two-storey bay window
+  const bx = colX(cols - 1), bh = fh * 2 - 0.4;
+  g.add(box(2.25, bh, 1.0, bm, bx, bh / 2 + 0.15, zf + 0.5));
+  g.add(box(2.55, 0.14, 1.25, MAT.stone, bx, bh + 0.25, zf + 0.5));
+  for (let f = 0; f < 2; f++) for (let k = -1; k <= 1; k++) {
+    const wm = k === 0 ? MAT.winLit : (rand() < 0.5 ? MAT.winLit : MAT.winDim);
+    const win = mesh(new THREE.PlaneGeometry(0.6, 1.55), wm, bx + k * 0.72, f * fh + 1.85, zf + 1.01);
+    win.castShadow = false;
+    g.add(win);
+  }
+  // panelled front door, transom lamp, stone steps
+  const dx = colX(0), dm = new THREE.MeshStandardMaterial({ color: pick(PAL.doors), roughness: 0.55 });
+  g.add(box(1.5, 2.95, 0.22, MAT.stone, dx, 1.55, zf + 0.06));
+  const door = mesh(new THREE.PlaneGeometry(1.05, 2.25), dm, dx, 1.2, zf + 0.18);
+  g.add(door);
+  const transom = mesh(new THREE.PlaneGeometry(0.9, 0.5), MAT.winLit, dx, 2.62, zf + 0.18);
+  transom.castShadow = false;
+  g.add(transom);
+  g.add(box(1.7, 0.14, 0.85, MAT.stone, dx, 0.07, zf + 0.42));
+  g.add(box(1.5, 0.13, 0.55, MAT.stone, dx, 0.2, zf + 0.28));
+  return g;
+}
+
+// ---- cast-iron gas lamp: fluted column, glowing lantern, warm point light ----
+const lamps = [];
+function buildGasLamp() {
+  const g = new THREE.Group();
+  g.add(cyl(0.24, 0.32, 0.55, 10, MAT.iron, 0, 0.28, 0));
+  g.add(cyl(0.08, 0.13, 2.7, 10, MAT.iron, 0, 1.9, 0));
+  g.add(cyl(0.15, 0.15, 0.1, 10, MAT.iron, 0, 2.32, 0));
+  g.add(box(0.95, 0.05, 0.05, MAT.iron, 0, 3.12, 0));      // ladder crossbar
+  g.add(box(0.46, 0.06, 0.46, MAT.iron, 0, 3.3, 0));       // lantern shelf
+  const gm = MAT.glass.clone();
+  const pane = cyl(0.25, 0.34, 0.56, 4, gm, 0, 3.62, 0);
+  pane.rotation.y = Math.PI / 4;
+  pane.castShadow = false;
+  g.add(pane);
+  const cap = mesh(new THREE.ConeGeometry(0.42, 0.3, 4), MAT.iron, 0, 4.02, 0);
+  cap.rotation.y = Math.PI / 4;
+  g.add(cap);
+  g.add(mesh(new THREE.SphereGeometry(0.07, 8, 6), MAT.brass, 0, 4.22, 0));
+  const light = new THREE.PointLight(0xffb15c, 11, 17, 2);
+  light.position.set(0, 3.6, 0);
+  g.add(light);
+  lamps.push({ mat: gm, light, base: 11, phase: rr(0, Math.PI * 2) });
+  return g;
+}
+
+// ---- red pillar postbox ------------------------------------------------------
+function buildPostbox() {
+  const g = new THREE.Group();
+  g.add(cyl(0.6, 0.66, 0.2, 14, MAT.iron, 0, 0.1, 0));
+  g.add(cyl(0.5, 0.5, 1.55, 14, MAT.post, 0, 0.95, 0));
+  g.add(cyl(0.56, 0.56, 0.12, 14, MAT.post, 0, 1.76, 0));
+  g.add(mesh(new THREE.SphereGeometry(0.5, 14, 8, 0, Math.PI * 2, 0, Math.PI / 2), MAT.post, 0, 1.8, 0));
+  g.add(box(0.46, 0.07, 0.06, MAT.iron, 0, 1.42, 0.49));   // letter slot
+  g.add(box(0.34, 0.26, 0.04, MAT.brass, 0, 1.05, 0.5));   // notice plate
+  return g;
+}
+
+// ---- wrought-iron fence with instanced pickets (gate gap faces the street) ---
+function buildIronFence(w, d) {
+  const g = new THREE.Group(), pts = [];
+  const sides = [
+    { f: [-w / 2, -d / 2], t: [w / 2, -d / 2] }, { f: [w / 2, -d / 2], t: [w / 2, d / 2] },
+    { f: [w / 2, d / 2], t: [-w / 2, d / 2] },   { f: [-w / 2, d / 2], t: [-w / 2, -d / 2] }
+  ];
+  sides.forEach((s, si) => {
+    const dx = s.t[0] - s.f[0], dz = s.t[1] - s.f[1];
+    const n = Math.round(Math.hypot(dx, dz) / 0.55);
+    for (let i = 1; i < n; i++) {
+      const x = s.f[0] + dx * i / n, z = s.f[1] + dz * i / n;
+      if (si === 3 && Math.abs(z) < 1.1) continue;         // gate opening
+      pts.push([x, z]);
+    }
+    for (const ry of [0.4, 0.98]) {
+      if (si === 3) continue;                              // west rails split at gate
+      g.add(box(Math.abs(dx) + 0.06, 0.055, Math.abs(dz) + 0.06, MAT.iron,
+        (s.f[0] + s.t[0]) / 2, ry, (s.f[1] + s.t[1]) / 2));
+    }
+    g.add(box(0.15, 1.4, 0.15, MAT.iron, s.f[0], 0.7, s.f[1]));
+  });
+  for (const gz of [-1.15, 1.15]) {                        // gate rails + posts
+    for (const ry of [0.4, 0.98]) g.add(box(0.06, 0.055, d / 2 - 1.15, MAT.iron, -w / 2, ry, gz > 0 ? (gz + d / 2) / 2 : (gz - d / 2) / 2));
+    g.add(cyl(0.07, 0.07, 1.55, 8, MAT.iron, -w / 2, 0.78, gz));
+    g.add(mesh(new THREE.SphereGeometry(0.11, 8, 6), MAT.brass, -w / 2, 1.62, gz));
+  }
+  const shaft = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.028, 0.028, 1.16, 5), MAT.iron, pts.length);
+  const tip = new THREE.InstancedMesh(new THREE.ConeGeometry(0.05, 0.17, 5), MAT.iron, pts.length);
+  const m4 = new THREE.Matrix4();
+  pts.forEach((p, i) => {
+    m4.setPosition(p[0], 0.62, p[1]); shaft.setMatrixAt(i, m4);
+    m4.setPosition(p[0], 1.28, p[1]); tip.setMatrixAt(i, m4);
+  });
+  shaft.instanceMatrix.needsUpdate = tip.instanceMatrix.needsUpdate = true;
+  shaft.castShadow = tip.castShadow = true;
+  g.add(shaft, tip);
+  return g;
+}
+
+// ---- bare winter tree, park bench, memorial statue ---------------------------
+const trees = [];
+function buildBareTree(s) {
+  const g = new THREE.Group();
+  g.add(cyl(0.1, 0.2, 2.2 * s, 7, MAT.wood, 0, 1.1 * s, 0));
+  for (let i = 0; i < 6; i++) {
+    const br = cyl(0.015, 0.055, rr(1.1, 1.7) * s, 5, MAT.wood, 0, 0, 0);
+    br.position.y = rr(1.7, 2.2) * s;
+    br.rotation.set(rr(-0.9, 0.9), rr(0, 6.28), rr(0.5, 1.1));
+    br.translateY(br.geometry.parameters.height / 2);
+    g.add(br);
+  }
+  trees.push(g);
+  return g;
+}
+function buildBench() {
+  const g = new THREE.Group();
+  for (const s of [-0.62, 0.62]) {
+    g.add(box(0.08, 0.42, 0.5, MAT.iron, s, 0.21, 0));
+    g.add(box(0.08, 0.5, 0.09, MAT.iron, s, 0.66, -0.22));
+  }
+  for (let i = 0; i < 3; i++) g.add(box(1.4, 0.045, 0.14, MAT.wood, 0, 0.44, -0.16 + i * 0.16));
+  for (let i = 0; i < 2; i++) g.add(box(1.4, 0.1, 0.045, MAT.iron, 0, 0.62 + i * 0.2, -0.25));
+  return g;
+}
+function buildStatue() {
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.35, 1.5, MAT.stone, 0, 0.17, 0));
+  g.add(box(1.0, 1.15, 1.0, MAT.stone, 0, 0.9, 0));
+  g.add(box(1.2, 0.18, 1.2, MAT.stone, 0, 1.55, 0));
+  g.add(cyl(0.2, 0.3, 1.5, 8, MAT.stone, 0, 2.35, 0));     // cloaked figure
+  g.add(box(0.62, 0.2, 0.34, MAT.stone, 0, 2.9, 0));       // shoulders
+  g.add(mesh(new THREE.SphereGeometry(0.17, 10, 8), MAT.stone, 0, 3.12, 0));
+  return g;
+}
+
+// ---- the fenced garden square ------------------------------------------------
+function buildParkSquare(w, d) {
+  const g = new THREE.Group();
+  g.add(box(w - 0.5, 0.16, d - 0.5, MAT.grass, 0, 0.08, 0));
+  const path = mesh(new THREE.PlaneGeometry(w / 2, 1.7), MAT.flag.clone(), -w / 4 + 0.4, 0.17, 0);
+  path.rotation.x = -Math.PI / 2; path.castShadow = false;
+  g.add(path);
+  g.add(buildIronFence(w, d));
+  g.add(buildStatue());
+  const t1 = buildBareTree(1.15); t1.position.set(w * 0.26, 0.1, -d * 0.28); g.add(t1);
+  const t2 = buildBareTree(0.95); t2.position.set(w * 0.2, 0.1, d * 0.3); g.add(t2);
+  const b1 = buildBench(); b1.position.set(0.2, 0.14, -1.7); g.add(b1);
+  const b2 = buildBench(); b2.position.set(0.2, 0.14, 1.7); b2.rotation.y = Math.PI; g.add(b2);
+  return g;
+}
+
+// ---- hansom carriage with dray horse and flickering side lantern -------------
+let carriage, horseHead, cabLantern, cabLight;
+function buildWheel(r) {
+  const w = new THREE.Group();
+  w.add(mesh(new THREE.TorusGeometry(r, 0.045, 8, 22), MAT.iron, 0, 0, 0));
+  w.add(cyl(0.06, 0.06, 0.09, 8, MAT.brass, 0, 0, 0)).children;
+  w.children[1].rotation.x = Math.PI / 2;
+  for (let i = 0; i < 8; i++) {
+    const sp = box(0.03, r - 0.05, 0.03, MAT.wood, 0, 0, 0);
+    sp.rotation.z = i * Math.PI / 4;
+    sp.translateY((r - 0.05) / 2);
+    w.add(sp);
+  }
+  w.rotation.y = Math.PI / 2;
+  return w;
+}
+function buildCarriage() {
+  const g = new THREE.Group();
+  g.add(box(1.7, 1.5, 2.2, MAT.cab, 0, 1.6, -0.2));        // cab body
+  g.add(box(1.82, 0.1, 2.34, MAT.cab, 0, 2.4, -0.2));      // roof
+  for (const sx of [-0.86, 0.86]) {
+    const win = mesh(new THREE.PlaneGeometry(0.85, 0.7), MAT.winDim, sx * 1.001, 1.9, -0.2);
+    win.rotation.y = sx > 0 ? Math.PI / 2 : -Math.PI / 2;
+    win.castShadow = false;
+    g.add(win);
+  }
+  g.add(box(0.36, 0.14, 3.6, MAT.wood, 0, 0.82, 0.4));     // undercarriage beam
+  g.add(box(1.5, 0.12, 0.6, MAT.wood, 0, 2.05, 1.15));     // driver bench
+  g.add(box(1.5, 0.5, 0.1, MAT.cab, 0, 2.32, 1.42));
+  g.add(box(1.4, 0.1, 0.5, MAT.iron, 0, 1.15, 1.5));       // footboard
+  for (const sx of [-0.88, 0.88]) {
+    const rw = buildWheel(0.65); rw.position.set(sx, 0.65, -0.85); g.add(rw);
+    const fw = buildWheel(0.46); fw.position.set(sx, 0.46, 1.05); g.add(fw);
+  }
+  cabLantern = mesh(new THREE.BoxGeometry(0.16, 0.26, 0.16), MAT.glass.clone(), -0.95, 2.1, 0.95);
+  cabLantern.castShadow = false;
+  g.add(cabLantern);
+  g.add(box(0.2, 0.06, 0.2, MAT.iron, -0.95, 2.26, 0.95));
+  cabLight = new THREE.PointLight(0xffa860, 5, 9, 2);
+  cabLight.position.set(-0.95, 2.1, 0.95);
+  g.add(cabLight);
+  for (const sx of [-0.5, 0.5]) {                          // shafts to the horse
+    const sh = cyl(0.035, 0.035, 2.1, 6, MAT.wood, sx, 0.95, 2.05);
+    sh.rotation.x = Math.PI / 2 - 0.08;
+    g.add(sh);
+  }
+  // dray horse
+  const h = new THREE.Group();
+  const body = mesh(new THREE.CapsuleGeometry(0.42, 0.95, 5, 10), MAT.horse, 0, 1.2, 0);
+  body.rotation.x = Math.PI / 2;
+  h.add(body);
+  horseHead = new THREE.Group();
+  const neck = cyl(0.15, 0.24, 0.85, 8, MAT.horse, 0, 0.32, 0.1);
+  neck.rotation.x = -0.5;
+  horseHead.add(neck);
+  horseHead.add(box(0.24, 0.3, 0.55, MAT.horse, 0, 0.72, 0.42));
+  horseHead.add(box(0.16, 0.18, 0.3, MAT.horse, 0, 0.66, 0.78));
+  for (const sx of [-0.08, 0.08]) {
+    const ear = mesh(new THREE.ConeGeometry(0.05, 0.16, 6), MAT.horse, sx, 0.94, 0.32);
+    horseHead.add(ear);
+  }
+  horseHead.position.set(0, 1.35, 0.62);
+  h.add(horseHead);
+  for (const [lx, lz] of [[-0.22, 0.42], [0.22, 0.42], [-0.22, -0.45], [0.22, -0.45]]) {
+    h.add(cyl(0.055, 0.085, 1.0, 7, MAT.horse, lx, 0.55, lz));
+    h.add(cyl(0.07, 0.08, 0.1, 7, MAT.iron, lx, 0.05, lz));
+  }
+  const tail = cyl(0.045, 0.11, 0.72, 6, MAT.horse, 0, 1.05, -0.85);
+  tail.rotation.x = 0.5;
+  h.add(tail);
+  h.position.set(0, 0, 3.3);
+  g.add(h);
+  return g;
+}
+
+// ---- distant clock tower with four lit faces ---------------------------------
+const clockHands = [];
+function buildClockTower() {
+  const g = new THREE.Group();
+  const bm = MAT.brick.clone();
+  bm.map = texClone(TEX.brick, 2.2, 9);
+  bm.color = new THREE.Color('#7d6154');
+  g.add(box(4.4, 1.2, 4.4, MAT.stone, 0, 0.6, 0));
+  g.add(box(3.2, 14, 3.2, bm, 0, 8.2, 0));
+  g.add(box(1.5, 2.6, 0.3, MAT.iron, 0, 2.4, 1.62));       // arched doorway
+  for (const by of [6, 10.5]) g.add(box(3.5, 0.3, 3.5, MAT.stone, 0, by, 0));
+  const wl = mesh(new THREE.PlaneGeometry(0.9, 1.5), MAT.winLit, 0, 8.6, 1.62);
+  wl.castShadow = false;
+  g.add(wl);
+  g.add(box(3.9, 3.4, 3.9, MAT.stone, 0, 16.9, 0));        // clock stage
+  for (let i = 0; i < 4; i++) {                            // four faces + hands
+    const fg = new THREE.Group();
+    fg.rotation.y = i * Math.PI / 2;
+    const face = mesh(new THREE.PlaneGeometry(2.6, 2.6), MAT.clock, 0, 0, 1.96);
+    face.castShadow = false;
+    fg.add(face);
+    const hm = new THREE.MeshBasicMaterial({ color: '#241f14', fog: false });
+    const minG = new THREE.PlaneGeometry(0.07, 1.0); minG.translate(0, 0.44, 0);
+    const hrG = new THREE.PlaneGeometry(0.09, 0.68); hrG.translate(0, 0.28, 0);
+    const mh = new THREE.Mesh(minG, hm), hh = new THREE.Mesh(hrG, hm);
+    mh.position.z = hh.position.z = 1.98; hh.position.y = mh.position.y = 0;
+    fg.add(mh, hh);
+    clockHands.push({ mh, hh });
+    fg.position.y = 16.9;
+    g.add(fg);
+  }
+  g.add(box(4.3, 0.35, 4.3, MAT.stone, 0, 18.8, 0));
+  const spire = mesh(PYR, MAT.slate, 0, 20.75, 0);
+  spire.scale.set(4.1, 3.6, 4.1);
+  g.add(spire);
+  g.add(cyl(0.03, 0.03, 1.3, 6, MAT.brass, 0, 23.1, 0));
+  g.add(mesh(new THREE.SphereGeometry(0.12, 8, 6), MAT.brass, 0, 23.7, 0));
+  const glow = new THREE.PointLight(0xffe2a6, 7, 15, 2);   // lit-face halo
+  glow.position.set(0, 17.2, 0);
+  g.add(glow);
+  return g;
+}
+
+/* ============================ 6. assembly & layout ============================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CFG.fogColor);
+scene.fog = new THREE.Fog(CFG.fogColor, CFG.fogNear, CFG.fogFar);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(24, 15, 21);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4, -4);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 18;
+controls.maxDistance = 48;
+controls.maxPolarAngle = 1.26;
+controls.minPolarAngle = 0.35;
+
+// ground base + backdrop dome + hazy moon
+const ground = mesh(new THREE.PlaneGeometry(240, 240), new THREE.MeshStandardMaterial({ color: '#101319', roughness: 0.95 }), 0, -0.02, 0);
+ground.rotation.x = -Math.PI / 2; ground.castShadow = false;
+scene.add(ground);
+const dome = new THREE.Mesh(new THREE.SphereGeometry(150, 24, 14),
+  new THREE.MeshBasicMaterial({ map: TEX.sky, side: THREE.BackSide, fog: false, depthWrite: false }));
+scene.add(dome);
+const moon = new THREE.Mesh(new THREE.CircleGeometry(4, 24), MAT.moon);
+moon.position.set(46, 58, -92); moon.lookAt(0, 4, 0);
+scene.add(moon);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.puff, color: 0xaebbd6, opacity: 0.5, transparent: true, fog: false, depthWrite: false }));
+halo.position.copy(moon.position); halo.scale.set(26, 26, 1);
+scene.add(halo);
+
+scene.add(buildStreet());
+
+// terraces of townhouses down both sides (right side leaves room for the square)
+function terraceRow(side) {
+  let z = -38;
+  while (z < 26) {
+    const w = rr(6.5, 9), floors = rand() < 0.72 ? 3 : 2;
+    if (side > 0 && z + w > -0.5 && z < 21) { z = 21.5; continue; }
+    const house = buildTownhouse(w, floors);
+    house.rotation.y = side < 0 ? Math.PI / 2 : -Math.PI / 2;
+    house.position.set(side * (CFG.streetHalf + CFG.walkW + 3.5), 0, z + w / 2);
+    scene.add(house);
+    z += w + 0.06;
+  }
+}
+terraceRow(-1);
+terraceRow(1);
+
+// twin rows of gas lamps, staggered, fading away down the street
+for (let z = -42, i = 0; z <= 28; z += CFG.lampGap, i++) {
+  const L = buildGasLamp();
+  L.position.set(-5.3, 0.14, z);
+  scene.add(L);
+  const R = buildGasLamp();
+  R.position.set(5.3, 0.14, z + CFG.lampGap / 2);
+  scene.add(R);
+}
+
+// garden square behind the right-hand sidewalk
+const square = buildParkSquare(11.5, 17);
+square.position.set(CFG.streetHalf + CFG.walkW + 6.1, 0, 10);
+scene.add(square);
+
+// pillar postbox on the left sidewalk
+const postbox = buildPostbox();
+postbox.position.set(-6.5, 0.16, -2.5);
+postbox.rotation.y = Math.PI / 2;
+scene.add(postbox);
+
+// hansom cab drawn up the street
+carriage = buildCarriage();
+carriage.position.set(1.9, 0.02, 6);
+carriage.rotation.y = Math.PI;
+scene.add(carriage);
+
+// clock tower closing the vista at the street's end
+const tower = buildClockTower();
+tower.position.set(0, 0, -50);
+scene.add(tower);
+scene.add(box(15, 0.24, 9, MAT.flag, 0, 0.12, -50));       // tower plaza
+
+// drifting fog banks hanging between the lamps
+const fogBanks = [];
+for (let i = 0; i < 12; i++) {
+  const sm = new THREE.SpriteMaterial({ map: TEX.puff, transparent: true, opacity: 0.15, depthWrite: false });
+  const spr = new THREE.Sprite(sm);
+  const bx = rr(-11, 11), bz = -46 + i * 6.4 + rr(-2, 2);
+  spr.position.set(bx, rr(1.2, 3.6), bz);
+  spr.scale.set(rr(11, 19), rr(3.5, 6.5), 1);
+  scene.add(spr);
+  fogBanks.push({ spr, x: bx, z: bz, ph: rr(0, 6.28), sp: rr(0.05, 0.16), amp: rr(1.5, 4), op: rr(0.1, 0.2) });
+}
+
+/* ============================== 7. lighting rig =============================== */
+const hemi = new THREE.HemisphereLight(0x44546f, 0x131922, 0.6);
+scene.add(hemi);
+scene.add(new THREE.AmbientLight(0x2a3348, 0.5));
+const moonLight = new THREE.DirectionalLight(0xa8c0e8, 1.0);
+moonLight.position.set(34, 46, -26);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.left = -42;
+moonLight.shadow.camera.right = 42;
+moonLight.shadow.camera.top = 55;
+moonLight.shadow.camera.bottom = -55;
+moonLight.shadow.camera.near = 4;
+moonLight.shadow.camera.far = 140;
+moonLight.shadow.bias = -0.0006;
+scene.add(moonLight);
+scene.add(moonLight.target);
+moonLight.target.position.set(0, 0, -8);
+
+/* ============================== 8. animation loop ============================= */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // 1) gas mantles breathe and flicker, each with its own phase
+  for (const L of lamps) {
+    const f = 0.86 + 0.09 * Math.sin(t * 7.9 + L.phase) + 0.05 * Math.sin(t * 13.7 + L.phase * 3.1);
+    L.light.intensity = L.base * f;
+    L.mat.emissiveIntensity = 2.6 * f;
+  }
+  // 2) fog banks drift and slowly swell between the lamps
+  for (const b of fogBanks) {
+    b.spr.position.x = b.x + Math.sin(t * b.sp + b.ph) * b.amp;
+    b.spr.position.z = b.z + Math.cos(t * b.sp * 0.7 + b.ph) * b.amp * 0.6;
+    b.spr.material.opacity = b.op * (0.75 + 0.25 * Math.sin(t * 0.45 + b.ph));
+  }
+  // 3) the waiting carriage rocks, the horse nods, its lantern gutters
+  carriage.rotation.z = 0.007 * Math.sin(t * 1.8);
+  horseHead.rotation.x = 0.09 * Math.sin(t * 1.15);
+  const cf = 0.8 + 0.2 * Math.sin(t * 11.3) * Math.sin(t * 3.1);
+  cabLight.intensity = 5 * cf;
+  cabLantern.material.emissiveIntensity = 2.6 * cf;
+  // 4) clock hands creep around the lit faces
+  for (const h of clockHands) {
+    h.mh.rotation.z = -t * 0.05;
+    h.hh.rotation.z = -1.1 - t * 0.0042;
+  }
+  // 5) bare trees sway in the night air
+  trees.forEach((tr, i) => { tr.rotation.z = 0.02 * Math.sin(t * 0.9 + i * 2.1); });
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================= 9. resize ================================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

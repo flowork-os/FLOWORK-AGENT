@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Running Sneaker</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#1a1c20}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1a1c20);
+scene.fog = new THREE.Fog(0x1a1c20, 12, 26);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth/innerHeight, 0.1, 100);
+camera.position.set(4.2, 2.6, 5.2);
+
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+// ---------- Lighting ----------
+scene.add(new THREE.HemisphereLight(0xbfd4ff, 0x30281f, 0.55));
+const key = new THREE.DirectionalLight(0xfff2e0, 2.2);
+key.position.set(5, 7, 4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -5; key.shadow.camera.right = 5;
+key.shadow.camera.top = 5; key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0004; key.shadow.radius = 6;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x8fb4ff, 0.9);
+rim.position.set(-6, 4, -5);
+scene.add(rim);
+const fill = new THREE.PointLight(0xffe8d0, 0.5, 20);
+fill.position.set(-3, 2, 4);
+scene.add(fill);
+
+// ---------- Ground ----------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(12, 64),
+  new THREE.MeshStandardMaterial({color:0x24262b, roughness:0.95, metalness:0})
+);
+ground.rotation.x = -Math.PI/2;
+ground.receiveShadow = true;
+scene.add(ground);
+// soft radial contact shadow
+const shTex = (()=>{const c=document.createElement('canvas');c.width=c.height=256;
+  const g=c.getContext('2d'),r=g.createRadialGradient(128,128,10,128,128,128);
+  r.addColorStop(0,'rgba(0,0,0,0.5)');r.addColorStop(1,'rgba(0,0,0,0)');
+  g.fillStyle=r;g.fillRect(0,0,256,256);return new THREE.CanvasTexture(c);})();
+const soft = new THREE.Mesh(new THREE.PlaneGeometry(5.5,3.4),
+  new THREE.MeshBasicMaterial({map:shTex, transparent:true, depthWrite:false}));
+soft.rotation.x = -Math.PI/2; soft.position.y = 0.005;
+scene.add(soft);
+
+// ---------- Fabric-ish bump texture for mesh upper ----------
+const meshTex = (()=>{const c=document.createElement('canvas');c.width=c.height=256;
+  const g=c.getContext('2d');g.fillStyle='#808080';g.fillRect(0,0,256,256);
+  for(let y=0;y<256;y+=4)for(let x=0;x<256;x+=4){
+    const v=110+Math.floor(Math.random()*60);
+    g.fillStyle=`rgb(${v},${v},${v})`;g.fillRect(x,y,3,3);}
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;t.repeat.set(6,3);return t;})();
+
+// ---------- Materials ----------
+const matUpper = new THREE.MeshStandardMaterial({color:0x2b4a8f, roughness:0.92, bumpMap:meshTex, bumpScale:0.02});
+const matUpperDark = new THREE.MeshStandardMaterial({color:0x1c2d55, roughness:0.9, bumpMap:meshTex, bumpScale:0.015});
+const matFoam = new THREE.MeshStandardMaterial({color:0xf2f0ea, roughness:0.6});
+const matFoam2 = new THREE.MeshStandardMaterial({color:0xd7d3c8, roughness:0.65});
+const matRubber = new THREE.MeshStandardMaterial({color:0x24242a, roughness:0.55});
+const matTongue = new THREE.MeshStandardMaterial({color:0x35569c, roughness:0.95, bumpMap:meshTex, bumpScale:0.02});
+const matHeel = new THREE.MeshStandardMaterial({color:0xe8e6df, roughness:0.35, metalness:0.05});
+const matLace = new THREE.MeshStandardMaterial({color:0xf5f5f2, roughness:0.85});
+const matEyelet = new THREE.MeshStandardMaterial({color:0x15151a, roughness:0.4, metalness:0.4});
+const matAccent = new THREE.MeshStandardMaterial({color:0xff5a36, roughness:0.5});
+
+// ---------- Shoe (left shoe: toe +X, medial side +Z) ----------
+const shoe = new THREE.Group();
+
+// footprint outline: last-like shape via width profile along length
+// t: 0 heel -> 1 toe ; returns half-widths (medial z+, lateral z-)
+function widthAt(t){
+  const w = 0.34 + 0.62*Math.sin(Math.PI*Math.min(1,t*0.92+0.06))
+          + 0.18*Math.exp(-Math.pow((t-0.68)/0.16,2))   // forefoot flare
+          - 0.10*Math.exp(-Math.pow((t-0.38)/0.14,2));  // arch waist
+  return w*0.62;
+}
+function soleShape(scale=1, toeCut=0){
+  const s = new THREE.Shape();
+  const N=40, L=3.1;
+  const pts=[];
+  for(let i=0;i<=N;i++){const t=i/N;pts.push([t*L-L/2, widthAt(t)*scale]);}
+  for(let i=N;i>=0;i--){const t=i/N;
+    // lateral side slightly straighter, medial (above) more curved -> left foot
+    pts.push([t*L-L/2, -widthAt(t)*scale*(t>0.5?1.04:0.97)]);}
+  s.moveTo(pts[0][0],pts[0][1]);
+  pts.forEach(p=>s.lineTo(p[0],p[1]));
+  s.closePath();
+  return s;
+}
+
+// ---- Outsole (rubber) ----
+const outsoleGeo = new THREE.ExtrudeGeometry(soleShape(1.03), {depth:0.14, bevelEnabled:true, bevelThickness:0.03, bevelSize:0.03, bevelSegments:2, curveSegments:24});
+outsoleGeo.rotateX(-Math.PI/2);
+const outsole = new THREE.Mesh(outsoleGeo, matRubber);
+outsole.position.y = 0.0;
+shoe.add(outsole);
+// tread lugs
+for(let i=0;i<9;i++){
+  const t=0.08+i*0.105, x=t*3.1-1.55;
+  const w=widthAt(t)*1.7;
+  const lug=new THREE.Mesh(new THREE.BoxGeometry(0.14,0.05,w), matRubber);
+  lug.position.set(x,0.01,0);
+  shoe.add(lug);
+}
+
+// ---- Midsole: two foam layers ----
+const mid1Geo = new THREE.ExtrudeGeometry(soleShape(1.06), {depth:0.22, bevelEnabled:true, bevelThickness:0.05, bevelSize:0.05, bevelSegments:3, curveSegments:24});
+mid1Geo.rotateX(-Math.PI/2);
+const mid1 = new THREE.Mesh(mid1Geo, matFoam);
+mid1.position.y = 0.17;
+shoe.add(mid1);
+const mid2Geo = new THREE.ExtrudeGeometry(soleShape(1.0), {depth:0.12, bevelEnabled:true, bevelThickness:0.04, bevelSize:0.04, bevelSegments:2, curveSegments:24});
+mid2Geo.rotateX(-Math.PI/2);
+const mid2 = new THREE.Mesh(mid2Geo, matFoam2);
+mid2.position.y = 0.42;
+shoe.add(mid2);
+// heel-lift wedge (thicker heel stack)
+const wedge = new THREE.Mesh(new THREE.SphereGeometry(0.52, 24, 16), matFoam);
+wedge.scale.set(1.15, 0.5, 1.05);
+wedge.position.set(-1.18, 0.42, 0);
+shoe.add(wedge);
+
+// ---- Upper (mesh body) : lathe-free sculpted from scaled spheres/hulls ----
+const upper = new THREE.Group();
+function blob(x,y,z, sx,sy,sz, mat, ry=0){
+  const m=new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), mat);
+  m.scale.set(sx,sy,sz); m.position.set(x,y,z); m.rotation.y=ry;
+  m.castShadow=true; return m;
+}
+// toe box (low, rounded)
+upper.add(blob(1.02, 0.62, 0, 0.62, 0.30, 0.52, matUpper));
+// vamp / forefoot
+upper.add(blob(0.55, 0.68, 0, 0.62, 0.36, 0.60, matUpper));
+// midfoot
+upper.add(blob(-0.05, 0.74, 0, 0.62, 0.44, 0.55, matUpper));
+// quarter panels rising to ankle
+upper.add(blob(-0.68, 0.82, 0, 0.60, 0.52, 0.52, matUpperDark));
+// heel / ankle collar zone
+upper.add(blob(-1.15, 0.92, 0, 0.46, 0.55, 0.46, matUpperDark));
+// mudguard strip around toe
+const guard = blob(1.06, 0.55, 0, 0.60, 0.22, 0.53, matUpperDark);
+upper.add(guard);
+shoe.add(upper);
+
+// ---- Ankle collar (padded rim) ----
+const collar = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.09, 14, 32), matTongue);
+collar.position.set(-1.05, 1.32, 0);
+collar.rotation.x = Math.PI/2;
+collar.rotation.y = 0.25;
+collar.scale.set(1.25, 1, 1);
+collar.castShadow = true;
+shoe.add(collar);
+
+// ---- Heel counter (stiff cup) ----
+const heelCup = new THREE.Mesh(
+  new THREE.SphereGeometry(0.5, 32, 20, Math.PI*0.62, Math.PI*0.76, Math.PI*0.15, Math.PI*0.52), matHeel);
+heelCup.scale.set(1.05, 1.05, 0.98);
+heelCup.position.set(-1.16, 0.72, 0);
+heelCup.castShadow = true;
+shoe.add(heelCup);
+// heel pull tab
+const tab = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.028, 10, 20), matAccent);
+tab.position.set(-1.56, 1.25, 0);
+tab.rotation.y = Math.PI/2;
+shoe.add(tab);
+
+// ---- Tongue (padded) ----
+const tongue = new THREE.Mesh(new THREE.CapsuleGeometry(0.16, 0.72, 8, 16), matTongue);
+tongue.scale.set(1, 1, 1.9);
+tongue.position.set(0.05, 1.02, 0);
+tongue.rotation.z = -0.92;
+tongue.castShadow = true;
+shoe.add(tongue);
+const tongueTop = new THREE.Mesh(new THREE.CapsuleGeometry(0.13, 0.3, 8, 16), matTongue);
+tongueTop.scale.set(1, 1, 1.8);
+tongueTop.position.set(-0.40, 1.30, 0);
+tongueTop.rotation.z = -1.15;
+shoe.add(tongueTop);
+// tongue label
+const label = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.02, 0.2), matAccent);
+label.position.set(-0.46, 1.44, 0);
+label.rotation.z = -1.15 + Math.PI/2;
+shoe.add(label);
+
+// ---- Eyelets + lace crossings along the throat ----
+// throat line from (0.55, 0.86) up to (-0.35, 1.24)
+const nEyes = 5;
+const eyeRows = [];
+for(let i=0;i<nEyes;i++){
+  const u = i/(nEyes-1);
+  const x = 0.55 - u*0.95;
+  const y = 0.88 + u*0.40;
+  const half = 0.30 - u*0.05;
+  eyeRows.push({x, y, half});
+  for(const s of [1,-1]){
+    const e = new THREE.Mesh(new THREE.TorusGeometry(0.040, 0.016, 10, 18), matEyelet);
+    e.position.set(x, y, s*half);
+    e.rotation.x = s*0.85;
+    e.rotation.y = 0.35;
+    e.castShadow = true;
+    shoe.add(e);
+  }
+}
+// criss-cross laces (tubes)
+function laceTube(a, b){
+  const midY = (a.y+b.y)/2 + 0.07;
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(a.x, a.y, a.z),
+    new THREE.Vector3((a.x+b.x)/2, midY, (a.z+b.z)/2),
+    new THREE.Vector3(b.x, b.y, b.z)
+  ]);
+  const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 0.028, 8), matLace);
+  m.castShadow = true;
+  return m;
+}
+for(let i=0;i<nEyes-1;i++){
+  const A=eyeRows[i], B=eyeRows[i+1];
+  shoe.add(laceTube({x:A.x, y:A.y+0.02, z: A.half*0.92},{x:B.x, y:B.y+0.02, z:-B.half*0.92}));
+  shoe.add(laceTube({x:A.x, y:A.y+0.02, z:-A.half*0.92},{x:B.x, y:B.y+0.02, z: B.half*0.92}));
+}
+// top bow-ish loops + dangling ends
+const topRow = eyeRows[nEyes-1];
+for(const s of [1,-1]){
+  const loop = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.028, 10, 20), matLace);
+  loop.position.set(topRow.x-0.05, topRow.y+0.10, s*0.14);
+  loop.rotation.x = s*0.6; loop.rotation.z = 0.4;
+  loop.castShadow = true;
+  shoe.add(loop);
+  const endCurve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(topRow.x, topRow.y+0.02, s*0.1),
+    new THREE.Vector3(topRow.x+0.12, topRow.y-0.16, s*0.30),
+    new THREE.Vector3(topRow.x+0.10, topRow.y-0.38, s*0.38)
+  ]);
+  const end = new THREE.Mesh(new THREE.TubeGeometry(endCurve, 16, 0.026, 8), matLace);
+  end.castShadow = true;
+  shoe.add(end);
+  const aglet = new THREE.Mesh(new THREE.CylinderGeometry(0.028,0.028,0.09,10), matEyelet);
+  const p = endCurve.getPoint(1);
+  aglet.position.copy(p);
+  shoe.add(aglet);
+}
+
+// ---- Side swoosh-ish accent stripe ----
+const stripeCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-1.35, 0.70, -0.42),
+  new THREE.Vector3(-0.55, 0.62, -0.56),
+  new THREE.Vector3( 0.35, 0.60, -0.58),
+  new THREE.Vector3( 1.05, 0.62, -0.44)
+]);
+const stripe = new THREE.Mesh(new THREE.TubeGeometry(stripeCurve, 32, 0.035, 8), matAccent);
+stripe.castShadow = true;
+shoe.add(stripe);
+const stripe2 = stripe.clone();
+stripe2.scale.z = -1;
+shoe.add(stripe2);
+
+shoe.traverse(o=>{if(o.isMesh){o.castShadow=true;}});
+shoe.position.y = 0.02;
+scene.add(shoe);
+
+// ---------- Controls ----------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.7, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.4;
+controls.minDistance = 2.5;
+controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI*0.49;
+
+addEventListener('resize', ()=>{
+  camera.aspect = innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(()=>{
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

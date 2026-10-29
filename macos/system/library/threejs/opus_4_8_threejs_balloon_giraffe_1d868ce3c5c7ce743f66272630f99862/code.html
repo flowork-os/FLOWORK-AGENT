@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Balloon Giraffe — Twisty Party Balloon</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171c; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 system-ui, sans-serif; color: #9aa0ad;
+    letter-spacing: .3px; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">Balloon Giraffe · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------- Renderer ---------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+/* ---------- Scene & Camera ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171c);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.2, 3.1, 7.0);
+
+/* Soft procedural environment for glossy latex reflections */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------- Lighting ---------- */
+const hemi = new THREE.HemisphereLight(0xbcd2ff, 0x241b12, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e0, 2.6);
+key.position.set(5, 9, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 32;
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -2;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9db4ff, 0.6);
+fill.position.set(-6, 3, 3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.4);
+rim.position.set(-3, 5, -7);
+scene.add(rim);
+
+/* ---------- Ground (shadow catcher) ---------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------- Materials ---------- */
+const latexYellow = new THREE.MeshPhysicalMaterial({
+  color: 0xffcf1a,
+  metalness: 0.0,
+  roughness: 0.22,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.06,
+  sheen: 0.35,
+  sheenColor: new THREE.Color(0xffffff),
+  envMapIntensity: 0.9
+});
+
+const latexBrown = new THREE.MeshPhysicalMaterial({
+  color: 0x6e3f1c,
+  metalness: 0.0,
+  roughness: 0.3,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.1,
+  envMapIntensity: 0.7
+});
+
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x140d05,
+  metalness: 0.0,
+  roughness: 0.08,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03,
+  envMapIntensity: 1.0
+});
+
+const tuftMat = new THREE.MeshPhysicalMaterial({
+  color: 0x4a2c14,
+  metalness: 0.0,
+  roughness: 0.5,
+  clearcoat: 0.6,
+  envMapIntensity: 0.5
+});
+
+/* ---------- Balloon geometry builder ----------
+   A tube following a curve whose radius bulges between "twist" joints
+   and pinches to a nub at both ends, mimicking a twisted party balloon. */
+function makeBalloonGeometry(curve, radius, segs, radialSegments = 22, tubularSegments = null) {
+  tubularSegments = tubularSegments || segs * 22;
+  const frames = curve.computeFrenetFrames(tubularSegments, false);
+  const positions = [], uvs = [], indices = [];
+  const P = new THREE.Vector3();
+  const eCap = 0.05; // fraction of length used to round the end nubs
+
+  function profile(u) {
+    const local = (u * segs) % 1;
+    let f = 0.6 + 0.4 * Math.sin(Math.PI * local); // pinch (0.6) at joints, full (1.0) mid-segment
+    let cap = 1.0;
+    if (u < eCap) cap = Math.sqrt(Math.max(u, 0) / eCap);
+    else if (u > 1 - eCap) cap = Math.sqrt(Math.max(1 - u, 0) / eCap);
+    return f * cap;
+  }
+
+  for (let i = 0; i <= tubularSegments; i++) {
+    const u = i / tubularSegments;
+    curve.getPointAt(u, P);
+    const N = frames.normals[i];
+    const B = frames.binormals[i];
+    const r = radius * profile(u);
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = (j / radialSegments) * Math.PI * 2;
+      const sin = Math.sin(v);
+      const cos = -Math.cos(v);
+      const nx = cos * N.x + sin * B.x;
+      const ny = cos * N.y + sin * B.y;
+      const nz = cos * N.z + sin * B.z;
+      positions.push(P.x + r * nx, P.y + r * ny, P.z + r * nz);
+      uvs.push(u, j / radialSegments);
+    }
+  }
+
+  for (let i = 0; i < tubularSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = (radialSegments + 1) * i + j;
+      const b = (radialSegments + 1) * (i + 1) + j;
+      const c = (radialSegments + 1) * (i + 1) + (j + 1);
+      const d = (radialSegments + 1) * i + (j + 1);
+      indices.push(a, b, d);
+      indices.push(b, c, d);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* ---------- The giraffe (single centered object) ---------- */
+const giraffe = new THREE.Group();
+scene.add(giraffe);
+
+const knotGeo = new THREE.SphereGeometry(1, 20, 16);
+const Z = new THREE.Vector3(0, 0, 1);
+
+function toV3(arr) { return arr.map(p => new THREE.Vector3(p[0], p[1], p[2])); }
+
+/* place little twist-knot bands at each internal joint of a balloon */
+function addKnots(curve, radius, segs, mat = latexYellow) {
+  for (let k = 1; k < segs; k++) {
+    const u = k / segs;
+    const p = curve.getPointAt(u);
+    const t = curve.getTangentAt(u).normalize();
+    const knot = new THREE.Mesh(knotGeo, mat);
+    knot.position.copy(p);
+    knot.quaternion.setFromUnitVectors(Z, t);
+    const s = radius * 0.82;
+    knot.scale.set(s, s, s * 0.62);
+    knot.castShadow = true;
+    knot.receiveShadow = true;
+    giraffe.add(knot);
+  }
+}
+
+function addBalloon(points, radius, segs, mat = latexYellow, knots = true) {
+  const curve = new THREE.CatmullRomCurve3(toV3(points));
+  const geo = makeBalloonGeometry(curve, radius, segs);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  giraffe.add(mesh);
+  if (knots) addKnots(curve, radius, segs, mat);
+  return { mesh, curve, radius, segs };
+}
+
+/* solid connector / joint knot */
+function addJointKnot(pos, r, mat = latexYellow, flatten = 0.85) {
+  const m = new THREE.Mesh(knotGeo, mat);
+  m.position.set(pos[0], pos[1], pos[2]);
+  m.scale.set(r, r * flatten, r);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  giraffe.add(m);
+  return m;
+}
+
+/* ----- Legs (four stubby twisted balloons) ----- */
+const legR = 0.2;
+const legDefs = [
+  [ 0.40, 0.55], [-0.40, 0.55],   // front L / R
+  [ 0.40,-0.72], [-0.40,-0.72]    // back  L / R
+];
+for (const [x, z] of legDefs) {
+  const topZ = z > 0 ? z + 0.05 : z + 0.04;
+  addBalloon([
+    [x, 0.20, z],
+    [x, 0.80, z + 0.02],
+    [x, 1.42, topZ]
+  ], legR, 2, latexYellow);
+
+  // rounded balloon foot
+  const foot = new THREE.Mesh(knotGeo, latexYellow);
+  foot.position.set(x, 0.17, z);
+  foot.scale.set(0.19, 0.15, 0.22);
+  foot.castShadow = true; foot.receiveShadow = true;
+  giraffe.add(foot);
+
+  // hip / shoulder joint knot
+  addJointKnot([x, 1.42, topZ], 0.2, latexYellow, 0.9);
+}
+
+/* ----- Body (torso) ----- */
+const body = addBalloon([
+  [0, 1.50, -0.90],
+  [0, 1.63, -0.35],
+  [0, 1.66,  0.35],
+  [0, 1.55,  0.85]
+], 0.35, 3, latexYellow);
+
+/* ----- Neck (long, segmented, rising forward) ----- */
+addJointKnot([0, 1.72, 0.76], 0.26, latexYellow, 0.95);
+const neck = addBalloon([
+  [0, 1.72, 0.74],
+  [0.02, 2.28, 0.94],
+  [0, 2.84, 1.05],
+  [-0.02, 3.40, 1.05],
+  [0, 3.86, 0.96]
+], 0.23, 5, latexYellow);
+
+/* ----- Head + muzzle ----- */
+addJointKnot([0, 3.86, 0.97], 0.2, latexYellow, 0.95);
+addBalloon([
+  [0, 3.88, 0.98],
+  [0.0, 3.96, 1.26],
+  [0, 3.85, 1.52]
+], 0.185, 2, latexYellow);
+
+/* nostril dimples */
+for (const sx of [-1, 1]) {
+  const n = new THREE.Mesh(knotGeo, latexBrown);
+  n.position.set(0.06 * sx, 3.86, 1.5);
+  n.scale.set(0.03, 0.035, 0.02);
+  giraffe.add(n);
+}
+
+/* ----- Eyes ----- */
+for (const sx of [-1, 1]) {
+  const eye = new THREE.Mesh(knotGeo, eyeMat);
+  eye.position.set(0.135 * sx, 3.93, 1.28);
+  eye.scale.setScalar(0.055);
+  eye.castShadow = true;
+  giraffe.add(eye);
+}
+
+/* ----- Ears (flattened balloon blobs) ----- */
+for (const sx of [-1, 1]) {
+  const ear = new THREE.Mesh(knotGeo, latexYellow);
+  ear.position.set(0.2 * sx, 3.99, 0.98);
+  ear.scale.set(0.16, 0.06, 0.1);
+  ear.rotation.z = -0.5 * sx;
+  ear.rotation.y = 0.3 * sx;
+  ear.castShadow = true; ear.receiveShadow = true;
+  giraffe.add(ear);
+}
+
+/* ----- Ossicones (tiny horn balloons with knobs) ----- */
+for (const sx of [-1, 1]) {
+  addBalloon([
+    [0.07 * sx, 3.98, 1.0],
+    [0.075 * sx, 4.1, 0.98],
+    [0.08 * sx, 4.2, 0.96]
+  ], 0.05, 1, latexYellow, false);
+  const knob = new THREE.Mesh(knotGeo, latexBrown);
+  knob.position.set(0.08 * sx, 4.24, 0.955);
+  knob.scale.setScalar(0.085);
+  knob.castShadow = true; knob.receiveShadow = true;
+  giraffe.add(knob);
+}
+
+/* ----- Tail with tuft ----- */
+addBalloon([
+  [0, 1.55, -0.90],
+  [0, 1.15, -1.02],
+  [0, 0.74, -1.05]
+], 0.06, 3, latexYellow);
+for (let i = 0; i < 5; i++) {
+  const t = new THREE.Mesh(knotGeo, tuftMat);
+  const a = i / 5 * Math.PI * 2;
+  t.position.set(Math.cos(a) * 0.05, 0.66 - (i % 2) * 0.06, -1.06 + Math.sin(a) * 0.05);
+  t.scale.setScalar(0.055);
+  t.castShadow = true;
+  giraffe.add(t);
+}
+
+/* ---------- Brown balloon spots ---------- */
+function addSpot(part, u, angle, size) {
+  const { curve, radius, segs } = part;
+  const p = curve.getPointAt(u);
+  const T = curve.getTangentAt(u).normalize();
+  const ref = Math.abs(T.y) < 0.9 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+  const n1 = new THREE.Vector3().crossVectors(ref, T).normalize();
+  const n2 = new THREE.Vector3().crossVectors(T, n1).normalize();
+  const dir = new THREE.Vector3()
+    .addScaledVector(n1, Math.cos(angle))
+    .addScaledVector(n2, Math.sin(angle))
+    .normalize();
+  const bulge = 0.6 + 0.4 * Math.abs(Math.sin(Math.PI * ((u * segs) % 1)));
+  const pos = p.clone().addScaledVector(dir, radius * bulge * 0.92);
+
+  const spot = new THREE.Mesh(knotGeo, latexBrown);
+  spot.position.copy(pos);
+  spot.quaternion.setFromUnitVectors(Z, dir);
+  spot.scale.set(size, size, size * 0.35);
+  spot.castShadow = false;
+  spot.receiveShadow = true;
+  giraffe.add(spot);
+}
+
+/* spots along the body */
+const bodySpots = [
+  [0.22, 0.9, 0.15], [0.35, 2.2, 0.14], [0.5, -0.4, 0.15],
+  [0.62, 1.6, 0.13], [0.78, 0.3, 0.14], [0.44, 4.0, 0.12],
+  [0.3, 3.4, 0.12], [0.7, 2.8, 0.12]
+];
+for (const [u, a, s] of bodySpots) addSpot(body, u, a, s);
+
+/* spots along the neck */
+const neckSpots = [
+  [0.16, 0.4, 0.11], [0.3, 2.0, 0.1], [0.42, 4.1, 0.1],
+  [0.55, 0.8, 0.1], [0.68, 2.6, 0.09], [0.8, 4.4, 0.09],
+  [0.24, 3.3, 0.1], [0.6, 5.0, 0.09]
+];
+for (const [u, a, s] of neckSpots) addSpot(neck, u, a, s);
+
+/* ---------- Center the object over the origin ---------- */
+const bbox = new THREE.Box3().setFromObject(giraffe);
+const center = bbox.getCenter(new THREE.Vector3());
+giraffe.position.x -= center.x;
+giraffe.position.z -= center.z;
+
+/* ---------- Controls ---------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 3.5;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, center.y, 0);
+controls.update();
+
+/* ---------- Resize ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- Render loop ---------- */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

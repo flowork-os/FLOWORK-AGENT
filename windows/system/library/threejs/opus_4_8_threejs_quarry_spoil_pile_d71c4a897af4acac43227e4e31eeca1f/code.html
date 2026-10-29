@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quarry Spoil Pile &amp; Access Road</title>
+<style>
+  html,body{margin:0;height:100%;background:#16181c;overflow:hidden}
+  #c{display:block;width:100%;height:100%}
+  #hud{position:fixed;left:14px;bottom:12px;font:12px/1.4 system-ui,-apple-system,sans-serif;
+       color:#aab2bd;opacity:.72;pointer-events:none;letter-spacing:.2px}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud">Quarry spoil pile &amp; graded access road · fully procedural · meter scale, north-up · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =========================================================================
+   Quarry spoil pile & access road — single procedural, centered object.
+   Coordinates are in metres. Layout is north-up (+Z = North).
+   The graded access road runs roughly E–W along +X, grazing the southern
+   toe of an irregular conical loose-rock heap on undulating ground.
+   ========================================================================= */
+
+// ---------- small helpers ----------
+const clamp = (x,a,b)=> x<a?a:(x>b?b:x);
+const smoothstep = (a,b,x)=>{ const t=clamp((x-a)/(b-a),0,1); return t*t*(3-2*t); };
+function mulberry32(a){ return function(){ a|=0; a=a+0x6D2B79F5|0; let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t; return ((t^t>>>14)>>>0)/4294967296; }; }
+
+// value-noise + fbm (deterministic, no textures)
+function hash2(x,y){ const h=Math.sin(x*127.1+y*311.7)*43758.5453123; return h-Math.floor(h); }
+function vnoise(x,y){
+  const xi=Math.floor(x), yi=Math.floor(y), xf=x-xi, yf=y-yi;
+  const tl=hash2(xi,yi), tr=hash2(xi+1,yi), bl=hash2(xi,yi+1), br=hash2(xi+1,yi+1);
+  const u=xf*xf*(3-2*xf), v=yf*yf*(3-2*yf);
+  return (tl*(1-u)+tr*u)*(1-v)+(bl*(1-u)+br*u)*v;
+}
+function fbm(x,y,oct){ let a=0.5,f=1,s=0,n=0; for(let i=0;i<oct;i++){ s+=a*vnoise(x*f,y*f); n+=a; a*=0.5; f*=2; } return s/n; }
+
+// ---------- terrain field (metres) ----------
+const SIZE=64, HALF=SIZE/2, SEG=256;   // 64 m tile
+const HEAP_R=14, HEAP_H=11;            // heap ~28 m base dia, ~11 m tall (~38° repose)
+
+function groundBroad(x,z){ return (fbm(x*0.020+3.1, z*0.020+7.7,4)-0.5)*2.0 + 1.5; }
+function groundHeight(x,z){ return groundBroad(x,z) + (fbm(x*0.060+1.2, z*0.060+9.3,3)-0.5)*0.7; }
+
+// irregular conical heap of loose rock/gravel centred at origin
+function heapHeight(x,z){
+  const r=Math.hypot(x,z);
+  const ang=Math.atan2(z,x);
+  const rn=fbm(Math.cos(ang)*1.5+20, Math.sin(ang)*1.5+20,3);   // non-circular base
+  const Reff=HEAP_R*(0.80+0.40*rn);
+  if(r>=Reff) return 0;
+  const t=1-r/Reff;                                             // 0 at toe, 1 at peak
+  let h=HEAP_H*Math.pow(t,1.08);
+  const lump=(fbm(x*0.12+40, z*0.12+40,4)-0.5)*2.6;             // dumped lobes
+  const fine=(fbm(x*0.50+80, z*0.50+80,3)-0.5)*0.7;             // gravel bumpiness
+  h+=(lump+fine)*smoothstep(0,0.14,t);
+  return Math.max(0,h);
+}
+
+// gently curving graded road corridor
+function roadCenterZ(x){ return 16.0 + 2.5*Math.sin((x+8)*0.030); }
+const ROAD_HALF=3.2, ROAD_INFL=ROAD_HALF+4.0;   // 6.4 m carriageway + graded batters
+
+function computeHeight(x,z){
+  let y=groundHeight(x,z)+heapHeight(x,z);
+  const zc=roadCenterZ(x), d=Math.abs(z-zc);
+  if(d<ROAD_INFL){
+    // smooth longitudinal grade, slight crown for drainage, faint surface roughness
+    let rs=groundBroad(x,zc)-0.5+Math.max(0,ROAD_HALF-d)*0.03;
+    rs+=(vnoise(x*3+5,zc*3+5)-0.5)*0.05;
+    const blend=d<=ROAD_HALF?1:1-smoothstep(ROAD_HALF,ROAD_INFL,d);
+    y=rs*blend + y*(1-blend);   // flattens carriageway, cuts a graded batter into the toe
+  }
+  // settle terrain to the studio floor at the tile border
+  const m=Math.max(Math.abs(x),Math.abs(z));
+  y*=smoothstep(HALF, HALF-7, m);
+  return y;
+}
+
+// ---------- build the ONE centered object ----------
+const world=new THREE.Group();
+
+// heightfield mesh with baked vertex colours
+const nx=SEG+1, nverts=nx*nx;
+const positions=new Float32Array(nverts*3);
+const colors=new Float32Array(nverts*3);
+const heapArr=new Float32Array(nverts);
+const dArr=new Float32Array(nverts);
+
+let p=0;
+for(let j=0;j<nx;j++){
+  for(let i=0;i<nx;i++){
+    const x=-HALF+(i/SEG)*SIZE;
+    const z=-HALF+(j/SEG)*SIZE;
+    positions[p*3]=x; positions[p*3+1]=computeHeight(x,z); positions[p*3+2]=z;
+    heapArr[p]=heapHeight(x,z);
+    dArr[p]=Math.abs(z-roadCenterZ(x));
+    p++;
+  }
+}
+const indices=[];
+for(let j=0;j<SEG;j++){
+  for(let i=0;i<SEG;i++){
+    const a=j*nx+i, b=j*nx+i+1, c=(j+1)*nx+i, d=(j+1)*nx+i+1;
+    indices.push(a,c,b, b,c,d);
+  }
+}
+const geo=new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.BufferAttribute(positions,3));
+geo.setIndex(indices);
+geo.computeVertexNormals();
+
+// earthy palette
+const cSoilA=new THREE.Color(0x6f5c3e), cSoilB=new THREE.Color(0x87714c), cGrass=new THREE.Color(0x6d6a44);
+const cRockL=new THREE.Color(0x9a8878), cRockD=new THREE.Color(0x51463a),
+      cRockG=new THREE.Color(0x827b6f), cStone=new THREE.Color(0xab9d88);
+const cRoad=new THREE.Color(0x8f8065),  cRoadL=new THREE.Color(0xa89a7e), cRut=new THREE.Color(0x6d5f47);
+
+const nrm=geo.attributes.normal;
+const soil=new THREE.Color(), rock=new THREE.Color(), road=new THREE.Color(), col=new THREE.Color();
+for(let k=0;k<nverts;k++){
+  const x=positions[k*3], z=positions[k*3+2], ny=nrm.getY(k);
+  const heapMask=smoothstep(0.05,1.2,heapArr[k]);
+  const d=dArr[k];
+  const roadMask=d<ROAD_INFL ? (d<=ROAD_HALF?1:1-smoothstep(ROAD_HALF,ROAD_INFL,d)) : 0;
+
+  const mn=fbm(x*0.05+50,z*0.05+50,3);   // broad patches
+  const cn=fbm(x*0.80+70,z*0.80+70,2);   // fine grain
+  const stone=fbm(x*1.30+11,z*1.30+11,2);
+
+  // undulating soil ground, dry-grass tint on flatter areas
+  soil.copy(cSoilA).lerp(cSoilB,mn);
+  soil.lerp(cGrass, 0.28*smoothstep(0.86,0.99,ny));
+  soil.multiplyScalar(0.88+0.24*cn);
+
+  // loose rock/gravel heap — steeper faces read greyer, scattered lighter stones
+  rock.copy(cRockD).lerp(cRockL,cn);
+  rock.lerp(cRockG, 0.45*(1-ny));
+  if(stone>0.66) rock.lerp(cStone,0.5);
+  rock.multiplyScalar(0.82+0.32*cn);
+
+  // graded gravel road with faint wheel ruts
+  road.copy(cRoad).lerp(cRoadL,cn);
+  road.lerp(cRut, 0.35*(smoothstep(0.6,1.1,d)*(1-smoothstep(1.6,2.3,d))));
+  road.multiplyScalar(0.90+0.16*cn);
+
+  col.copy(soil).lerp(rock,heapMask).lerp(road,roadMask);
+  colors[k*3]=col.r; colors[k*3+1]=col.g; colors[k*3+2]=col.b;
+}
+geo.setAttribute('color', new THREE.BufferAttribute(colors,3));
+
+const terrain=new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+  vertexColors:true, roughness:0.98, metalness:0.0
+}));
+terrain.castShadow=true; terrain.receiveShadow=true;
+world.add(terrain);
+
+// scattered cobbles / boulders (instanced) sitting on the surface
+function makeRockGeo(seed){
+  const g=new THREE.IcosahedronGeometry(0.5,1);
+  const pos=g.attributes.position, v=new THREE.Vector3();
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    const s=0.75+fbm(v.x*2+seed, v.z*2+v.y*2+seed,3)*0.6;
+    v.multiplyScalar(s); v.y*=0.82;
+    pos.setXYZ(i,v.x,v.y,v.z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+const RN=90;
+const rocks=new THREE.InstancedMesh(makeRockGeo(3.0),
+  new THREE.MeshStandardMaterial({roughness:0.95,metalness:0.0}), RN);
+rocks.castShadow=true; rocks.receiveShadow=true;
+const rng=mulberry32(20260706);
+const dummy=new THREE.Object3D(), scratch=new THREE.Color();
+const rockCols=[0x6f6357,0x847768,0x574c3f,0x928475,0x726456];
+for(let i=0;i<RN;i++){
+  let x,z;
+  if(rng()<0.68){                                   // most on the heap
+    const ang=rng()*Math.PI*2, rr=Math.sqrt(rng())*HEAP_R*0.96;
+    x=Math.cos(ang)*rr; z=Math.sin(ang)*rr;
+  } else {                                           // some spilled along the road
+    x=-HALF+rng()*SIZE; z=roadCenterZ(x)+(rng()-0.5)*11;
+  }
+  const y=computeHeight(x,z);
+  let s=0.14+rng()*0.36;
+  if(rng()<0.12) s=0.6+rng()*0.7;                    // occasional boulder
+  dummy.position.set(x, y-s*0.35, z);
+  dummy.rotation.set(rng()*6.28, rng()*6.28, rng()*6.28);
+  dummy.scale.set(s*(0.8+rng()*0.4), s*(0.6+rng()*0.5), s*(0.8+rng()*0.4));
+  dummy.updateMatrix();
+  rocks.setMatrixAt(i,dummy.matrix);
+  scratch.setHex(rockCols[(rng()*rockCols.length)|0]);
+  rocks.setColorAt(i,scratch);
+}
+rocks.instanceMatrix.needsUpdate=true;
+if(rocks.instanceColor) rocks.instanceColor.needsUpdate=true;
+world.add(rocks);
+
+// ---------- renderer / scene / camera ----------
+const canvas=document.getElementById('c');
+const renderer=new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.02;
+renderer.outputColorSpace=THREE.SRGBColorSpace;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x181a1e);          // neutral dark studio
+scene.fog=new THREE.Fog(0x181a1e, 95, 240);
+scene.add(world);
+
+// subtle ground plane that ONLY receives shadows
+const floor=new THREE.Mesh(new THREE.PlaneGeometry(300,300),
+  new THREE.ShadowMaterial({opacity:0.32}));
+floor.rotation.x=-Math.PI/2;
+floor.position.y=-0.05;
+floor.receiveShadow=true;
+scene.add(floor);
+
+const camera=new THREE.PerspectiveCamera(46, window.innerWidth/window.innerHeight, 0.5, 2000);
+camera.position.set(30, 27, 46);
+
+// ---------- lighting: hemisphere + directional key, plus fill & rim ----------
+scene.add(new THREE.HemisphereLight(0xbcd2ea, 0x40372a, 0.55));
+
+const sun=new THREE.DirectionalLight(0xfff1dc, 2.7);   // key (soft shadows)
+sun.position.set(-30,42,26);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+const sc=sun.shadow.camera; sc.near=1; sc.far=140; sc.left=-38; sc.right=38; sc.top=38; sc.bottom=-38;
+sun.shadow.bias=-0.0004; sun.shadow.normalBias=0.03; sun.shadow.radius=4;
+scene.add(sun); scene.add(sun.target);
+
+const fill=new THREE.DirectionalLight(0x9fb6cf, 0.55); // cool fill
+fill.position.set(34,18,-22); scene.add(fill);
+
+const rim=new THREE.DirectionalLight(0xe6ecff, 0.8);   // rim / back light
+rim.position.set(8,20,-38); scene.add(rim);
+
+// ---------- controls ----------
+const controls=new OrbitControls(camera, renderer.domElement);
+controls.enableDamping=true;
+controls.dampingFactor=0.05;
+controls.autoRotate=true;
+controls.autoRotateSpeed=0.5;
+controls.target.set(0,3.5,0);
+controls.minDistance=18;
+controls.maxDistance=110;
+controls.maxPolarAngle=Math.PI*0.49;
+controls.update();
+
+// ---------- resize + render loop ----------
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+renderer.setAnimationLoop(()=>{ controls.update(); renderer.render(scene,camera); });
+</script>
+</body>
+</html>

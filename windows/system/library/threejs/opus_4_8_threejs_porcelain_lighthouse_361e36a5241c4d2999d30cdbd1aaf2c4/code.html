@@ -1,0 +1,430 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Porcelain Lighthouse</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0d10; }
+  #app { position: fixed; inset: 0; }
+  .tag {
+    position: fixed; left: 18px; bottom: 14px;
+    font: 12px/1.4 "Helvetica Neue", Arial, sans-serif;
+    color: rgba(230,235,245,0.42); letter-spacing: 0.5px;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="tag">Porcelain Lighthouse · glazed white china with cobalt spiral · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const app = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
+
+/* ------------------------------------------------------------------ *
+ *  Scene + neutral dark studio background
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+
+function makeBackground() {
+  const c = document.createElement('canvas');
+  c.width = 8; c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0.0, '#20222b');
+  g.addColorStop(0.45, '#15161c');
+  g.addColorStop(1.0, '#0a0a0d');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 8, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeBackground();
+
+/* ------------------------------------------------------------------ *
+ *  Camera
+ * ------------------------------------------------------------------ */
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.8, 3.0, 7.4);
+
+/* ------------------------------------------------------------------ *
+ *  Environment map (soft studio reflections for the glaze)
+ * ------------------------------------------------------------------ */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting : hemisphere + key + fill + rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xcfe0ff, 0x2a2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e6, 2.1);
+key.position.set(6, 10, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 32;
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 8;
+key.shadow.camera.bottom = -2;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.55);
+fill.position.set(-6, 3.5, 2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.25);
+rim.position.set(-3.5, 6, -6.5);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane : receives shadows only
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural cobalt-spiral glaze texture (drawn in code, no assets)
+ * ------------------------------------------------------------------ */
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+function makeSpiralTexture() {
+  const size = 1024;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = size;
+  const ctx = cv.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const data = img.data;
+
+  const cream  = [246, 242, 233];   // warm porcelain white
+  const cobalt = [22, 52, 132];     // deep hand-painted cobalt
+  const cobalt2= [44, 84, 176];     // lighter brush variation
+
+  const S    = 2;      // cobalt stripes per full turn
+  const T    = 1.35;   // turns of vertical drift (spiral pitch)
+  const duty = 0.44;   // fraction of surface that is blue
+  const edge = 0.035;  // soft painted edge (phase units)
+
+  for (let y = 0; y < size; y++) {
+    const v = y / (size - 1);
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+
+      // seamless-in-u wobble (integer frequencies in u keep the wrap seam clean)
+      let phase = (u - v * T) * S;
+      phase += 0.03 * Math.sin(u * Math.PI * 2 * 3 + v * 26.0);
+      phase += 0.018 * Math.sin(v * 42.0);
+
+      let f = phase - Math.floor(phase);           // 0..1
+      const a = smoothstep(0.0, edge, f);
+      const b = 1.0 - smoothstep(duty - edge, duty, f);
+      const m = Math.min(a, b);                    // 1 inside blue stripe
+
+      // painterly cobalt shade variation (seamless in u)
+      const varn = 0.5 + 0.5 * Math.sin(u * Math.PI * 2 * 8 + v * 55.0);
+      const br = 0.92 + 0.10 * Math.sin(u * Math.PI * 2 * 5 + v * 90.0); // brush streaks
+      const cr = (cobalt[0] + (cobalt2[0] - cobalt[0]) * varn) * br;
+      const cg = (cobalt[1] + (cobalt2[1] - cobalt[1]) * varn) * br;
+      const cb = (cobalt[2] + (cobalt2[2] - cobalt[2]) * varn) * br;
+
+      // faint glaze mottle on the cream
+      const mot = 1.0 + 0.015 * Math.sin(u * Math.PI * 2 * 11 + v * 70.0);
+
+      const idx = (y * size + x) * 4;
+      data[idx    ] = cream[0] * mot * (1 - m) + cr * m;
+      data[idx + 1] = cream[1] * mot * (1 - m) + cg * m;
+      data[idx + 2] = cream[2] * mot * (1 - m) + cb * m;
+      data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = MAX_ANISO;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const spiralTex = makeSpiralTexture();
+
+/* ------------------------------------------------------------------ *
+ *  Materials
+ * ------------------------------------------------------------------ */
+const matPorcelain = new THREE.MeshPhysicalMaterial({
+  color: 0xf6f3ec,
+  roughness: 0.28,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.06,
+  sheen: 0.6,
+  sheenRoughness: 0.45,
+  sheenColor: new THREE.Color(0xbfd2ff),
+  envMapIntensity: 1.15
+});
+
+const matTower = matPorcelain.clone();
+matTower.color = new THREE.Color(0xffffff);
+matTower.map = spiralTex;
+
+const matGlazePool = new THREE.MeshPhysicalMaterial({
+  color: 0xdfe8f6,
+  roughness: 0.05,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.02,
+  transmission: 0.22,
+  thickness: 0.35,
+  ior: 1.5,
+  transparent: true,
+  envMapIntensity: 1.5
+});
+
+const matGold = new THREE.MeshPhysicalMaterial({
+  color: 0xcaa24c,
+  metalness: 1.0,
+  roughness: 0.3,
+  clearcoat: 0.5,
+  clearcoatRoughness: 0.15,
+  envMapIntensity: 1.35
+});
+
+const matGlass = new THREE.MeshPhysicalMaterial({
+  color: 0xaec6e0,
+  metalness: 0.0,
+  roughness: 0.08,
+  transmission: 0.92,
+  thickness: 0.4,
+  ior: 1.45,
+  transparent: true,
+  side: THREE.DoubleSide,
+  envMapIntensity: 1.3
+});
+
+const matLamp = new THREE.MeshStandardMaterial({
+  color: 0xfff2cf,
+  emissive: 0xffd68a,
+  emissiveIntensity: 2.6,
+  roughness: 0.4
+});
+
+/* ------------------------------------------------------------------ *
+ *  Build the lighthouse (one centered object)
+ * ------------------------------------------------------------------ */
+const lighthouse = new THREE.Group();
+scene.add(lighthouse);
+
+function add(mesh, cast = true, receive = true) {
+  mesh.castShadow = cast;
+  mesh.receiveShadow = receive;
+  lighthouse.add(mesh);
+  return mesh;
+}
+function goldRing(radius, tube, y, seg = 96) {
+  const m = new THREE.Mesh(new THREE.TorusGeometry(radius, tube, 16, seg), matGold);
+  m.rotation.x = Math.PI / 2;
+  m.position.y = y;
+  return add(m);
+}
+
+/* --- Foot / plinth --- */
+add(new THREE.Mesh(new THREE.CylinderGeometry(1.16, 1.24, 0.30, 96), matPorcelain)
+  .translateY(0.15));
+add(new THREE.Mesh(new THREE.CylinderGeometry(1.02, 1.08, 0.14, 96), matPorcelain)
+  .translateY(0.35));
+
+/* --- Pooled glaze ring where tower meets the foot --- */
+const pool = new THREE.Mesh(new THREE.TorusGeometry(0.95, 0.11, 20, 120), matGlazePool);
+pool.rotation.x = Math.PI / 2;
+pool.position.y = 0.36;
+add(pool, false, true);
+
+/* --- Tower body with cobalt spiral --- */
+add(new THREE.Mesh(
+  new THREE.CylinderGeometry(0.60, 0.98, 3.05, 160, 1, true),
+  matTower
+).translateY(1.785));
+
+goldRing(0.945, 0.02, 0.52, 120);
+goldRing(0.632, 0.018, 3.24, 96);
+
+/* --- Gallery (balcony) below the lantern --- */
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.86, 0.60, 0.24, 96), matPorcelain)
+  .translateY(3.43));                                   // flared corbel
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.90, 0.90, 0.06, 96), matPorcelain)
+  .translateY(3.58));                                   // floor disk
+
+// railing balusters + rail (gilded)
+const balusterGeo = new THREE.CylinderGeometry(0.012, 0.012, 0.18, 8);
+const nBal = 22;
+for (let i = 0; i < nBal; i++) {
+  const a = (i / nBal) * Math.PI * 2;
+  const b = new THREE.Mesh(balusterGeo, matGold);
+  b.position.set(Math.cos(a) * 0.845, 3.70, Math.sin(a) * 0.845);
+  add(b, true, false);
+}
+goldRing(0.845, 0.024, 3.79, 96);
+
+/* --- Lantern room --- */
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 0.07, 64), matGold)
+  .translateY(3.66));                                   // base ring
+
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.50, 0.50, 0.62, 48, 1, true), matGlass)
+  .translateY(4.00), false, false);                     // glazing
+
+// gilded mullions
+const mulGeo = new THREE.BoxGeometry(0.032, 0.63, 0.05);
+const nMul = 8;
+for (let i = 0; i < nMul; i++) {
+  const a = (i / nMul) * Math.PI * 2;
+  const m = new THREE.Mesh(mulGeo, matGold);
+  m.position.set(Math.cos(a) * 0.50, 4.00, Math.sin(a) * 0.50);
+  m.rotation.y = -a;
+  add(m, true, false);
+}
+
+// glowing lamp inside
+const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 24, 16), matLamp);
+lamp.position.y = 4.00;
+lighthouse.add(lamp);
+const lampLight = new THREE.PointLight(0xffd89a, 3.0, 3.5, 2.0);
+lampLight.position.y = 4.00;
+lighthouse.add(lampLight);
+
+// cornice + top ring
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.56, 0.50, 0.06, 64), matPorcelain)
+  .translateY(4.35));
+goldRing(0.54, 0.03, 4.37, 96);
+
+/* --- Domed roof (ogee bell dome, fine-china style) --- */
+const domePts = [];
+const dh = 0.62, dr = 0.54, dsteps = 26;
+for (let i = 0; i <= dsteps; i++) {
+  const t = i / dsteps;
+  const ang = t * Math.PI * 0.5;
+  const r = dr * Math.pow(Math.cos(ang), 0.82) * (1.0 - 0.10 * Math.sin(ang));
+  const y = dh * Math.sin(ang);
+  domePts.push(new THREE.Vector2(Math.max(r, 0.0008), y));
+}
+domePts.push(new THREE.Vector2(0.0008, dh + 0.02));
+const dome = new THREE.Mesh(new THREE.LatheGeometry(domePts, 72), matPorcelain);
+dome.position.y = 4.37;
+add(dome);
+
+/* --- Finial + gilded weathervane crown --- */
+add(new THREE.Mesh(new THREE.SphereGeometry(0.058, 24, 16), matGold)
+  .translateY(5.02));                                   // finial ball
+
+add(new THREE.Mesh(new THREE.CylinderGeometry(0.017, 0.017, 0.48, 12), matGold)
+  .translateY(5.27));                                   // rod
+
+add(new THREE.Mesh(new THREE.SphereGeometry(0.05, 20, 14), matGold)
+  .translateY(5.16));                                   // mid bead
+
+// cardinal cross (N-S / E-W)
+const crossGeo = new THREE.CylinderGeometry(0.011, 0.011, 0.46, 10);
+const crossX = new THREE.Mesh(crossGeo, matGold); crossX.rotation.z = Math.PI / 2; crossX.position.y = 5.40;
+const crossZ = new THREE.Mesh(crossGeo, matGold); crossZ.rotation.x = Math.PI / 2; crossZ.position.y = 5.40;
+add(crossX); add(crossZ);
+const tipGeo = new THREE.SphereGeometry(0.026, 14, 10);
+[[0.23,0,0],[-0.23,0,0],[0,0,0.23],[0,0,-0.23]].forEach(p => {
+  const t = new THREE.Mesh(tipGeo, matGold);
+  t.position.set(p[0], 5.40, p[2]);
+  add(t);
+});
+
+// spinning arrow
+const vane = new THREE.Group();
+vane.position.y = 5.55;
+lighthouse.add(vane);
+const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.019, 0.019, 0.5, 12), matGold);
+shaft.rotation.z = Math.PI / 2;
+shaft.castShadow = true;
+vane.add(shaft);
+const head = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.17, 16), matGold);
+head.rotation.z = -Math.PI / 2; head.position.x = 0.33; head.castShadow = true;
+vane.add(head);
+const tail = new THREE.Mesh(new THREE.BoxGeometry(0.02, 0.15, 0.15), matGold);
+tail.position.x = -0.26; tail.castShadow = true;
+vane.add(tail);
+vane.rotation.y = 0.6;
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 4.5;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 2.5, 0);
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ------------------------------------------------------------------ *
+ *  Render loop
+ * ------------------------------------------------------------------ */
+function animate() {
+  requestAnimationFrame(animate);
+  vane.rotation.y += 0.004;         // weathervane idles in the breeze
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

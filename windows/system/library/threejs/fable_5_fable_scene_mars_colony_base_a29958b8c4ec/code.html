@@ -1,0 +1,697 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mars Colony Base</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#b0704a}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   1. CONFIG / PALETTE — nasa-punk Mars colony
+   ================================================================ */
+const PAL = {
+  skyHorizon : 0xd99a5b,   // butterscotch haze at the horizon
+  skyMid     : 0xc07a4a,   // dusty salmon band
+  skyZenith  : 0x6e4636,   // muddy mauve overhead
+  fog        : 0xcd8f55,
+  dust       : 0xa85a35,   // martian regolith
+  dustDark   : 0x7c3e26,
+  rock       : 0x94492e,
+  habShell   : 0xd8d2c4,   // bone-white habitat cladding
+  habTrim    : 0xb7451f,   // NASA "worm" rust-orange trim
+  metal      : 0x8f9298,
+  metalDark  : 0x4a4e55,
+  solarCell  : 0x1d3357,
+  glassGreen : 0x9fe8b4,
+  windowWarm : 0xffc978,
+  beaconRed  : 0xff4630,
+  beaconGrn  : 0x54ff88,
+  sun        : 0xffe3b0
+};
+const SUN_DIR = new THREE.Vector3(-0.55, 0.52, 0.32).normalize(); // panels aim here
+
+/* ================================================================
+   2. SEEDED PRNG + SMALL HELPERS (all randomness flows through rng)
+   ================================================================ */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng     = mulberry32(20260815);
+const rand    = (a, b) => a + rng() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const smooth  = (a, b, x) => { const t = Math.min(Math.max((x - a) / (b - a), 0), 1); return t * t * (3 - 2 * t); };
+
+/* Cheap deterministic 2D value noise for the dune field */
+const NGRID = 64, noiseTable = new Float32Array(NGRID * NGRID);
+for (let i = 0; i < noiseTable.length; i++) noiseTable[i] = rng();
+function vnoise(x, z){
+  const xi = Math.floor(x), zi = Math.floor(z), xf = x - xi, zf = z - zi;
+  const ix = ((xi % NGRID) + NGRID) % NGRID, iz = ((zi % NGRID) + NGRID) % NGRID;
+  const jx = (ix + 1) % NGRID, jz = (iz + 1) % NGRID;
+  const a = noiseTable[iz * NGRID + ix], b = noiseTable[iz * NGRID + jx];
+  const c = noiseTable[jz * NGRID + ix], d = noiseTable[jz * NGRID + jx];
+  const u = xf * xf * (3 - 2 * xf), v = zf * zf * (3 - 2 * zf);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function duneHeight(x, z){
+  const r = Math.hypot(x, z);
+  let h = vnoise(x * 0.045 + 9, z * 0.045) * 3.4 + vnoise(x * 0.16, z * 0.16 + 4) * 0.9;
+  h += Math.sin(x * 0.05 + z * 0.03) * 1.1;                 // long dune ridges
+  return h * smooth(30, 70, r);                              // flat pad for the base
+}
+
+/* ================================================================
+   3. PROCEDURAL CANVAS TEXTURES
+   ================================================================ */
+function makeCanvas(size, draw){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+const dustTex = makeCanvas(1024, (g, s) => {           // mottled regolith
+  g.fillStyle = '#a85a35'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 4200; i++){
+    const r = rand(1, 8);
+    g.fillStyle = `rgba(${randInt(110, 190)},${randInt(55, 95)},${randInt(30, 55)},${rand(0.05, 0.22)})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s, r, 0, 7); g.fill();
+  }
+  for (let i = 0; i < 240; i++){                        // wind streaks
+    g.strokeStyle = `rgba(220,150,95,${rand(0.04, 0.1)})`; g.lineWidth = rand(1, 3);
+    const x = rng() * s, y = rng() * s;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(40, 140), y + rand(-8, 8)); g.stroke();
+  }
+});
+dustTex.wrapS = dustTex.wrapT = THREE.RepeatWrapping; dustTex.repeat.set(7, 7);
+
+const habTex = makeCanvas(512, (g, s) => {             // riveted panel cladding
+  g.fillStyle = '#d8d2c4'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(90,84,74,0.5)'; g.lineWidth = 3;
+  const step = s / 6;
+  for (let i = 0; i <= 6; i++){
+    g.beginPath(); g.moveTo(i * step, 0); g.lineTo(i * step, s); g.stroke();
+    g.beginPath(); g.moveTo(0, i * step); g.lineTo(s, i * step); g.stroke();
+  }
+  g.fillStyle = 'rgba(70,66,60,0.55)';
+  for (let x = 0; x <= 6; x++) for (let y = 0; y <= 6; y++)
+    for (let k = 0; k < 4; k++){ g.beginPath(); g.arc(x * step + step * 0.2 + k * step * 0.2, y * step + step * 0.12, 2.4, 0, 7); g.fill(); }
+  for (let i = 0; i < 500; i++){                        // dust scouring
+    g.fillStyle = `rgba(168,90,53,${rand(0.03, 0.1)})`;
+    g.fillRect(rng() * s, rng() * s, rand(2, 26), rand(1, 3));
+  }
+});
+habTex.wrapS = habTex.wrapT = THREE.RepeatWrapping; habTex.repeat.set(3, 2);
+
+const solarTex = makeCanvas(256, (g, s) => {           // photovoltaic cell grid
+  g.fillStyle = '#16294a'; g.fillRect(0, 0, s, s);
+  const n = 6, cell = s / n;
+  for (let x = 0; x < n; x++) for (let y = 0; y < n; y++){
+    const grd = g.createLinearGradient(x * cell, y * cell, (x + 1) * cell, (y + 1) * cell);
+    grd.addColorStop(0, '#2a4f8f'); grd.addColorStop(0.5, '#1d3a6e'); grd.addColorStop(1, '#12234a');
+    g.fillStyle = grd; g.fillRect(x * cell + 2, y * cell + 2, cell - 4, cell - 4);
+    g.fillStyle = 'rgba(190,220,255,0.25)'; g.fillRect(x * cell + 4, y * cell + 4, cell - 8, 3);
+  }
+});
+const skyTex = makeCanvas(512, (g, s) => {             // butterscotch gradient sky
+  const grd = g.createLinearGradient(0, s, 0, 0);
+  grd.addColorStop(0.0, '#e2a765'); grd.addColorStop(0.18, '#d99a5b');
+  grd.addColorStop(0.45, '#c07a4a'); grd.addColorStop(1.0, '#6e4636');
+  g.fillStyle = grd; g.fillRect(0, 0, s, s);
+});
+const puffTex = makeCanvas(64, (g, s) => {             // soft dust mote sprite
+  const grd = g.createRadialGradient(s/2, s/2, 2, s/2, s/2, s/2);
+  grd.addColorStop(0, 'rgba(255,220,180,0.9)'); grd.addColorStop(0.5, 'rgba(230,170,110,0.35)');
+  grd.addColorStop(1, 'rgba(230,170,110,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, s, s);
+});
+
+/* ================================================================
+   4. SHARED MATERIALS
+   ================================================================ */
+const M = {
+  dust     : new THREE.MeshStandardMaterial({ color: 0xffffff, map: dustTex, roughness: 1 }),
+  rock     : new THREE.MeshStandardMaterial({ color: PAL.rock, roughness: 0.95, flatShading: true }),
+  hab      : new THREE.MeshStandardMaterial({ map: habTex, roughness: 0.62, metalness: 0.12 }),
+  trim     : new THREE.MeshStandardMaterial({ color: PAL.habTrim, roughness: 0.5, metalness: 0.25 }),
+  metal    : new THREE.MeshStandardMaterial({ color: PAL.metal, roughness: 0.38, metalness: 0.65 }),
+  metalDark: new THREE.MeshStandardMaterial({ color: PAL.metalDark, roughness: 0.55, metalness: 0.55 }),
+  solar    : new THREE.MeshStandardMaterial({ map: solarTex, roughness: 0.25, metalness: 0.55, emissive: 0x0a1a3a, emissiveIntensity: 0.35 }),
+  glassGrn : new THREE.MeshPhysicalMaterial({ color: PAL.glassGreen, transparent: true, opacity: 0.4, roughness: 0.15, metalness: 0.05, emissive: 0x2f9a55, emissiveIntensity: 0.5, side: THREE.DoubleSide, depthWrite: false }),
+  windowLit: new THREE.MeshStandardMaterial({ color: 0x332211, emissive: PAL.windowWarm, emissiveIntensity: 1.6 }),
+  plant    : new THREE.MeshStandardMaterial({ color: 0x3f9c4c, roughness: 0.85, flatShading: true }),
+  tire     : new THREE.MeshStandardMaterial({ color: 0x2c2c30, roughness: 0.9 }),
+  track    : new THREE.MeshStandardMaterial({ color: PAL.dustDark, roughness: 1 }),
+  beaconR  : new THREE.MeshStandardMaterial({ color: 0x220505, emissive: PAL.beaconRed, emissiveIntensity: 2 }),
+  beaconG  : new THREE.MeshStandardMaterial({ color: 0x052205, emissive: PAL.beaconGrn, emissiveIntensity: 2 }),
+  white    : new THREE.MeshStandardMaterial({ color: 0xe8e4da, roughness: 0.5, metalness: 0.2 })
+};
+
+/* ================================================================
+   5. RENDERER / SCENE / CAMERA / CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 60, 260);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 900);
+camera.position.set(50, 20, 60);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 5, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.9;
+controls.minDistance = 38; controls.maxDistance = 140;
+controls.maxPolarAngle = Math.PI * 0.485;
+
+/* ================================================================
+   6. BUILDER FUNCTIONS — each returns a THREE.Group
+   ================================================================ */
+const blinkers = [];   // {mat|light, phase, speed} pulsing emissives / lights
+
+/* ---- 6a. dune field ground + sky dome + moons + sun disc ------- */
+function buildTerrain(){
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(520, 520, 110, 110);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++)
+    pos.setY(i, duneHeight(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  const ground = new THREE.Mesh(geo, M.dust);
+  ground.receiveShadow = true;
+  g.add(ground);
+
+  const sky = new THREE.Mesh(
+    new THREE.SphereGeometry(420, 32, 18),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+  g.add(sky);
+
+  const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(14, 32),
+    new THREE.MeshBasicMaterial({ color: PAL.sun, fog: false }));
+  sunDisc.position.copy(SUN_DIR).multiplyScalar(400);
+  sunDisc.lookAt(0, 0, 0); g.add(sunDisc);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: puffTex, color: 0xffd9a0, transparent: true, opacity: 0.8, fog: false }));
+  halo.scale.setScalar(90); halo.position.copy(SUN_DIR).multiplyScalar(395);
+  g.add(halo);
+  return g;
+}
+function buildMoons(){
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xcbb79f, emissive: 0x8a7663, emissiveIntensity: 0.55, roughness: 1, flatShading: true, fog: false });
+  const phobos = new THREE.Mesh(new THREE.IcosahedronGeometry(6.5, 1), mat);
+  phobos.scale.set(1.25, 0.9, 1);
+  const deimos = new THREE.Mesh(new THREE.IcosahedronGeometry(4, 1), mat.clone());
+  g.add(phobos, deimos);
+  g.userData = { phobos, deimos };
+  return g;
+}
+
+/* ---- 6b. habitat dome with airlock, portholes, beacon ---------- */
+function buildHabDome(radius, airlockAngle){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.06, radius * 1.14, 0.9, 28), M.trim);
+  base.position.y = 0.45; base.castShadow = base.receiveShadow = true;
+  g.add(base);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(radius, 36, 20, 0, Math.PI * 2, 0, Math.PI / 2), M.hab);
+  dome.position.y = 0.9; dome.castShadow = dome.receiveShadow = true;
+  g.add(dome);
+  for (let i = 0; i < 4; i++){                              // structural ribs
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(radius + 0.06, 0.1, 8, 40, Math.PI), M.trim);
+    rib.position.y = 0.9; rib.rotation.y = (i / 4) * Math.PI;
+    rib.castShadow = true;
+    g.add(rib);
+  }
+  const nWin = randInt(4, 6);                               // glowing portholes
+  for (let i = 0; i < nWin; i++){
+    const a = rand(0, Math.PI * 2), lat = rand(0.35, 0.6);
+    const win = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.18, 14), M.windowLit);
+    const dir = new THREE.Vector3(Math.cos(a) * Math.cos(lat), Math.sin(lat), Math.sin(a) * Math.cos(lat));
+    win.position.copy(dir).multiplyScalar(radius).add(new THREE.Vector3(0, 0.9, 0));
+    win.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir); g.add(win);
+  }
+  const airlock = new THREE.Group();                        // protruding airlock
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(1.5, 1.5, 3.2, 18), M.hab);
+  tube.rotation.z = Math.PI / 2; tube.castShadow = true;
+  const door = new THREE.Mesh(new THREE.CircleGeometry(1.1, 18), M.metalDark);
+  door.rotation.y = Math.PI / 2; door.position.x = 1.62;
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.2, 0.14, 8, 24), M.trim);
+  rim.rotation.y = Math.PI / 2; rim.position.x = 1.61;
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 8), M.beaconG.clone());
+  lamp.position.set(1.6, 1.35, 0); blinkers.push({ mat: lamp.material, phase: rand(0, 6), speed: 2.2 });
+  airlock.add(tube, door, rim, lamp);
+  airlock.position.set(Math.cos(airlockAngle) * (radius * 0.92), 1.6, Math.sin(airlockAngle) * (radius * 0.92));
+  airlock.rotation.y = -airlockAngle; g.add(airlock);
+  const mastTip = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.09, 2.4, 6), M.metal);
+  mastTip.position.y = radius + 1.9;
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.22, 10, 10), M.beaconR.clone());
+  bulb.position.y = radius + 3.1; blinkers.push({ mat: bulb.material, phase: rand(0, 6), speed: 3 });
+  g.add(mastTip, bulb);
+  return g;
+}
+
+/* ---- 6c. pressurised connector tunnel -------------------------- */
+function buildTunnel(a, b){
+  const g = new THREE.Group();
+  const dir = b.clone().sub(a), len = dir.length();
+  const tube = new THREE.Mesh(new THREE.CylinderGeometry(1.4, 1.4, len, 16), M.hab);
+  tube.castShadow = tube.receiveShadow = true; tube.rotation.z = Math.PI / 2;
+  const ribGeo = new THREE.TorusGeometry(1.45, 0.12, 8, 18);
+  for (let i = 1; i < Math.floor(len / 2.4); i++){
+    const rib = new THREE.Mesh(ribGeo, M.trim);
+    rib.rotation.y = Math.PI / 2;
+    rib.position.x = -len / 2 + i * 2.4;
+    g.add(rib);
+  }
+  g.add(tube);
+  g.position.copy(a.clone().add(b).multiplyScalar(0.5)).setY(1.35);
+  g.rotation.y = -Math.atan2(dir.z, dir.x); return g;
+}
+
+/* ---- 6d. greenhouse dome glowing green from within ------------- */
+function buildGreenhouse(){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(6.4, 6.9, 0.8, 24), M.trim);
+  base.position.y = 0.4; base.castShadow = base.receiveShadow = true;
+  g.add(base);
+  const glass = new THREE.Mesh(new THREE.SphereGeometry(6, 28, 16, 0, Math.PI * 2, 0, Math.PI / 2), M.glassGrn);
+  glass.position.y = 0.8;
+  g.add(glass);
+  for (let i = 0; i < 6; i++){                              // glazing ribs
+    const rib = new THREE.Mesh(new THREE.TorusGeometry(6.04, 0.08, 6, 36, Math.PI), M.white);
+    rib.position.y = 0.8;
+    rib.rotateOnWorldAxis(new THREE.Vector3(0, 1, 0), (i / 6) * Math.PI);
+    g.add(rib);
+  }
+  const bedGeo = new THREE.BoxGeometry(2.1, 0.7, 8.4);      // planter beds
+  for (let i = -1; i <= 1; i++){
+    const bed = new THREE.Mesh(bedGeo, M.metalDark);
+    bed.position.set(i * 3, 1.15, 0); g.add(bed);
+  }
+  const plantGeo = new THREE.IcosahedronGeometry(0.42, 0);  // leafy crops
+  const plants = new THREE.InstancedMesh(plantGeo, M.plant, 66);
+  const dummy = new THREE.Object3D();
+  let k = 0;
+  for (let i = -1; i <= 1; i++) for (let j = 0; j < 22; j++){
+    dummy.position.set(i * 3 + rand(-0.6, 0.6), 1.7 + rand(0, 0.25), -3.8 + (j % 11) * 0.76 + rand(-0.15, 0.15));
+    dummy.rotation.set(rng() * 3, rng() * 3, rng() * 3); dummy.scale.setScalar(rand(0.7, 1.35));
+    dummy.updateMatrix(); plants.setMatrixAt(k++, dummy.matrix);
+  }
+  g.add(plants);
+  const glow = new THREE.PointLight(0x58ff85, 26, 22, 1.9); // interior grow-light
+  glow.position.y = 4; g.add(glow); g.userData.glow = glow;
+  return g;
+}
+
+/* ---- 6e. six-wheeled rover ------------------------------------- */
+function buildRover(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(3.6, 0.9, 2.3), M.white);
+  body.position.y = 1.35; body.castShadow = true;
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.35, 1.9), M.metalDark);
+  deck.position.y = 1.95; deck.castShadow = true;
+  const rtg = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.32, 1.2, 10), M.metal); // power unit
+  rtg.rotation.z = Math.PI / 2; rtg.position.set(-2.1, 1.6, 0); rtg.castShadow = true;
+  g.add(body, deck, rtg);
+  const wheelGeo = new THREE.CylinderGeometry(0.58, 0.58, 0.45, 16);
+  const hubGeo = new THREE.CylinderGeometry(0.3, 0.3, 0.5, 8);
+  for (const sx of [-1, 1]) for (let i = 0; i < 3; i++){    // six wheels + suspension
+    const wx = -1.35 + i * 1.35;
+    const wheel = new THREE.Mesh(wheelGeo, M.tire);
+    wheel.rotation.x = Math.PI / 2; wheel.position.set(wx, 0.58, sx * 1.45); wheel.castShadow = true;
+    const hub = new THREE.Mesh(hubGeo, M.trim);
+    hub.rotation.x = Math.PI / 2; hub.position.copy(wheel.position);
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.9, 0.16), M.metal);
+    strut.position.set(wx, 1, sx * 1.15); strut.rotation.x = sx * 0.4;
+    g.add(wheel, hub, strut);
+  }
+  const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.1, 1.5, 8), M.metal);
+  mast.position.set(1.4, 2.8, 0);
+  const head = new THREE.Group();                           // camera head (scans)
+  head.add(new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.3), M.white));
+  const eyeGeo = new THREE.CylinderGeometry(0.09, 0.09, 0.12, 10);
+  for (const ex of [-0.18, 0.18]){
+    const eye = new THREE.Mesh(eyeGeo, M.metalDark);
+    eye.rotation.x = Math.PI / 2; eye.position.set(ex, 0, 0.18); head.add(eye);
+  }
+  head.position.set(1.4, 3.65, 0);
+  const dish = new THREE.Mesh(new THREE.SphereGeometry(0.55, 14, 8, 0, Math.PI * 2, 0, 1), M.white);
+  dish.rotation.x = -2.5; dish.position.set(-0.7, 2.4, -0.7);
+  g.add(mast, head, dish);
+  g.userData.head = head;
+  return g;
+}
+
+/* ---- 6f. charging mast with sagging cable to the rover --------- */
+function buildChargingMast(roverPortWorld){
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.26, 5.6, 10), M.metal);
+  pole.position.y = 2.8; pole.castShadow = true;
+  const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.9, 1.1, 0.4, 12), M.metalDark);
+  foot.position.y = 0.2;
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(1.8, 0.16, 0.16), M.metal);
+  arm.position.set(0.8, 5.3, 0);
+  const lampHead = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.22, 0.4), M.metalDark);
+  lampHead.position.set(1.7, 5.2, 0);
+  const chargeLight = new THREE.Mesh(new THREE.SphereGeometry(0.14, 8, 8), M.beaconG.clone());
+  chargeLight.position.set(1.7, 5.02, 0); blinkers.push({ mat: chargeLight.material, phase: 0.5, speed: 1.6 });
+  const lamp = new THREE.PointLight(0xffd9a0, 10, 14, 2);
+  lamp.position.set(1.7, 4.9, 0);
+  g.add(pole, foot, arm, lampHead, chargeLight, lamp);
+  g.userData.cableFrom = new THREE.Vector3(1.7, 5.05, 0);   // local anchor
+  g.userData.cableTo = roverPortWorld; return g;
+}
+
+/* ---- 6g. solar panel array angled at the sun ------------------- */
+function buildSolarArray(rows, cols){
+  const g = new THREE.Group();
+  const panelGeo = new THREE.BoxGeometry(3.4, 0.12, 2.3);
+  const legGeo = new THREE.CylinderGeometry(0.07, 0.07, 1.6, 6);
+  const tilt = Math.acos(SUN_DIR.y);                        // face the sun
+  const yaw = Math.atan2(SUN_DIR.x, SUN_DIR.z);
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++){
+    const p = new THREE.Group();
+    const panel = new THREE.Mesh(panelGeo, M.solar);
+    panel.castShadow = true; panel.rotation.x = tilt * 0.85; panel.position.y = 1.55;
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(3.5, 0.06, 2.4), M.metalDark);
+    frame.rotation.x = tilt * 0.85; frame.position.y = 1.49;
+    p.add(panel, frame);
+    for (const lx of [-1.4, 1.4]){
+      const leg = new THREE.Mesh(legGeo, M.metal);
+      leg.position.set(lx, 0.8, 0); p.add(leg);
+    }
+    p.position.set(c * 4.1, 0, r * 3.6); p.rotation.y = yaw + Math.PI;
+    g.add(p);
+  }
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.1, 1, 0.8), M.metalDark); // combiner box
+  box.position.set(-2.6, 0.5, 1); box.castShadow = true;
+  g.add(box); return g;
+}
+
+/* ---- 6h. communications dish on lattice tower ------------------ */
+function buildCommsDish(){
+  const g = new THREE.Group();
+  const legGeo = new THREE.CylinderGeometry(0.1, 0.14, 4.6, 8);
+  for (let i = 0; i < 4; i++){
+    const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+    const leg = new THREE.Mesh(legGeo, M.metal);
+    leg.position.set(Math.cos(a) * 1.5, 2.2, Math.sin(a) * 1.5);
+    leg.rotation.z = Math.cos(a) * 0.32; leg.rotation.x = -Math.sin(a) * 0.32;
+    leg.castShadow = true; g.add(leg);
+  }
+  const platform = new THREE.Mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.3, 12), M.metalDark);
+  platform.position.y = 4.5; platform.castShadow = true;
+  g.add(platform);
+  const yoke = new THREE.Group();                           // azimuth scanner
+  const pts = [];
+  for (let i = 0; i <= 12; i++){ const x = i / 12 * 3; pts.push(new THREE.Vector2(x, x * x * 0.16)); }
+  const dish = new THREE.Mesh(new THREE.LatheGeometry(pts, 30), M.white);
+  dish.castShadow = true;
+  const feedGeo = new THREE.CylinderGeometry(0.04, 0.04, 2.1, 6);
+  for (let i = 0; i < 3; i++){                              // feed struts
+    const a = (i / 3) * Math.PI * 2;
+    const strut = new THREE.Mesh(feedGeo, M.metal);
+    strut.position.set(Math.cos(a) * 1, 1.05, Math.sin(a) * 1);
+    strut.rotation.z = Math.cos(a) * 0.45; strut.rotation.x = -Math.sin(a) * 0.45;
+    dish.add(strut);
+  }
+  const feed = new THREE.Mesh(new THREE.SphereGeometry(0.18, 8, 8), M.beaconR.clone());
+  feed.position.y = 2.05; dish.add(feed);
+  blinkers.push({ mat: feed.material, phase: 2, speed: 2.6 });
+  dish.rotation.z = 0.9; dish.position.y = 0.6;             // elevation tilt
+  yoke.add(dish); yoke.position.y = 4.65;
+  g.add(yoke);
+  g.userData.yoke = yoke;
+  return g;
+}
+
+/* ---- 6i. weather mast with spinning anemometer ----------------- */
+function buildWeatherMast(){
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.1, 4.4, 8), M.metal);
+  pole.position.y = 2.2; pole.castShadow = true;
+  g.add(pole);
+  const spinner = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const a = (i / 3) * Math.PI * 2;
+    const arm = new THREE.Mesh(new THREE.BoxGeometry(0.75, 0.04, 0.04), M.metal);
+    arm.position.set(Math.cos(a) * 0.37, 0, Math.sin(a) * 0.37); arm.rotation.y = -a;
+    const cup = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6, 0, Math.PI * 2, 0, Math.PI / 2), M.trim);
+    cup.position.set(Math.cos(a) * 0.75, 0, Math.sin(a) * 0.75);
+    cup.rotation.z = Math.PI / 2; cup.rotation.y = -a;
+    spinner.add(arm, cup);
+  }
+  spinner.position.y = 4.5;
+  const vane = new THREE.Mesh(new THREE.ConeGeometry(0.16, 0.7, 4), M.trim);
+  vane.rotation.z = -Math.PI / 2; vane.position.set(0.3, 3.6, 0);
+  g.add(spinner, vane);
+  g.userData.spinner = spinner;
+  return g;
+}
+
+/* ---- 6j. supply props: tank farm + crate stack ----------------- */
+function buildTankFarm(){
+  const g = new THREE.Group();
+  const tankGeo = new THREE.CapsuleGeometry(0.9, 2.6, 6, 14);
+  for (let i = 0; i < 2; i++){
+    const tank = new THREE.Mesh(tankGeo, M.white);
+    tank.rotation.z = Math.PI / 2; tank.position.set(0, 1.15, i * 2.3); tank.castShadow = true;
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.93, 0.93, 0.4, 16), M.trim);
+    band.rotation.z = Math.PI / 2; band.position.set(0.7, 1.15, i * 2.3);
+    for (const cx of [-1.2, 1.2]){
+      const cradle = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.8, 1), M.metalDark);
+      cradle.position.set(cx, 0.4, i * 2.3); g.add(cradle);
+    }
+    g.add(tank, band);
+  }
+  return g;
+}
+function buildCrates(n){
+  const g = new THREE.Group();
+  const crates = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), M.trim.clone(), n);
+  crates.material.color.set(0xc9c2b2);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < n; i++){
+    const s = rand(0.7, 1.2);
+    dummy.position.set(rand(-2, 2), s / 2, rand(-1.6, 1.6));
+    dummy.rotation.y = rand(0, Math.PI); dummy.scale.setScalar(s);
+    dummy.updateMatrix(); crates.setMatrixAt(i, dummy.matrix);
+  }
+  crates.castShadow = true;
+  g.add(crates);
+  return g;
+}
+
+/* ---- 6k. scattered boulders (instanced) ------------------------ */
+function buildBoulders(count){
+  const g = new THREE.Group();
+  const geo = new THREE.DodecahedronGeometry(1, 0);
+  const rocks = new THREE.InstancedMesh(geo, M.rock, count);
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  for (let i = 0; i < count; i++){
+    const a = rand(0, Math.PI * 2), r = rand(34, 150);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    dummy.position.set(x, duneHeight(x, z) + 0.1, z);
+    dummy.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    dummy.scale.set(rand(0.35, 2.3), rand(0.3, 1.6), rand(0.35, 2.3));
+    dummy.updateMatrix(); rocks.setMatrixAt(i, dummy.matrix);
+    col.setHSL(0.045, rand(0.45, 0.6), rand(0.26, 0.4)); rocks.setColorAt(i, col);
+  }
+  rocks.castShadow = rocks.receiveShadow = true;
+  g.add(rocks);
+  return g;
+}
+
+/* ---- 6l. rover wheel tracks pressed into the dust -------------- */
+function buildRoverTracks(){
+  const g = new THREE.Group();
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-6, 0, 17), new THREE.Vector3(0, 0, 30),
+    new THREE.Vector3(14, 0, 44), new THREE.Vector3(20, 0, 66),
+    new THREE.Vector3(16, 0, 92)
+  ]);
+  const N = 68;
+  const marks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.05, 0.3), M.track, N * 2);
+  const dummy = new THREE.Object3D();
+  let k = 0;
+  for (let i = 0; i < N; i++){
+    const t = i / (N - 1);
+    const p = curve.getPoint(t), tan = curve.getTangent(t);
+    const side = new THREE.Vector3(-tan.z, 0, tan.x).normalize();
+    for (const s of [-0.85, 0.85]){
+      dummy.position.copy(p).addScaledVector(side, s);
+      dummy.position.y = duneHeight(dummy.position.x, dummy.position.z) + 0.05;
+      dummy.rotation.y = -Math.atan2(tan.z, tan.x);
+      dummy.updateMatrix(); marks.setMatrixAt(k++, dummy.matrix);
+    }
+  }
+  g.add(marks); return g;
+}
+
+/* ---- 6m. distant dust devil (animated particle vortex) --------- */
+function buildDustDevil(){
+  const COUNT = 240, H = 34;
+  const geo = new THREE.BufferGeometry();
+  const posArr = new Float32Array(COUNT * 3);
+  const seeds = [];
+  for (let i = 0; i < COUNT; i++)
+    seeds.push({ a: rand(0, Math.PI * 2), h: rand(0, H), spin: rand(1.4, 2.6), rise: rand(2, 5) });
+  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+  const mat = new THREE.PointsMaterial({ map: puffTex, color: 0xc98a52, size: 4, transparent: true, opacity: 0.65, depthWrite: false, sizeAttenuation: true });
+  const pts = new THREE.Points(geo, mat);
+  pts.frustumCulled = false;
+  const g = new THREE.Group(); g.add(pts);
+  g.userData = { seeds, posArr, geo, H };
+  return g;
+}
+
+/* ================================================================
+   7. ASSEMBLY / LAYOUT
+   ================================================================ */
+scene.add(buildTerrain());
+const moons = buildMoons(); scene.add(moons);
+
+const habA = buildHabDome(9, Math.PI * 0.85);  habA.position.set(-8, 0, -5);
+const habB = buildHabDome(6.5, Math.PI * 0.1); habB.position.set(9, 0, -12);
+const habC = buildHabDome(5, Math.PI * 1.4);   habC.position.set(2, 0, 8);
+scene.add(habA, habB, habC);
+scene.add(buildTunnel(new THREE.Vector3(-8, 0, -5), new THREE.Vector3(9, 0, -12)));
+scene.add(buildTunnel(new THREE.Vector3(-8, 0, -5), new THREE.Vector3(2, 0, 8)));
+
+const greenhouse = buildGreenhouse();
+greenhouse.position.set(17, 0, 4); scene.add(greenhouse);
+scene.add(buildTunnel(new THREE.Vector3(9, 0, -12), new THREE.Vector3(17, 0, 4)));
+
+const rover = buildRover();
+rover.position.set(-7, 0, 16); rover.rotation.y = 0.5; scene.add(rover);
+const mast = buildChargingMast(new THREE.Vector3(-5.5, 1.6, 15.2));
+mast.position.set(-12, 0, 14); mast.rotation.y = -0.4; scene.add(mast);
+{ // sagging charge cable, mast arm -> rover socket
+  const from = mast.localToWorld(mast.userData.cableFrom.clone());
+  const to = mast.userData.cableTo;
+  const mid = from.clone().add(to).multiplyScalar(0.5); mid.y -= 1.6;
+  const cable = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(from, mid, to), 20, 0.05, 6), M.metalDark);
+  scene.add(cable);
+}
+
+const solarField = buildSolarArray(2, 4);
+solarField.position.set(-30, 0, -14); scene.add(solarField);
+const comms = buildCommsDish();
+comms.position.set(23, 0, -18); scene.add(comms);
+const weather = buildWeatherMast();
+weather.position.set(9, 0, 14); scene.add(weather);
+const tanks = buildTankFarm();
+tanks.position.set(-18, 0, -14); tanks.rotation.y = 0.7; scene.add(tanks);
+const crates = buildCrates(7);
+crates.position.set(-2, 0, 12.5); scene.add(crates);
+
+scene.add(buildBoulders(130));
+scene.add(buildRoverTracks());
+
+const devil = buildDustDevil();
+devil.position.set(-95, 0, -78);
+scene.add(devil);
+
+/* ================================================================
+   8. LIGHTING RIG
+   ================================================================ */
+const sun = new THREE.DirectionalLight(0xffd9a6, 2.9);
+sun.position.copy(SUN_DIR).multiplyScalar(90);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -60; sun.shadow.camera.right = 60;
+sun.shadow.camera.top = 60; sun.shadow.camera.bottom = -60;
+sun.shadow.camera.near = 20; sun.shadow.camera.far = 220;
+sun.shadow.bias = -0.0004;
+scene.add(sun, sun.target);
+
+const hemi = new THREE.HemisphereLight(0xd99a5b, 0x6e3a24, 0.6);
+const bounce = new THREE.AmbientLight(0x8a5030, 0.28);      // dust-scattered fill
+scene.add(hemi, bounce);
+
+/* ================================================================
+   9. ANIMATION LOOP
+   ================================================================ */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // dust devil: particles corkscrew upward while the column wanders
+  const { seeds, posArr, geo, H } = devil.userData;
+  for (let i = 0; i < seeds.length; i++){
+    const s = seeds[i];
+    const h = (s.h + t * s.rise) % H;
+    const rad = 0.9 + (h / H) * 6.5;
+    const a = s.a + t * s.spin + h * 0.22;
+    posArr[i * 3] = Math.cos(a) * rad;
+    posArr[i * 3 + 1] = h + 1;
+    posArr[i * 3 + 2] = Math.sin(a) * rad;
+  }
+  geo.attributes.position.needsUpdate = true;
+  devil.position.x = -95 + Math.sin(t * 0.05) * 18;
+  devil.position.z = -78 + Math.cos(t * 0.04) * 14;
+
+  // comms dish scanning the sky, rover cam mast panning
+  comms.userData.yoke.rotation.y = t * 0.25;
+  rover.userData.head.rotation.y = Math.sin(t * 0.5) * 0.8;
+
+  // greenhouse grow-light breathing
+  greenhouse.userData.glow.intensity = 22 + Math.sin(t * 1.3) * 8;
+  M.glassGrn.emissiveIntensity = 0.45 + Math.sin(t * 1.3) * 0.18;
+
+  // anemometer spin + beacon blinking
+  weather.userData.spinner.rotation.y = t * 5.5;
+  for (const b of blinkers)
+    b.mat.emissiveIntensity = 1.2 + Math.sin(t * b.speed + b.phase) * 1.1;
+
+  // twin moons drifting low across the butterscotch sky
+  const ma = 3.19 + t * 0.012, mb = 3.52 - t * 0.015;
+  moons.userData.phobos.position.set(Math.sin(ma) * 265, 76 + Math.sin(t * 0.2) * 4, Math.cos(ma) * 265);
+  moons.userData.deimos.position.set(Math.sin(mb) * 305, 84 + Math.cos(t * 0.16) * 4, Math.cos(mb) * 305);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   10. RESIZE
+   ================================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

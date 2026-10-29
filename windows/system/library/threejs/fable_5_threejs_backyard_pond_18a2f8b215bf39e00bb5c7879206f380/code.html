@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Backyard Pond Edge — Procedural three.js</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17191c; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------- utilities
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260707);
+const ss = THREE.MathUtils.smoothstep; // ss(x, min, max)
+
+// gentle organic value-noise built from incommensurate sines
+function terrainNoise(x, z) {
+  return Math.sin(x * 2.4 + 1.3) * Math.sin(z * 2.1 + 4.2) * 0.5
+       + Math.sin(x * 5.7 + 2.1) * Math.sin(z * 4.9 + 0.7) * 0.3
+       + Math.sin(x * 11.3 + 0.5) * Math.sin(z * 10.1 + 3.3) * 0.2;
+}
+
+const BASIN_R = 1.02;      // radius where the pond basin meets grade
+const WATER_Y = -0.035;    // water sits ~3.5 cm below grade
+
+// height of the landscaped ground (basin + surrounding lawn)
+function groundY(x, z) {
+  const r = Math.hypot(x, z);
+  const n = terrainNoise(x, z);
+  if (r < BASIN_R) {
+    const t = r / BASIN_R;
+    const depth = Math.pow(Math.max(0, 1 - t * t), 0.85) * 0.30;
+    return -depth + n * 0.008 * Math.sin(t * Math.PI);
+  }
+  const fadeEdge = 1 - ss(r, 1.85, 2.18);
+  const bumps = n * 0.045 * ss(r, 1.05, 1.5);
+  const berm  = 0.022 * ss(r, BASIN_R, 1.35);
+  return (bumps + berm) * fadeEdge;
+}
+
+// ---------------------------------------------------------------- renderer
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------- scene / camera
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1d20); // neutral dark studio backdrop
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 60);
+camera.position.set(2.9, 1.9, 3.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.28, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 1.6;
+controls.maxDistance = 9;
+controls.maxPolarAngle = 1.42;
+
+// soft studio reflections for the water (fully procedural, no assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+// ---------------------------------------------------------------- lights
+const hemi = new THREE.HemisphereLight(0xbcd2e8, 0x3a3226, 0.5);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0dd, 2.3);
+key.position.set(4.5, 6.5, 2.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -4; key.shadow.camera.right = 4;
+key.shadow.camera.top = 4;  key.shadow.camera.bottom = -4;
+key.shadow.camera.near = 1; key.shadow.camera.far = 18;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb4cc, 0.45);
+fill.position.set(-5, 3, -2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xe8eeff, 0.7);
+rim.position.set(-2.5, 4.5, -5.5);
+scene.add(rim);
+
+// subtle ground plane that only receives shadows (annulus outside the diorama)
+const catcher = new THREE.Mesh(
+  new THREE.RingGeometry(2.2, 9, 72).rotateX(-Math.PI / 2),
+  new THREE.ShadowMaterial({ opacity: 0.28 })
+);
+catcher.position.y = -0.005;
+catcher.receiveShadow = true;
+scene.add(catcher);
+
+// ---------------------------------------------------------------- THE object
+const pond = new THREE.Group();
+scene.add(pond);
+
+// ---- landscaped ground: basin + liner floor + mulch shelf + lawn (vertex colors)
+{
+  const geo = new THREE.RingGeometry(0.01, 2.2, 160, 56);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+
+  const cLiner = new THREE.Color(0x141216);
+  const cMulch = new THREE.Color(0x53412c);
+  const cGrass = new THREE.Color(0x4d6a2d);
+  const cDry   = new THREE.Color(0x7c8446);
+  const c = new THREE.Color(), g = new THREE.Color();
+
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, groundY(x, z));
+    const r = Math.hypot(x, z);
+    const n01 = THREE.MathUtils.clamp((terrainNoise(x * 1.7 + 3.1, z * 1.7 - 2.4) + 1) / 2, 0, 1);
+    g.copy(cGrass).lerp(cDry, n01 * 0.7);
+    c.copy(cLiner).lerp(cMulch, ss(r, 1.00, 1.25)).lerp(g, ss(r, 1.32, 1.62));
+    c.multiplyScalar(0.88 + 0.24 * THREE.MathUtils.clamp((terrainNoise(x * 3.3, z * 3.7) + 1) / 2, 0, 1));
+    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+
+  const ground = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 1.0, metalness: 0, envMapIntensity: 0.15
+  }));
+  ground.receiveShadow = true;
+  ground.castShadow = true;
+  pond.add(ground);
+}
+
+// ---- black EPDM liner lip, peeking up just behind the stone ring
+{
+  const geo = new THREE.TorusGeometry(1.04, 0.032, 12, 110);
+  geo.rotateX(Math.PI / 2);
+  const liner = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({
+    color: 0x0b0b0d, roughness: 0.45, metalness: 0, envMapIntensity: 0.35
+  }));
+  liner.scale.y = 0.45;
+  liner.position.y = 0.018;
+  liner.castShadow = true;
+  liner.receiveShadow = true;
+  pond.add(liner);
+}
+
+// ---- water surface (animated gentle ripples)
+const waterGeo = new THREE.RingGeometry(0.001, 1.0, 96, 22);
+waterGeo.rotateX(-Math.PI / 2);
+const waterBase = waterGeo.attributes.position.array.slice();
+const water = new THREE.Mesh(waterGeo, new THREE.MeshPhysicalMaterial({
+  color: 0x0e2a24, roughness: 0.06, metalness: 0,
+  clearcoat: 1.0, clearcoatRoughness: 0.1,
+  transparent: true, opacity: 0.94, envMapIntensity: 1.1
+}));
+water.position.y = WATER_Y;
+water.receiveShadow = true;
+pond.add(water);
+
+// ---- rounded stones bordering the pond
+const stonePalette = [0x8f8a82, 0x7b756c, 0x9a9187, 0x6e6a64, 0xa39a8b, 0x85807a];
+const stoneMats = stonePalette.map(cc => new THREE.MeshStandardMaterial({
+  color: cc, roughness: 0.92, metalness: 0, envMapIntensity: 0.25
+}));
+
+function displaceStone(geo, seed) {
+  const p = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const n = Math.sin(v.x * 3.9 + seed) * Math.sin(v.y * 4.3 + seed * 1.3) * 0.6
+            + Math.sin(v.y * 8.1 + seed * 0.7) * Math.sin(v.z * 7.3 + seed * 1.9) * 0.25
+            + Math.sin(v.x * 11.0 + seed * 2.3) * Math.sin(v.z * 10.0 + seed * 0.4) * 0.15;
+    v.multiplyScalar(1 + n * 0.18);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+}
+
+function addStone(x, z, s, flatten) {
+  const geo = new THREE.SphereGeometry(1, 20, 14);
+  displaceStone(geo, rng() * 100);
+  const m = new THREE.Mesh(geo, stoneMats[Math.floor(rng() * stoneMats.length)]);
+  m.scale.set(
+    s * (0.85 + rng() * 0.5),
+    s * flatten,
+    s * (0.85 + rng() * 0.5)
+  );
+  m.rotation.set((rng() - 0.5) * 0.35, rng() * Math.PI * 2, (rng() - 0.5) * 0.35);
+  m.position.set(x, groundY(x, z) + m.scale.y * 0.45, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  pond.add(m);
+  return m;
+}
+
+// main border ring
+const STONE_COUNT = 30;
+for (let i = 0; i < STONE_COUNT; i++) {
+  const a = (i / STONE_COUNT) * Math.PI * 2 + (rng() - 0.5) * 0.10;
+  const rr = 1.10 + rng() * 0.16;
+  addStone(Math.cos(a) * rr, Math.sin(a) * rr, 0.10 + rng() * 0.08, 0.5 + rng() * 0.2);
+}
+// sparse inner accents right at the waterline
+for (let i = 0; i < 8; i++) {
+  const a = rng() * Math.PI * 2;
+  const rr = 0.99 + rng() * 0.08;
+  addStone(Math.cos(a) * rr, Math.sin(a) * rr, 0.06 + rng() * 0.04, 0.5 + rng() * 0.15);
+}
+// two flat stones half-submerged in the shallows
+for (let i = 0; i < 2; i++) {
+  const a = 1.1 + i * 2.4 + rng() * 0.5;
+  const rr = 0.88 + rng() * 0.05;
+  const st = addStone(Math.cos(a) * rr, Math.sin(a) * rr, 0.11 + rng() * 0.03, 0.42);
+  st.position.y = groundY(st.position.x, st.position.z) + st.scale.y * 0.75;
+}
+
+// ---- scattered pebbles on the mulch shelf (instanced)
+{
+  const geo = new THREE.IcosahedronGeometry(1, 1);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.95, envMapIntensity: 0.2 });
+  const count = 70;
+  const inst = new THREE.InstancedMesh(geo, mat, count);
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = Math.sqrt(THREE.MathUtils.lerp(1.06 * 1.06, 1.6 * 1.6, rng()));
+    const s = 0.012 + rng() * 0.02;
+    const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+    dummy.position.set(x, groundY(x, z) + s * 0.35, z);
+    dummy.rotation.set(rng() * Math.PI, rng() * Math.PI, rng() * Math.PI);
+    dummy.scale.set(s, s * 0.55, s);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    col.setHSL(0.08 + rng() * 0.03, 0.05 + rng() * 0.08, 0.3 + rng() * 0.28);
+    inst.setColorAt(i, col);
+  }
+  inst.castShadow = true;
+  inst.receiveShadow = true;
+  pond.add(inst);
+}
+
+// ---- cattails rising from the edge
+const stemMat  = new THREE.MeshStandardMaterial({ color: 0x6b7d3a, roughness: 0.8, envMapIntensity: 0.3 });
+const headMat  = new THREE.MeshStandardMaterial({ color: 0x5e3b1f, roughness: 1.0, envMapIntensity: 0.15 });
+const spikeMat = new THREE.MeshStandardMaterial({ color: 0xc9b37a, roughness: 0.9 });
+const leafMats = [
+  new THREE.MeshStandardMaterial({ color: 0x55702f, roughness: 0.85, side: THREE.DoubleSide, envMapIntensity: 0.3 }),
+  new THREE.MeshStandardMaterial({ color: 0x4a6329, roughness: 0.85, side: THREE.DoubleSide, envMapIntensity: 0.3 })
+];
+
+function makeLeafGeo(len, w, bend) {
+  const g = new THREE.PlaneGeometry(w, len, 1, 12);
+  g.translate(0, len / 2, 0);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const t = p.getY(i) / len;
+    p.setX(i, p.getX(i) * (1 - 0.85 * t));
+    p.setZ(i, bend * t * t);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+function makeCattail(h) {
+  const stalk = new THREE.Group();
+
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.012, h, 8), stemMat);
+  stem.position.y = h / 2;
+  stem.castShadow = true;
+  stalk.add(stem);
+
+  const headLen = 0.15 + rng() * 0.06;
+  const head = new THREE.Mesh(new THREE.CapsuleGeometry(0.02, headLen, 6, 12), headMat);
+  head.position.y = h + headLen / 2 - 0.01;
+  head.castShadow = true;
+  stalk.add(head);
+
+  const spike = new THREE.Mesh(new THREE.CylinderGeometry(0.0015, 0.004, 0.14, 6), spikeMat);
+  spike.position.y = h + headLen + 0.055;
+  spike.castShadow = true;
+  stalk.add(spike);
+
+  const nLeaves = 2 + Math.floor(rng() * 2);
+  for (let i = 0; i < nLeaves; i++) {
+    const len = h * (0.72 + rng() * 0.28);
+    const leaf = new THREE.Mesh(
+      makeLeafGeo(len, 0.022 + rng() * 0.008, 0.16 + rng() * 0.14),
+      leafMats[Math.floor(rng() * leafMats.length)]
+    );
+    leaf.rotation.y = rng() * Math.PI * 2;
+    leaf.rotation.z = (rng() - 0.5) * 0.1;
+    leaf.castShadow = true;
+    stalk.add(leaf);
+  }
+
+  stalk.rotation.set((rng() - 0.5) * 0.14, rng() * Math.PI * 2, (rng() - 0.5) * 0.14);
+  return stalk;
+}
+
+function addCattailCluster(angle, radius, nStalks) {
+  for (let i = 0; i < nStalks; i++) {
+    const x = Math.cos(angle) * radius + (rng() - 0.5) * 0.14;
+    const z = Math.sin(angle) * radius + (rng() - 0.5) * 0.14;
+    const stalk = makeCattail(1.1 + rng() * 0.4);
+    stalk.position.set(x, groundY(x, z), z);
+    pond.add(stalk);
+  }
+}
+addCattailCluster(2.15, 1.14, 3);
+addCattailCluster(3.95, 1.12, 2);
+
+// ---- low grass tufts on the surrounding lawn (instanced)
+{
+  const geo = new THREE.ConeGeometry(0.006, 0.09, 4);
+  geo.translate(0, 0.045, 0);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, envMapIntensity: 0.2 });
+  const count = 240;
+  const inst = new THREE.InstancedMesh(geo, mat, count);
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const a = rng() * Math.PI * 2;
+    const rr = Math.sqrt(THREE.MathUtils.lerp(1.38 * 1.38, 2.06 * 2.06, rng()));
+    const x = Math.cos(a) * rr, z = Math.sin(a) * rr;
+    const s = 0.7 + rng() * 1.1;
+    dummy.position.set(x, groundY(x, z), z);
+    dummy.rotation.set((rng() - 0.5) * 0.5, rng() * Math.PI, (rng() - 0.5) * 0.5);
+    dummy.scale.set(s * (0.8 + rng() * 0.4), s, s * (0.8 + rng() * 0.4));
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    col.setHSL(0.22 + rng() * 0.05, 0.42 + rng() * 0.1, 0.24 + rng() * 0.14);
+    inst.setColorAt(i, col);
+  }
+  inst.receiveShadow = true;
+  pond.add(inst);
+}
+
+// ---------------------------------------------------------------- animate
+const clock = new THREE.Clock();
+
+function animate() {
+  const t = clock.getElapsedTime();
+
+  // gentle water ripples, damped near the bank so the waterline stays put
+  const p = waterGeo.attributes.position;
+  const arr = p.array;
+  for (let i = 0; i < p.count; i++) {
+    const x = waterBase[i * 3], z = waterBase[i * 3 + 2];
+    const r = Math.hypot(x, z);
+    const amp = 1 - ss(r, 0.82, 0.99);
+    arr[i * 3 + 1] = amp * (
+      Math.sin(x * 8.3 + t * 1.5) * Math.sin(z * 7.1 - t * 1.1) * 0.005 +
+      Math.sin((x + z) * 13.7 + t * 2.1) * 0.0022
+    );
+  }
+  p.needsUpdate = true;
+  waterGeo.computeVertexNormals();
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+// ---------------------------------------------------------------- resize
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

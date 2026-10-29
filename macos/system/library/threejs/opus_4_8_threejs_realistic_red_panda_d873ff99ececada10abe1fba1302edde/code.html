@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Red Panda — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #17171a; }
+  #c { display: block; width: 100%; height: 100%; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #9a9aa2; letter-spacing: .3px; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hint">Red Panda · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+// ---------------------------------------------------------------------------
+// Scene & Camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191a1d);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.6, 2.3, 4.9);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.target.set(0, 1.2, 0);
+controls.minDistance = 3.0;
+controls.maxDistance = 12.0;
+controls.maxPolarAngle = Math.PI * 0.52;
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcccdc, 0x2c2620, 0.65);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e2, 2.6);
+key.position.set(-4.2, 6.0, 4.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 24;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0006;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.7);
+fill.position.set(5.0, 2.2, 3.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.7);
+rim.position.set(1.5, 4.0, -5.5);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane — only receives shadows
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Palette
+// ---------------------------------------------------------------------------
+const C = (h) => new THREE.Color(h);
+const COL = {
+  rust:      C(0xb44a1e),
+  rustLite:  C(0xc76a30),
+  rustDark:  C(0x813410),
+  cream:     C(0xf1e2c4),
+  white:     C(0xf9f2e6),
+  darkFur:   C(0x2a1c14),
+  black:     C(0x14100d),
+  innerEar:  C(0xd6a483),
+  nose:      C(0x1a0e0a),
+};
+
+// ---------------------------------------------------------------------------
+// Panda assembly
+// ---------------------------------------------------------------------------
+const panda = new THREE.Group();
+scene.add(panda);
+
+const UP = new THREE.Vector3(0, 1, 0);
+const v = (x, y, z) => new THREE.Vector3(x, y, z);
+
+// Fur strands accumulate here, then become ONE InstancedMesh.
+const strands = [];
+
+function addStrand(pos, dir, length, thickness, baseColor) {
+  const d = dir.clone();
+  if (d.lengthSq() < 1e-6) d.set(0, 1, 0);
+  d.normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(UP, d);
+  const s = v(thickness, length, thickness);
+  const m = new THREE.Matrix4().compose(pos, q, s);
+  const c = baseColor.clone().offsetHSL(
+    (Math.random() - 0.5) * 0.012,
+    (Math.random() - 0.5) * 0.05,
+    (Math.random() - 0.5) * 0.07
+  );
+  strands.push([m, c]);
+}
+
+function randUnitVec() {
+  const y = Math.random() * 2 - 1;
+  const a = Math.random() * Math.PI * 2;
+  const r = Math.sqrt(Math.max(0, 1 - y * y));
+  return v(r * Math.cos(a), y, r * Math.sin(a));
+}
+
+// Solid base body used for silhouette + shadow (mostly hidden by fur).
+function baseEllipsoid(center, radii, color, opts = {}) {
+  const geo = new THREE.SphereGeometry(1, 20, 16);
+  const mat = new THREE.MeshStandardMaterial({
+    color,
+    roughness: opts.roughness ?? 0.92,
+    metalness: 0.0,
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.scale.copy(radii);
+  mesh.position.copy(center);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  panda.add(mesh);
+  return mesh;
+}
+
+// Distribute fur strands over an ellipsoid surface.
+function furEllipsoid(center, radii, count, opts = {}) {
+  const length = opts.length ?? 0.32;
+  const droop = opts.droop ?? 0.25;
+  const thickness = opts.thickness ?? 0.03;
+  const jitter = opts.jitter ?? 0.4;
+  for (let i = 0; i < count; i++) {
+    const u = randUnitVec();
+    const pos = v(
+      center.x + radii.x * u.x,
+      center.y + radii.y * u.y,
+      center.z + radii.z * u.z
+    );
+    const normal = v(u.x / radii.x, u.y / radii.y, u.z / radii.z).normalize();
+    const dir = normal.clone();
+    dir.y -= droop;
+    dir.x += (Math.random() - 0.5) * jitter;
+    dir.z += (Math.random() - 0.5) * jitter;
+    const len = length * (0.7 + Math.random() * 0.6);
+    const color = opts.colorFn ? opts.colorFn(u, pos) : opts.color;
+    addStrand(pos, dir, len, thickness, color);
+  }
+}
+
+// ---------- BODY (curled, compact sitting pose) ----------
+const bodyCenter = v(0, 1.06, 0.0);
+const bodyRadii = v(1.16, 1.06, 1.24);
+baseEllipsoid(bodyCenter, bodyRadii, COL.rust);
+baseEllipsoid(v(0, 0.5, 0.35), v(0.95, 0.55, 0.95), COL.darkFur); // dark belly base
+furEllipsoid(bodyCenter, bodyRadii, 6400, {
+  length: 0.36, droop: 0.30, thickness: 0.033, jitter: 0.45,
+  colorFn: (u) => {
+    if (u.y < -0.30) return COL.darkFur;                 // belly / underside dark
+    if (u.y < -0.05 && u.z > 0.15) return COL.rustDark;  // lower chest transition
+    if (u.y > 0.55) return COL.rustLite;                 // top catches light
+    return COL.rust;
+  }
+});
+
+// ---------- HEAD ----------
+const headCenter = v(0, 2.06, 0.34);
+const headRadii = v(0.74, 0.70, 0.74);
+baseEllipsoid(headCenter, headRadii, COL.rust);
+furEllipsoid(headCenter, headRadii, 3200, {
+  length: 0.19, droop: 0.12, thickness: 0.028, jitter: 0.5,
+  colorFn: (u) => {
+    // White/cream face on the front & lower muzzle, rust on crown/back.
+    if (u.z > 0.30 && u.y < 0.45 && u.y > -0.55) return COL.white;
+    if (u.z > 0.05 && u.y < -0.15) return COL.cream;
+    if (u.y > 0.55) return COL.rustLite;
+    return COL.rust;
+  }
+});
+
+// Rust "tear-mark" stripes below the eyes
+function tearMark(sign) {
+  const geo = new THREE.SphereGeometry(1, 12, 10);
+  const mat = new THREE.MeshStandardMaterial({ color: COL.rustDark, roughness: 0.9 });
+  const m = new THREE.Mesh(geo, mat);
+  m.scale.set(0.10, 0.20, 0.08);
+  m.position.set(sign * 0.24, 1.90, 1.02);
+  m.castShadow = true;
+  panda.add(m);
+}
+tearMark(1); tearMark(-1);
+
+// ---------- EYES ----------
+function eye(sign) {
+  const eyeMat = new THREE.MeshStandardMaterial({
+    color: 0x0b0a0c, roughness: 0.14, metalness: 0.0, emissive: 0x060606
+  });
+  const e = new THREE.Mesh(new THREE.SphereGeometry(0.105, 20, 16), eyeMat);
+  e.position.set(sign * 0.27, 2.19, 0.96);
+  e.castShadow = true;
+  panda.add(e);
+  // catch-light
+  const hi = new THREE.Mesh(
+    new THREE.SphereGeometry(0.028, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  hi.position.set(sign * 0.30, 2.24, 1.04);
+  panda.add(hi);
+}
+eye(1); eye(-1);
+
+// ---------- NOSE (warm subsurface glow) ----------
+const noseMat = new THREE.MeshStandardMaterial({
+  color: COL.nose, roughness: 0.32, metalness: 0.0,
+  emissive: 0x3a140c, emissiveIntensity: 0.35
+});
+const nose = new THREE.Mesh(new THREE.SphereGeometry(0.085, 18, 14), noseMat);
+nose.scale.set(1.15, 0.9, 1.0);
+nose.position.set(0, 1.93, 1.05);
+nose.castShadow = true;
+panda.add(nose);
+
+// ---------- EARS (rounded, warm inner ear) ----------
+function ear(sign) {
+  const c = v(sign * 0.49, 2.60, 0.20);
+  const r = v(0.30, 0.30, 0.16);
+  baseEllipsoid(c, r, COL.rust);
+  // warm inner ear (SSS feel via emissive)
+  const inner = new THREE.Mesh(
+    new THREE.SphereGeometry(1, 14, 12),
+    new THREE.MeshStandardMaterial({
+      color: COL.innerEar, roughness: 0.85,
+      emissive: 0x6e3820, emissiveIntensity: 0.45
+    })
+  );
+  inner.scale.set(0.18, 0.20, 0.10);
+  inner.position.set(sign * 0.49, 2.58, 0.32);
+  panda.add(inner);
+  // fur: rust body, pale fringe at the rim
+  furEllipsoid(c, r, 620, {
+    length: 0.16, droop: 0.05, thickness: 0.022, jitter: 0.5,
+    colorFn: (u) => (u.y > 0.2 || Math.abs(u.x) > 0.55) ? COL.white : COL.rust
+  });
+}
+ear(1); ear(-1);
+
+// ---------- FRONT LEGS + tiny black paws ----------
+function frontLimb(sign) {
+  const legC = v(sign * 0.36, 0.62, 0.74);
+  const legR = v(0.21, 0.46, 0.23);
+  baseEllipsoid(legC, legR, COL.black);
+  furEllipsoid(legC, legR, 700, { length: 0.14, droop: 0.22, thickness: 0.026, color: COL.black });
+
+  const pawC = v(sign * 0.36, 0.22, 0.98);
+  const pawR = v(0.20, 0.16, 0.24);
+  baseEllipsoid(pawC, pawR, COL.black);
+  furEllipsoid(pawC, pawR, 420, { length: 0.10, droop: 0.15, thickness: 0.024, color: COL.black });
+}
+frontLimb(1); frontLimb(-1);
+
+// ---------- TAIL (bushy, ringed, wrapping around the front paws) ----------
+const tailCurve = new THREE.CatmullRomCurve3([
+  v(0.15, 1.12, -1.15),
+  v(1.18, 0.86, -0.45),
+  v(1.48, 0.68, 0.50),
+  v(1.02, 0.55, 1.30),
+  v(0.18, 0.50, 1.58),
+  v(-0.55, 0.52, 1.24)
+]);
+const tailSegs = 13;
+for (let i = 0; i < tailSegs; i++) {
+  const t = i / (tailSegs - 1);
+  const p = tailCurve.getPoint(t);
+  const radius = 0.44 * (1 - 0.30 * t);
+  const band = Math.floor(t * 7);
+  let baseCol = (band % 2 === 0) ? COL.rustDark : COL.rustLite;
+  if (t > 0.9) baseCol = COL.cream; // pale tail tip
+  baseEllipsoid(p, v(radius * 0.8, radius * 0.8, radius * 0.8), baseCol);
+  furEllipsoid(p, v(radius, radius, radius), 470, {
+    length: 0.40, droop: 0.16, thickness: 0.031, jitter: 0.55, color: baseCol
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Build the single fur InstancedMesh (strand-by-strand look)
+// ---------------------------------------------------------------------------
+const strandGeo = new THREE.ConeGeometry(0.5, 1, 4, 1, true);
+strandGeo.translate(0, 0.5, 0); // base at origin, grows +Y
+const furMat = new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 });
+
+const fur = new THREE.InstancedMesh(strandGeo, furMat, strands.length);
+fur.castShadow = false;
+fur.receiveShadow = true;
+for (let i = 0; i < strands.length; i++) {
+  fur.setMatrixAt(i, strands[i][0]);
+  fur.setColorAt(i, strands[i][1]);
+}
+fur.instanceMatrix.needsUpdate = true;
+if (fur.instanceColor) fur.instanceColor.needsUpdate = true;
+panda.add(fur);
+
+// Center the whole panda horizontally at the origin (keep it grounded).
+const box = new THREE.Box3().setFromObject(panda);
+const center = new THREE.Vector3();
+box.getCenter(center);
+panda.position.x -= center.x;
+panda.position.z -= center.z;
+controls.target.set(0, (box.min.y + box.max.y) * 0.5, 0);
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

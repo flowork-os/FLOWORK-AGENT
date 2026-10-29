@@ -1,0 +1,696 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cozy Log Cabin Interior</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#120c08}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================== CONFIG & PALETTE ============================== */
+const ROOM = { W: 13, D: 11, H: 4.46 };          // interior span x, z, ceiling height
+const W2 = ROOM.W / 2, D2 = ROOM.D / 2;
+const LOG_R = 0.24;                               // wall log radius
+const COURSES = 10;                               // stacked log rows per wall
+const WIN = { cx: 1.6, w: 1.9, y0: 1.15, y1: 2.95 };  // frosted window on north wall
+const DOOR = { cz: 1.4, w: 1.15, top: 2.4 };          // plank door on east wall
+
+const PAL = {
+  logWood:   0xa97a4e, logDark: 0x6e4a2c, chink: 0xcbb38d,
+  floorWood: 0x8d6742, beamWood: 0x7a5535, plankCeil: 0x93704b,
+  stone:     0x8f857a, stoneDark: 0x4a423a, char: 0x1c1410,
+  leather:   0x7a4b2a, knitCream: 0xe8dcc2, knitRed: 0xa8372f, knitPine: 0x3f5a3c,
+  fur:       0x3a2517, furLight: 0x5a3d26,
+  brass:     0xb08a3e, iron: 0x2a2a2e, candle: 0xf2e6c8,
+  fire:      0xff8531, ember: 0xff4a12, lampGlow: 0xffc46a,
+  night:     0x0d1428, moon: 0xdfe8ff, snow: 0xeef3fb,
+  paper:     0xefe6cf, cocoa: 0x40261a
+};
+
+/* ============================== PRNG & SMALL HELPERS ============================== */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260815);
+const rand = (a = 1, b) => (b === undefined ? rng() * a : a + rng() * (b - a));
+const pick = arr => arr[Math.floor(rng() * arr.length)];
+const flick = t => 0.55 + 0.2 * Math.sin(t * 8.7) + 0.15 * Math.sin(t * 5.3 + 1.7) + 0.1 * Math.sin(t * 13.1 + 4.2);
+
+/* ============================== CANVAS TEXTURES ============================== */
+function makeTexture(w, h, draw, repX = 1, repY = 1) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+function plankTexture(rep, tone) {
+  return makeTexture(512, 512, (g, w, h) => {
+    g.fillStyle = tone; g.fillRect(0, 0, w, h);
+    for (let p = 0; p < 6; p++) {                       // six planks per tile
+      const y0 = p * h / 6;
+      g.fillStyle = `rgba(60,35,15,${0.08 + rand(0.1)})`; g.fillRect(0, y0, w, h / 6);
+      g.strokeStyle = 'rgba(40,22,8,0.85)'; g.lineWidth = 3;
+      g.strokeRect(-2, y0, w + 4, h / 6);
+      for (let s = 0; s < 9; s++) {                     // grain streaks
+        g.strokeStyle = `rgba(52,30,12,${0.12 + rand(0.22)})`; g.lineWidth = 1 + rand(1.4);
+        const gy = y0 + rand(h / 6); g.beginPath(); g.moveTo(0, gy);
+        g.bezierCurveTo(w * 0.3, gy + rand(-6, 6), w * 0.7, gy + rand(-6, 6), w, gy);
+        g.stroke();
+      }
+      if (rng() < 0.7) {                                // knot
+        const kx = rand(w), ky = y0 + rand(10, h / 6 - 10);
+        g.fillStyle = 'rgba(42,24,10,0.8)'; g.beginPath();
+        g.ellipse(kx, ky, 5 + rand(4), 3 + rand(2), 0, 0, 7); g.fill();
+      }
+    }
+  }, rep[0], rep[1]);
+}
+const floorTex = plankTexture([3, 5], '#8d6742');
+const ceilTex  = plankTexture([4, 3], '#7d5c3d');
+const barkTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#a97a4e'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 60; i++) {                        // long grain along v
+    g.strokeStyle = `rgba(${70 + rand(50) | 0},${42 + rand(28) | 0},${18 + rand(14) | 0},${0.25 + rand(0.4)})`;
+    g.lineWidth = 1 + rand(2.5);
+    const x = rand(w); g.beginPath(); g.moveTo(x, 0);
+    g.bezierCurveTo(x + rand(-8, 8), h * 0.33, x + rand(-8, 8), h * 0.66, x, h); g.stroke();
+  }
+  for (let i = 0; i < 5; i++) {
+    g.fillStyle = 'rgba(50,28,10,0.65)';
+    g.beginPath(); g.ellipse(rand(w), rand(h), 4 + rand(5), 8 + rand(8), 0, 0, 7); g.fill();
+  }
+}, 2, 1);
+const stoneTex = makeTexture(512, 512, (g, w, h) => {
+  g.fillStyle = '#4a423a'; g.fillRect(0, 0, w, h);
+  for (let r = 0; r < 6; r++) for (let c = 0; c < 5; c++) {
+    const x = c * w / 5 + rand(-8, 8) + (r % 2 ? w / 10 : 0), y = r * h / 6 + rand(-6, 6);
+    const sw = w / 5 - 10 + rand(-8, 8), sh = h / 6 - 10 + rand(-6, 6);
+    const v = 120 + rand(60);
+    g.fillStyle = `rgb(${v | 0},${v * 0.93 | 0},${v * 0.84 | 0})`;
+    g.beginPath(); g.roundRect(x, y, sw, sh, 14); g.fill();
+    g.fillStyle = 'rgba(255,255,255,0.08)'; g.beginPath(); g.roundRect(x + 4, y + 4, sw - 8, sh * 0.4, 10); g.fill();
+  }
+}, 2, 2);
+const leatherTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#7a4b2a'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 220; i++) {
+    g.fillStyle = `rgba(${40 + rand(70) | 0},${25 + rand(35) | 0},${10 + rand(18) | 0},${0.1 + rand(0.2)})`;
+    g.beginPath(); g.arc(rand(w), rand(h), 2 + rand(9), 0, 7); g.fill();
+  }
+  for (let i = 0; i < 26; i++) {                        // fine worn creases
+    g.strokeStyle = 'rgba(35,18,6,0.22)'; g.lineWidth = 1;
+    const x = rand(w), y = rand(h);
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-26, 26), y + rand(-26, 26)); g.stroke();
+  }
+  g.fillStyle = 'rgba(215,170,120,0.1)';                // worn sheen patch
+  g.beginPath(); g.ellipse(w / 2, h / 2, w * 0.3, h * 0.22, 0.4, 0, 7); g.fill();
+}, 1, 1);
+const knitTex = makeTexture(256, 256, (g, w, h) => {
+  const stripes = ['#e8dcc2', '#a8372f', '#e8dcc2', '#3f5a3c'];
+  for (let s = 0; s < 8; s++) { g.fillStyle = stripes[s % 4]; g.fillRect(0, s * h / 8, w, h / 8); }
+  g.strokeStyle = 'rgba(60,40,25,0.3)'; g.lineWidth = 2;
+  for (let y = 0; y < h; y += 8) for (let x = 0; x < w; x += 8) {   // stitch V's
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + 4, y + 6); g.lineTo(x + 8, y); g.stroke();
+  }
+}, 2, 2);
+const furTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#3a2517'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 900; i++) {
+    g.strokeStyle = `rgba(${60 + rand(60) | 0},${38 + rand(40) | 0},${20 + rand(24) | 0},${0.3 + rand(0.4)})`;
+    g.lineWidth = 1; const x = rand(w), y = rand(h);
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand(-4, 4), y + rand(4, 10)); g.stroke();
+  }
+}, 2, 2);
+const frostTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = 'rgba(190,214,240,0.28)'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 90; i++) {                        // heavy frost near edges
+    const ex = rand(w), ey = rand(h);
+    const d = Math.min(ex, ey, w - ex, h - ey) / (w / 2);
+    g.fillStyle = `rgba(235,244,255,${Math.max(0, 0.6 - d * 1.3) + rand(0.08)})`;
+    g.beginPath(); g.arc(ex, ey, 4 + rand(10), 0, 7); g.fill();
+  }
+}, 1, 1);
+const nightTex = makeTexture(512, 384, (g, w, h) => {
+  const sky = g.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, '#070d1e'); sky.addColorStop(0.62, '#1a2c50'); sky.addColorStop(1, '#31456e');
+  g.fillStyle = sky; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 90; i++) { g.fillStyle = `rgba(255,255,255,${0.3 + rand(0.6)})`; g.fillRect(rand(w), rand(h * 0.55), 1.6, 1.6); }
+  g.fillStyle = '#dfe8ff'; g.beginPath(); g.arc(w * 0.72, h * 0.2, 26, 0, 7); g.fill();
+  g.fillStyle = 'rgba(223,232,255,0.18)'; g.beginPath(); g.arc(w * 0.72, h * 0.2, 44, 0, 7); g.fill();
+  g.fillStyle = '#dfe9f6'; g.fillRect(0, h * 0.78, w, h * 0.22);          // snowfield
+  for (let i = 0; i < 16; i++) {                        // pine silhouettes
+    const x = rand(w), base = h * (0.78 + rand(0.06)), s = 20 + rand(34);
+    g.fillStyle = 'rgba(10,20,30,0.92)';
+    for (let l = 0; l < 3; l++) {
+      g.beginPath(); g.moveTo(x, base - s + l * s * 0.28);
+      g.lineTo(x - s * (0.3 - l * 0.06), base - l * s * 0.18);
+      g.lineTo(x + s * (0.3 - l * 0.06), base - l * s * 0.18); g.fill();
+    }
+  }
+});
+const glowTex = makeTexture(128, 128, (g, w, h) => {
+  const gr = g.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.45)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+const flameTex = makeTexture(128, 192, (g, w, h) => {
+  const gr = g.createRadialGradient(w / 2, h * 0.62, 4, w / 2, h * 0.58, w * 0.55);
+  gr.addColorStop(0, 'rgba(255,246,200,1)'); gr.addColorStop(0.35, 'rgba(255,170,60,0.85)');
+  gr.addColorStop(0.75, 'rgba(230,80,20,0.35)'); gr.addColorStop(1, 'rgba(160,30,0,0)');
+  g.fillStyle = gr;
+  g.beginPath(); g.ellipse(w / 2, h * 0.6, w * 0.42, h * 0.52, 0, 0, 7); g.fill();
+});
+
+/* ============================== MATERIALS ============================== */
+const M = o => new THREE.MeshStandardMaterial(o);
+const matFloor  = M({ map: floorTex, roughness: 0.85, color: 0xc4a077 });
+const matCeil   = M({ map: ceilTex, roughness: 0.9, color: 0xa5825d });
+const matLog    = M({ map: barkTex, roughness: 0.9, color: 0xc79b6b });
+const matBeam   = M({ color: 0x6e4c2e, roughness: 0.9 });
+const matStone  = M({ map: stoneTex, roughness: 0.95 });
+const matChar   = M({ color: PAL.char, roughness: 1 });
+const matLeather= M({ map: leatherTex, roughness: 0.6 });
+const matKnit   = M({ map: knitTex, roughness: 1 });
+const matFur    = M({ map: furTex, roughness: 1, color: 0xdbb98c });
+const matWood   = M({ color: PAL.beamWood, roughness: 0.8 });
+const matDarkWood = M({ color: 0x5b3d22, roughness: 0.85 });
+const matBrass  = M({ color: PAL.brass, roughness: 0.35, metalness: 0.85 });
+const matIron   = M({ color: PAL.iron, roughness: 0.55, metalness: 0.6 });
+const matCandle = M({ color: PAL.candle, roughness: 0.6 });
+const matPaper  = M({ color: PAL.paper, roughness: 1 });
+const matEmber  = M({ color: 0x221008, emissive: PAL.ember, emissiveIntensity: 1 });
+const matGlass  = M({ map: frostTex, transparent: true, opacity: 0.55, roughness: 0.25, emissive: 0x25334d, emissiveIntensity: 0.4, side: THREE.DoubleSide });
+const matNight  = new THREE.MeshBasicMaterial({ map: nightTex, fog: false });
+const matWreath = M({ color: 0x2f5232, roughness: 1 });
+
+/* ============================== SCENE / RENDERER / CAMERA ============================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b1020);
+scene.fog = new THREE.FogExp2(0x1a110a, 0.026);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 60);
+camera.position.set(3.4, 3.0, 3.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.35, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.2;
+controls.minDistance = 2.6; controls.maxDistance = 4.7;
+controls.minPolarAngle = 1.02; controls.maxPolarAngle = 1.38;
+
+/* ============================== BUILDERS ============================== */
+const box = (w, h, d, mat) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+const cyl = (r1, r2, h, mat, seg = 14) => new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), mat);
+function shadowed(g) { g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); return g; }
+
+// --- stacked timber walls (instanced log courses with window/door gaps) ---
+function buildLogWalls() {
+  const g = new THREE.Group();
+  const segs = [];
+  const yOf = i => LOG_R + i * (2 * LOG_R * 0.92);
+  for (let i = 0; i < COURSES; i++) {
+    const y = yOf(i), rr = LOG_R * rand(0.95, 1.05);
+    segs.push({ axis: 'x', len: ROOM.W + 0.5, x: 0, y, z: D2, r: rr });          // south
+    segs.push({ axis: 'z', len: ROOM.D + 0.5, x: -W2, y, z: 0, r: rr });         // west
+    const winHit = (y + rr > WIN.y0 && y - rr < WIN.y1);
+    if (winHit) {                                                                 // north, split at window
+      const L = WIN.cx - WIN.w / 2, R = WIN.cx + WIN.w / 2;
+      segs.push({ axis: 'x', len: L + W2, x: (L - W2) / 2, y, z: -D2, r: rr });
+      segs.push({ axis: 'x', len: W2 - R, x: (R + W2) / 2, y, z: -D2, r: rr });
+    } else segs.push({ axis: 'x', len: ROOM.W + 0.5, x: 0, y, z: -D2, r: rr });
+    const doorHit = (y - rr < DOOR.top);
+    if (doorHit) {                                                                // east, split at door
+      const L = DOOR.cz - DOOR.w / 2, R = DOOR.cz + DOOR.w / 2;
+      segs.push({ axis: 'z', len: L + D2, x: W2, y, z: (L - D2) / 2, r: rr });
+      segs.push({ axis: 'z', len: D2 - R, x: W2, y, z: (R + D2) / 2, r: rr });
+    } else segs.push({ axis: 'z', len: ROOM.D + 0.5, x: W2, y, z: 0, r: rr });
+  }
+  const geo = new THREE.CylinderGeometry(1, 1, 1, 12);
+  const inst = new THREE.InstancedMesh(geo, matLog, segs.length);
+  const d = new THREE.Object3D();
+  segs.forEach((s, i) => {
+    d.position.set(s.x, s.y, s.z);
+    d.rotation.set(s.axis === 'z' ? Math.PI / 2 : 0, 0, s.axis === 'x' ? Math.PI / 2 : 0);
+    d.scale.set(s.r, s.len, s.r);
+    d.updateMatrix(); inst.setMatrixAt(i, d.matrix);
+  });
+  inst.castShadow = inst.receiveShadow = true;
+  g.add(inst);
+  return g;
+}
+
+// --- floor, plank ceiling and heavy beams ---
+function buildFloorCeiling() {
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.W, ROOM.D), matFloor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.W, ROOM.D), matCeil);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = ROOM.H; ceil.receiveShadow = true;
+  g.add(floor, ceil);
+  for (let i = 0; i < 5; i++) {                       // beamed ceiling for dancing firelight
+    const b = box(ROOM.W, 0.36, 0.3, matBeam);
+    b.position.set(0, ROOM.H - 0.18, -4.4 + i * 2.2);
+    b.castShadow = b.receiveShadow = true; g.add(b);
+  }
+  const ridge = box(0.32, 0.3, ROOM.D, matBeam);      // central purlin
+  ridge.position.set(0, ROOM.H - 0.15, 0); ridge.receiveShadow = true; g.add(ridge);
+  return g;
+}
+
+// --- stone fireplace with fire, embers, mantel ---
+const flames = [], steamPuffs = [];
+function flameSprite(size, x, y, z, speed) {
+  const m = new THREE.SpriteMaterial({ map: flameTex, color: 0xffc080, transparent: true, opacity: 0.9, depthWrite: false, blending: THREE.AdditiveBlending });
+  const s = new THREE.Sprite(m); s.scale.set(size, size * 1.5, 1); s.position.set(x, y, z);
+  flames.push({ spr: s, base: size, speed, phase: rand(6.28) });
+  return s;
+}
+function buildFireplace() {
+  const g = new THREE.Group();
+  const parts = [
+    box(1.05, 1.15, 0.95, matStone), box(1.05, 1.15, 0.95, matStone),   // columns
+    box(1.05, ROOM.H - 1.5, 3.4, matStone),                             // breast above lintel
+    box(1.05, 0.38, 3.4, matStone)                                      // lintel band
+  ];
+  parts[0].position.set(-6.07, 0.575, 1.225); parts[1].position.set(-6.07, 0.575, -1.225);
+  parts[2].position.set(-6.07, 1.53 + (ROOM.H - 1.5) / 2, 0); parts[3].position.set(-6.07, 1.34, 0);
+  parts.forEach(p => { p.castShadow = p.receiveShadow = true; g.add(p); });
+  const back = box(0.16, 1.25, 1.6, matChar); back.position.set(-6.5, 0.62, 0); g.add(back);
+  const hearth = box(1.95, 0.12, 2.7, matStone); hearth.position.set(-5.45, 0.06, 0);
+  hearth.receiveShadow = true; g.add(hearth);
+  const mantel = box(0.55, 0.14, 3.1, matDarkWood); mantel.position.set(-5.5, 1.6, 0);
+  mantel.castShadow = true; g.add(mantel);
+  for (let i = 0; i < 3; i++) {                        // burning logs on the grate
+    const log = cyl(0.09, 0.09, 0.95, matDarkWood, 9);
+    log.rotation.x = Math.PI / 2; log.rotation.z = rand(-0.25, 0.25);
+    log.position.set(-6.05 + i * 0.13, 0.2 + i * 0.11, 0); g.add(log);
+  }
+  const emberGeo = new THREE.SphereGeometry(0.035, 6, 5);
+  const embers = new THREE.InstancedMesh(emberGeo, matEmber, 42);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 42; i++) {
+    d.position.set(rand(-6.38, -5.72), 0.14 + rand(0.05), rand(-0.58, 0.58));
+    d.scale.setScalar(rand(0.6, 1.5)); d.updateMatrix(); embers.setMatrixAt(i, d.matrix);
+  }
+  g.add(embers);
+  g.add(flameSprite(0.75, -6.02, 0.62, 0, 1.0), flameSprite(0.55, -6.1, 0.58, 0.24, 1.35),
+        flameSprite(0.5, -6.05, 0.55, -0.22, 1.2), flameSprite(0.38, -5.95, 0.5, 0.08, 1.6));
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xff7a28, transparent: true, opacity: 0.35, depthWrite: false, blending: THREE.AdditiveBlending }));
+  glow.scale.set(2.6, 2.2, 1); glow.position.set(-5.9, 0.75, 0); g.add(glow);
+  return g;
+}
+
+// --- worn leather armchair with knitted throw ---
+function buildArmchair() {
+  const g = new THREE.Group();
+  const base = box(0.98, 0.4, 0.92, matLeather); base.position.y = 0.32;
+  const cushion = box(0.86, 0.18, 0.8, matLeather); cushion.position.set(0, 0.56, 0.03);
+  const backr = box(0.98, 0.92, 0.24, matLeather); backr.position.set(0, 0.88, -0.4); backr.rotation.x = -0.12;
+  g.add(base, cushion, backr);
+  for (const sx of [-1, 1]) {
+    const arm = box(0.18, 0.56, 0.9, matLeather); arm.position.set(sx * 0.49, 0.62, -0.02); g.add(arm);
+    const cap = cyl(0.1, 0.1, 0.9, matLeather, 10); cap.rotation.x = Math.PI / 2;
+    cap.position.set(sx * 0.49, 0.9, -0.02); g.add(cap);
+  }
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const leg = cyl(0.05, 0.06, 0.14, matDarkWood, 8); leg.position.set(sx * 0.4, 0.07, sz * 0.36); g.add(leg);
+  }
+  const throwTop = box(0.52, 0.05, 0.78, matKnit); throwTop.position.set(0.42, 0.93, -0.02); throwTop.rotation.z = -0.08;
+  const throwHang = box(0.52, 0.62, 0.05, matKnit); throwHang.position.set(0.62, 0.62, -0.02);
+  throwHang.rotation.z = -0.1; throwHang.rotation.y = Math.PI / 2;
+  g.add(throwTop, throwHang);
+  return shadowed(g);
+}
+
+// --- bearskin-style rug in front of the hearth ---
+function buildBearRug() {
+  const g = new THREE.Group();
+  const flat = (rx, rz, x, z, mat) => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 0.06, 22), mat);
+    m.scale.set(rx, 1, rz); m.position.set(x, 0.03, z);
+    m.castShadow = m.receiveShadow = true; return m;
+  };
+  g.add(flat(1.3, 0.85, 0, 0, matFur));                                  // body
+  g.add(flat(0.3, 0.24, 1.05, 0.62, matFur), flat(0.3, 0.24, 1.05, -0.62, matFur));
+  g.add(flat(0.3, 0.24, -1.05, 0.62, matFur), flat(0.3, 0.24, -1.05, -0.62, matFur));
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 10), matFur);
+  head.scale.set(1.05, 0.5, 0.85); head.position.set(1.42, 0.1, 0); head.castShadow = true;
+  const snout = new THREE.Mesh(new THREE.SphereGeometry(0.13, 10, 8), M({ color: PAL.furLight, roughness: 1 }));
+  snout.scale.set(1.2, 0.6, 0.8); snout.position.set(1.66, 0.09, 0);
+  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 6), matIron); nose.position.set(1.78, 0.12, 0);
+  g.add(head, snout, nose);
+  for (const s of [-1, 1]) {
+    const ear = new THREE.Mesh(new THREE.SphereGeometry(0.07, 8, 6), matFur);
+    ear.position.set(1.3, 0.2, s * 0.2); g.add(ear);
+  }
+  return g;
+}
+
+// --- bookshelf with instanced books ---
+function buildBookshelf() {
+  const g = new THREE.Group();
+  const side = () => box(0.09, 2.5, 0.38, matDarkWood);
+  const s1 = side(), s2 = side(); s1.position.set(-1.06, 1.25, 0); s2.position.set(1.06, 1.25, 0);
+  const top = box(2.3, 0.09, 0.42, matDarkWood); top.position.y = 2.5;
+  const backP = box(2.12, 2.46, 0.04, M({ color: 0x4a3018, roughness: 1 })); backP.position.set(0, 1.25, -0.17);
+  g.add(s1, s2, top, backP);
+  for (const y of [0.08, 0.72, 1.36, 2.0]) { const sh = box(2.12, 0.07, 0.36, matDarkWood); sh.position.y = y; g.add(sh); }
+  const bookGeo = new THREE.BoxGeometry(1, 1, 1);
+  const bookMat = M({ color: 0xffffff, roughness: 0.85 });
+  const books = new THREE.InstancedMesh(bookGeo, bookMat, 46);
+  const cols = [0x8c3b32, 0x3e5a54, 0x9c7a3a, 0x4a4e73, 0x6d4a68, 0x77593b, 0xa89060];
+  const d = new THREE.Object3D(); const c = new THREE.Color(); let bi = 0;
+  for (const y of [0.72, 1.36, 2.0]) {
+    let x = -0.98;
+    while (x < 0.9 && bi < 44) {
+      const bw = rand(0.07, 0.12), bh = rand(0.42, 0.6);
+      d.position.set(x + bw / 2, y + 0.035 + bh / 2, rand(-0.04, 0.02));
+      d.scale.set(bw, bh, 0.3); d.rotation.z = rng() < 0.12 ? rand(-0.09, 0.09) : 0;
+      d.updateMatrix(); books.setMatrixAt(bi, d.matrix);
+      books.setColorAt(bi, c.setHex(pick(cols)).offsetHSL(0, 0, rand(-0.05, 0.05)));
+      bi++; x += bw + 0.012; d.rotation.z = 0;
+    }
+  }
+  for (let k = 0; k < 2; k++) {                        // flat stack on lowest shelf
+    d.position.set(0.5, 0.155 + k * 0.09, 0); d.scale.set(0.34, 0.08, 0.26);
+    d.rotation.y = rand(-0.3, 0.3); d.updateMatrix(); books.setMatrixAt(bi, d.matrix);
+    books.setColorAt(bi, c.setHex(pick(cols))); bi++; d.rotation.y = 0;
+  }
+  books.castShadow = true; g.add(books);
+  const jug = cyl(0.09, 0.12, 0.24, M({ color: 0x71838f, roughness: 0.4 }), 12);
+  jug.position.set(-0.55, 0.2, 0); g.add(jug);
+  return shadowed(g);
+}
+
+// --- writing desk with glowing oil lamp ---
+let lampLight;
+function buildDesk() {
+  const g = new THREE.Group();
+  const top = box(2.0, 0.09, 0.85, matWood); top.position.y = 0.78;
+  g.add(top);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const leg = box(0.09, 0.74, 0.09, matDarkWood); leg.position.set(sx * 0.88, 0.37, sz * 0.33); g.add(leg);
+  }
+  const drawer = box(1.9, 0.16, 0.7, matWood); drawer.position.set(0, 0.66, 0);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 6), matBrass); knob.position.set(0, 0.66, 0.36);
+  g.add(drawer, knob);
+  const lamp = new THREE.Group();                      // oil lamp
+  const foot = cyl(0.11, 0.13, 0.05, matBrass, 14); foot.position.y = 0.025;
+  const stem = cyl(0.025, 0.035, 0.14, matBrass, 10); stem.position.y = 0.12;
+  const font = new THREE.Mesh(new THREE.SphereGeometry(0.09, 12, 9), matBrass);
+  font.scale.y = 0.72; font.position.y = 0.23;
+  const chimney = cyl(0.05, 0.075, 0.24, M({ color: 0xfff3d8, transparent: true, opacity: 0.35, roughness: 0.1 }), 12);
+  chimney.position.y = 0.42;
+  lamp.add(foot, stem, font, chimney);
+  lamp.add(flameSprite(0.16, 0, 0.4, 0, 2.2));
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: PAL.lampGlow, transparent: true, opacity: 0.4, depthWrite: false, blending: THREE.AdditiveBlending }));
+  halo.scale.set(1.1, 1.1, 1); halo.position.y = 0.42; lamp.add(halo);
+  lampLight = new THREE.PointLight(PAL.lampGlow, 8, 7, 2); lampLight.position.y = 0.45; lamp.add(lampLight);
+  lamp.position.set(0.62, 0.825, -0.12); g.add(lamp);
+  for (let i = 0; i < 3; i++) {                        // scattered letters
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(0.28, 0.38), matPaper);
+    p.rotation.x = -Math.PI / 2; p.rotation.z = rand(-0.7, 0.7);
+    p.position.set(rand(-0.6, 0.1), 0.83 + i * 0.004, rand(-0.15, 0.15)); g.add(p);
+  }
+  const ink = cyl(0.035, 0.045, 0.07, M({ color: 0x1d2438, roughness: 0.3 }), 10);
+  ink.position.set(-0.7, 0.86, -0.2);
+  const quill = new THREE.Mesh(new THREE.ConeGeometry(0.02, 0.3, 6), M({ color: 0xd8d2c2, roughness: 0.9 }));
+  quill.position.set(-0.7, 0.98, -0.2); quill.rotation.z = 0.5;
+  g.add(ink, quill);
+  const stool = new THREE.Group();
+  const seat = cyl(0.22, 0.22, 0.06, matWood, 14); seat.position.y = 0.5;
+  stool.add(seat);
+  for (let i = 0; i < 3; i++) {
+    const a = i * 2.1, l = cyl(0.03, 0.04, 0.5, matDarkWood, 8);
+    l.position.set(Math.cos(a) * 0.15, 0.25, Math.sin(a) * 0.15); l.rotation.z = Math.cos(a) * 0.14;
+    l.rotation.x = -Math.sin(a) * 0.14; stool.add(l);
+  }
+  stool.position.set(-0.15, 0, 0.85); g.add(stool);
+  return shadowed(g);
+}
+
+// --- stump side table with steaming mug ---
+function buildSideTable() {
+  const g = new THREE.Group();
+  const stump = cyl(0.3, 0.34, 0.58, matLog, 16); stump.position.y = 0.29;
+  const ringTop = new THREE.Mesh(new THREE.CircleGeometry(0.295, 16), M({ color: 0xc9a06b, roughness: 0.8 }));
+  ringTop.rotation.x = -Math.PI / 2; ringTop.position.y = 0.581;
+  g.add(stump, ringTop);
+  const mug = new THREE.Group();
+  const body = cyl(0.09, 0.08, 0.14, M({ color: 0x9c3527, roughness: 0.4 }), 14); body.position.y = 0.07;
+  const cocoa = new THREE.Mesh(new THREE.CircleGeometry(0.075, 14), M({ color: PAL.cocoa, roughness: 0.6 }));
+  cocoa.rotation.x = -Math.PI / 2; cocoa.position.y = 0.135;
+  const handle = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 8, 14, Math.PI), M({ color: 0x9c3527, roughness: 0.4 }));
+  handle.position.set(0.09, 0.075, 0); handle.rotation.z = -Math.PI / 2;
+  mug.add(body, cocoa, handle);
+  for (let i = 0; i < 7; i++) {                        // steam puffs
+    const sm = new THREE.SpriteMaterial({ map: glowTex, color: 0xdfe9f2, transparent: true, opacity: 0, depthWrite: false });
+    const p = new THREE.Sprite(sm); p.position.set(0, 0.16, 0);
+    steamPuffs.push({ spr: p, phase: i / 7, wob: rand(6.28) });
+    mug.add(p);
+  }
+  mug.position.set(0.02, 0.58, 0.03); g.add(mug);
+  return shadowed(g);
+}
+
+// --- frosted window unit with night diorama and drifting snow ---
+let snowPts, snowData;
+function buildWindowUnit() {
+  const g = new THREE.Group();
+  const w = WIN.w, h = WIN.y1 - WIN.y0, cy = (WIN.y0 + WIN.y1) / 2;
+  const frame = new THREE.Group();
+  for (const [bw, bh, bx, by] of [[w + 0.3, 0.15, 0, h / 2 + 0.075], [w + 0.3, 0.15, 0, -h / 2 - 0.075], [0.15, h, -w / 2 - 0.075, 0], [0.15, h, w / 2 + 0.075, 0]]) {
+    const b = box(bw, bh, 0.55, matDarkWood); b.position.set(bx, by, 0); frame.add(b);
+  }
+  const mullV = box(0.06, h, 0.1, matDarkWood);
+  const mullH = box(w, 0.06, 0.1, matDarkWood); mullH.position.y = 0.12;
+  const sill = box(w + 0.5, 0.09, 0.3, matDarkWood); sill.position.set(0, -h / 2 - 0.19, 0.18);
+  frame.add(mullV, mullH, sill);
+  frame.children.forEach(m => { m.castShadow = m.receiveShadow = true; });
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(w, h), matGlass);
+  g.add(frame, glass);
+  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(13, 7.5), matNight);
+  backdrop.position.set(0.4, 0.6, -3.4); g.add(backdrop);
+  const N = 340, pos = new Float32Array(N * 3);
+  snowData = { base: [], speed: [], phase: [] };
+  for (let i = 0; i < N; i++) {
+    const bx = rand(-4.5, 4.5), by = rand(0, 6) - cy + 1.2, bz = rand(-3.2, -0.25);
+    pos.set([bx, by, bz], i * 3);
+    snowData.base.push(bx); snowData.speed.push(rand(0.25, 0.7)); snowData.phase.push(rand(6.28));
+  }
+  const sg = new THREE.BufferGeometry();
+  sg.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  snowPts = new THREE.Points(sg, new THREE.PointsMaterial({ color: PAL.snow, size: 0.055, transparent: true, opacity: 0.9, fog: false }));
+  g.add(snowPts);
+  g.position.set(WIN.cx, cy, -D2);
+  return g;
+}
+
+// --- plank door with iron hardware and a winter wreath ---
+function buildDoor() {
+  const g = new THREE.Group();
+  const leaf = box(0.09, DOOR.top, DOOR.w, matWood);
+  leaf.position.y = DOOR.top / 2; leaf.material = M({ map: plankTexture([1, 1], '#7a5535'), roughness: 0.85 });
+  g.add(leaf);
+  for (const [bw, bh, by, bz] of [[0.16, DOOR.top + 0.15, (DOOR.top + 0.15) / 2, DOOR.w / 2 + 0.08], [0.16, DOOR.top + 0.15, (DOOR.top + 0.15) / 2, -DOOR.w / 2 - 0.08], [0.16, 0.16, DOOR.top + 0.08, 0]]) {
+    const fpc = box(bw, bh, bh === 0.16 ? DOOR.w + 0.32 : 0.16, matDarkWood);
+    fpc.position.set(0, by, bz); g.add(fpc);
+  }
+  for (const y of [0.55, 1.85]) {                      // strap hinges
+    const strap = box(0.02, 0.09, 0.5, matIron); strap.position.set(-0.06, y, 0.2); g.add(strap);
+  }
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), matIron);
+  knob.position.set(-0.09, 1.1, -0.42); g.add(knob);
+  const wreath = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.06, 8, 18), matWreath);
+  wreath.rotation.y = Math.PI / 2; wreath.position.set(-0.09, 1.75, 0); g.add(wreath);
+  for (let i = 0; i < 5; i++) {
+    const berry = new THREE.Mesh(new THREE.SphereGeometry(0.02, 6, 5), M({ color: 0xb03030, roughness: 0.4 }));
+    const a = rand(6.28); berry.position.set(-0.16, 1.75 + Math.sin(a) * 0.2, Math.cos(a) * 0.2); g.add(berry);
+  }
+  return shadowed(g);
+}
+
+// --- firewood stack beside the hearth ---
+function buildWoodStack() {
+  const g = new THREE.Group();
+  const cradle1 = box(0.06, 0.5, 0.1, matIron), cradle2 = box(0.06, 0.5, 0.1, matIron);
+  cradle1.position.set(0, 0.25, 0.5); cradle2.position.set(0, 0.25, -0.5); g.add(cradle1, cradle2);
+  const inst = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1, 1, 9), matLog, 11);
+  const d = new THREE.Object3D(); let i = 0;
+  for (let row = 0; row < 3 && i < 11; row++) for (let k = 0; k < 4 - row && i < 11; k++) {
+    const r = rand(0.075, 0.1);
+    d.position.set(rand(-0.03, 0.03), r + row * 0.17, -0.35 + k * 0.22 + row * 0.11);
+    d.rotation.set(0, 0, Math.PI / 2); d.scale.set(r, rand(0.75, 0.9), r);
+    d.updateMatrix(); inst.setMatrixAt(i++, d.matrix);
+  }
+  inst.castShadow = inst.receiveShadow = true; g.add(inst);
+  return g;
+}
+
+// --- mounted antlers and mantel candles ---
+function buildAntlers() {
+  const g = new THREE.Group();
+  const plaque = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.05, 8), matDarkWood);
+  plaque.rotation.z = Math.PI / 2; g.add(plaque);
+  const boneMat = M({ color: 0xe3d9c4, roughness: 0.7 });
+  for (const s of [-1, 1]) {
+    let p = new THREE.Vector3(0.06, 0.05, s * 0.08);
+    let dir = new THREE.Vector3(0.5, 0.9, s * 0.7).normalize();
+    for (let seg = 0; seg < 3; seg++) {
+      const len = 0.26 - seg * 0.05;
+      const c = cyl(0.028 - seg * 0.007, 0.02 - seg * 0.005, len, boneMat, 7);
+      const mid = p.clone().addScaledVector(dir, len / 2);
+      c.position.copy(mid); c.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      g.add(c);
+      const tine = cyl(0.014, 0.005, 0.14, boneMat, 6);
+      tine.position.copy(mid).add(new THREE.Vector3(0.02, 0.06, s * 0.05));
+      tine.rotation.z = -0.7; g.add(tine);
+      p.addScaledVector(dir, len);
+      dir = new THREE.Vector3(dir.x + 0.15, dir.y - 0.18, dir.z + s * 0.12).normalize();
+    }
+  }
+  return shadowed(g);
+}
+function buildCandle(h) {
+  const g = new THREE.Group();
+  const stick = cyl(0.045, 0.055, h, matCandle, 10); stick.position.y = h / 2; g.add(stick);
+  const dish = cyl(0.07, 0.09, 0.03, matBrass, 12); dish.position.y = 0.015; g.add(dish);
+  g.add(flameSprite(0.11, 0, h + 0.05, 0, 2.6));
+  return shadowed(g);
+}
+
+/* ============================== ASSEMBLY & LAYOUT ============================== */
+scene.add(buildLogWalls());
+scene.add(buildFloorCeiling());
+scene.add(buildFireplace());
+
+const chair = buildArmchair(); chair.position.set(-2.7, 0, 1.35); chair.rotation.y = -Math.PI / 2 + 0.35; scene.add(chair);
+const rug = buildBearRug(); rug.position.set(-3.6, 0, -0.55); rug.rotation.y = 0.14; scene.add(rug);
+const shelf = buildBookshelf(); shelf.position.set(-3.55, 0, -5.06); scene.add(shelf);
+const desk = buildDesk(); desk.position.set(1.7, 0, -4.9); scene.add(desk);
+const table = buildSideTable(); table.position.set(-1.8, 0, 0.5); scene.add(table);
+scene.add(buildWindowUnit());
+const door = buildDoor(); door.position.set(6.42, 0, DOOR.cz); scene.add(door);
+const stack = buildWoodStack(); stack.position.set(-5.85, 0, 2.75); stack.rotation.y = 0.35; scene.add(stack);
+const antlers = buildAntlers(); antlers.position.set(-6.35, 2.75, 0); scene.add(antlers);
+const candleA = buildCandle(0.2); candleA.position.set(-5.55, 1.67, 1.15); scene.add(candleA);
+const candleB = buildCandle(0.26); candleB.position.set(-5.55, 1.67, -1.05); scene.add(candleB);
+
+// extra coherence props: bench, basket and wall lantern near the door
+const bench = box(1.3, 0.09, 0.4, matWood); bench.position.set(4.9, 0.42, 4.6);
+const bLegA = box(0.09, 0.4, 0.36, matDarkWood); bLegA.position.set(4.45, 0.2, 4.6);
+const bLegB = bLegA.clone(); bLegB.position.x = 5.35;
+[bench, bLegA, bLegB].forEach(m => { m.castShadow = m.receiveShadow = true; scene.add(m); });
+const basket = cyl(0.26, 0.2, 0.3, M({ map: barkTex, color: 0xb98f5c, roughness: 1 }), 12);
+basket.position.set(3.1, 0.15, 4.7); basket.castShadow = true; scene.add(basket);
+const yarn = new THREE.Mesh(new THREE.SphereGeometry(0.09, 10, 8), M({ color: 0xa8372f, roughness: 1 }));
+yarn.position.set(3.05, 0.34, 4.68); scene.add(yarn);
+
+/* ============================== LIGHTING RIG ============================== */
+const hemi = new THREE.HemisphereLight(0x46536f, 0x3a2818, 0.9);
+scene.add(hemi);
+const ambient = new THREE.AmbientLight(0x36261a, 0.9);
+scene.add(ambient);
+
+const bounce = new THREE.PointLight(0xff9a55, 11, 14, 2);      // warm bounce filling the room
+bounce.position.set(-1.2, 3.1, 0.4);
+scene.add(bounce);
+
+const fireLight = new THREE.PointLight(PAL.fire, 70, 17, 2);   // key: dancing firelight
+fireLight.position.set(-5.45, 1.0, 0);
+fireLight.castShadow = true;
+fireLight.shadow.mapSize.set(1024, 1024);
+fireLight.shadow.bias = -0.006; fireLight.shadow.camera.near = 0.15; fireLight.shadow.camera.far = 15;
+scene.add(fireLight);
+
+const emberLight = new THREE.PointLight(PAL.ember, 3, 4, 2);
+emberLight.position.set(-6.05, 0.3, 0);
+scene.add(emberLight);
+
+const moonLight = new THREE.DirectionalLight(0x9fb8ff, 1.6);   // cool spill through the window
+moonLight.position.set(WIN.cx + 2.5, 5.5, -11);
+moonLight.target.position.set(0.4, 0.6, 1.5);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(1024, 1024);
+moonLight.shadow.camera.left = -8; moonLight.shadow.camera.right = 8;
+moonLight.shadow.camera.top = 8; moonLight.shadow.camera.bottom = -8;
+moonLight.shadow.camera.near = 1; moonLight.shadow.camera.far = 30;
+moonLight.shadow.bias = -0.002;
+scene.add(moonLight, moonLight.target);
+
+/* ============================== ANIMATION LOOP ============================== */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const f = flick(t);
+  fireLight.intensity = 62 + 36 * f;                            // firelight dances on beams
+  fireLight.position.y = 1.0 + 0.08 * Math.sin(t * 6.3);
+  fireLight.position.z = 0.1 * Math.sin(t * 4.1);
+  emberLight.intensity = 1.8 + 1.6 * flick(t * 0.55 + 3.1);
+  matEmber.emissiveIntensity = 0.7 + 0.6 * flick(t * 0.6 + 1.4);
+  lampLight.intensity = 13 + 3 * flick(t * 1.6 + 5.2);
+  for (const fl of flames) {                                    // flame sprites shimmer
+    const n = flick(t * fl.speed + fl.phase);
+    fl.spr.scale.set(fl.base * (0.82 + 0.3 * n), fl.base * 1.5 * (0.8 + 0.38 * n), 1);
+    fl.spr.material.opacity = 0.55 + 0.4 * n;
+    fl.spr.position.y += Math.sin(t * 9 + fl.phase) * 0.0006;
+  }
+  for (const p of steamPuffs) {                                 // steam curls off the mug
+    const u = (t * 0.16 + p.phase) % 1;
+    p.spr.position.y = 0.16 + u * 0.75;
+    p.spr.position.x = Math.sin(u * 7 + p.wob) * 0.06;
+    p.spr.scale.setScalar(0.08 + u * 0.22);
+    p.spr.material.opacity = 0.5 * Math.sin(u * Math.PI);
+  }
+  const pos = snowPts.geometry.attributes.position;             // snow drifts past the window
+  for (let i = 0; i < pos.count; i++) {
+    let y = pos.getY(i) - snowData.speed[i] * 0.016;
+    if (y < -2.2) y += 6.2;
+    pos.setY(i, y);
+    pos.setX(i, snowData.base[i] + Math.sin(t * 0.6 + snowData.phase[i]) * 0.45);
+  }
+  pos.needsUpdate = true;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================== RESIZE ============================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

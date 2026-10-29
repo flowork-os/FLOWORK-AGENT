@@ -1,0 +1,705 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Summer Beach Boardwalk</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#8ed4f7}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   CONFIG & PALETTE  (bright vacation pop)
+   ============================================================ */
+const SEED = 706227;
+const POP = [0xff6f61, 0x00b3ad, 0xffd23f, 0xff4f9a, 0x7a5ce8, 0xff8a3d];
+const PAL = {
+  fog: 0xcfeefc, sand: 0xf2dcab, water: 0x2fa8d5, waterDeep: 0x1b7fb0,
+  wood: 0xc98d5a, woodDark: 0x9a6a42, white: 0xfdfdf8, steel: 0x8a93a6,
+  steelLight: 0xd6dbe6, red: 0xe6473f, teal: 0x00b3ad, yellow: 0xffd23f,
+  bulb: 0xfff3b0, leaf: 0x3fae62, trunk: 0xa6764f
+};
+
+/* ============================================================
+   SEEDED PRNG & SMALL HELPERS
+   ============================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr = (a, b) => a + rand() * (b - a);
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+// Create a mesh, position it and optionally attach it in one call.
+function mesh(geo, mat, x = 0, y = 0, z = 0, parent = null) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  if (parent) parent.add(m);
+  return m;
+}
+// Enable shadows on every mesh inside a group.
+function shadowify(root) {
+  root.traverse((o) => { if (o.isMesh) { o.castShadow = o.receiveShadow = true; } });
+  return root;
+}
+
+// Beach profile: flat under the boardwalk, sloping down into the surf.
+// The waterline (y = 0) sits at z ~= 8.
+function sandHeight(x, z) {
+  const slope = z > -3 ? (z + 3) * 0.05 : 0;
+  const bumps = Math.sin(x * 0.5 + z * 0.7) * 0.03 + Math.sin(x * 0.21 - z * 0.33) * 0.04;
+  return 0.55 - slope + bumps * THREE.MathUtils.smoothstep(z, -3, 1);
+}
+
+/* ============================================================
+   CANVAS TEXTURES (procedural surfaces)
+   ============================================================ */
+function makeTexture(w, h, draw, repeatX = 1, repeatY = 1) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX, repeatY);
+  return tex;
+}
+
+// Sun-warmed sand speckle.
+const sandTex = makeTexture(256, 256, (ctx, w, h) => {
+  ctx.fillStyle = '#f2dcab'; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 1400; i++) {
+    ctx.fillStyle = pick(['#e8cf97', '#f8e6bc', '#e0c48c', '#efd7a2']);
+    ctx.globalAlpha = rr(0.3, 0.8);
+    ctx.fillRect(rand() * w, rand() * h, rr(1, 3), rr(1, 3));
+  }
+  ctx.globalAlpha = 1;
+}, 10, 10);
+
+// Weathered boardwalk planks (grain runs along x).
+const plankTex = makeTexture(256, 256, (ctx, w, h) => {
+  ctx.fillStyle = '#c98d5a'; ctx.fillRect(0, 0, w, h);
+  for (let p = 0; p < 8; p++) {
+    const y = p * 32;
+    ctx.fillStyle = pick(['#c08350', '#d29763', '#b97e4b', '#cf9260']);
+    ctx.fillRect(0, y, w, 30);
+    ctx.strokeStyle = 'rgba(90,55,30,0.55)'; ctx.lineWidth = 2;
+    ctx.strokeRect(-2, y, w + 4, 30);
+    ctx.strokeStyle = 'rgba(120,75,40,0.5)'; ctx.lineWidth = 1;
+    for (let g = 0; g < 5; g++) {
+      const gy = y + rr(4, 26);
+      ctx.beginPath(); ctx.moveTo(0, gy);
+      ctx.bezierCurveTo(w * 0.3, gy + rr(-3, 3), w * 0.7, gy + rr(-3, 3), w, gy + rr(-2, 2));
+      ctx.stroke();
+    }
+  }
+}, 6, 2);
+
+// Sparkling sea surface.
+const waterTex = makeTexture(256, 256, (ctx, w, h) => {
+  ctx.fillStyle = '#2fa8d5'; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 350; i++) {
+    ctx.strokeStyle = pick(['#5fc3e6', '#8fd9f0', '#1b8fc0']);
+    ctx.globalAlpha = rr(0.2, 0.6); ctx.lineWidth = rr(1, 2.5);
+    const x = rand() * w, y = rand() * h;
+    ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + rr(6, 22), y); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+}, 5, 5);
+
+// Vertical candy stripes (awning + umbrellas + beach balls).
+function stripeTex(colors, cols = 12) {
+  return makeTexture(256, 256, (ctx, w, h) => {
+    for (let i = 0; i < cols; i++) {
+      ctx.fillStyle = colors[i % colors.length];
+      ctx.fillRect(i * (w / cols), 0, w / cols + 1, h);
+    }
+  });
+}
+const awningTex = stripeTex(['#e6473f', '#fdfdf8'], 10);
+const umbrellaTexes = [stripeTex(['#ff6f61', '#fdfdf8']), stripeTex(['#00b3ad', '#fdfdf8']), stripeTex(['#ffd23f', '#fdfdf8'])];
+const ballTex = stripeTex(['#e6473f', '#fdfdf8', '#2f7fe6', '#fdfdf8', '#ffd23f', '#fdfdf8'], 6);
+
+// Horizontal towel stripes, white base so instance colors tint it.
+const towelTex = makeTexture(128, 128, (ctx, w, h) => {
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = 'rgba(120,120,120,0.5)';
+  for (let i = 0; i < 6; i++) ctx.fillRect(0, i * 22 + 6, w, 9);
+});
+
+// Arcade marquee: hot gradient + chunky lettering.
+const arcadeTex = makeTexture(512, 160, (ctx, w, h) => {
+  const grad = ctx.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#7a5ce8'); grad.addColorStop(1, '#ff4f9a');
+  ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+  ctx.fillStyle = '#33176b';
+  ctx.font = 'bold 96px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('ARCADE', w / 2 + 5, h / 2 + 6);
+  ctx.fillStyle = '#ffd23f';
+  ctx.fillText('ARCADE', w / 2, h / 2);
+});
+
+// Rental shack sign.
+const surfSignTex = makeTexture(512, 128, (ctx, w, h) => {
+  ctx.fillStyle = '#00b3ad'; ctx.fillRect(0, 0, w, h);
+  ctx.strokeStyle = '#fdfdf8'; ctx.lineWidth = 10; ctx.strokeRect(8, 8, w - 16, h - 16);
+  ctx.fillStyle = '#fdfdf8';
+  ctx.font = 'bold 64px sans-serif'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('SURF RENTALS', w / 2, h / 2);
+});
+
+/* ============================================================
+   MATERIALS (single shared palette)
+   ============================================================ */
+const std = (opts) => new THREE.MeshStandardMaterial(opts);
+const MAT = {
+  sand: std({ map: sandTex, roughness: 1 }),
+  plank: std({ map: plankTex, roughness: 0.9 }),
+  wood: std({ color: PAL.wood, roughness: 0.85 }),
+  woodDark: std({ color: PAL.woodDark, roughness: 0.9 }),
+  water: std({ map: waterTex, transparent: true, opacity: 0.92, roughness: 0.3, metalness: 0.15 }),
+  foam: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.85 }),
+  white: std({ color: PAL.white, roughness: 0.7 }),
+  red: std({ color: PAL.red, roughness: 0.6 }),
+  teal: std({ color: PAL.teal, roughness: 0.6 }),
+  yellow: std({ color: PAL.yellow, roughness: 0.6 }),
+  steel: std({ color: PAL.steel, roughness: 0.5, metalness: 0.55 }),
+  steelLight: std({ color: PAL.steelLight, roughness: 0.4, metalness: 0.6 }),
+  awning: std({ map: awningTex, roughness: 0.8, side: THREE.DoubleSide }),
+  towel: std({ map: towelTex, roughness: 0.95 }),
+  ball: std({ map: ballTex, roughness: 0.5 }),
+  arcade: std({ map: arcadeTex, roughness: 0.7 }),
+  surfSign: std({ map: surfSignTex, roughness: 0.7 }),
+  bulbA: std({ color: PAL.bulb, emissive: 0xffdd66, emissiveIntensity: 2 }),
+  bulbB: std({ color: PAL.bulb, emissive: 0xff8a3d, emissiveIntensity: 0.4 }),
+  cloud: std({ color: 0xffffff, roughness: 1, emissive: 0xf4fbff, emissiveIntensity: 0.35, fog: false }),
+  leaf: std({ color: PAL.leaf, roughness: 0.9, side: THREE.DoubleSide }),
+  trunk: std({ color: PAL.trunk, roughness: 1 }),
+  cone: std({ color: 0xe8b06a, roughness: 0.9 }),
+  scoopPink: std({ color: 0xff9fbe, roughness: 0.8 }),
+  scoopMint: std({ color: 0xa9e8c8, roughness: 0.8 }),
+  gull: std({ color: 0xf4f4ef, roughness: 0.8 }),
+  beak: std({ color: 0xff8a3d, roughness: 0.7 }),
+  pops: POP.map((c) => std({ color: c, roughness: 0.55 }))
+};
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 42, 130);
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(17, 11, 22);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.6, -2);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.0;
+controls.minDistance = 15;
+controls.maxDistance = 60;
+controls.maxPolarAngle = 1.46;
+
+/* ============================================================
+   BUILDERS — every focal structure returns a THREE.Group
+   ============================================================ */
+
+// ---- Heat-bright sky dome + puffy drifting clouds ----
+const clouds = [];
+function buildSky() {
+  const g = new THREE.Group();
+  const tex = makeTexture(256, 256, (ctx, w, h) => {
+    const grad = ctx.createLinearGradient(0, 0, 0, h);
+    grad.addColorStop(0, '#1f86e0'); grad.addColorStop(0.5, '#66c4f2');
+    grad.addColorStop(0.8, '#c9ecfb'); grad.addColorStop(1, '#eef9ff');
+    ctx.fillStyle = grad; ctx.fillRect(0, 0, w, h);
+  });
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(160, 32, 18),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false })));
+  const puffGeo = new THREE.IcosahedronGeometry(1, 1);
+  for (let i = 0; i < 7; i++) {              // puffy cumulus clusters
+    const cl = new THREE.Group();
+    for (let p = 0; p < 5; p++) {
+      const puff = mesh(puffGeo, MAT.cloud, rr(-2.4, 2.4), rr(-0.4, 0.6), rr(-1, 1), cl);
+      puff.scale.set(rr(1.2, 2.4), rr(0.7, 1.1), rr(1, 1.8));
+    }
+    cl.position.set(rr(-34, 34), rr(14, 21), rr(-30, 26));
+    clouds.push({ node: cl, speed: rr(0.25, 0.6) });
+    g.add(cl);
+  }
+  return g;
+}
+
+// ---- Sand beach (gentle slope into the surf) ----
+function buildBeach() {
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(80, 60, 80, 60);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setY(i, sandHeight(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  const sandMesh = new THREE.Mesh(geo, MAT.sand);
+  sandMesh.position.z = -8;                   // beach band centered on the scene
+  sandMesh.receiveShadow = true;
+  g.add(sandMesh);
+  return g;
+}
+
+// ---- Ocean: vertex-animated swell + foam lines rolling ashore ----
+let waveGeo = null, waveBase = null;
+const foamLines = [];
+function buildOcean() {
+  const g = new THREE.Group();
+  waveGeo = new THREE.PlaneGeometry(80, 34, 64, 24);
+  waveGeo.rotateX(-Math.PI / 2);
+  waveGeo.translate(0, 0, 25);                // spans z = 8 .. 42
+  waveBase = waveGeo.attributes.position.array.slice();
+  const sea = new THREE.Mesh(waveGeo, MAT.water);
+  sea.receiveShadow = true;
+  g.add(sea);
+  const deep = mesh(new THREE.PlaneGeometry(80, 20), std({ color: PAL.waterDeep, roughness: 0.4 }), 0, -0.12, 48, g);
+  deep.rotation.x = -Math.PI / 2;
+  for (let i = 0; i < 3; i++) {               // breaking foam lines
+    const foam = mesh(new THREE.PlaneGeometry(72, 0.55), MAT.foam.clone(), 0, 0.1, 10, g);
+    foam.rotation.x = -Math.PI / 2;
+    foamLines.push({ node: foam, off: i * 1.35 });
+  }
+  return g;
+}
+
+// ---- Raised plank boardwalk with railing and beach steps ----
+function buildBoardwalk() {
+  const g = new THREE.Group();
+  mesh(new THREE.BoxGeometry(33, 0.35, 6.5), MAT.plank, 0, 0.62, -5.2, g);    // deck
+  for (let i = 0; i < 11; i++)                // support posts along the beach edge
+    mesh(new THREE.BoxGeometry(0.24, 0.7, 0.24), MAT.woodDark, -15 + i * 3, 0.3, -2.1, g);
+  const railGeo = new THREE.BoxGeometry(0.12, 0.9, 0.12);
+  for (const seg of [[-16.4, -2.6], [2.6, 16.4]]) {   // railing with a stair gap
+    const [x0, x1] = seg;
+    mesh(new THREE.BoxGeometry(x1 - x0, 0.1, 0.12), MAT.wood, (x0 + x1) / 2, 1.72, -1.98, g);
+    for (let x = x0 + 0.4; x <= x1 - 0.3; x += 1.55) mesh(railGeo, MAT.wood, x, 1.28, -1.98, g);
+  }
+  for (let s = 0; s < 4; s++)                 // steps down to the sand
+    mesh(new THREE.BoxGeometry(4.6, 0.16, 0.55), MAT.plank, 0, 0.66 - s * 0.16, -1.75 + s * 0.55, g);
+  for (const bx of [-5.5, 13.5])              // teal litter bins
+    mesh(new THREE.CylinderGeometry(0.3, 0.26, 0.75, 10), MAT.teal, bx, 1.17, -2.6, g);
+  return shadowify(g);
+}
+
+// ---- Ferris wheel with colored gondolas (turns; cabins stay level) ----
+let wheelGroup = null;
+const gondolaPivots = [];
+function buildFerrisWheel() {
+  const g = new THREE.Group();
+  for (const sz of [-1, 1]) for (const sx of [-1, 1]) {
+    const leg = mesh(new THREE.CylinderGeometry(0.15, 0.2, 7.8, 8), MAT.steel, sx * 2, 3.7, sz * 1, g);
+    leg.rotation.z = sx * 0.27;
+  }
+  mesh(new THREE.BoxGeometry(5.2, 0.4, 2.9), MAT.steel, 0, 0.2, 0, g);        // base skid
+  const axle = mesh(new THREE.CylinderGeometry(0.18, 0.18, 3, 10), MAT.steelLight, 0, 7.3, 0, g);
+  axle.rotation.x = Math.PI / 2;
+  wheelGroup = new THREE.Group();
+  wheelGroup.position.y = 7.3;
+  g.add(wheelGroup);
+  for (const sz of [-1, 1])                   // twin rims
+    mesh(new THREE.TorusGeometry(5, 0.1, 8, 44), MAT.steelLight, 0, 0, sz * 0.55, wheelGroup);
+  const spokeGeo = new THREE.CylinderGeometry(0.05, 0.05, 5, 6);
+  spokeGeo.translate(0, 2.5, 0);
+  const spokes = new THREE.InstancedMesh(spokeGeo, MAT.steel, 24);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 24; i++) {
+    dummy.position.set(0, 0, i < 12 ? 0.55 : -0.55);
+    dummy.rotation.set(0, 0, ((i % 12) / 12) * Math.PI * 2);
+    dummy.updateMatrix();
+    spokes.setMatrixAt(i, dummy.matrix);
+  }
+  wheelGroup.add(spokes);
+  mesh(new THREE.CylinderGeometry(0.45, 0.45, 1.3, 12), MAT.yellow, 0, 0, 0, wheelGroup).rotation.x = Math.PI / 2;
+  for (let i = 0; i < 10; i++) {              // gondolas hang from the rim
+    const a = (i / 10) * Math.PI * 2;
+    const pivot = new THREE.Group();
+    pivot.position.set(Math.cos(a) * 5, Math.sin(a) * 5, 0);
+    mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.4, 6), MAT.steel, 0, -0.2, 0, pivot);
+    const cab = mesh(new THREE.BoxGeometry(0.9, 0.62, 0.75), MAT.pops[i % MAT.pops.length], 0, -0.72, 0, pivot);
+    mesh(new THREE.ConeGeometry(0.62, 0.3, 4), MAT.white, 0, 0.46, 0, cab).rotation.y = Math.PI / 4;
+    gondolaPivots.push(pivot);
+    wheelGroup.add(pivot);
+  }
+  return shadowify(g);
+}
+
+// ---- Arcade facade: marquee, chasing bulbs, neon-bright posters ----
+function buildArcade() {
+  const g = new THREE.Group();
+  mesh(new THREE.BoxGeometry(6.8, 4.4, 1.6), MAT.pops[3], 0, 2.2, 0, g);      // pink body
+  mesh(new THREE.BoxGeometry(7.2, 0.5, 1.8), MAT.pops[4], 0, 4.55, 0, g);     // purple parapet
+  mesh(new THREE.PlaneGeometry(6.2, 1.5), MAT.arcade, 0, 3.4, 0.82, g);       // marquee sign
+  mesh(new THREE.BoxGeometry(2.2, 2.1, 0.2), std({ color: 0x24164a, roughness: 0.9 }), 0, 1.15, 0.78, g); // doorway
+  for (const sx of [-1, 1]) {                 // window posters
+    mesh(new THREE.PlaneGeometry(1.5, 1.6), sx < 0 ? MAT.teal : MAT.yellow, sx * 2.2, 1.5, 0.82, g);
+    mesh(new THREE.PlaneGeometry(1.7, 1.8), MAT.white, sx * 2.2, 1.5, 0.81, g);
+  }
+  // Two alternating bulb sets around the marquee = chase effect
+  const bulbGeo = new THREE.SphereGeometry(0.09, 8, 6);
+  const spots = [];
+  for (let i = 0; i < 12; i++) spots.push([-3.05 + i * 0.555, 4.28]);
+  for (let i = 0; i < 4; i++) { spots.push([-3.28, 1.15 + i * 0.9]); spots.push([3.28, 1.15 + i * 0.9]); }
+  const setA = new THREE.InstancedMesh(bulbGeo, MAT.bulbA, Math.ceil(spots.length / 2));
+  const setB = new THREE.InstancedMesh(bulbGeo, MAT.bulbB, Math.floor(spots.length / 2));
+  const dummy = new THREE.Object3D();
+  let ia = 0, ib = 0;
+  spots.forEach(([x, y], i) => {
+    dummy.position.set(x, y, 0.85);
+    dummy.updateMatrix();
+    if (i % 2 === 0) setA.setMatrixAt(ia++, dummy.matrix); else setB.setMatrixAt(ib++, dummy.matrix);
+  });
+  g.add(setA, setB);
+  return shadowify(g);
+}
+
+// ---- Ice-cream stand with striped awning + giant cone ----
+function buildIceCreamStand() {
+  const g = new THREE.Group();
+  mesh(new THREE.BoxGeometry(3, 2.5, 2), MAT.white, 0, 1.25, 0, g);           // kiosk
+  mesh(new THREE.BoxGeometry(2.2, 1.1, 0.12), std({ color: 0x3a2b2b, roughness: 0.9 }), 0, 1.7, 1.02, g); // window
+  mesh(new THREE.BoxGeometry(2.5, 0.12, 0.5), MAT.wood, 0, 1.1, 1.2, g);      // counter shelf
+  const awn = mesh(new THREE.BoxGeometry(3.4, 0.06, 1.6), MAT.awning, 0, 2.62, 1.5, g);
+  awn.rotation.x = 0.42;                       // striped awning
+  mesh(new THREE.BoxGeometry(3.4, 0.18, 0.06), MAT.red, 0, 2.32, 2.2, g);     // awning valance
+  for (const sx of [-1, 1]) mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.25, 6), MAT.steelLight, sx * 1.6, 1.72, 2.18, g);
+  const cone = mesh(new THREE.ConeGeometry(0.42, 1, 12), MAT.cone, 0, 3.3, 0, g);
+  cone.rotation.x = Math.PI;                   // giant waffle cone prop
+  mesh(new THREE.SphereGeometry(0.45, 12, 10), MAT.scoopPink, 0, 3.95, 0, g);
+  mesh(new THREE.SphereGeometry(0.34, 12, 10), MAT.scoopMint, 0, 4.5, 0, g);
+  mesh(new THREE.SphereGeometry(0.07, 8, 6), MAT.red, 0, 4.78, 0, g);         // cherry
+  return shadowify(g);
+}
+
+// ---- Surf rental shack + racked surfboards ----
+function buildRentalShack() {
+  const g = new THREE.Group();
+  mesh(new THREE.BoxGeometry(3.6, 2.6, 2.4), MAT.wood, 0, 1.3, 0, g);
+  const roof = mesh(new THREE.BoxGeometry(4.2, 0.14, 3), MAT.woodDark, 0, 2.75, -0.1, g);
+  roof.rotation.x = 0.1;
+  mesh(new THREE.PlaneGeometry(3, 0.75), MAT.surfSign, 0, 2.25, 1.22, g);     // painted sign
+  mesh(new THREE.BoxGeometry(0.9, 1.7, 0.1), MAT.teal, -1, 0.85, 1.21, g);    // door
+  mesh(new THREE.BoxGeometry(1.1, 0.9, 0.1), std({ color: 0xbfe8f7, roughness: 0.4 }), 0.85, 1.5, 1.21, g); // window
+  const buoy = mesh(new THREE.TorusGeometry(0.32, 0.09, 8, 18), MAT.red, -2.05, 1.7, 0.4, g);
+  buoy.rotation.y = Math.PI / 2;               // lifebuoy on the wall
+  // Rack of leaning boards
+  const rack = new THREE.Group();
+  rack.position.set(3.4, 0, 0.3);
+  mesh(new THREE.BoxGeometry(3.2, 0.12, 0.12), MAT.woodDark, 0, 1.5, -0.35, rack);
+  for (const sx of [-1.5, 1.5]) mesh(new THREE.BoxGeometry(0.12, 1.56, 0.12), MAT.woodDark, sx, 0.78, -0.35, rack);
+  const boardGeo = new THREE.CapsuleGeometry(0.3, 1.15, 4, 10);
+  boardGeo.scale(0.62, 1, 0.14);
+  for (let i = 0; i < 5; i++) {
+    const b = mesh(boardGeo, MAT.pops[i % MAT.pops.length], -1.2 + i * 0.6, 0.95, -0.12, rack);
+    b.rotation.x = -0.22;
+    b.rotation.z = rr(-0.06, 0.06);
+  }
+  g.add(rack);
+  return shadowify(g);
+}
+
+// ---- Lifeguard tower ----
+function buildLifeguardTower() {
+  const g = new THREE.Group();
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    mesh(new THREE.CylinderGeometry(0.09, 0.11, 1.9, 8), MAT.wood, sx * 0.8, 0.95, sz * 0.65, g);
+  mesh(new THREE.BoxGeometry(2.2, 0.14, 1.8), MAT.plank, 0, 1.95, 0, g);      // platform
+  mesh(new THREE.BoxGeometry(1.7, 1.25, 1.35), MAT.white, 0, 2.7, -0.1, g);   // cabin
+  mesh(new THREE.BoxGeometry(2.1, 0.12, 1.7), MAT.red, 0, 3.42, -0.1, g);     // red roof
+  mesh(new THREE.BoxGeometry(0.75, 0.65, 0.05), std({ color: 0x9fd9f2, roughness: 0.4 }), 0, 2.78, 0.6, g); // window
+  for (const s of [-1, 1]) {                  // access ladder
+    const rail = mesh(new THREE.BoxGeometry(0.07, 2.1, 0.07), MAT.wood, s * 0.3, 1.05, 0.95, g);
+    rail.rotation.x = -0.25;
+  }
+  for (let r = 0; r < 4; r++) mesh(new THREE.BoxGeometry(0.62, 0.06, 0.06), MAT.wood, 0, 0.45 + r * 0.45, 1.22 - r * 0.12, g);
+  const flag = mesh(new THREE.PlaneGeometry(0.55, 0.35), std({ color: PAL.red, side: THREE.DoubleSide }), 0.32, 4, -0.1, g);
+  flag.position.x = 0.34;
+  mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.9, 6), MAT.steelLight, 0, 3.9, -0.1, g);
+  g.userData.flag = flag;
+  return shadowify(g);
+}
+
+// ---- Beach umbrella (striped canopy, tilted into the sun) ----
+function buildUmbrella() {
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(0.04, 0.05, 2.3, 8), MAT.steelLight, 0, 1.15, 0, g);
+  const canopy = mesh(new THREE.ConeGeometry(1.3, 0.6, 14, 1, true), std({ map: pick(umbrellaTexes), roughness: 0.8, side: THREE.DoubleSide }), 0, 2.35, 0, g);
+  canopy.castShadow = true;
+  mesh(new THREE.SphereGeometry(0.06, 8, 6), MAT.white, 0, 2.75, 0, g);
+  g.rotation.z = rr(-0.14, 0.14);
+  g.rotation.x = rr(-0.1, 0.1);
+  return shadowify(g);
+}
+
+// ---- Palm tree with fanned fronds ----
+const palms = [];
+function buildPalm(scale) {
+  const g = new THREE.Group();
+  let px = 0;
+  for (let s = 0; s < 6; s++) {               // gently curving trunk
+    mesh(new THREE.CylinderGeometry(0.11 * scale, 0.14 * scale, 0.62 * scale, 8), MAT.trunk, px, (0.28 + s * 0.55) * scale, 0, g);
+    px += 0.055 * scale * s;
+  }
+  const crown = new THREE.Group();
+  crown.position.set(px, 3.75 * scale, 0);
+  const frondGeo = new THREE.PlaneGeometry(2 * scale, 0.5 * scale, 4, 1);
+  frondGeo.translate(scale, 0, 0);
+  const fPos = frondGeo.attributes.position;
+  for (let i = 0; i < fPos.count; i++)        // droop the frond tips
+    fPos.setY(i, fPos.getY(i) - Math.pow(fPos.getX(i) / (2 * scale), 2) * 0.9 * scale);
+  for (let f = 0; f < 8; f++) {
+    const frond = mesh(frondGeo, MAT.leaf, 0, 0, 0, crown);
+    frond.rotation.y = (f / 8) * Math.PI * 2 + rr(-0.2, 0.2);
+    frond.rotation.z = rr(-0.12, 0.18);
+    frond.castShadow = true;
+  }
+  for (let c = 0; c < 3; c++) mesh(new THREE.SphereGeometry(0.12 * scale, 8, 6), MAT.woodDark, rr(-0.15, 0.15), -0.12 * scale, rr(-0.15, 0.15), crown);
+  g.add(crown);
+  palms.push({ crown, phase: rr(0, Math.PI * 2) });
+  return shadowify(g);
+}
+
+// ---- Seagull (wings flap; the flock circles overhead) ----
+const gulls = [];
+function buildSeagull() {
+  const g = new THREE.Group();
+  mesh(new THREE.SphereGeometry(0.16, 10, 8), MAT.gull, 0, 0, 0, g).scale.set(1.8, 1, 1);
+  mesh(new THREE.SphereGeometry(0.09, 8, 6), MAT.gull, 0.3, 0.06, 0, g);
+  mesh(new THREE.ConeGeometry(0.04, 0.14, 6), MAT.beak, 0.42, 0.05, 0, g).rotation.z = -Math.PI / 2;
+  const wingGeo = new THREE.BoxGeometry(0.16, 0.025, 0.75);
+  wingGeo.translate(0, 0, 0.375);
+  const wings = [];
+  for (const s of [-1, 1]) {
+    const w = mesh(wingGeo, MAT.gull, 0.02, 0.05, s * 0.1, g);
+    if (s < 0) w.rotation.y = Math.PI;
+    wings.push(w);
+  }
+  g.userData.wings = wings;
+  return g;
+}
+
+// ---- Sandcastle (bonus prop) ----
+function buildSandcastle() {
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.8, 10), MAT.sand, 0, 0.4, 0, g);
+  mesh(new THREE.ConeGeometry(0.4, 0.4, 10), MAT.sand, 0, 1, 0, g);
+  for (const [cx, cz] of [[-0.55, -0.4], [0.55, -0.4], [-0.55, 0.45], [0.55, 0.45]]) {
+    mesh(new THREE.CylinderGeometry(0.18, 0.22, 0.55, 8), MAT.sand, cx, 0.27, cz, g);
+    mesh(new THREE.ConeGeometry(0.22, 0.28, 8), MAT.sand, cx, 0.68, cz, g);
+  }
+  mesh(new THREE.BoxGeometry(1.1, 0.35, 0.14), MAT.sand, 0, 0.17, -0.42, g);
+  mesh(new THREE.BoxGeometry(1.1, 0.35, 0.14), MAT.sand, 0, 0.17, 0.46, g);
+  return shadowify(g);
+}
+
+// ---- Pennant string strung across the boardwalk ----
+const pennants = [];
+function buildPennants() {
+  const g = new THREE.Group();
+  const p0 = new THREE.Vector3(-15.5, 3.4, -4.5), p2 = new THREE.Vector3(15.5, 3.4, -4.5);
+  const curve = new THREE.QuadraticBezierCurve3(p0, new THREE.Vector3(0, 2.6, -4.5), p2);
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 32, 0.018, 5), MAT.steelLight));
+  for (const sx of [-1, 1]) mesh(new THREE.CylinderGeometry(0.06, 0.07, 3.5, 8), MAT.woodDark, sx * 15.5, 1.75, -4.5, g);
+  const flagShape = new THREE.Shape();
+  flagShape.moveTo(-0.14, 0); flagShape.lineTo(0.14, 0); flagShape.lineTo(0, -0.36); flagShape.closePath();
+  const flagGeo = new THREE.ShapeGeometry(flagShape);
+  for (let i = 1; i < 15; i++) {
+    const pt = curve.getPoint(i / 15);
+    const flag = mesh(flagGeo, std({ color: POP[i % POP.length], roughness: 0.7, side: THREE.DoubleSide }), pt.x, pt.y - 0.02, pt.z, g);
+    flag.castShadow = true;
+    pennants.push({ node: flag, phase: rr(0, Math.PI * 2) });
+  }
+  return g;
+}
+
+/* ============================================================
+   ASSEMBLY & LAYOUT
+   ============================================================ */
+const placeOnSand = (obj, x, z, lift = 0, ry = 0) => {
+  obj.position.set(x, sandHeight(x, z + 8) + lift, z);   // beach mesh is shifted -8 in z
+  obj.rotation.y = ry;
+  scene.add(obj);
+  return obj;
+};
+// NOTE: sandHeight sampling accounts for the beach plane's -8 z offset.
+
+scene.add(buildSky(), buildBeach(), buildOcean(), buildBoardwalk(), buildPennants());
+
+const wheel = buildFerrisWheel();
+wheel.position.set(-8.5, 0.1, -11.8);
+scene.add(wheel);
+
+const arcade = buildArcade();
+arcade.position.set(3.2, 0.72, -10.6);
+scene.add(arcade);
+
+const stand = buildIceCreamStand();
+stand.position.set(10.5, 0.78, -6.8);
+stand.rotation.y = -0.12;
+scene.add(stand);
+
+const shack = buildRentalShack();
+shack.position.set(-12.6, 0.78, -6.9);
+shack.rotation.y = 0.16;
+scene.add(shack);
+
+const tower = placeOnSand(buildLifeguardTower(), 8.4, 4.6, -0.05, -0.35);
+
+// Rows of umbrellas with a towel (and the odd beach ball) beside each
+const towelSpots = [];
+const umbrellaSpots = [[-10.5, 1.6], [-6.6, 2.3], [-2.6, 1.8], [1.4, 2.4], [-8.4, 4.9], [-4.4, 5.4], [-0.4, 5.0], [3.6, 5.5]];
+for (const [ux, uz] of umbrellaSpots) {
+  placeOnSand(buildUmbrella(), ux, uz, 0);
+  towelSpots.push([ux + rr(0.9, 1.5), uz + rr(0.4, 1.1), rr(-0.5, 0.5)]);
+}
+const towelGeo = new THREE.BoxGeometry(0.95, 0.04, 1.8);
+const towels = new THREE.InstancedMesh(towelGeo, MAT.towel, towelSpots.length);
+const tDummy = new THREE.Object3D();
+towelSpots.forEach(([tx, tz, tr], i) => {
+  tDummy.position.set(tx, sandHeight(tx, tz + 8) + 0.05, tz);
+  tDummy.rotation.set(0, tr, 0);
+  tDummy.updateMatrix();
+  towels.setMatrixAt(i, tDummy.matrix);
+  towels.setColorAt(i, new THREE.Color(POP[i % POP.length]));
+});
+towels.receiveShadow = true;
+scene.add(towels);
+
+for (const [bx, bz] of [[-5.9, 3.4], [2.6, 3.9]]) placeOnSand(mesh(new THREE.SphereGeometry(0.32, 14, 12), MAT.ball), bx, bz, 0.32, rr(0, 3)).castShadow = true;
+placeOnSand(buildSandcastle(), 6, 1.6, 0, 0.5);
+placeOnSand(buildPalm(1.1), -14.6, -0.6, 0);
+placeOnSand(buildPalm(0.95), 14.8, -1.2, 0, 2.1);
+placeOnSand(buildPalm(1.0), 12.9, 0.9, 0, 4.2);
+
+// Seagull flock circling over the shoreline
+for (let i = 0; i < 5; i++) {
+  const gull = buildSeagull();
+  gulls.push({ node: gull, cx: rr(-8, 8), cz: rr(-2, 6), r: rr(2.5, 6), h: rr(6.5, 10), speed: rr(0.3, 0.55) * pick([-1, 1]), phase: rr(0, Math.PI * 2) });
+  scene.add(gull);
+}
+
+/* ============================================================
+   LIGHTING RIG — high summer sun over the water
+   ============================================================ */
+const sun = new THREE.DirectionalLight(0xfff4d8, 1.7);
+sun.position.set(14, 26, 20);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+Object.assign(sun.shadow.camera, { left: -28, right: 28, top: 28, bottom: -28, near: 4, far: 80 });
+sun.shadow.bias = -0.0006;
+sun.target.position.set(0, 0, -3);
+scene.add(sun, sun.target);
+
+scene.add(new THREE.HemisphereLight(0x9fd9ff, 0xf2dcab, 0.75));
+scene.add(new THREE.AmbientLight(0xfdf6e8, 0.14));
+
+const marqueeLight = new THREE.PointLight(0xffd7a0, 6, 12, 2);  // arcade glow
+marqueeLight.position.set(3.2, 4.4, -9);
+scene.add(marqueeLight);
+
+/* ============================================================
+   ANIMATION LOOP
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 1) Ferris wheel turns; gondolas counter-rotate to stay level
+  wheelGroup.rotation.z = t * 0.28;
+  for (const p of gondolaPivots) p.rotation.z = -wheelGroup.rotation.z;
+
+  // 2) Gentle swell rolling toward the beach
+  const pos = waveGeo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = waveBase[i * 3], z = waveBase[i * 3 + 2];
+    const amp = THREE.MathUtils.smoothstep(z, 8.5, 14) * 0.16 + 0.02;
+    pos.setY(i, Math.sin(z * 0.55 - t * 1.3) * amp + Math.sin(x * 0.35 + z * 0.2 - t * 0.8) * amp * 0.6);
+  }
+  pos.needsUpdate = true;
+  waveGeo.computeVertexNormals();
+  waterTex.offset.x = t * 0.008;
+  for (const f of foamLines) {                // foam lines wash ashore and fade
+    const cycle = (t * 0.55 + f.off) % 4;
+    f.node.position.z = 11.2 - cycle * 0.85;
+    f.node.material.opacity = 0.85 * (1 - cycle / 4.4);
+  }
+
+  // 3) Seagulls wheeling overhead, wings beating
+  for (const s of gulls) {
+    const a = t * s.speed + s.phase;
+    s.node.position.set(s.cx + Math.cos(a) * s.r, s.h + Math.sin(t * 1.7 + s.phase) * 0.4, s.cz + Math.sin(a) * s.r);
+    s.node.rotation.y = (s.speed >= 0 ? -a - Math.PI / 2 : -a + Math.PI / 2);
+    const flap = Math.sin(t * 8 + s.phase) * 0.55;
+    s.node.userData.wings[0].rotation.x = -flap;
+    s.node.userData.wings[1].rotation.x = flap;
+  }
+
+  // 4) Arcade bulbs chase
+  MAT.bulbA.emissiveIntensity = 1.4 + Math.sin(t * 6) * 1.2;
+  MAT.bulbB.emissiveIntensity = 1.4 - Math.sin(t * 6) * 1.2;
+
+  // 5) Pennants + lifeguard flag fluttering in the sea breeze
+  for (const p of pennants) p.node.rotation.y = Math.sin(t * 2.4 + p.phase) * 0.45;
+  tower.userData.flag.rotation.y = Math.sin(t * 3.1) * 0.5;
+
+  // 6) Palm crowns swaying, clouds drifting on the trade wind
+  for (const p of palms) {
+    p.crown.rotation.z = Math.sin(t * 0.8 + p.phase) * 0.045;
+    p.crown.rotation.x = Math.cos(t * 0.66 + p.phase) * 0.035;
+  }
+  for (const c of clouds) {
+    c.node.position.x += c.speed * 0.016;
+    if (c.node.position.x > 40) c.node.position.x = -40;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

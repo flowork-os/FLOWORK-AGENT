@@ -1,0 +1,490 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Procedural Bonsai Pine</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #121316; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(255,255,255,0.35); letter-spacing: .3px; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">Bonsai Pine · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Deterministic RNG so the tree looks the same every load
+ * ------------------------------------------------------------------ */
+let seed = 20260706 >>> 0;
+function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+function rr(a, b) { return a + (b - a) * rand(); }
+
+const YUP = new THREE.Vector3(0, 1, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / scene / camera
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141619);
+scene.fog = new THREE.Fog(0x141619, 9, 26);
+
+// Soft studio reflections for nicer PBR shading (no external assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.6, 2.7, 5.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.enablePan = false;
+controls.minDistance = 3.2;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 1.45, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere + directional key / fill / rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xbcd3ff, 0x2a2018, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1dc, 2.5);
+key.position.set(4.5, 6.5, 3.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 22;
+key.shadow.camera.left = -5; key.shadow.camera.right = 5;
+key.shadow.camera.top = 5; key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+key.target.position.set(0, 1.3, 0);
+scene.add(key); scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x9db6ff, 0.55);
+fill.position.set(-5.5, 3.0, 2.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.5);
+rim.position.set(-2.5, 4.2, -6.0);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-only ground plane
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ================================================================== *
+ *  THE ONE CENTERED OBJECT: procedural bonsai pine
+ * ================================================================== */
+const bonsai = new THREE.Group();
+scene.add(bonsai);
+
+const SOIL_TOP = 0.66; // world height of soil surface
+
+/* ---- procedural aged-bark texture (canvas) ---- */
+function makeBarkTexture() {
+  const s = 512;
+  const cv = document.createElement('canvas');
+  cv.width = cv.height = s;
+  const ctx = cv.getContext('2d');
+  ctx.fillStyle = '#6a5844';
+  ctx.fillRect(0, 0, s, s);
+  // vertical fibrous streaks
+  for (let i = 0; i < 900; i++) {
+    const x = Math.random() * s;
+    const shade = 60 + Math.random() * 90;
+    const dark = Math.random() < 0.5;
+    ctx.strokeStyle = dark
+      ? `rgba(${shade * 0.5},${shade * 0.42},${shade * 0.32},0.35)`
+      : `rgba(${shade + 60},${shade + 42},${shade + 24},0.22)`;
+    ctx.lineWidth = 0.5 + Math.random() * 2.2;
+    ctx.beginPath();
+    let y = Math.random() * s, len = 30 + Math.random() * 180, xx = x;
+    ctx.moveTo(xx, y);
+    while (len > 0) { xx += (Math.random() - 0.5) * 3; y += 6; len -= 6; ctx.lineTo(xx, y); }
+    ctx.stroke();
+  }
+  // horizontal cracks / plates
+  for (let i = 0; i < 120; i++) {
+    ctx.strokeStyle = `rgba(30,22,14,${0.15 + Math.random() * 0.25})`;
+    ctx.lineWidth = 0.5 + Math.random() * 1.5;
+    const y = Math.random() * s, x0 = Math.random() * s, w = 20 + Math.random() * 90;
+    ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x0 + w, y + (Math.random() - 0.5) * 8); ctx.stroke();
+  }
+  // fine speckle
+  const img = ctx.getImageData(0, 0, s, s), d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (Math.random() - 0.5) * 26;
+    d[i] += n; d[i + 1] += n * 0.9; d[i + 2] += n * 0.8;
+  }
+  ctx.putImageData(img, 0, 0);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+const barkTex = makeBarkTexture();
+
+/* ---- tapered / gnarled tube generator along a curve ---- */
+function makeTaperedTube(curve, opts) {
+  const tubular = opts.tubular || 32;
+  const radial = opts.radial || 10;
+  const rBase = opts.rBase !== undefined ? opts.rBase : 0.2;
+  const rTip = opts.rTip !== undefined ? opts.rTip : 0.05;
+  const gnarl = opts.gnarl || 0;
+  const taperPow = opts.taperPow || 1.3;
+  const frames = curve.computeFrenetFrames(tubular, false);
+  const pos = [], uv = [], idx = [];
+  const P = new THREE.Vector3();
+  for (let i = 0; i <= tubular; i++) {
+    const t = i / tubular;
+    curve.getPointAt(t, P);
+    const N = frames.normals[i], B = frames.binormals[i];
+    const radius = THREE.MathUtils.lerp(rBase, rTip, Math.pow(t, taperPow));
+    for (let j = 0; j <= radial; j++) {
+      const v = j / radial;
+      const theta = v * Math.PI * 2;
+      const ridge = gnarl * (0.55 * Math.sin(theta * 7 + t * 3) +
+                             0.3 * Math.sin(theta * 15 - t * 8) +
+                             0.22 * Math.sin(t * 11 + theta));
+      const rad = radius * (1 + ridge);
+      const cos = -Math.cos(theta), sin = Math.sin(theta);
+      const nx = cos * N.x + sin * B.x;
+      const ny = cos * N.y + sin * B.y;
+      const nz = cos * N.z + sin * B.z;
+      pos.push(P.x + rad * nx, P.y + rad * ny, P.z + rad * nz);
+      uv.push(t * (tubular / 8), v * 2.0);
+    }
+  }
+  for (let i = 1; i <= tubular; i++) {
+    for (let j = 1; j <= radial; j++) {
+      const a = (radial + 1) * (i - 1) + (j - 1);
+      const b = (radial + 1) * i + (j - 1);
+      const c = (radial + 1) * i + j;
+      const d = (radial + 1) * (i - 1) + j;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* ---- geometry collectors ---- */
+const barkGeos = [];
+const foliageDarkGeos = [];
+const foliageLightGeos = [];
+const needleGeos = [];
+const mossGeos = [];
+const soilMoundGeos = [];
+
+/* ---- foliage pad: clustered puffs + needle fuzz ---- */
+function addFoliagePad(center, size) {
+  const puffs = 7 + Math.floor(rand() * 6);
+  for (let k = 0; k < puffs; k++) {
+    const pr = size * (0.32 + rand() * 0.30);
+    const g = new THREE.IcosahedronGeometry(pr, 1);
+    const p = g.attributes.position;
+    for (let vi = 0; vi < p.count; vi++) {
+      const x = p.getX(vi), y = p.getY(vi), z = p.getZ(vi);
+      const len = Math.hypot(x, y, z) || 1;
+      const ux = x / len, uy = y / len, uz = z / len;
+      const nz = (Math.sin(x * 13 + y * 7) + Math.cos(z * 11 - y * 5)) * 0.5;
+      const d = pr * (1 + nz * 0.22);
+      p.setXYZ(vi, ux * d, uy * d, uz * d);
+    }
+    g.scale(1, 0.72, 1); // flatten into a cushion
+    const ang = rand() * Math.PI * 2;
+    const rad = size * 0.58 * Math.sqrt(rand());
+    const ox = Math.cos(ang) * rad, oz = Math.sin(ang) * rad;
+    const oy = (rand() - 0.35) * size * 0.30;
+    g.translate(center.x + ox, center.y + oy, center.z + oz);
+    (rand() < 0.35 ? foliageLightGeos : foliageDarkGeos).push(g);
+  }
+  // needle tufts poking out of the pad
+  const nc = 10 + Math.floor(rand() * 8);
+  for (let n = 0; n < nc; n++) {
+    const h = size * (0.30 + rand() * 0.30);
+    const cg = new THREE.ConeGeometry(h * 0.10, h, 5, 1);
+    const dir = new THREE.Vector3(rand() * 2 - 1, 0.7 + rand() * 0.8, rand() * 2 - 1).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(YUP, dir);
+    cg.applyQuaternion(q);
+    const ang = rand() * Math.PI * 2, rad = size * 0.55 * Math.sqrt(rand());
+    const bx = center.x + Math.cos(ang) * rad, bz = center.z + Math.sin(ang) * rad;
+    const by = center.y + size * 0.12 + rand() * size * 0.18;
+    cg.translate(bx + dir.x * h * 0.45, by + dir.y * h * 0.45, bz + dir.z * h * 0.45);
+    needleGeos.push(cg);
+  }
+}
+
+/* ---- trunk (gnarled, tapered, with movement) ---- */
+const trunkCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.00, 0.00, 0.00),
+  new THREE.Vector3(0.08, 0.45, 0.12),
+  new THREE.Vector3(-0.13, 0.95, 0.05),
+  new THREE.Vector3(0.15, 1.45, -0.12),
+  new THREE.Vector3(0.03, 1.92, 0.07),
+  new THREE.Vector3(-0.07, 2.28, 0.01)
+], false, 'catmullrom', 0.5);
+
+barkGeos.push(makeTaperedTube(trunkCurve, {
+  tubular: 72, radial: 16, rBase: 0.34, rTip: 0.045, gnarl: 0.09, taperPow: 1.45
+}));
+
+/* ---- surface roots (nebari) flaring into the soil ---- */
+const rootCount = 6;
+for (let i = 0; i < rootCount; i++) {
+  const a = (i / rootCount) * Math.PI * 2 + rr(-0.35, 0.35);
+  const out = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+  const p0 = new THREE.Vector3(0, 0.07, 0).addScaledVector(out, 0.10);
+  const p1 = out.clone().multiplyScalar(0.34); p1.y = -0.01 + rr(-0.02, 0.03);
+  const p2 = out.clone().multiplyScalar(0.58 + rand() * 0.28); p2.y = -0.07;
+  const c = new THREE.CatmullRomCurve3([p0, p1, p2]);
+  barkGeos.push(makeTaperedTube(c, {
+    tubular: 16, radial: 10, rBase: 0.13, rTip: 0.028, gnarl: 0.05, taperPow: 1.2
+  }));
+}
+
+/* ---- wire-trained branches fanning out in tiers ---- */
+const branches = [
+  { t: 0.30, ang: 0.5, len: 1.50, tier: 0 },
+  { t: 0.33, ang: 3.5, len: 1.35, tier: 0 },
+  { t: 0.46, ang: 1.9, len: 1.20, tier: 1 },
+  { t: 0.50, ang: 5.0, len: 1.10, tier: 1 },
+  { t: 0.62, ang: 0.9, len: 1.00, tier: 2 },
+  { t: 0.66, ang: 3.9, len: 0.90, tier: 2 },
+  { t: 0.78, ang: 2.5, len: 0.80, tier: 3 },
+  { t: 0.82, ang: 5.7, len: 0.70, tier: 3 }
+];
+
+function buildBranch(b) {
+  const base = trunkCurve.getPointAt(b.t);
+  const outward = new THREE.Vector3(Math.cos(b.ang), 0, Math.sin(b.ang));
+  const trunkR = THREE.MathUtils.lerp(0.34, 0.045, Math.pow(b.t, 1.45)) * 0.9;
+  const start = base.clone().addScaledVector(outward, trunkR * 0.7);
+  const lateral = new THREE.Vector3().crossVectors(outward, YUP).normalize();
+  const lift = 0.17 - b.tier * 0.02;
+  const wob = rr(-1, 1);
+  const len = b.len;
+
+  const p0 = start.clone();
+  const p1 = start.clone().addScaledVector(outward, len * 0.30)
+    .addScaledVector(YUP, len * lift).addScaledVector(lateral, len * 0.06 * wob);
+  const p2 = start.clone().addScaledVector(outward, len * 0.62)
+    .addScaledVector(YUP, len * lift * 0.7).addScaledVector(lateral, len * 0.12 * wob);
+  const p3 = start.clone().addScaledVector(outward, len * 0.98)
+    .addScaledVector(YUP, len * (lift * 0.2 - 0.05)).addScaledVector(lateral, len * 0.17 * wob);
+  const curve = new THREE.CatmullRomCurve3([p0, p1, p2, p3]);
+
+  const rB = THREE.MathUtils.lerp(0.11, 0.06, b.tier / 4);
+  barkGeos.push(makeTaperedTube(curve, {
+    tubular: 24, radial: 8, rBase: rB, rTip: 0.018, gnarl: 0.03, taperPow: 1.1
+  }));
+
+  const padSize = THREE.MathUtils.lerp(0.50, 0.34, b.tier / 4);
+
+  // pad at the branch tip
+  const tip = curve.getPointAt(1);
+  addFoliagePad(tip.clone().addScaledVector(YUP, padSize * 0.35), padSize);
+
+  // side twig + pad (upper)
+  const midP = curve.getPointAt(0.7);
+  const side = lateral.clone().multiplyScalar(rand() > 0.5 ? 1 : -1);
+  const twigEnd = midP.clone().addScaledVector(side, len * 0.28)
+    .addScaledVector(outward, len * 0.10).addScaledVector(YUP, len * 0.02);
+  const twig = new THREE.CatmullRomCurve3([
+    midP, midP.clone().lerp(twigEnd, 0.5).addScaledVector(YUP, 0.03), twigEnd
+  ]);
+  barkGeos.push(makeTaperedTube(twig, { tubular: 10, radial: 6, rBase: 0.045, rTip: 0.012 }));
+  addFoliagePad(twigEnd.clone().addScaledVector(YUP, padSize * 0.30), padSize * 0.80);
+
+  // side twig + pad (lower, opposite)
+  const midP2 = curve.getPointAt(0.45);
+  const side2 = side.clone().multiplyScalar(-1);
+  const twigEnd2 = midP2.clone().addScaledVector(side2, len * 0.26)
+    .addScaledVector(outward, len * 0.05);
+  const twig2 = new THREE.CatmullRomCurve3([
+    midP2, midP2.clone().lerp(twigEnd2, 0.5).addScaledVector(YUP, 0.02), twigEnd2
+  ]);
+  barkGeos.push(makeTaperedTube(twig2, { tubular: 10, radial: 6, rBase: 0.04, rTip: 0.01 }));
+  addFoliagePad(twigEnd2.clone().addScaledVector(YUP, padSize * 0.28), padSize * 0.75);
+}
+branches.forEach(buildBranch);
+
+/* ---- apex canopy ---- */
+const apex = trunkCurve.getPointAt(1.0);
+addFoliagePad(apex.clone().addScaledVector(YUP, 0.12), 0.55);
+addFoliagePad(apex.clone().add(new THREE.Vector3(0.22, 0.05, -0.12)), 0.42);
+addFoliagePad(apex.clone().add(new THREE.Vector3(-0.18, 0.02, 0.16)), 0.40);
+
+/* ---- soil mound around the trunk base ---- */
+{
+  const mound = new THREE.SphereGeometry(0.55, 20, 12);
+  mound.scale(1, 0.28, 0.8);
+  mound.translate(0, -0.03, 0);
+  soilMoundGeos.push(mound);
+}
+
+/* ---- moss patches + pebbles on the soil ---- */
+for (let i = 0; i < 12; i++) {
+  const m = new THREE.CircleGeometry(0.10 + rand() * 0.13, 8);
+  m.rotateX(-Math.PI / 2);
+  const a = rand() * Math.PI * 2, r = rand();
+  m.translate(Math.cos(a) * r * 1.05, 0.006, Math.sin(a) * r * 0.66);
+  mossGeos.push(m);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Materials
+ * ------------------------------------------------------------------ */
+const barkMat = new THREE.MeshStandardMaterial({
+  map: barkTex, bumpMap: barkTex, bumpScale: 0.02,
+  color: 0xffffff, roughness: 0.94, metalness: 0.0, envMapIntensity: 0.45
+});
+const foliageDarkMat = new THREE.MeshStandardMaterial({
+  color: 0x2b5327, roughness: 0.9, metalness: 0.0, flatShading: true, envMapIntensity: 0.5
+});
+const foliageLightMat = new THREE.MeshStandardMaterial({
+  color: 0x40732f, roughness: 0.88, metalness: 0.0, flatShading: true, envMapIntensity: 0.55
+});
+const needleMat = new THREE.MeshStandardMaterial({
+  color: 0x4c7d40, roughness: 0.85, metalness: 0.0, flatShading: true, envMapIntensity: 0.5
+});
+const soilMat = new THREE.MeshStandardMaterial({ color: 0x2c221a, roughness: 1.0, metalness: 0.0 });
+const mossMat = new THREE.MeshStandardMaterial({ color: 0x3c5a2c, roughness: 1.0, metalness: 0.0 });
+
+/* ---- assemble the tree (offset up to the soil surface) ---- */
+const tree = new THREE.Group();
+tree.position.y = SOIL_TOP;
+bonsai.add(tree);
+
+function addMerged(geos, mat, cast, receive) {
+  if (!geos.length) return;
+  const mesh = new THREE.Mesh(mergeGeometries(geos, false), mat);
+  mesh.castShadow = !!cast;
+  mesh.receiveShadow = !!receive;
+  tree.add(mesh);
+  return mesh;
+}
+addMerged(barkGeos, barkMat, true, true);
+addMerged(foliageDarkGeos, foliageDarkMat, true, true);
+addMerged(foliageLightGeos, foliageLightMat, true, true);
+addMerged(needleGeos, needleMat, false, false);
+addMerged(soilMoundGeos, soilMat, false, true);
+addMerged(mossGeos, mossMat, false, true);
+
+/* ------------------------------------------------------------------ *
+ *  Shallow rectangular bonsai pot
+ * ------------------------------------------------------------------ */
+const pot = new THREE.Group();
+bonsai.add(pot);
+
+const potMat = new THREE.MeshStandardMaterial({
+  color: 0x7c4636, roughness: 0.72, metalness: 0.05, envMapIntensity: 0.7
+});
+const potDarkMat = new THREE.MeshStandardMaterial({
+  color: 0x5e3527, roughness: 0.78, metalness: 0.05, envMapIntensity: 0.6
+});
+
+function boxMesh(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  pot.add(m);
+  return m;
+}
+
+// body, rim overhang, feet
+boxMesh(2.90, 0.54, 1.90, potMat, 0, 0.37, 0);
+boxMesh(3.04, 0.12, 2.04, potMat, 0, 0.61, 0);   // rim (top 0.67)
+const fx = 1.18, fz = 0.70;
+boxMesh(0.20, 0.10, 0.20, potDarkMat, fx, 0.05, fz);
+boxMesh(0.20, 0.10, 0.20, potDarkMat, -fx, 0.05, fz);
+boxMesh(0.20, 0.10, 0.20, potDarkMat, fx, 0.05, -fz);
+boxMesh(0.20, 0.10, 0.20, potDarkMat, -fx, 0.05, -fz);
+
+// soil slab filling the pot up to SOIL_TOP
+const soilSlab = new THREE.Mesh(new THREE.BoxGeometry(2.66, 0.22, 1.66), soilMat);
+soilSlab.position.set(0, 0.55, 0);
+soilSlab.receiveShadow = true;
+pot.add(soilSlab);
+
+// a few pebbles on the soil surface
+const pebbleMat = new THREE.MeshStandardMaterial({ color: 0x8b8378, roughness: 0.9, metalness: 0.0 });
+for (let i = 0; i < 6; i++) {
+  const p = new THREE.Mesh(new THREE.IcosahedronGeometry(0.05 + rand() * 0.045, 0), pebbleMat);
+  p.scale.set(1, 0.6, 1);
+  const a = rand() * Math.PI * 2, r = 0.4 + rand() * 0.85;
+  p.position.set(Math.cos(a) * r * 1.05, SOIL_TOP + 0.02, Math.sin(a) * r * 0.6);
+  p.castShadow = true; p.receiveShadow = true;
+  pot.add(p);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,825 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Glowing Jellyfish Lantern</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0d12; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: rgba(180, 225, 235, 0.42); letter-spacing: 0.12em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Drag to orbit &nbsp;·&nbsp; Scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0d12);
+scene.fog = new THREE.FogExp2(0x0a0d12, 0.018);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(3.6, 1.1, 5.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 2.6;
+controls.maxDistance = 16;
+controls.target.set(0, 0.35, 0);
+controls.maxPolarAngle = Math.PI * 0.92;
+controls.update();
+
+/* ============================================================
+   Palette
+   ============================================================ */
+const AQUA      = new THREE.Color(0x5ff0ff);
+const AQUA_DEEP = new THREE.Color(0x18b6d8);
+const CYAN      = new THREE.Color(0x46e8ff);
+const VIOLET    = new THREE.Color(0x8a4cf0);
+const MAGENTA   = new THREE.Color(0xb057ff);
+
+/* ============================================================
+   Root object — the ONE centered object
+   ============================================================ */
+const jelly = new THREE.Group();
+jelly.position.y = 0.15;
+scene.add(jelly);
+
+// Sub-groups so animation can address parts independently
+const bellGroup = new THREE.Group();      // dome + veins + rim
+const tentacleGroup = new THREE.Group();  // trailing tentacles
+const loopGroup = new THREE.Group();      // dark hanging loop (unlit part)
+jelly.add(bellGroup, tentacleGroup, loopGroup);
+
+/* ------------------------------------------------------------
+   Bell profile: a smooth bell-dome jellyfish cap.
+   Returns radius at parameter t in [0,1] where t=0 is apex,
+   t=1 is the flared skirt rim.
+   ------------------------------------------------------------ */
+const BELL_H = 1.35;   // total height of the bell
+const BELL_R = 1.25;   // max radius of the bell
+
+function bellRadius(t) {
+  // Base dome: sine lobe gives a rounded apex swelling to a wide waist
+  const dome = Math.pow(Math.sin(Math.PI * 0.5 * Math.pow(t, 0.78)), 0.85);
+  // Skirt flare near the bottom edge
+  const flare = 1.0 + 0.16 * Math.pow(Math.max(0, (t - 0.72) / 0.28), 2.0);
+  // Slight tuck just above the rim for a bell lip
+  const tuck = 1.0 - 0.06 * Math.exp(-Math.pow((t - 0.86) / 0.09, 2));
+  return BELL_R * dome * flare * tuck;
+}
+
+function bellHeight(t) {
+  // Apex at +BELL_H*0.62, rim drops below origin
+  const drop = Math.pow(t, 1.12);
+  return BELL_H * (0.62 - drop);
+}
+
+// Build the lathe profile
+const PROFILE_STEPS = 160;
+const bellProfile = [];
+for (let i = 0; i <= PROFILE_STEPS; i++) {
+  const t = i / PROFILE_STEPS;
+  const r = Math.max(0.0009, bellRadius(t));
+  bellProfile.push(new THREE.Vector2(r, bellHeight(t)));
+}
+
+const bellGeo = new THREE.LatheGeometry(bellProfile, 168);
+bellGeo.computeVertexNormals();
+
+/* Translucent luminous cap material */
+const bellMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0e3b4a,
+  emissive: AQUA_DEEP.clone(),
+  emissiveIntensity: 0.85,
+  roughness: 0.16,
+  metalness: 0.0,
+  transmission: 0.82,
+  thickness: 0.85,
+  ior: 1.28,
+  attenuationColor: new THREE.Color(0x1fd4e8),
+  attenuationDistance: 1.4,
+  clearcoat: 0.75,
+  clearcoatRoughness: 0.22,
+  transparent: true,
+  opacity: 0.92,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+const bell = new THREE.Mesh(bellGeo, bellMat);
+bell.castShadow = false;
+bell.receiveShadow = false;
+bellGroup.add(bell);
+
+/* Inner glow shell — a slightly smaller additive dome that reads
+   as the light trapped inside the cap. */
+const innerProfile = [];
+for (let i = 0; i <= 90; i++) {
+  const t = i / 90;
+  const r = Math.max(0.0009, bellRadius(t) * 0.885);
+  innerProfile.push(new THREE.Vector2(r, bellHeight(t) * 0.97 - 0.02));
+}
+const innerGeo = new THREE.LatheGeometry(innerProfile, 96);
+const innerMat = new THREE.MeshBasicMaterial({
+  color: AQUA.clone().multiplyScalar(0.55),
+  transparent: true,
+  opacity: 0.30,
+  blending: THREE.AdditiveBlending,
+  side: THREE.BackSide,
+  depthWrite: false
+});
+const innerShell = new THREE.Mesh(innerGeo, innerMat);
+bellGroup.add(innerShell);
+
+/* Soft volumetric haze around the bell (fresnel-ish shell) */
+const hazeGeo = new THREE.SphereGeometry(1.0, 48, 36);
+const hazeMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uColor: { value: AQUA.clone() },
+    uIntensity: { value: 0.55 },
+    uTime: { value: 0 }
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vN;
+    varying vec3 vV;
+    void main() {
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      vN = normalize(normalMatrix * normal);
+      vV = normalize(-mv.xyz);
+      gl_Position = projectionMatrix * mv;
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform vec3 uColor;
+    uniform float uIntensity;
+    uniform float uTime;
+    varying vec3 vN;
+    varying vec3 vV;
+    void main() {
+      float f = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+      f = pow(clamp(f, 0.0, 1.0), 2.6);
+      float pulse = 0.85 + 0.15 * sin(uTime * 1.1);
+      gl_FragColor = vec4(uColor * f * uIntensity * pulse, f * 0.55 * uIntensity);
+    }
+  `,
+  transparent: true,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false,
+  side: THREE.BackSide
+});
+const haze = new THREE.Mesh(hazeGeo, hazeMat);
+haze.scale.set(BELL_R * 1.32, BELL_H * 0.92, BELL_R * 1.32);
+haze.position.y = BELL_H * 0.62 - BELL_H * 0.60;
+bellGroup.add(haze);
+
+/* ------------------------------------------------------------
+   Luminous veins branching across the cap surface.
+   Each vein is a TubeGeometry following the bell surface, from
+   near the apex down to the rim, with side-branches.
+   ------------------------------------------------------------ */
+const veinMat = new THREE.MeshBasicMaterial({
+  color: AQUA.clone(),
+  transparent: true,
+  opacity: 0.95,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const veinGlowMat = new THREE.MeshBasicMaterial({
+  color: AQUA.clone().multiplyScalar(0.5),
+  transparent: true,
+  opacity: 0.22,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+// Surface point at (t, theta) pushed slightly outward along the shell
+function bellSurfacePoint(t, theta, offset = 0.012) {
+  const r = bellRadius(t) + offset;
+  const y = bellHeight(t);
+  return new THREE.Vector3(Math.cos(theta) * r, y, Math.sin(theta) * r);
+}
+
+function makeVeinCurve(theta0, tStart, tEnd, wobbleAmp, wobbleFreq, phase) {
+  const pts = [];
+  const N = 34;
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    const t = THREE.MathUtils.lerp(tStart, tEnd, u);
+    // veins meander a little as they descend
+    const wob = Math.sin(u * Math.PI * wobbleFreq + phase) * wobbleAmp * (0.25 + u * 0.9);
+    pts.push(bellSurfacePoint(t, theta0 + wob, 0.014));
+  }
+  return new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.4);
+}
+
+const veinsGroup = new THREE.Group();
+bellGroup.add(veinsGroup);
+
+const MAIN_VEINS = 12;
+for (let i = 0; i < MAIN_VEINS; i++) {
+  const theta = (i / MAIN_VEINS) * Math.PI * 2;
+  const phase = i * 1.37;
+
+  // Main trunk vein: apex region -> rim
+  const trunk = makeVeinCurve(theta, 0.07, 0.985, 0.085, 1.6, phase);
+  const trunkGeo = new THREE.TubeGeometry(trunk, 90, 0.016, 8, false);
+  const trunkMesh = new THREE.Mesh(trunkGeo, veinMat);
+  veinsGroup.add(trunkMesh);
+
+  const trunkHaloGeo = new THREE.TubeGeometry(trunk, 60, 0.052, 8, false);
+  veinsGroup.add(new THREE.Mesh(trunkHaloGeo, veinGlowMat));
+
+  // Two side branches peeling off the trunk lower down
+  for (let b = 0; b < 2; b++) {
+    const startT = 0.42 + b * 0.20;
+    const dir = b % 2 === 0 ? 1 : -1;
+    const branchPts = [];
+    const M = 22;
+    for (let j = 0; j <= M; j++) {
+      const u = j / M;
+      const t = THREE.MathUtils.lerp(startT, 0.985, u);
+      const wobTrunk = Math.sin(((t - 0.07) / (0.985 - 0.07)) * Math.PI * 1.6 + phase) * 0.085;
+      const spread = dir * (0.055 + 0.16 * Math.pow(u, 0.85)) * (1.0 - b * 0.22);
+      branchPts.push(bellSurfacePoint(t, theta + wobTrunk + spread, 0.013));
+    }
+    const bc = new THREE.CatmullRomCurve3(branchPts, false, 'catmullrom', 0.4);
+    veinsGroup.add(new THREE.Mesh(new THREE.TubeGeometry(bc, 60, 0.0105, 7, false), veinMat));
+    veinsGroup.add(new THREE.Mesh(new THREE.TubeGeometry(bc, 40, 0.036, 7, false), veinGlowMat));
+
+    // Small twig off the branch
+    const twigPts = [];
+    const K = 14;
+    const twigStart = 0.66 + b * 0.10;
+    for (let j = 0; j <= K; j++) {
+      const u = j / K;
+      const t = THREE.MathUtils.lerp(twigStart, 0.985, u);
+      const uu = (t - startT) / (0.985 - startT);
+      const wobTrunk = Math.sin(((t - 0.07) / (0.985 - 0.07)) * Math.PI * 1.6 + phase) * 0.085;
+      const spread = dir * (0.055 + 0.16 * Math.pow(Math.max(uu, 0), 0.85)) * (1.0 - b * 0.22);
+      const twigSpread = dir * 0.075 * Math.pow(u, 0.8);
+      twigPts.push(bellSurfacePoint(t, theta + wobTrunk + spread + twigSpread, 0.012));
+    }
+    const tc = new THREE.CatmullRomCurve3(twigPts, false, 'catmullrom', 0.4);
+    veinsGroup.add(new THREE.Mesh(new THREE.TubeGeometry(tc, 34, 0.0068, 6, false), veinMat));
+  }
+}
+
+/* Bright rim ring at the base of the bell — the brightest zone */
+{
+  const rimT = 0.985;
+  const rimR = bellRadius(rimT) + 0.012;
+  const rimY = bellHeight(rimT);
+
+  const rimGeo = new THREE.TorusGeometry(rimR, 0.022, 12, 200);
+  const rimMat = new THREE.MeshBasicMaterial({
+    color: 0x9dfaff,
+    transparent: true,
+    opacity: 0.95,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const rim = new THREE.Mesh(rimGeo, rimMat);
+  rim.rotation.x = Math.PI / 2;
+  rim.position.y = rimY;
+  bellGroup.add(rim);
+
+  const rimHalo = new THREE.Mesh(
+    new THREE.TorusGeometry(rimR, 0.10, 10, 120),
+    new THREE.MeshBasicMaterial({
+      color: 0x4fe6ff, transparent: true, opacity: 0.20,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  rimHalo.rotation.x = Math.PI / 2;
+  rimHalo.position.y = rimY;
+  bellGroup.add(rimHalo);
+
+  // Scalloped bumps along the rim for organic detail
+  const scallops = 36;
+  const scallopMat = new THREE.MeshBasicMaterial({
+    color: 0x86f6ff, transparent: true, opacity: 0.75,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const scallopGeo = new THREE.SphereGeometry(0.032, 12, 10);
+  for (let i = 0; i < scallops; i++) {
+    const a = (i / scallops) * Math.PI * 2;
+    const s = new THREE.Mesh(scallopGeo, scallopMat);
+    s.position.set(Math.cos(a) * rimR, rimY - 0.005, Math.sin(a) * rimR);
+    s.scale.set(1, 0.7, 1);
+    bellGroup.add(s);
+  }
+}
+
+/* Oral arms — short frilled ribbons hanging under the bell center */
+const oralGroup = new THREE.Group();
+bellGroup.add(oralGroup);
+{
+  const ORAL_COUNT = 5;
+  for (let i = 0; i < ORAL_COUNT; i++) {
+    const a = (i / ORAL_COUNT) * Math.PI * 2 + 0.4;
+    const pts = [];
+    const N = 20;
+    for (let j = 0; j <= N; j++) {
+      const u = j / N;
+      const r = 0.10 + 0.30 * Math.pow(u, 0.7);
+      const y = bellHeight(0.55) - 0.10 - 1.15 * Math.pow(u, 1.05);
+      const sway = Math.sin(u * 4.2 + i) * 0.10;
+      pts.push(new THREE.Vector3(
+        Math.cos(a + sway * 0.5) * r,
+        y,
+        Math.sin(a + sway * 0.5) * r
+      ));
+    }
+    const c = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+    const geo = new THREE.TubeGeometry(c, 60, 0.045, 8, false);
+    // taper the tube manually
+    const pos = geo.attributes.position;
+    const count = pos.count;
+    const segs = 61, radial = 9;
+    for (let s = 0; s < segs; s++) {
+      const u = s / (segs - 1);
+      const scaleR = (1.0 - 0.82 * Math.pow(u, 0.8));
+      const center = c.getPoint(u);
+      for (let r2 = 0; r2 < radial; r2++) {
+        const idx = s * radial + r2;
+        if (idx >= count) continue;
+        const vx = pos.getX(idx) - center.x;
+        const vy = pos.getY(idx) - center.y;
+        const vz = pos.getZ(idx) - center.z;
+        pos.setXYZ(idx, center.x + vx * scaleR, center.y + vy * scaleR, center.z + vz * scaleR);
+      }
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    const mat = new THREE.MeshBasicMaterial({
+      color: new THREE.Color().lerpColors(AQUA, VIOLET, 0.35),
+      transparent: true,
+      opacity: 0.62,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false
+    });
+    oralGroup.add(new THREE.Mesh(geo, mat));
+  }
+}
+
+/* ------------------------------------------------------------
+   Tentacles: 12 tapering emissive strands, cyan -> violet,
+   brightest where they meet the bell.
+   ------------------------------------------------------------ */
+const TENTACLE_COUNT = 12;
+const TENT_SEGMENTS = 64;
+const TENT_RADIAL = 7;
+const tentacles = [];
+
+const rimTAttach = 0.96;
+const attachR = bellRadius(rimTAttach);
+const attachY = bellHeight(rimTAttach);
+
+for (let i = 0; i < TENTACLE_COUNT; i++) {
+  const a = (i / TENTACLE_COUNT) * Math.PI * 2;
+  const len = 2.5 + ((i * 7919) % 100) / 100 * 1.5;   // deterministic 2.5..4.0
+  const phase = (i * 2.399963);                        // golden-angle spread
+  const baseR = attachR * (0.90 + 0.08 * Math.sin(i * 2.1));
+
+  // Build the strand geometry as a tapered tube; we rebuild positions
+  // each frame from a parametric curve for gentle drifting motion.
+  const curvePts = [];
+  for (let j = 0; j <= TENT_SEGMENTS; j++) curvePts.push(new THREE.Vector3());
+  const curve = new THREE.CatmullRomCurve3(curvePts, false, 'catmullrom', 0.5);
+
+  const geo = new THREE.TubeGeometry(curve, TENT_SEGMENTS, 0.03, TENT_RADIAL, false);
+
+  // Vertex colors: cyan at top -> violet at the tip, brightness falls off
+  const posAttr = geo.attributes.position;
+  const colors = new Float32Array(posAttr.count * 3);
+  const segsN = TENT_SEGMENTS + 1;
+  const radN = TENT_RADIAL + 1;
+  const c = new THREE.Color();
+  for (let s = 0; s < segsN; s++) {
+    const u = s / (segsN - 1);
+    c.copy(CYAN).lerp(VIOLET, Math.pow(u, 0.72));
+    if (u > 0.72) c.lerp(MAGENTA, (u - 0.72) / 0.28 * 0.55);
+    const bright = THREE.MathUtils.lerp(1.55, 0.30, Math.pow(u, 0.62));
+    for (let r = 0; r < radN; r++) {
+      const idx = s * radN + r;
+      if (idx >= posAttr.count) continue;
+      colors[idx * 3 + 0] = Math.min(c.r * bright, 1.6);
+      colors[idx * 3 + 1] = Math.min(c.g * bright, 1.6);
+      colors[idx * 3 + 2] = Math.min(c.b * bright, 1.6);
+    }
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const mat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.92,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.frustumCulled = false;
+  tentacleGroup.add(mesh);
+
+  // Soft halo sleeve around the strand
+  const haloGeo = new THREE.TubeGeometry(curve, TENT_SEGMENTS, 0.085, 6, false);
+  const haloColors = new Float32Array(haloGeo.attributes.position.count * 3);
+  const hRadN = 7;
+  for (let s = 0; s < segsN; s++) {
+    const u = s / (segsN - 1);
+    c.copy(CYAN).lerp(VIOLET, Math.pow(u, 0.72));
+    const bright = THREE.MathUtils.lerp(0.55, 0.05, Math.pow(u, 0.5));
+    for (let r = 0; r < hRadN; r++) {
+      const idx = s * hRadN + r;
+      if (idx >= haloGeo.attributes.position.count) continue;
+      haloColors[idx * 3 + 0] = c.r * bright;
+      haloColors[idx * 3 + 1] = c.g * bright;
+      haloColors[idx * 3 + 2] = c.b * bright;
+    }
+  }
+  haloGeo.setAttribute('color', new THREE.BufferAttribute(haloColors, 3));
+  const haloMat = new THREE.MeshBasicMaterial({
+    vertexColors: true, transparent: true, opacity: 0.20,
+    blending: THREE.AdditiveBlending, depthWrite: false
+  });
+  const haloMesh = new THREE.Mesh(haloGeo, haloMat);
+  haloMesh.frustumCulled = false;
+  tentacleGroup.add(haloMesh);
+
+  tentacles.push({
+    angle: a, len, phase, baseR,
+    curve, curvePts,
+    geo, haloGeo,
+    coreRadius: 0.030, haloRadius: 0.085
+  });
+}
+
+/* Rebuild a tentacle tube's vertices in place from its curve.
+   Implements a tapering radius profile without reallocating geometry. */
+const _tmpFrames = { tangents: [], normals: [], binormals: [] };
+function updateTentacleGeometry(t, time) {
+  const { curve, curvePts, len, phase, angle, baseR } = t;
+
+  const swayAmp = 0.16;
+  for (let j = 0; j <= TENT_SEGMENTS; j++) {
+    const u = j / TENT_SEGMENTS;
+    const drop = len * Math.pow(u, 1.02);
+    // radial drift: strands splay slightly outward then curl inward
+    const radial = baseR + 0.30 * Math.sin(u * Math.PI * 0.85) - 0.16 * Math.pow(u, 2.2);
+    const wave = Math.sin(time * 0.9 - u * 4.2 + phase) * swayAmp * Math.pow(u, 1.35);
+    const wave2 = Math.cos(time * 0.62 - u * 2.4 + phase * 0.7) * swayAmp * 0.7 * Math.pow(u, 1.5);
+    const aa = angle + wave * 0.55;
+    const rr = Math.max(0.02, radial + wave2 * 0.55);
+
+    curvePts[j].set(
+      Math.cos(aa) * rr,
+      attachY + 0.02 - drop + Math.sin(time * 0.8 + phase) * 0.02 * u,
+      Math.sin(aa) * rr
+    );
+  }
+  curve.updateArcLengths && curve.updateArcLengths();
+
+  // Recompute Frenet frames and rewrite tube vertices
+  const frames = curve.computeFrenetFrames(TENT_SEGMENTS, false);
+  writeTube(t.geo, curve, frames, TENT_SEGMENTS, TENT_RADIAL, (u) =>
+    t.coreRadius * (1.0 - 0.94 * Math.pow(u, 0.78)) + 0.0016
+  );
+  writeTube(t.haloGeo, curve, frames, TENT_SEGMENTS, 6, (u) =>
+    t.haloRadius * (1.0 - 0.92 * Math.pow(u, 0.7)) + 0.004
+  );
+}
+
+function writeTube(geo, curve, frames, tubularSegments, radialSegments, radiusFn) {
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  const P = new THREE.Vector3();
+  const N = new THREE.Vector3();
+  const B = new THREE.Vector3();
+  const normal = new THREE.Vector3();
+
+  for (let i = 0; i <= tubularSegments; i++) {
+    const u = i / tubularSegments;
+    curve.getPoint(u, P);
+    N.copy(frames.normals[i]);
+    B.copy(frames.binormals[i]);
+    const radius = radiusFn(u);
+
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = (j / radialSegments) * Math.PI * 2;
+      const sin = Math.sin(v);
+      const cos = -Math.cos(v);
+
+      normal.set(
+        cos * N.x + sin * B.x,
+        cos * N.y + sin * B.y,
+        cos * N.z + sin * B.z
+      ).normalize();
+
+      const idx = i * (radialSegments + 1) + j;
+      if (idx >= pos.count) continue;
+      pos.setXYZ(idx, P.x + radius * normal.x, P.y + radius * normal.y, P.z + radius * normal.z);
+      nrm.setXYZ(idx, normal.x, normal.y, normal.z);
+    }
+  }
+  pos.needsUpdate = true;
+  nrm.needsUpdate = true;
+  geo.computeBoundingSphere();
+}
+
+/* ------------------------------------------------------------
+   The slim DARK hanging loop — the only unlit part.
+   A thin torus ring plus a short stem into the dome apex.
+   ------------------------------------------------------------ */
+{
+  const apexY = bellHeight(0.0);
+
+  const darkMat = new THREE.MeshStandardMaterial({
+    color: 0x14181e,
+    roughness: 0.42,
+    metalness: 0.85,
+    emissive: 0x000000
+  });
+
+  // Stem / collar seated on the dome apex
+  const collar = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.062, 0.088, 0.07, 28, 1),
+    darkMat
+  );
+  collar.position.y = apexY + 0.015;
+  collar.castShadow = true;
+  loopGroup.add(collar);
+
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.026, 0.030, 0.16, 20, 1),
+    darkMat
+  );
+  stem.position.y = apexY + 0.12;
+  stem.castShadow = true;
+  loopGroup.add(stem);
+
+  // The loop ring itself
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.135, 0.0195, 18, 96),
+    darkMat
+  );
+  ring.position.y = apexY + 0.325;
+  ring.castShadow = true;
+  loopGroup.add(ring);
+
+  // Small bead where ring meets stem
+  const bead = new THREE.Mesh(new THREE.SphereGeometry(0.036, 20, 14), darkMat);
+  bead.position.y = apexY + 0.198;
+  bead.castShadow = true;
+  loopGroup.add(bead);
+
+  // Slim suspension cord rising out of frame
+  const cord = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.008, 0.008, 5.0, 10, 1),
+    new THREE.MeshStandardMaterial({ color: 0x0e1115, roughness: 0.9, metalness: 0.1 })
+  );
+  cord.position.y = apexY + 0.46 + 2.5;
+  loopGroup.add(cord);
+}
+
+/* ------------------------------------------------------------
+   Drifting bioluminescent motes around the lantern
+   ------------------------------------------------------------ */
+{
+  const COUNT = 420;
+  const positions = new Float32Array(COUNT * 3);
+  const colors = new Float32Array(COUNT * 3);
+  const seeds = new Float32Array(COUNT);
+  const c = new THREE.Color();
+  for (let i = 0; i < COUNT; i++) {
+    // deterministic pseudo-random distribution
+    const s1 = (Math.sin(i * 12.9898) * 43758.5453) % 1;
+    const s2 = (Math.sin(i * 78.233) * 12345.6789) % 1;
+    const s3 = (Math.sin(i * 39.425) * 24634.6345) % 1;
+    const u = Math.abs(s1), v = Math.abs(s2), w = Math.abs(s3);
+    const rad = 1.6 + w * 4.2;
+    const th = u * Math.PI * 2;
+    const yy = -3.4 + v * 6.4;
+    positions[i * 3 + 0] = Math.cos(th) * rad;
+    positions[i * 3 + 1] = yy;
+    positions[i * 3 + 2] = Math.sin(th) * rad;
+    c.copy(CYAN).lerp(VIOLET, w);
+    const b = 0.35 + u * 0.65;
+    colors[i * 3 + 0] = c.r * b;
+    colors[i * 3 + 1] = c.g * b;
+    colors[i * 3 + 2] = c.b * b;
+    seeds[i] = u * 6.283;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  const m = new THREE.PointsMaterial({
+    size: 0.035,
+    vertexColors: true,
+    transparent: true,
+    opacity: 0.75,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    sizeAttenuation: true
+  });
+  const pts = new THREE.Points(g, m);
+  pts.frustumCulled = false;
+  jelly.add(pts);
+  pts.userData.seeds = seeds;
+  pts.userData.baseY = Float32Array.from({ length: COUNT }, (_, i) => positions[i * 3 + 1]);
+  window.__motes = pts;
+}
+
+/* ============================================================
+   Lighting
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x2a4f66, 0x07090c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xbfe9ff, 1.15);
+key.position.set(4.2, 6.5, 4.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 26;
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 6;
+key.shadow.camera.bottom = -6;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x3d6f9a, 0.35);
+fill.position.set(-5.0, 1.6, 3.2);
+scene.add(fill);
+
+const rimLight = new THREE.DirectionalLight(0x7f5dff, 0.55);
+rimLight.position.set(-2.4, 3.0, -5.4);
+scene.add(rimLight);
+
+// Emissive core lights radiating from the lantern itself
+const coreLight = new THREE.PointLight(0x5ff0ff, 9.0, 12.0, 2.0);
+coreLight.position.set(0, bellHeight(0.45), 0);
+jelly.add(coreLight);
+
+const rimGlowLight = new THREE.PointLight(0x7ef7ff, 5.5, 8.0, 2.0);
+rimGlowLight.position.set(0, bellHeight(0.97) - 0.05, 0);
+jelly.add(rimGlowLight);
+
+const violetLight = new THREE.PointLight(0x9b5cff, 3.2, 9.0, 2.0);
+violetLight.position.set(0, bellHeight(1.0) - 1.6, 0);
+jelly.add(violetLight);
+
+/* ============================================================
+   Ground plane — receives shadows only
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -4.6;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint glow pool on the floor beneath the lantern
+{
+  const poolGeo = new THREE.CircleGeometry(3.4, 72);
+  const poolMat = new THREE.ShaderMaterial({
+    uniforms: { uColor: { value: new THREE.Color(0x2ad0ee) }, uTime: { value: 0 } },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main() {
+        vUv = uv;
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uColor;
+      uniform float uTime;
+      varying vec2 vUv;
+      void main() {
+        float d = distance(vUv, vec2(0.5)) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        a = pow(a, 2.4) * (0.80 + 0.20 * sin(uTime * 0.9));
+        gl_FragColor = vec4(uColor, a * 0.28);
+      }
+    `,
+    transparent: true,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  });
+  const pool = new THREE.Mesh(poolGeo, poolMat);
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.y = -4.585;
+  scene.add(pool);
+  window.__pool = poolMat;
+}
+
+/* ============================================================
+   Animation
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const time = clock.getElapsedTime();
+
+  // Gentle bell pulsation (breathing) — squash & stretch
+  const pulse = Math.sin(time * 0.85);
+  const pulse2 = Math.sin(time * 0.85 - 0.5);
+  bellGroup.scale.set(1 + pulse * 0.030, 1 - pulse2 * 0.045, 1 + pulse * 0.030);
+  bellGroup.position.y = pulse2 * 0.045;
+
+  // Slow drift of the whole lantern on its cord
+  jelly.position.y = 0.15 + Math.sin(time * 0.55) * 0.055;
+  jelly.rotation.z = Math.sin(time * 0.37) * 0.022;
+  jelly.rotation.x = Math.cos(time * 0.31) * 0.018;
+
+  // Vein shimmer
+  const veinPulse = 0.80 + 0.20 * Math.sin(time * 1.6);
+  veinMat.opacity = 0.72 * veinPulse + 0.20;
+  veinGlowMat.opacity = 0.16 + 0.10 * veinPulse;
+  bellMat.emissiveIntensity = 0.70 + 0.28 * veinPulse;
+  innerMat.opacity = 0.24 + 0.10 * veinPulse;
+
+  hazeMat.uniforms.uTime.value = time;
+  if (window.__pool) window.__pool.uniforms.uTime.value = time;
+
+  coreLight.intensity = 8.0 + 2.0 * veinPulse;
+  rimGlowLight.intensity = 4.8 + 1.4 * Math.sin(time * 1.2 + 0.6);
+  violetLight.intensity = 2.8 + 0.9 * Math.sin(time * 0.9 + 2.0);
+
+  // Tentacle motion
+  for (let i = 0; i < tentacles.length; i++) {
+    updateTentacleGeometry(tentacles[i], time);
+  }
+
+  // Motes drift
+  const motes = window.__motes;
+  if (motes) {
+    const p = motes.geometry.attributes.position;
+    const seeds = motes.userData.seeds;
+    const baseY = motes.userData.baseY;
+    for (let i = 0; i < seeds.length; i++) {
+      p.array[i * 3 + 1] = baseY[i] + Math.sin(time * 0.25 + seeds[i]) * 0.32;
+    }
+    p.needsUpdate = true;
+    motes.rotation.y = time * 0.015;
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// Prime tentacle geometry once before the first frame
+for (let i = 0; i < tentacles.length; i++) updateTentacleGeometry(tentacles[i], 0);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+animate();
+</script>
+</body>
+</html>

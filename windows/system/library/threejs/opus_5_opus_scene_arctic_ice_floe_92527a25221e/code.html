@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Arctic Ice Floe Night</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#050c18} canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============ 1. CONFIG, PALETTE & SCENE CONSTANTS ====================== */
+const SEED = 40817;
+const FOG_COLOR = 0x0a1526;          // night haze over the water
+const FOG_DENSITY = 0.0125;
+const SEA_Y = 0;                     // waterline: everything floats around this plane
+const PAL = {
+  snow: 0xeef4fb, snowDim: 0xc9d8e8, iceEdge: 0x9fd0ea, iceBlue: 0x4aa8d8, iceDeep: 0x1d6f9e,
+  water: 0x0c1a2c, fur: 0xf0efe4, furShade: 0xcfd4d8, muzzle: 0x1a1c20,
+  seal: 0x4d555e, sealBelly: 0x8b939b, iglooGlow: 0xffb265, wood: 0x6b5137
+};
+
+// registries filled by the builders, consumed by the animation loop
+const floes = [];          // { obj, bob, spin, phase } drifting ice sheets
+const curtains = [];       // aurora ribbons with cached rest positions
+const breathers = [];      // seals that bob at the breathing hole
+const heads = [];          // animal head pivots that turn gently
+let starsA = null, starsB = null, snow = null, snowVel = null, sheen = null;
+let seaMat = null, glowLight = null, auroraLightG = null, auroraLightV = null;
+
+/* ============ 2. SEEDED PRNG & GEOMETRY HELPERS ========================= */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr = (a, b) => a + rand() * (b - a);
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+function shad(m, c = true, r = true) { m.castShadow = c; m.receiveShadow = r; return m; }
+function canvas2d(w, h) { const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')]; }
+function toTex(c, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry); t.anisotropy = 4;
+  return t;
+}
+function ellip(rx, ry, rz, mat, seg = 16, cast = true) {     // squashed sphere: the animal building block
+  const m = new THREE.Mesh(new THREE.SphereGeometry(1, seg, Math.round(seg * 0.7)), mat);
+  m.scale.set(rx, ry, rz);
+  return shad(m, cast, true);
+}
+// irregular convex outline used for both floes and the ice rubble
+function floeShape(radius, sides, jitter) {
+  const s = new THREE.Shape();
+  for (let i = 0; i < sides; i++) {
+    const a = i / sides * 6.283, r = radius * (1 - jitter + rand() * jitter * 2);
+    const x = Math.cos(a) * r, y = Math.sin(a) * r;
+    if (i === 0) s.moveTo(x, y); else s.lineTo(x, y);
+  }
+  s.closePath();
+  return s;
+}
+
+/* ============ 3. PROCEDURAL CANVAS TEXTURES ============================= */
+function makeSnowTex() {                                     // wind-packed snow with faint drifts
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#eff4fa'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 140; i++) {                            // soft drift bands
+    g.fillStyle = `rgba(${ri(190, 226)},${ri(206, 236)},${ri(224, 250)},${rr(0.1, 0.32)})`;
+    g.beginPath(); g.ellipse(rr(0, 512), rr(0, 512), rr(30, 130), rr(8, 34), rr(0, 3.14), 0, 6.283); g.fill();
+  }
+  for (let i = 0; i < 2600; i++) {                           // crystal sparkle
+    g.fillStyle = `rgba(255,255,255,${rr(0.2, 0.8)})`;
+    g.fillRect(rr(0, 512), rr(0, 512), rr(1, 2.5), rr(1, 2.5));
+  }
+  return toTex(c, 3, 3);
+}
+function makeIceTex() {                                      // fractured blue ice for cut edges
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#9ecfe8'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 60; i++) {                             // vertical melt striations
+    g.fillStyle = `rgba(${ri(90, 170)},${ri(170, 220)},${ri(210, 250)},${rr(0.15, 0.5)})`;
+    g.fillRect(rr(0, 512), 0, rr(3, 22), 512);
+  }
+  g.strokeStyle = 'rgba(240,252,255,0.55)';
+  for (let i = 0; i < 40; i++) {                             // hairline cracks
+    g.lineWidth = rr(0.6, 2); let x = rr(0, 512), y = rr(0, 512);
+    g.beginPath(); g.moveTo(x, y);
+    for (let k = 0; k < 4; k++) { x += rr(-60, 60); y += rr(-70, 70); g.lineTo(x, y); }
+    g.stroke();
+  }
+  return toTex(c, 2, 2);
+}
+function makeBlockTex() {                                    // igloo snow-block courses
+  const [c, g] = canvas2d(512, 256);
+  g.fillStyle = '#e6eef7'; g.fillRect(0, 0, 512, 256);
+  g.strokeStyle = 'rgba(150,175,200,0.75)'; g.lineWidth = 3;
+  for (let row = 0; row < 7; row++) {
+    const h = 256 / 7, y = row * h, off = (row % 2) * 34;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(512, y); g.stroke();
+    for (let b = 0; b < 8; b++) {
+      const x = off + b * 64;
+      g.fillStyle = `rgba(${ri(220, 248)},${ri(230, 250)},${ri(240, 255)},0.85)`;
+      g.fillRect(x + 3, y + 3, 58, h - 6);
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x, y + h); g.stroke();
+    }
+  }
+  return toTex(c, 2, 1);
+}
+function makeStarWaterTex() {                                // stars smeared into the swell
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#000308'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 260; i++) {
+    const x = rr(0, 512), y = rr(0, 512), h = rr(6, 34), w = rr(1, 2.6);
+    const gr = g.createLinearGradient(x, y - h / 2, x, y + h / 2);
+    gr.addColorStop(0, 'rgba(180,215,255,0)');
+    gr.addColorStop(0.5, `rgba(214,236,255,${rr(0.3, 0.95)})`);
+    gr.addColorStop(1, 'rgba(180,215,255,0)');
+    g.fillStyle = gr; g.fillRect(x - w / 2, y - h / 2, w, h);
+  }
+  return toTex(c, 3, 3);
+}
+function makeRippleNormalTex() {                             // tileable swell normals for the sea
+  const S = 256, [c, g] = canvas2d(S, S), img = g.createImageData(S, S);
+  const hAt = (x, y) => Math.sin(x * 0.19 + Math.sin(y * 0.07) * 2.2) * 0.6 + Math.sin(y * 0.11 + x * 0.03) * 0.4;
+  for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) {
+    const dx = hAt(x + 1, y) - hAt(x - 1, y), dy = hAt(x, y + 1) - hAt(x, y - 1);
+    const n = new THREE.Vector3(-dx, -dy, 2.4).normalize(), i = (y * S + x) * 4;
+    img.data[i] = (n.x * 0.5 + 0.5) * 255; img.data[i + 1] = (n.y * 0.5 + 0.5) * 255;
+    img.data[i + 2] = (n.z * 0.5 + 0.5) * 255; img.data[i + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(14, 14);
+  return t;
+}
+function makeAuroraTex() {                                   // green-to-violet curtain with ray gaps
+  const [c, g] = canvas2d(256, 256);
+  const gr = g.createLinearGradient(0, 256, 0, 0);
+  gr.addColorStop(0.00, 'rgba(70,255,150,0)');
+  gr.addColorStop(0.20, 'rgba(80,255,165,0.85)');
+  gr.addColorStop(0.52, 'rgba(110,240,255,0.62)');
+  gr.addColorStop(0.82, 'rgba(178,120,255,0.5)');
+  gr.addColorStop(1.00, 'rgba(150,90,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 256, 256);
+  g.globalCompositeOperation = 'destination-out';
+  for (let i = 0; i < 80; i++) { g.fillStyle = `rgba(0,0,0,${rr(0.12, 0.8)})`; g.fillRect(rr(0, 256), 0, rr(1, 7), 256); }
+  return toTex(c, 1, 1);
+}
+function makeDotTex() {                                      // soft round sprite for stars and snow
+  const [c, g] = canvas2d(64, 64);
+  const gr = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  gr.addColorStop(0, 'rgba(255,255,255,1)');
+  gr.addColorStop(0.35, 'rgba(214,236,255,0.75)');
+  gr.addColorStop(1, 'rgba(180,215,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64);
+  return toTex(c, 1, 1);
+}
+
+/* ============ 4. MATERIAL PALETTE ====================================== */
+const snowTex = makeSnowTex(), iceTex = makeIceTex(), dotTex = makeDotTex();
+const MAT = {
+  snow: new THREE.MeshStandardMaterial({ map: snowTex, color: PAL.snow, roughness: 0.9, metalness: 0 }),
+  snowSide: new THREE.MeshStandardMaterial({ map: iceTex, color: PAL.iceEdge, roughness: 0.5, metalness: 0.05 }),
+  iceBlue: new THREE.MeshStandardMaterial({ color: PAL.iceBlue, roughness: 0.28, metalness: 0.1, transparent: true, opacity: 0.9, emissive: PAL.iceDeep, emissiveIntensity: 0.55 }),
+  berg: new THREE.MeshStandardMaterial({ color: 0xdcecf8, roughness: 0.55, metalness: 0.04, flatShading: true }),
+  bergBase: new THREE.MeshStandardMaterial({ color: 0x63bce4, roughness: 0.32, metalness: 0.08, flatShading: true, emissive: 0x0f4e74, emissiveIntensity: 0.7 }),
+  block: new THREE.MeshStandardMaterial({ map: makeBlockTex(), color: 0xe8f0fa, roughness: 0.85 }),
+  fur: new THREE.MeshStandardMaterial({ color: PAL.fur, roughness: 0.95, metalness: 0 }),
+  furShade: new THREE.MeshStandardMaterial({ color: PAL.furShade, roughness: 0.95 }),
+  dark: new THREE.MeshStandardMaterial({ color: PAL.muzzle, roughness: 0.5 }),
+  seal: new THREE.MeshStandardMaterial({ color: PAL.seal, roughness: 0.42, metalness: 0.15 }),
+  sealBelly: new THREE.MeshStandardMaterial({ color: PAL.sealBelly, roughness: 0.5 }),
+  hole: new THREE.MeshStandardMaterial({ color: 0x061019, roughness: 0.15, metalness: 0.6 }),
+  glow: new THREE.MeshBasicMaterial({ color: PAL.iglooGlow, fog: false }),
+  wood: new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.85 })
+};
+
+/* ============ 5. BUILDERS: SEA, SKY, STARS & AURORA ==================== */
+function buildSkyDome() {                                    // deep polar night gradient
+  const [c, g] = canvas2d(4, 256);
+  const gr = g.createLinearGradient(0, 0, 0, 256);
+  gr.addColorStop(0.00, '#03050d'); gr.addColorStop(0.42, '#081428');
+  gr.addColorStop(0.78, '#12304c'); gr.addColorStop(1.00, '#050a14');
+  g.fillStyle = gr; g.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  return new THREE.Mesh(new THREE.SphereGeometry(120, 32, 24),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, fog: false, depthWrite: false }));
+}
+function buildSea() {                                        // dark water carrying star reflections
+  seaMat = new THREE.MeshStandardMaterial({
+    color: PAL.water, roughness: 0.34, metalness: 0.35,
+    normalMap: makeRippleNormalTex(), normalScale: new THREE.Vector2(0.5, 0.5),
+    emissive: 0xffffff, emissiveMap: makeStarWaterTex(), emissiveIntensity: 0.62
+  });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(300, 300), seaMat);
+  m.rotation.x = -Math.PI / 2; m.position.y = SEA_Y; m.receiveShadow = true;
+  return m;
+}
+function buildAuroraSheen() {                                // the curtains smeared over the swell
+  const mat = new THREE.MeshBasicMaterial({
+    map: makeAuroraTex(), transparent: true, opacity: 0.14, blending: THREE.AdditiveBlending,
+    depthWrite: false, fog: true
+  });
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(90, 46), mat);
+  m.rotation.x = -Math.PI / 2; m.position.set(0, 0.04, -30);
+  sheen = m;
+  return m;
+}
+function buildIceShelf() {                                   // jagged shelf silhouette on the horizon
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0x9fb8cf, roughness: 0.9, flatShading: true });
+  for (let i = 0; i < 34; i++) {
+    const a = i / 34 * 6.283 + rr(-0.05, 0.05), d = rr(72, 84);
+    const h = rr(2.5, 7.5), w = rr(6, 13);
+    const block = new THREE.Mesh(new THREE.CylinderGeometry(w * rr(0.4, 0.7), w, h, ri(5, 7)), mat);
+    block.position.set(Math.cos(a) * d, h * 0.42, Math.sin(a) * d);
+    block.rotation.set(rr(-0.05, 0.05), rr(0, 6.28), rr(-0.05, 0.05));
+    g.add(block);
+  }
+  return g;
+}
+function buildStars(count, radius, size, opacity) {          // scattered points on the sky shell
+  const pos = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++) {
+    const u = rr(0.02, 1), a = rr(0, 6.283), r = Math.sqrt(1 - u * u);
+    pos[i * 3] = Math.cos(a) * r * radius; pos[i * 3 + 1] = u * radius; pos[i * 3 + 2] = Math.sin(a) * r * radius;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({
+    map: dotTex, size, sizeAttenuation: true, transparent: true, opacity,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+  }));
+}
+function buildAurora() {                                     // stacked ribbons of polar light
+  const g = new THREE.Group(), tex = makeAuroraTex();
+  const specs = [[62, 20, -44, 0.06, 0.85], [48, 16, -32, -0.28, 0.72], [40, 22, -54, 0.34, 0.6], [34, 13, -24, -0.5, 0.5]];
+  for (const [w, h, z, ry, op] of specs) {
+    const geo = new THREE.PlaneGeometry(w, h, 44, 6);
+    const mat = new THREE.MeshBasicMaterial({
+      map: tex, transparent: true, opacity: op, blending: THREE.AdditiveBlending,
+      depthWrite: false, side: THREE.DoubleSide, fog: false
+    });
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(rr(-10, 10), 6.5 + h * 0.5, z); m.rotation.y = ry;
+    g.add(m);
+    curtains.push({ mesh: m, rest: geo.attributes.position.array.slice(), h, baseOp: op, phase: rr(0, 6.28), amp: rr(1.6, 3.4), sp: rr(0.16, 0.3) });
+  }
+  return g;
+}
+function buildSnowfall(count) {                              // sparse drifting snow crystals
+  const pos = new Float32Array(count * 3);
+  snowVel = [];
+  for (let i = 0; i < count; i++) {
+    pos[i * 3] = rr(-40, 40); pos[i * 3 + 1] = rr(0.5, 26); pos[i * 3 + 2] = rr(-40, 30);
+    snowVel.push({ vy: rr(0.25, 0.7), sw: rr(0, 6.28), amp: rr(0.2, 0.7) });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({
+    map: dotTex, size: 0.16, transparent: true, opacity: 0.55, depthWrite: false, fog: true
+  }));
+}
+
+/* ============ 6. BUILDERS: ICE STRUCTURES ============================== */
+function buildIceFloe(radius, thickness, sides) {            // flat sheet with a blue waterline band
+  const g = new THREE.Group();
+  const geo = new THREE.ExtrudeGeometry(floeShape(radius, sides, 0.22), {
+    depth: thickness, bevelEnabled: true, bevelSize: radius * 0.05, bevelThickness: thickness * 0.35, bevelSegments: 2, curveSegments: 1
+  });
+  geo.rotateX(-Math.PI / 2); geo.translate(0, -thickness * 0.55, 0);
+  const slab = shad(new THREE.Mesh(geo, [MAT.snow, MAT.snowSide]));
+  g.add(slab);
+  const rim = shad(new THREE.Mesh(new THREE.CylinderGeometry(radius * 1.03, radius * 0.86, thickness * 0.7, sides), MAT.iceBlue), false, false);
+  rim.position.y = -thickness * 0.62; rim.rotation.y = Math.PI / sides; g.add(rim);
+  for (let i = 0; i < Math.round(radius); i++) {             // wind-blown snow humps on top
+    const hump = ellip(rr(0.4, 1.5), rr(0.12, 0.34), rr(0.5, 1.7), MAT.snow, 12);
+    const a = rr(0, 6.283), d = rr(0, radius * 0.7);
+    hump.position.set(Math.cos(a) * d, thickness * 0.42, Math.sin(a) * d); g.add(hump);
+  }
+  return g;
+}
+function buildIceberg(scale) {                               // sculpted berg with a glowing blue foot
+  const g = new THREE.Group();
+  const geo = new THREE.IcosahedronGeometry(1, 1), p = geo.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    v.multiplyScalar(0.84 + rand() * 0.3);
+    v.y = v.y > 0 ? v.y * rr(1.05, 1.45) : v.y * 0.35;
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  const peak = shad(new THREE.Mesh(geo, MAT.berg));
+  peak.position.y = 0.5; peak.scale.set(1.15, 1, 1.05); g.add(peak);
+  const base = shad(new THREE.Mesh(new THREE.CylinderGeometry(1.24, 1.55, 0.62, 9), MAT.bergBase), false, false);
+  base.position.y = -0.06; base.rotation.y = rr(0, 6.28); g.add(base);
+  const shard = shad(new THREE.Mesh(new THREE.ConeGeometry(0.55, rr(0.9, 1.6), 6), MAT.berg));
+  shard.position.set(rr(-0.6, 0.6), 1.05, rr(-0.6, 0.6)); shard.rotation.z = rr(-0.16, 0.16); g.add(shard);
+  g.scale.setScalar(scale);
+  return g;
+}
+function buildPressureRidge(length, height, count) {         // buckled ice thrown up along a seam
+  const g = new THREE.Group();
+  for (let i = 0; i < count; i++) {
+    const h = height * rr(0.5, 1.15), w = rr(0.5, 1.3);
+    const slab = shad(new THREE.Mesh(new THREE.BoxGeometry(w, h, rr(0.28, 0.7)), MAT.snow));
+    slab.position.set((i / (count - 1) - 0.5) * length + rr(-0.2, 0.2), h * 0.35, rr(-0.35, 0.35));
+    slab.rotation.set(rr(-0.35, 0.35), rr(-0.5, 0.5), rr(-0.5, 0.5));
+    g.add(slab);
+    if (i % 3 === 0) {                                       // blue ice showing in the fracture
+      const shard = shad(new THREE.Mesh(new THREE.ConeGeometry(rr(0.16, 0.3), h * rr(0.8, 1.3), 5), MAT.iceBlue), true, false);
+      shard.position.set(slab.position.x + rr(-0.3, 0.3), h * 0.55, rr(-0.3, 0.3));
+      shard.rotation.z = rr(-0.4, 0.4); g.add(shard);
+    }
+  }
+  return g;
+}
+function buildSled(len) {                                    // hunter's wooden sled beside the igloo
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const runner = shad(new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.14, len), MAT.wood));
+    runner.position.set(0.24 * s, 0.12, 0); g.add(runner);
+  }
+  for (let i = 0; i < 6; i++) {
+    const slat = shad(new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.05, 0.12), MAT.wood));
+    slat.position.set(0, 0.21, (i / 5 - 0.5) * (len - 0.2)); g.add(slat);
+  }
+  const handle = shad(new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.5, 6), MAT.wood));
+  handle.position.set(0, 0.42, len * 0.44); handle.rotation.x = 0.3; g.add(handle);
+  const bundle = ellip(0.26, 0.16, 0.4, MAT.furShade, 12);
+  bundle.position.set(0, 0.36, -len * 0.2); g.add(bundle);
+  return g;
+}
+function buildBreathingHole(radius) {                        // dark opening ringed with ice rubble
+  const g = new THREE.Group();
+  const water = new THREE.Mesh(new THREE.CircleGeometry(radius, 20), MAT.hole);
+  water.rotation.x = -Math.PI / 2; water.position.y = 0.02; water.receiveShadow = true; g.add(water);
+  const lip = shad(new THREE.Mesh(new THREE.TorusGeometry(radius * 1.02, radius * 0.13, 7, 20), MAT.snowSide));
+  lip.rotation.x = Math.PI / 2; g.add(lip);
+  for (let i = 0; i < 9; i++) {                              // chipped ice chunks around the rim
+    const chunk = shad(new THREE.Mesh(new THREE.DodecahedronGeometry(rr(0.1, 0.26), 0), MAT.snow));
+    const a = i / 9 * 6.283 + rr(-0.2, 0.2), d = radius * rr(1.2, 1.7);
+    chunk.position.set(Math.cos(a) * d, 0.08, Math.sin(a) * d);
+    chunk.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3)); g.add(chunk);
+  }
+  return g;
+}
+function buildIgloo(radius) {                                // snow-block dome with a warm doorway
+  const g = new THREE.Group();
+  const dome = shad(new THREE.Mesh(new THREE.SphereGeometry(radius, 22, 12, 0, 6.283, 0, Math.PI / 2), MAT.block));
+  dome.scale.y = 0.86; g.add(dome);
+  const cap = shad(new THREE.Mesh(new THREE.SphereGeometry(radius * 0.22, 10, 8), MAT.block));
+  cap.position.y = radius * 0.83; g.add(cap);
+  const tunnel = shad(new THREE.Mesh(new THREE.SphereGeometry(radius * 0.44, 14, 8, 0, 6.283, 0, Math.PI / 2), MAT.block));
+  tunnel.scale.set(1, 1, 2.1); tunnel.position.z = radius * 0.82; g.add(tunnel);
+  const door = new THREE.Mesh(new THREE.CircleGeometry(radius * 0.3, 14), MAT.glow);
+  door.position.set(0, radius * 0.16, radius * 1.7); g.add(door);
+  const spill = new THREE.Mesh(new THREE.CircleGeometry(radius * 1.2, 18),
+    new THREE.MeshBasicMaterial({ color: PAL.iglooGlow, transparent: true, opacity: 0.08, depthWrite: false }));
+  spill.rotation.x = -Math.PI / 2; spill.position.set(0, 0.06, radius * 2.3); g.add(spill);
+  for (let i = 0; i < 5; i++) {                              // spare blocks stacked outside
+    const b = shad(new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.26, 0.32), MAT.block));
+    b.position.set(-radius * 1.25 + (i % 3) * 0.05, 0.13 + Math.floor(i / 3) * 0.26, radius * 0.4 + (i % 3) * 0.36);
+    b.rotation.y = rr(-0.2, 0.2); g.add(b);
+  }
+  const pole = shad(new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.06, 2.4, 6), MAT.wood));
+  pole.position.set(radius * 1.15, 1.2, -radius * 0.2); g.add(pole);
+  return g;
+}
+
+/* ============ 7. BUILDERS: ARCTIC WILDLIFE ============================= */
+function buildPolarBear(scale) {                             // heavy-shouldered bear on all fours
+  const g = new THREE.Group();
+  const body = ellip(0.62, 0.58, 1.12, MAT.fur, 20); body.position.y = 1.02; g.add(body);
+  const rump = ellip(0.56, 0.54, 0.5, MAT.fur, 16); rump.position.set(0, 1.0, 0.95); g.add(rump);
+  const shoulder = ellip(0.6, 0.56, 0.5, MAT.fur, 16); shoulder.position.set(0, 1.1, -0.85); g.add(shoulder);
+  const headPivot = new THREE.Group(); headPivot.position.set(0, 1.12, -1.32); g.add(headPivot);
+  const neck = ellip(0.34, 0.32, 0.42, MAT.fur, 14); neck.position.set(0, 0.05, 0.24); headPivot.add(neck);
+  const head = ellip(0.36, 0.34, 0.42, MAT.fur, 16); head.position.set(0, 0.06, -0.2); headPivot.add(head);
+  const muzzle = ellip(0.19, 0.17, 0.28, MAT.fur, 12); muzzle.position.set(0, -0.04, -0.54); headPivot.add(muzzle);
+  const nose = ellip(0.09, 0.07, 0.07, MAT.dark, 10, false); nose.position.set(0, 0.0, -0.78); headPivot.add(nose);
+  for (const s of [-1, 1]) {
+    const ear = ellip(0.11, 0.11, 0.06, MAT.fur, 10); ear.position.set(0.2 * s, 0.32, -0.14); headPivot.add(ear);
+    const eye = ellip(0.05, 0.06, 0.05, MAT.dark, 8, false); eye.position.set(0.16 * s, 0.12, -0.48); headPivot.add(eye);
+    for (const [z, len] of [[-0.72, 0.86], [0.78, 0.82]]) {   // fore and hind legs
+      const leg = shad(new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.23, len, 10), MAT.furShade));
+      leg.position.set(0.42 * s, len * 0.5 + 0.06, z); g.add(leg);
+      const paw = ellip(0.24, 0.14, 0.3, MAT.fur, 12); paw.position.set(0.42 * s, 0.13, z - 0.06); g.add(paw);
+    }
+  }
+  const tail = ellip(0.13, 0.12, 0.11, MAT.fur, 10); tail.position.set(0, 1.1, 1.42); g.add(tail);
+  g.scale.setScalar(scale);
+  heads.push({ pivot: headPivot, amp: 0.22, sp: rr(0.3, 0.45), phase: rr(0, 6.28) });
+  return g;
+}
+function buildSeal(scale) {                                  // ringed seal hauled out on the ice
+  const g = new THREE.Group();
+  const body = ellip(0.42, 0.4, 1.0, MAT.seal, 18); body.position.y = 0.4; g.add(body);
+  const belly = ellip(0.34, 0.24, 0.82, MAT.sealBelly, 14); belly.position.set(0, 0.24, 0.06); g.add(belly);
+  const headPivot = new THREE.Group(); headPivot.position.set(0, 0.5, -0.86); g.add(headPivot);
+  const head = ellip(0.3, 0.28, 0.34, MAT.seal, 14); headPivot.add(head);
+  const snout = ellip(0.16, 0.14, 0.18, MAT.seal, 12); snout.position.set(0, -0.06, -0.3); headPivot.add(snout);
+  const nose = ellip(0.06, 0.05, 0.05, MAT.dark, 8, false); nose.position.set(0, -0.02, -0.44); headPivot.add(nose);
+  for (const s of [-1, 1]) {
+    const eye = ellip(0.055, 0.06, 0.05, MAT.dark, 8, false); eye.position.set(0.13 * s, 0.08, -0.24); headPivot.add(eye);
+    const flip = ellip(0.28, 0.07, 0.16, MAT.seal, 10); flip.position.set(0.4 * s, 0.16, -0.24);
+    flip.rotation.y = 0.5 * s; g.add(flip);
+    const tailFin = ellip(0.22, 0.06, 0.3, MAT.seal, 10); tailFin.position.set(0.16 * s, 0.22, 1.05);
+    tailFin.rotation.y = -0.55 * s; g.add(tailFin);
+  }
+  g.scale.setScalar(scale);
+  heads.push({ pivot: headPivot, amp: 0.3, sp: rr(0.4, 0.7), phase: rr(0, 6.28) });
+  return g;
+}
+
+/* ============ 8. SCENE ASSEMBLY & LAYOUT =============================== */
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(FOG_COLOR, FOG_DENSITY);
+scene.background = new THREE.Color(0x060d1a);
+scene.add(buildSkyDome(), buildSea(), buildAurora(), buildAuroraSheen(), buildIceShelf());
+starsA = buildStars(420, 108, 0.85, 0.9); starsB = buildStars(260, 100, 1.5, 0.55);
+scene.add(starsA, starsB);
+snow = buildSnowfall(300); scene.add(snow);
+
+// --- hero floe: the bear and her cub ---
+const heroFloe = buildIceFloe(7.4, 1.0, 11);
+heroFloe.position.set(0, 0, 0.5); scene.add(heroFloe);
+floes.push({ obj: heroFloe, bob: 0.07, spin: 0.006, phase: rr(0, 6.28), y: 0 });
+const ridge = buildPressureRidge(9, 1.4, 13);
+ridge.position.set(-1.2, 0.42, -4.6); ridge.rotation.y = 0.22; scene.add(ridge);
+const pond = new THREE.Mesh(new THREE.CircleGeometry(1.5, 18), MAT.iceBlue);
+pond.rotation.x = -Math.PI / 2; pond.position.set(3.6, 0.44, -1.2); pond.receiveShadow = true; scene.add(pond);
+const bear = buildPolarBear(1.45);
+bear.position.set(-0.6, 0.42, 1.9); bear.rotation.y = 2.5; scene.add(bear);
+const cub = buildPolarBear(0.72);
+cub.position.set(2.2, 0.42, 3.3); cub.rotation.y = 1.9; scene.add(cub);
+const tracks = new THREE.InstancedMesh(new THREE.CircleGeometry(0.18, 8), MAT.snowSide, 14);
+const paw = new THREE.Object3D();                            // paw prints trailing behind the bear
+for (let i = 0; i < 14; i++) {
+  const d = i * 0.44 + 1.1, side = (i % 2 ? 0.32 : -0.32);
+  paw.position.set(-0.6 + Math.sin(2.5) * d + Math.cos(2.5) * side, 0.47, 1.9 - Math.cos(2.5) * d + Math.sin(2.5) * side);
+  paw.rotation.set(-Math.PI / 2, 0, 0); paw.scale.setScalar(1 - i * 0.03);
+  paw.updateMatrix(); tracks.setMatrixAt(i, paw.matrix);
+}
+tracks.receiveShadow = true; scene.add(tracks);
+
+// --- seal floe with a breathing hole ---
+const sealFloe = buildIceFloe(3.9, 0.8, 9);
+sealFloe.position.set(-11, 0, -6.5); scene.add(sealFloe);
+floes.push({ obj: sealFloe, bob: 0.09, spin: -0.008, phase: rr(0, 6.28), y: 0 });
+const hole = buildBreathingHole(1.05);
+hole.position.set(-10.5, 0.38, -5.3); scene.add(hole);
+const sealA = buildSeal(1.25); sealA.position.set(-9.0, 0.38, -7.5); sealA.rotation.y = -0.6; scene.add(sealA);
+const sealB = buildSeal(1.05); sealB.position.set(-12.9, 0.38, -7.2); sealB.rotation.y = 2.3; scene.add(sealB);
+const sealC = buildSeal(1.0);                                // third seal surfacing in the hole
+sealC.position.set(-10.5, -0.2, -5.3); sealC.rotation.y = 2.5; scene.add(sealC);
+breathers.push({ obj: sealC, y: -0.2, amp: 0.22, sp: 0.6, phase: 1.2 });
+
+// --- distant camp floe with the glowing igloo ---
+const campFloe = buildIceFloe(6.4, 0.95, 12);
+campFloe.position.set(-17, 0, -15.5); scene.add(campFloe);
+floes.push({ obj: campFloe, bob: 0.05, spin: 0.005, phase: rr(0, 6.28), y: 0 });
+const igloo = buildIgloo(1.9);
+igloo.position.set(-17, 0.4, -15.5); igloo.rotation.y = 0.7; scene.add(igloo);
+const sled = buildSled(2.2);
+sled.position.set(-13.9, 0.42, -14.2); sled.rotation.y = 0.9; scene.add(sled);
+const campRidge = buildPressureRidge(6, 1.0, 9);
+campRidge.position.set(-19, 0.4, -19.2); campRidge.rotation.y = -0.4; scene.add(campRidge);
+
+// --- sculpted icebergs anchoring the horizon ---
+for (const [x, z, s, ry] of [[-9, -27, 4.2, 0.4], [15, -21, 3.2, -0.8], [-24, -3, 2.8, 1.6],
+                             [24, -8, 2.4, 0.9], [3, -34, 3.6, 2.2], [-30, -20, 3.0, 0.2]]) {
+  const berg = buildIceberg(s); berg.position.set(x, 0, z); berg.rotation.y = ry; scene.add(berg);
+  floes.push({ obj: berg, bob: 0.04, spin: 0.003, phase: rr(0, 6.28), y: 0 });
+}
+// --- drifting pack ice between the big sheets ---
+for (let i = 0; i < 16; i++) {
+  const r = rr(0.7, 2.6), f = buildIceFloe(r, rr(0.3, 0.6), ri(7, 10));
+  const a = rr(0, 6.283), d = rr(11, 30);
+  f.position.set(Math.cos(a) * d * 1.1, 0, Math.sin(a) * d * 0.75 - 4);
+  f.rotation.y = rr(0, 6.28); scene.add(f);
+  floes.push({ obj: f, bob: rr(0.07, 0.16), spin: rr(-0.02, 0.02), phase: rr(0, 6.28), y: 0 });
+}
+for (let i = 0; i < 22; i++) {                                // brash ice chips on the swell
+  const chip = shad(new THREE.Mesh(new THREE.DodecahedronGeometry(rr(0.16, 0.44), 0), MAT.snow));
+  const a = rr(0, 6.283), d = rr(8, 26);
+  chip.position.set(Math.cos(a) * d, 0.05, Math.sin(a) * d * 0.8 - 3);
+  chip.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3)); scene.add(chip);
+  floes.push({ obj: chip, bob: rr(0.1, 0.22), spin: rr(-0.04, 0.04), phase: rr(0, 6.28), y: 0.05 });
+}
+
+/* ============ 9. LIGHTING RIG ========================================== */
+const moon = new THREE.DirectionalLight(0xc9dcff, 2.2);      // low moon, front-right of the camera
+moon.position.set(22, 26, 16);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.near = 5; moon.shadow.camera.far = 90;
+moon.shadow.camera.left = -30; moon.shadow.camera.right = 30;
+moon.shadow.camera.top = 30; moon.shadow.camera.bottom = -30;
+moon.shadow.bias = -0.0011; moon.shadow.normalBias = 0.035;
+scene.add(moon);
+scene.add(new THREE.HemisphereLight(0x2c4d78, 0x0a1420, 0.85));
+scene.add(new THREE.AmbientLight(0x2a4266, 0.5));
+auroraLightG = new THREE.PointLight(0x5cffb0, 90, 70, 2);    // green curtain spilling onto the ice
+auroraLightG.position.set(-6, 20, -22); scene.add(auroraLightG);
+auroraLightV = new THREE.PointLight(0xb06cff, 60, 70, 2);    // violet upper band
+auroraLightV.position.set(10, 24, -30); scene.add(auroraLightV);
+glowLight = new THREE.PointLight(PAL.iglooGlow, 34, 17, 2);  // lamp burning inside the igloo
+glowLight.position.set(-12.4, 0.9, -10.0); scene.add(glowLight);
+const rim = new THREE.DirectionalLight(0x74a8ff, 0.5);       // cold back rim on the bergs
+rim.position.set(-18, 8, -26); scene.add(rim);
+
+/* ============ 10. RENDERER, CAMERA & CONTROLS ========================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+document.body.appendChild(renderer.domElement);
+
+const pmrem = new THREE.PMREMGenerator(renderer);            // night sky as a soft reflection source
+const envScene = new THREE.Scene(); envScene.add(buildSkyDome());
+scene.environment = pmrem.fromScene(envScene, 0, 1, 200).texture;
+pmrem.dispose();
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 320);
+camera.position.set(11.5, 8.6, 22);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(1.0, 2.6, -0.5);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+controls.minDistance = 15; controls.maxDistance = 46;
+controls.minPolarAngle = 0.5; controls.maxPolarAngle = 1.46;
+controls.update();
+
+/* ============ 11. ANIMATION LOOP ======================================= */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // every sheet of ice rises and falls on the slow polar swell
+  for (const f of floes) {
+    f.obj.position.y = f.y + Math.sin(t * 0.35 + f.phase) * f.bob;
+    f.obj.rotation.y += f.spin * 0.004;
+    f.obj.rotation.z = Math.sin(t * 0.28 + f.phase) * f.bob * 0.05;
+  }
+  // aurora curtains ripple, brighten and fade
+  for (const c of curtains) {
+    const p = c.mesh.geometry.attributes.position, rest = c.rest;
+    for (let i = 0; i < p.count; i++) {
+      const x = rest[i * 3], y = rest[i * 3 + 1];
+      p.setZ(i, Math.sin(x * 0.13 + t * c.sp * 2.2 + c.phase) * c.amp * (0.35 + (y + c.h / 2) / c.h * 0.8));
+    }
+    p.needsUpdate = true;
+    c.mesh.material.opacity = c.baseOp * (0.62 + 0.38 * Math.sin(t * c.sp * 1.6 + c.phase));
+  }
+  auroraLightG.intensity = 90 + Math.sin(t * 0.5) * 34;
+  auroraLightV.intensity = 60 + Math.sin(t * 0.37 + 1.6) * 26;
+
+  // bear, cub and seals lift and turn their heads
+  for (const h of heads) h.pivot.rotation.y = Math.sin(t * h.sp + h.phase) * h.amp;
+  for (const b of breathers) b.obj.position.y = b.y + Math.abs(Math.sin(t * b.sp + b.phase)) * b.amp;
+
+  // star reflections drift, stars twinkle, snow falls
+  seaMat.emissiveMap.offset.set(t * 0.004, t * 0.009);
+  seaMat.normalMap.offset.set(t * 0.006, t * 0.011);
+  sheen.material.map.offset.x = t * 0.01;
+  sheen.material.opacity = 0.14 + 0.06 * Math.sin(t * 0.45);
+  starsA.material.opacity = 0.9 - 0.18 * Math.sin(t * 0.9);
+  starsB.material.opacity = 0.55 + 0.2 * Math.sin(t * 0.6 + 1.1);
+  const sp = snow.geometry.attributes.position;
+  for (let i = 0; i < sp.count; i++) {
+    const v = snowVel[i];
+    let y = sp.getY(i) - v.vy * 0.016;
+    if (y < 0.2) y = 26;
+    sp.setY(i, y);
+    sp.setX(i, sp.getX(i) + Math.sin(t * 0.5 + v.sw) * v.amp * 0.004);
+  }
+  sp.needsUpdate = true;
+  glowLight.intensity = 28 + Math.sin(t * 2.4) * 3.5;        // lamplight flicker
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============ 12. RESIZE HANDLING ====================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Jeweled Crown — Gemstone Faceted</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e0f12; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    color: #b9b2a0; font: 12px/1.4 system-ui, sans-serif; letter-spacing: .08em;
+    text-transform: uppercase; opacity: .55; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Jeweled Crown · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & Camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x111318);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(0, 0.75, 5.8);
+
+// Studio environment for realistic gem/gold reflections (used for reflections only,
+// background stays a neutral dark studio color).
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + directional key (shadows) + fill + rim
+// ---------------------------------------------------------------------------
+scene.add(new THREE.HemisphereLight(0xbcd0ff, 0x201409, 0.55));
+
+const key = new THREE.DirectionalLight(0xfff4e6, 2.5);
+key.position.set(5, 8.5, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 32;
+key.shadow.camera.left = -4;
+key.shadow.camera.right = 4;
+key.shadow.camera.top = 4;
+key.shadow.camera.bottom = -4;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8aa8ff, 0.6);
+fill.position.set(-6, 3, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd39a, 1.25);
+rim.position.set(-3.5, 4.5, -6);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const goldMat = new THREE.MeshStandardMaterial({
+  color: 0xf7c56b, metalness: 1.0, roughness: 0.3, envMapIntensity: 1.2
+});
+const goldMatDS = goldMat.clone();
+goldMatDS.side = THREE.DoubleSide;
+
+function gemMaterial(color, emissive) {
+  return new THREE.MeshPhysicalMaterial({
+    color, emissive, emissiveIntensity: 0.28,
+    metalness: 0.0, roughness: 0.03,
+    transmission: 0.5, thickness: 0.6, ior: 1.9,
+    reflectivity: 0.7, clearcoat: 1.0, clearcoatRoughness: 0.04,
+    envMapIntensity: 1.7, flatShading: true, side: THREE.FrontSide
+  });
+}
+const ruby     = gemMaterial(0xd21b34, 0x360007);
+const emerald  = gemMaterial(0x10a052, 0x00250f);
+const sapphire = gemMaterial(0x1f5bd6, 0x00113a);
+const gemColors = [ruby, emerald, sapphire];
+
+const diamondMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, metalness: 0.0, roughness: 0.0,
+  transmission: 0.72, thickness: 0.5, ior: 2.4,
+  reflectivity: 0.95, clearcoat: 1.0, clearcoatRoughness: 0.02,
+  envMapIntensity: 2.3,
+  iridescence: 1.0, iridescenceIOR: 1.5, iridescenceThicknessRange: [120, 420],
+  emissive: 0xffffff, emissiveIntensity: 0.045,
+  flatShading: true, side: THREE.DoubleSide
+});
+
+// ---------------------------------------------------------------------------
+// Procedural round-brilliant gem geometry (girdle radius = 1)
+// table (top facets) -> girdle -> pavilion (culet). Outward winding enforced.
+// ---------------------------------------------------------------------------
+function createGemGeometry(sides, tableR, crownH, pavD) {
+  const pos = [];
+  const step = Math.PI * 2 / sides;
+  const T = [], G = [];
+  for (let i = 0; i < sides; i++) {
+    const a = i * step;
+    T.push(new THREE.Vector3(Math.cos(a) * tableR, crownH, Math.sin(a) * tableR));
+  }
+  for (let i = 0; i < sides; i++) {
+    const a = i * step + step / 2;                     // girdle offset by half step
+    G.push(new THREE.Vector3(Math.cos(a), 0, Math.sin(a)));
+  }
+  const C = new THREE.Vector3(0, crownH, 0);           // table centre
+  const K = new THREE.Vector3(0, -pavD, 0);            // culet
+  const center = new THREE.Vector3(0, (crownH - pavD) / 2, 0);
+
+  const push = (a, b, c) => {
+    let bb = b, cc = c;
+    const n = bb.clone().sub(a).cross(cc.clone().sub(a));
+    const cen = a.clone().add(bb).add(cc).multiplyScalar(1 / 3);
+    if (n.dot(cen.clone().sub(center)) < 0) { const t = bb; bb = cc; cc = t; }
+    pos.push(a.x, a.y, a.z, bb.x, bb.y, bb.z, cc.x, cc.y, cc.z);
+  };
+
+  for (let i = 0; i < sides; i++) {
+    const t0 = T[i], t1 = T[(i + 1) % sides];
+    const g0 = G[i], g1 = G[(i + 1) % sides];
+    push(C, t0, t1);     // table facet
+    push(t0, t1, g0);    // crown facet (downward)
+    push(g0, t1, g1);    // crown facet (upward)
+    push(g0, g1, K);     // pavilion facet
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const gemGeoMain = createGemGeometry(8, 0.5, 0.45, 0.85);
+const gemGeoBig  = createGemGeometry(16, 0.52, 0.5, 0.95);
+
+// ---------------------------------------------------------------------------
+// Crown assembly
+// ---------------------------------------------------------------------------
+const crown = new THREE.Group();
+const UP = new THREE.Vector3(0, 1, 0);
+const bandR = 1.2, bandH = 0.7, rimY = bandH / 2;
+
+function addGem(parent, mat, geo, position, dir, scale, bezel) {
+  const m = new THREE.Mesh(geo, mat);
+  m.scale.setScalar(scale);
+  m.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+  m.position.copy(position);
+  m.castShadow = true;
+  parent.add(m);
+  if (bezel) {
+    const bz = new THREE.Mesh(new THREE.TorusGeometry(scale * 1.0, scale * 0.17, 12, 24), goldMat);
+    bz.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir.clone().normalize());
+    bz.position.copy(position);
+    bz.castShadow = true;
+    parent.add(bz);
+  }
+  return m;
+}
+
+// --- Gold band (open cylinder) + top/bottom rims -----------------------------
+const band = new THREE.Mesh(
+  new THREE.CylinderGeometry(bandR, bandR * 1.03, bandH, 96, 1, true), goldMatDS
+);
+band.castShadow = true;
+band.receiveShadow = true;
+crown.add(band);
+
+const rimTop = new THREE.Mesh(new THREE.TorusGeometry(bandR, 0.055, 16, 96), goldMat);
+rimTop.rotation.x = Math.PI / 2;
+rimTop.position.y = rimY;
+rimTop.castShadow = true;
+crown.add(rimTop);
+const rimBot = rimTop.clone();
+rimBot.position.y = -rimY;
+crown.add(rimBot);
+
+// --- Ring of large faceted gems studding the band ---------------------------
+const bandGemCount = 8;
+for (let i = 0; i < bandGemCount; i++) {
+  const a = i / bandGemCount * Math.PI * 2;
+  const dir = new THREE.Vector3(Math.cos(a), 0.32, Math.sin(a));
+  const pos = new THREE.Vector3(Math.cos(a) * (bandR + 0.02), 0.0, Math.sin(a) * (bandR + 0.02));
+  addGem(crown, gemColors[i % 3], gemGeoMain, pos, dir, 0.24, true);
+}
+
+// --- Pointed spires (faceted gold), each tipped with a large gem -------------
+const pointAngles = [Math.PI / 4, 3 * Math.PI / 4, 5 * Math.PI / 4, 7 * Math.PI / 4];
+pointAngles.forEach((a, idx) => {
+  const spike = new THREE.Mesh(new THREE.ConeGeometry(0.14, 0.6, 6), goldMat);
+  spike.position.set(Math.cos(a) * bandR, rimY + 0.30, Math.sin(a) * bandR);
+  spike.castShadow = true;
+  crown.add(spike);
+
+  const tipPos = new THREE.Vector3(Math.cos(a) * bandR, rimY + 0.66, Math.sin(a) * bandR);
+  const dir = new THREE.Vector3(Math.cos(a) * 0.15, 1, Math.sin(a) * 0.15);
+  addGem(crown, gemColors[(idx + 1) % 3], gemGeoMain, tipPos, dir, 0.2, true);
+});
+
+// --- Pointed arches sweeping up to the peak, studded with small gems ---------
+const orbY = 1.5;
+const archAngles = [0, Math.PI / 2, Math.PI, 3 * Math.PI / 2];
+archAngles.forEach((a, idx) => {
+  const S  = new THREE.Vector3(Math.cos(a) * bandR, rimY, Math.sin(a) * bandR);
+  const P1 = new THREE.Vector3(Math.cos(a) * bandR * 1.12, 0.98, Math.sin(a) * bandR * 1.12);
+  const P2 = new THREE.Vector3(Math.cos(a) * bandR * 0.28, orbY + 0.05, Math.sin(a) * bandR * 0.28);
+  const E  = new THREE.Vector3(0, orbY, 0);
+  const curve = new THREE.CubicBezierCurve3(S, P1, P2, E);
+
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.055, 10, false), goldMat);
+  tube.castShadow = true;
+  crown.add(tube);
+
+  [0.30, 0.52, 0.74].forEach((t, k) => {
+    const p = curve.getPointAt(t);
+    const dir = new THREE.Vector3(p.x, 0.35, p.z);
+    if (dir.lengthSq() < 1e-4) dir.set(0, 1, 0);
+    addGem(crown, gemColors[(idx + k) % 3], gemGeoMain, p, dir, 0.12, false);
+  });
+});
+
+// --- Orb (monde) at the peak -------------------------------------------------
+const orb = new THREE.Mesh(new THREE.SphereGeometry(0.17, 32, 24), goldMat);
+orb.position.set(0, orbY, 0);
+orb.castShadow = true;
+crown.add(orb);
+
+const orbBand = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.025, 12, 32), goldMat);
+orbBand.rotation.x = Math.PI / 2;
+orbBand.position.set(0, orbY, 0);
+orbBand.castShadow = true;
+crown.add(orbBand);
+
+// --- Central diamond-cut jewel crowning the peak -----------------------------
+const diaScale = 0.5;
+const diaY0 = orbY + 0.18;                             // girdle height
+addGem(crown, diamondMat, gemGeoBig, new THREE.Vector3(0, diaY0, 0), UP, diaScale, false);
+
+const prong = new THREE.Mesh(new THREE.TorusGeometry(diaScale * 1.0, diaScale * 0.1, 10, 24), goldMat);
+prong.rotation.x = Math.PI / 2;
+prong.position.set(0, diaY0, 0);
+prong.castShadow = true;
+crown.add(prong);
+
+scene.add(crown);
+
+// ---------------------------------------------------------------------------
+// Centre the object at the origin & place the shadow-only ground plane
+// ---------------------------------------------------------------------------
+const box = new THREE.Box3().setFromObject(crown);
+const boxCenter = box.getCenter(new THREE.Vector3());
+crown.position.set(-boxCenter.x, -boxCenter.y, -boxCenter.z);
+const groundY = box.min.y - boxCenter.y;
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY - 0.01;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Radiating glints on the central jewel (procedural canvas sprite)
+// ---------------------------------------------------------------------------
+function makeGlintTexture() {
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const cx = size / 2;
+  const g = ctx.createRadialGradient(cx, cx, 0, cx, cx, cx);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.15, 'rgba(255,255,255,0.6)');
+  g.addColorStop(0.4, 'rgba(255,255,255,0.12)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  ctx.arc(cx, cx, cx, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.lineWidth = 2;
+  for (let i = 0; i < 4; i++) {
+    ctx.save();
+    ctx.translate(cx, cx);
+    ctx.rotate(i * Math.PI / 4);
+    const grad = ctx.createLinearGradient(-cx, 0, cx, 0);
+    grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, 'rgba(255,255,255,0.9)');
+    grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = grad;
+    ctx.beginPath();
+    ctx.moveTo(-cx, 0);
+    ctx.lineTo(cx, 0);
+    ctx.stroke();
+    ctx.restore();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const glintTex = makeGlintTexture();
+const glints = [];
+function addGlint(position, sizeBase, phase) {
+  const mat = new THREE.SpriteMaterial({
+    map: glintTex, color: 0xfff4e0, blending: THREE.AdditiveBlending,
+    transparent: true, depthWrite: false, opacity: 0.9
+  });
+  const s = new THREE.Sprite(mat);
+  s.position.copy(position);
+  s.scale.setScalar(sizeBase);
+  s.userData = { base: sizeBase, phase };
+  crown.add(s);
+  glints.push(s);
+}
+
+addGlint(new THREE.Vector3(0, diaY0 + 0.32, 0), 0.95, 0);
+for (let i = 0; i < 6; i++) {
+  const a = i / 6 * Math.PI * 2;
+  addGlint(
+    new THREE.Vector3(Math.cos(a) * 0.16, diaY0 + 0.2 + Math.sin(a * 2) * 0.05, Math.sin(a) * 0.16),
+    0.34, i * 0.9
+  );
+}
+
+// warm accent light so the peak reads as luminous
+const jewelLight = new THREE.PointLight(0xfff0cf, 0.55, 6, 2);
+jewelLight.position.set(0, diaY0 + 0.3, 0);
+crown.add(jewelLight);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 3.5;
+controls.maxDistance = 10;
+controls.maxPolarAngle = Math.PI * 0.92;
+controls.target.set(0, 0.05, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Animate
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  for (const g of glints) {
+    const { base, phase } = g.userData;
+    const pulse = Math.sin(t * 2.4 + phase);
+    g.scale.setScalar(base * (0.78 + 0.35 * pulse));
+    g.material.opacity = 0.5 + 0.4 * pulse;
+    g.material.rotation = t * 0.5 + phase;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

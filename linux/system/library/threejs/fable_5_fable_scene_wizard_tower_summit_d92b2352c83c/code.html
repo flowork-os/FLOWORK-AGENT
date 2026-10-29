@@ -1,0 +1,736 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Wizard Tower Summit</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0a0a18}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   CONFIG & PALETTE — one place for every color / tunable
+   ================================================================ */
+const SEED = 0xA11CE5;
+const PAL = {
+  fog:    0x14142c,  stone:  0x7d8296,  stoneDk: 0x4c5064,
+  brass:  0xc09a4a,  brassDk: 0x7a5f28,
+  wood:   0x6f4a2a,  woodDk: 0x452c14,
+  cloth:  0x2f1d5c,  trim:   0xd8a93f,
+  orb:    0x7fe8ff,  rune:   0x69e0ff,  mote:   0x9ff0ff,
+  raven:  0x14161e,  cloud:  0x272c44,  crag:   0x1e2234,
+  flame:  0xffa338,  potionA: 0xda55e8, potionB: 0x59e87a, potionC: 0xffb347,
+  page:   0xe8dcb8,  bookA:  0x5e2f6e,  bookB:  0x27486e,  bookC:  0x7a3030,
+  bolt:   0xe4f2ff,  moon:   0x9fb4ff
+};
+const LIGHTNING_PERIOD = 9;                     // seconds per storm cycle
+const STRIKES = [ { t0: 1.35, bolt: 0 }, { t0: 5.95, bolt: 1 } ];
+
+/* ================================================================
+   PRNG & SMALL HELPERS — all randomness flows through mulberry32
+   ================================================================ */
+function mulberry32(seed){
+  return function(){
+    let t = seed += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr   = (a, b) => a + (b - a) * rand();
+const pick = arr => arr[Math.floor(rand() * arr.length)];
+const polar = (a, r, y = 0) => new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r);
+function mesh(geo, mat, parent, x = 0, y = 0, z = 0){   // build + place in one call
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); parent.add(m);
+  return m;
+}
+function setShadow(root, cast, receive){
+  root.traverse(o => { if (o.isMesh) { o.castShadow = cast; o.receiveShadow = receive; } });
+}
+function makeCanvas(w, h, draw){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* ================================================================
+   PROCEDURAL CANVAS TEXTURES
+   ================================================================ */
+// -- coursed stone blocks (parapet & shaft walls) ------------------
+const stoneTex = makeCanvas(512, 512, (g, w, h) => {
+  g.fillStyle = '#565b70'; g.fillRect(0, 0, w, h);
+  const rows = 8, bh = h / rows;
+  for (let r = 0; r < rows; r++){
+    const off = (r % 2) * 34;
+    for (let x = -1; x < 8; x++){
+      const bx = x * 72 + off, shade = rr(-14, 14);
+      g.fillStyle = `rgb(${86 + shade},${91 + shade},${112 + shade})`;
+      g.fillRect(bx + 3, r * bh + 3, 66, bh - 6);
+      g.fillStyle = 'rgba(255,255,255,0.06)';
+      g.fillRect(bx + 3, r * bh + 3, 66, 5);
+    }
+  }
+  g.strokeStyle = '#2c2f42'; g.lineWidth = 4;
+  for (let r = 0; r <= rows; r++){ g.beginPath(); g.moveTo(0, r * bh); g.lineTo(w, r * bh); g.stroke(); }
+  for (let i = 0; i < 900; i++){                       // weathering speckle
+    g.fillStyle = `rgba(0,0,0,${rr(0.03, 0.16)})`;
+    g.fillRect(rand() * w, rand() * h, rr(1, 3), rr(1, 3));
+  }
+});
+stoneTex.wrapS = stoneTex.wrapT = THREE.RepeatWrapping;
+
+// -- radial flagstones for the platform deck ----------------------
+const flagTex = makeCanvas(1024, 1024, (g, w, h) => {
+  const cx = w / 2, cy = h / 2;
+  g.fillStyle = '#5b6076'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#282b3e'; g.lineWidth = 7;
+  const rings = [70, 150, 240, 335, 430, 505];
+  for (let i = 1; i < rings.length; i++){
+    const r0 = rings[i - 1], r1 = rings[i], n = 8 + i * 4;
+    for (let s = 0; s < n; s++){
+      const a0 = (s / n) * Math.PI * 2 + i * 0.21, a1 = ((s + 1) / n) * Math.PI * 2 + i * 0.21;
+      g.fillStyle = `rgb(${80 + rr(-13, 13) | 0},${85 + rr(-13, 13) | 0},${106 + rr(-13, 13) | 0})`;
+      g.beginPath(); g.arc(cx, cy, r1 - 3, a0 + 0.012, a1 - 0.012);
+      g.arc(cx, cy, r0 + 3, a1 - 0.012, a0 + 0.012, true); g.closePath();
+      g.fill(); g.stroke();
+    }
+  }
+  g.fillStyle = '#666b82'; g.beginPath(); g.arc(cx, cy, 66, 0, Math.PI * 2); g.fill(); g.stroke();
+  for (let i = 0; i < 1600; i++){
+    g.fillStyle = `rgba(0,0,0,${rr(0.02, 0.13)})`;
+    g.fillRect(rand() * w, rand() * h, 2, 2);
+  }
+});
+
+// -- weathered plank wood (crates, hatch, lectern) ----------------
+const woodTex = makeCanvas(512, 512, (g, w, h) => {
+  g.fillStyle = '#6b4526'; g.fillRect(0, 0, w, h);
+  for (let p = 0; p < 8; p++){
+    const y0 = p * 64;
+    g.fillStyle = `rgb(${100 + rr(-16, 16) | 0},${66 + rr(-12, 12) | 0},${36 + rr(-9, 9) | 0})`;
+    g.fillRect(0, y0 + 2, w, 60);
+    g.strokeStyle = 'rgba(40,22,8,0.55)'; g.lineWidth = 2;
+    for (let k = 0; k < 5; k++){
+      g.beginPath(); g.moveTo(0, y0 + rr(8, 58));
+      for (let x = 0; x <= w; x += 64) g.lineTo(x, y0 + 8 + ((k * 12 + Math.sin(x * 0.02 + p) * 6 + 24) % 48));
+      g.stroke();
+    }
+    if (rand() < 0.6){                                  // a knot
+      g.fillStyle = 'rgba(46,26,10,0.8)';
+      g.beginPath(); g.ellipse(rand() * w, y0 + 32, rr(4, 9), rr(3, 6), 0, 0, Math.PI * 2); g.fill();
+    }
+  }
+});
+woodTex.wrapS = woodTex.wrapT = THREE.RepeatWrapping;
+
+// -- glowing rune circle (transparent, additive) ------------------
+const runeTex = makeCanvas(1024, 1024, (g, w, h) => {
+  const cx = w / 2, cy = h / 2;
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = '#aef4ff'; g.shadowColor = '#3fd6ff'; g.shadowBlur = 22; g.lineCap = 'round';
+  g.lineWidth = 10; g.beginPath(); g.arc(cx, cy, 470, 0, Math.PI * 2); g.stroke();
+  g.lineWidth = 6;  g.beginPath(); g.arc(cx, cy, 336, 0, Math.PI * 2); g.stroke();
+  for (let i = 0; i < 26; i++){                        // ring of invented glyphs
+    const a = (i / 26) * Math.PI * 2;
+    g.save(); g.translate(cx + Math.cos(a) * 402, cy + Math.sin(a) * 402); g.rotate(a + Math.PI / 2);
+    g.lineWidth = 7;
+    for (let s = 0, n = 2 + Math.floor(rand() * 3); s < n; s++){
+      g.beginPath(); g.moveTo(rr(-24, 24), rr(-30, 30)); g.lineTo(rr(-24, 24), rr(-30, 30));
+      if (rand() < 0.5) g.lineTo(rr(-24, 24), rr(-30, 30));
+      g.stroke();
+    }
+    if (rand() < 0.4){ g.beginPath(); g.arc(0, 0, rr(6, 13), 0, Math.PI * 2); g.stroke(); }
+    g.restore();
+  }
+  g.lineWidth = 6; g.beginPath();                      // inner seven-point star
+  for (let i = 0; i <= 7; i++){
+    const a = ((i * 3) % 7) / 7 * Math.PI * 2 - Math.PI / 2;
+    const x = cx + Math.cos(a) * 300, y = cy + Math.sin(a) * 300;
+    i === 0 ? g.moveTo(x, y) : g.lineTo(x, y);
+  }
+  g.closePath(); g.stroke();
+  g.beginPath(); g.arc(cx, cy, 52, 0, Math.PI * 2); g.stroke();
+});
+
+// -- night storm sky dome -----------------------------------------
+const skyTex = makeCanvas(1024, 512, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, '#050514'); grad.addColorStop(0.45, '#10122e');
+  grad.addColorStop(0.75, '#1d1c44'); grad.addColorStop(1, '#28234e');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 26; i++){                        // rolling storm wisps
+    g.fillStyle = `rgba(52,54,96,${rr(0.10, 0.25)})`;
+    g.beginPath(); g.ellipse(rand() * w, h * rr(0.42, 0.8), rr(80, 240), rr(14, 42), 0, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < 420; i++){                       // stars, denser at zenith
+    g.fillStyle = `rgba(224,236,255,${rr(0.45, 1)})`;
+    g.beginPath();
+    g.arc(rand() * w, rand() * rand() * h * 0.6, rand() < 0.1 ? 1.7 : 1, 0, Math.PI * 2);
+    g.fill();
+  }
+});
+
+// -- banner cloth with crescent emblem & swallowtail cut ----------
+const bannerTex = makeCanvas(256, 384, (g, w, h) => {
+  g.fillStyle = '#2f1d5c'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#251445'; g.fillRect(0, h * 0.62, w, h * 0.38);
+  g.strokeStyle = '#d8a93f'; g.lineWidth = 10; g.strokeRect(7, 7, w - 14, h - 14);
+  g.fillStyle = '#d8a93f'; g.beginPath(); g.arc(w / 2, h * 0.34, 56, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#2f1d5c'; g.beginPath(); g.arc(w / 2 + 24, h * 0.31, 50, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#d8a93f';
+  for (let i = 0; i < 3; i++){
+    const a = -0.5 + i * 0.5;
+    g.beginPath(); g.arc(w / 2 + Math.cos(a) * 86, h * 0.34 + Math.sin(a) * 86, 7, 0, Math.PI * 2); g.fill();
+  }
+  g.globalCompositeOperation = 'destination-out';       // cut the swallowtail
+  g.beginPath(); g.moveTo(w * 0.5, h * 0.72); g.lineTo(w * 0.18, h); g.lineTo(w * 0.82, h);
+  g.closePath(); g.fill();
+});
+
+// -- soft radial glow (sprite / particle map) ---------------------
+const glowTex = makeCanvas(128, 128, (g, w, h) => {
+  const rad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  rad.addColorStop(0, 'rgba(190,240,255,1)'); rad.addColorStop(0.4, 'rgba(110,200,255,0.35)');
+  rad.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = rad; g.fillRect(0, 0, w, h);
+});
+
+/* ================================================================
+   MATERIALS
+   ================================================================ */
+const matStone   = new THREE.MeshStandardMaterial({ map: stoneTex, color: PAL.stone, roughness: 0.93 });
+const matFlag    = new THREE.MeshStandardMaterial({ map: flagTex, color: 0xbfc4d8, roughness: 0.9 });
+const matStoneDk = new THREE.MeshStandardMaterial({ color: PAL.stoneDk, roughness: 0.95 });
+const matBrass   = new THREE.MeshStandardMaterial({ color: PAL.brass, metalness: 0.85, roughness: 0.32 });
+const matBrassDk = new THREE.MeshStandardMaterial({ color: PAL.brassDk, metalness: 0.8, roughness: 0.45 });
+const matWood    = new THREE.MeshStandardMaterial({ map: woodTex, color: 0xb98d5e, roughness: 0.85 });
+const matWoodDk  = new THREE.MeshStandardMaterial({ color: PAL.woodDk, roughness: 0.9 });
+const matOrb     = new THREE.MeshStandardMaterial({ color: 0x0c2a33, emissive: PAL.orb, emissiveIntensity: 2.4, roughness: 0.25 });
+const matOrbCore = new THREE.MeshBasicMaterial({ color: 0xdffbff, wireframe: true, transparent: true, opacity: 0.8 });
+const matRune    = new THREE.MeshBasicMaterial({ map: runeTex, color: PAL.rune, transparent: true,
+                     blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+const matBanner  = new THREE.MeshStandardMaterial({ map: bannerTex, transparent: true, alphaTest: 0.5,
+                     side: THREE.DoubleSide, roughness: 0.9 });
+const matRaven   = new THREE.MeshStandardMaterial({ color: PAL.raven, roughness: 0.55, metalness: 0.2 });
+const matCloud   = new THREE.MeshStandardMaterial({ color: PAL.cloud, emissive: 0x33305e,
+                     emissiveIntensity: 0.16, roughness: 1, flatShading: true });
+const matCrag    = new THREE.MeshStandardMaterial({ color: PAL.crag, roughness: 1, flatShading: true });
+const matBolt    = new THREE.MeshBasicMaterial({ color: PAL.bolt, fog: false });
+const matPage    = new THREE.MeshStandardMaterial({ color: PAL.page, roughness: 0.9 });
+const matGlass   = new THREE.MeshStandardMaterial({ color: 0xbfe0e8, transparent: true, opacity: 0.35, roughness: 0.15 });
+const matCoal    = new THREE.MeshStandardMaterial({ color: 0x1c1410, emissive: 0xff6a1a, emissiveIntensity: 0.9, roughness: 1 });
+const matFlame   = new THREE.MeshBasicMaterial({ color: PAL.flame, transparent: true, opacity: 0.85,
+                     blending: THREE.AdditiveBlending, depthWrite: false });
+
+/* ================================================================
+   BUILDER FUNCTIONS — each returns a THREE.Group
+   ================================================================ */
+// -- sky dome, abyssal ground & distant crags ---------------------
+function buildBackdrop(){
+  const g = new THREE.Group();
+  mesh(new THREE.SphereGeometry(210, 32, 18),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }), g);
+  const ground = mesh(new THREE.CircleGeometry(240, 40),
+    new THREE.MeshStandardMaterial({ color: 0x0b0d1c, roughness: 1 }), g, 0, -38, 0);
+  ground.rotation.x = -Math.PI / 2;
+  for (let i = 0; i < 15; i++){                        // ring of jagged crags
+    const a = (i / 15) * Math.PI * 2 + rr(-0.14, 0.14);
+    const hgt = rr(18, 42), geo = new THREE.ConeGeometry(rr(6, 13), hgt, 7, 4);
+    const pos = geo.attributes.position;
+    for (let v = 0; v < pos.count; v++){               // shatter the silhouette
+      const y = pos.getY(v), f = 1 - (y + hgt / 2) / hgt;
+      pos.setX(v, pos.getX(v) + rr(-1, 1) * 2.4 * f);
+      pos.setZ(v, pos.getZ(v) + rr(-1, 1) * 2.4 * f);
+      if (f > 0.05 && f < 0.95) pos.setY(v, y + rr(-1.6, 1.6));
+    }
+    geo.computeVertexNormals();
+    const p = polar(a, rr(58, 92), -37 + hgt / 2);
+    mesh(geo, matCrag, g, p.x, p.y, p.z).rotation.y = rr(0, Math.PI * 2);
+  }
+  return g;
+}
+
+// -- the tower summit: deck, shaft, parapet, merlons, hatch -------
+function buildPlatform(){
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(9.2, 9.6, 1.3, 44), [matStone, matFlag, matStoneDk], g, 0, -0.65, 0);
+  const shaftMap = stoneTex.clone(); shaftMap.repeat.set(8, 6); shaftMap.needsUpdate = true;
+  mesh(new THREE.CylinderGeometry(7.7, 8.8, 36, 30, 1, true),
+    new THREE.MeshStandardMaterial({ map: shaftMap, color: PAL.stone, roughness: 0.95 }), g, 0, -19.3, 0);
+  const wallMap = stoneTex.clone(); wallMap.repeat.set(10, 1); wallMap.needsUpdate = true;
+  mesh(new THREE.CylinderGeometry(9.05, 9.05, 1.0, 44, 1, true),
+    new THREE.MeshStandardMaterial({ map: wallMap, color: PAL.stone, roughness: 0.93, side: THREE.DoubleSide }),
+    g, 0, 0.5, 0);
+  mesh(new THREE.TorusGeometry(9.05, 0.16, 8, 44), matStoneDk, g, 0, 1.02, 0).rotation.x = Math.PI / 2;
+  const dummy = new THREE.Object3D();
+  const merlons = new THREE.InstancedMesh(new THREE.BoxGeometry(1.15, 0.62, 0.42), matStone, 22);
+  for (let i = 0; i < 22; i++){                        // battlement teeth
+    dummy.position.copy(polar((i / 22) * Math.PI * 2, 9.02, 1.4));
+    dummy.lookAt(0, 1.4, 0); dummy.updateMatrix();
+    merlons.setMatrixAt(i, dummy.matrix);
+  }
+  merlons.castShadow = true; g.add(merlons);
+  const corbels = new THREE.InstancedMesh(new THREE.BoxGeometry(0.8, 0.9, 1.1), matStoneDk, 18);
+  for (let i = 0; i < 18; i++){                        // brackets under the lip
+    dummy.position.copy(polar((i / 18) * Math.PI * 2 + 0.12, 8.7, -1.7));
+    dummy.lookAt(0, -1.7, 0); dummy.updateMatrix();
+    corbels.setMatrixAt(i, dummy.matrix);
+  }
+  g.add(corbels);
+  mesh(new THREE.BoxGeometry(2.0, 0.14, 1.7), matWood, g, -3.3, 0.07, 3.6).rotation.y = 0.5;
+  mesh(new THREE.TorusGeometry(0.16, 0.035, 6, 14), matBrassDk, g, -3.0, 0.16, 3.2).rotation.x = Math.PI / 2.3;
+  setShadow(g, true, true);
+  return g;
+}
+
+// -- pedestal with the arcane orb & drifting motes ----------------
+function buildPedestal(){
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(1.2, 1.5, 0.5, 8), matStone, g, 0, 0.25, 0);
+  mesh(new THREE.CylinderGeometry(0.52, 0.68, 1.5, 8), matStone, g, 0, 1.25, 0);
+  mesh(new THREE.CylinderGeometry(0.9, 0.55, 0.42, 8), matStoneDk, g, 0, 2.21, 0);
+  mesh(new THREE.TorusGeometry(0.42, 0.07, 8, 20), matBrass, g, 0, 2.5, 0).rotation.x = Math.PI / 2;
+  const orb = mesh(new THREE.SphereGeometry(0.62, 32, 24), matOrb, g, 0, 3.06, 0);
+  orb.name = 'orb';
+  mesh(new THREE.IcosahedronGeometry(0.4, 1), matOrbCore, g, 0, 3.06, 0).name = 'orbCore';
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: PAL.orb,
+    transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.85 }));
+  halo.scale.setScalar(3.4); halo.position.y = 3.06; halo.name = 'halo'; g.add(halo);
+  const moteGeo = new THREE.BufferGeometry();          // slow spiral of sparks
+  const motePos = new Float32Array(42 * 3);
+  for (let i = 0; i < 42; i++){
+    const a = rr(0, Math.PI * 2), r = rr(0.9, 2.3);
+    motePos.set([Math.cos(a) * r, rr(2.2, 4.4), Math.sin(a) * r], i * 3);
+  }
+  moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+  const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ map: glowTex, color: PAL.mote,
+    size: 0.16, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  motes.name = 'motes'; g.add(motes);
+  setShadow(g, true, true); orb.castShadow = false;
+  return g;
+}
+
+// -- rune circle etched in light around the pedestal --------------
+function buildRuneCircle(){
+  const g = new THREE.Group();
+  const disc = mesh(new THREE.CircleGeometry(3.6, 64), matRune, g, 0, 0.03, 0);
+  disc.rotation.x = -Math.PI / 2; disc.name = 'runeDisc';
+  return g;
+}
+
+// -- brass telescope on a tripod, aimed at the storm --------------
+function buildTelescope(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const a = (i / 3) * Math.PI * 2;
+    const leg = mesh(new THREE.CylinderGeometry(0.05, 0.07, 1.7, 8), matWoodDk, g,
+      Math.cos(a) * 0.52, 0.78, Math.sin(a) * 0.52);
+    leg.lookAt(0, 2.1, 0); leg.rotateX(Math.PI / 2);
+  }
+  mesh(new THREE.SphereGeometry(0.17, 12, 10), matBrassDk, g, 0, 1.56, 0);
+  const arm = new THREE.Group(); arm.position.y = 1.56; arm.rotation.z = 0.68; g.add(arm);
+  mesh(new THREE.CylinderGeometry(0.17, 0.23, 2.5, 16), matBrass, arm).rotation.z = Math.PI / 2;
+  mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.16, 16), matBrassDk, arm, -1.28, 0, 0).rotation.z = Math.PI / 2;
+  mesh(new THREE.CylinderGeometry(0.07, 0.1, 0.34, 10), matBrassDk, arm, 1.4, 0, 0).rotation.z = Math.PI / 2;
+  mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.22, 8), matBrassDk, arm, 0.5, -0.18, 0);
+  mesh(new THREE.TorusGeometry(0.21, 0.03, 6, 16), matBrassDk, arm, -0.5, 0, 0).rotation.y = Math.PI / 2;
+  setShadow(g, true, false);
+  return g;
+}
+
+// -- one floating spellbook (hinged covers + pages) ---------------
+function buildSpellbook(coverColor){
+  const g = new THREE.Group();
+  const coverMat = new THREE.MeshStandardMaterial({ color: coverColor, roughness: 0.6 });
+  const coverGeo = new THREE.BoxGeometry(0.62, 0.05, 0.85); coverGeo.translate(0.31, 0, 0);
+  mesh(coverGeo, coverMat, g).rotation.z = -0.22;
+  const lid = mesh(coverGeo.clone(), coverMat, g); lid.rotation.z = 0.34; lid.name = 'lid';
+  const pageGeo = new THREE.BoxGeometry(0.54, 0.1, 0.76); pageGeo.translate(0.29, 0, 0);
+  mesh(pageGeo, matPage, g).rotation.z = -0.1;
+  mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.85, 8), coverMat, g).rotation.x = Math.PI / 2;
+  setShadow(g, true, false);
+  return g;
+}
+
+// -- a potion crate with corner posts -----------------------------
+function buildCrate(size){
+  const g = new THREE.Group();
+  mesh(new THREE.BoxGeometry(size, size * 0.82, size), matWood, g, 0, size * 0.41, 0);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    mesh(new THREE.BoxGeometry(0.09, size * 0.86, 0.09), matWoodDk, g, sx * size * 0.47, size * 0.43, sz * size * 0.47);
+  setShadow(g, true, true);
+  return g;
+}
+
+// -- glowing potion bottle (round flask or tall vial) -------------
+function buildPotion(color, tall){
+  const g = new THREE.Group();
+  const liquid = new THREE.MeshStandardMaterial({ color: 0x101018, emissive: color, emissiveIntensity: 1.5, roughness: 0.3 });
+  if (tall){
+    mesh(new THREE.CylinderGeometry(0.075, 0.09, 0.34, 10), liquid, g, 0, 0.17, 0);
+    mesh(new THREE.CylinderGeometry(0.095, 0.11, 0.4, 10), matGlass, g, 0, 0.2, 0);
+  } else {
+    mesh(new THREE.SphereGeometry(0.13, 12, 10), liquid, g, 0, 0.13, 0);
+    mesh(new THREE.SphereGeometry(0.155, 12, 10), matGlass, g, 0, 0.14, 0);
+    mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.16, 8), matGlass, g, 0, 0.3, 0);
+  }
+  mesh(new THREE.CylinderGeometry(0.04, 0.045, 0.07, 8), matWoodDk, g, 0, tall ? 0.43 : 0.39, 0);
+  return g;
+}
+
+// -- the raven, perched on a merlon -------------------------------
+function buildRaven(){
+  const g = new THREE.Group();
+  const body = mesh(new THREE.SphereGeometry(0.16, 14, 12), matRaven, g, 0, 0.2, 0);
+  body.scale.set(0.85, 1, 1.55); body.rotation.x = -0.35;
+  const head = new THREE.Group(); head.position.set(0, 0.38, 0.16); head.name = 'ravenHead'; g.add(head);
+  mesh(new THREE.SphereGeometry(0.095, 12, 10), matRaven, head);
+  mesh(new THREE.ConeGeometry(0.035, 0.14, 8), matBrassDk, head, 0, 0, 0.13).rotation.x = Math.PI / 2;
+  for (const s of [-1, 1])
+    mesh(new THREE.SphereGeometry(0.016, 6, 6),
+      new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffc966, emissiveIntensity: 0.8 }),
+      head, s * 0.055, 0.03, 0.07);
+  const tail = mesh(new THREE.BoxGeometry(0.12, 0.03, 0.3), matRaven, g, 0, 0.14, -0.3);
+  tail.rotation.x = 0.45; tail.name = 'ravenTail';
+  for (const s of [-1, 1]){
+    const wing = mesh(new THREE.SphereGeometry(0.13, 10, 8), matRaven, g, s * 0.12, 0.22, -0.02);
+    wing.scale.set(0.3, 0.75, 1.15); wing.rotation.z = s * -0.2;
+  }
+  for (const s of [-1, 1])
+    mesh(new THREE.CylinderGeometry(0.014, 0.014, 0.12, 6), matBrassDk, g, s * 0.05, 0.05, 0.06);
+  setShadow(g, true, false);
+  return g;
+}
+
+// -- banner on a pole; cloth vertices wave in the wind ------------
+const bannerCloths = [];
+function buildBanner(phase){
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(0.06, 0.08, 3.4, 10), matWoodDk, g, 0, 2.3, 0);
+  mesh(new THREE.SphereGeometry(0.1, 10, 8), matBrass, g, 0, 4.05, 0);
+  mesh(new THREE.CylinderGeometry(0.04, 0.04, 1.7, 8), matBrassDk, g, 0, 3.82, 0).rotation.x = Math.PI / 2;
+  const geo = new THREE.PlaneGeometry(1.5, 2.3, 10, 14);
+  const cloth = mesh(geo, matBanner, g, 0, 3.82 - 1.15, 0);
+  cloth.rotation.y = Math.PI / 2;                      // hang across the bar
+  bannerCloths.push({ geo, base: geo.attributes.position.array.slice(), phase });
+  setShadow(g, true, false);
+  return g;
+}
+
+// -- swirling storm-cloud ring above the tower --------------------
+function buildStormClouds(){
+  const g = new THREE.Group(); g.position.y = 14.5;
+  for (let i = 0; i < 13; i++){
+    const cluster = new THREE.Group();
+    cluster.position.copy(polar((i / 13) * Math.PI * 2, rr(5.5, 12.5), rr(-1.4, 2.6)));
+    for (let p = 0, n = 3 + Math.floor(rand() * 3); p < n; p++){
+      const puff = mesh(new THREE.IcosahedronGeometry(rr(1.3, 2.6), 1), matCloud, cluster,
+        rr(-2.2, 2.2), rr(-0.5, 0.7), rr(-2.2, 2.2));
+      puff.scale.y = 0.55; puff.rotation.y = rr(0, Math.PI * 2);
+    }
+    cluster.userData.bob = rr(0, Math.PI * 2);
+    g.add(cluster);
+  }
+  mesh(new THREE.IcosahedronGeometry(3.4, 1), matCloud, g, 0, 3.4, 0).scale.y = 0.5;
+  return g;
+}
+
+// -- a jagged lightning bolt from cloud to crag -------------------
+function buildBolt(azimuth){
+  const g = new THREE.Group();
+  const top = polar(azimuth, rr(38, 46), 16);
+  const bottom = polar(azimuth + rr(-0.06, 0.06), rr(52, 62), -30);
+  const pts = [];
+  for (let i = 0; i <= 7; i++){
+    const p = top.clone().lerp(bottom, i / 7);
+    if (i > 0 && i < 7){ p.x += rr(-2.6, 2.6); p.z += rr(-2.6, 2.6); }
+    pts.push(p);
+  }
+  for (let i = 0; i < 7; i++){
+    const a = pts[i], b = pts[i + 1];
+    const seg = mesh(new THREE.CylinderGeometry(0.16, 0.24, a.distanceTo(b), 5), matBolt, g);
+    seg.position.copy(a).lerp(b, 0.5); seg.lookAt(b); seg.rotateX(Math.PI / 2);
+    if (i === 2 || i === 4){                           // side branch
+      const e = a.clone().add(new THREE.Vector3(rr(-5, 5), -rr(3, 6), rr(-5, 5)));
+      const br = mesh(new THREE.CylinderGeometry(0.07, 0.12, a.distanceTo(e), 4), matBolt, g);
+      br.position.copy(a).lerp(e, 0.5); br.lookAt(e); br.rotateX(Math.PI / 2);
+    }
+  }
+  g.visible = false;
+  g.userData.top = top;
+  return g;
+}
+
+// -- brazier with glowing coals & a licking flame -----------------
+function buildBrazier(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const a = (i / 3) * Math.PI * 2 + 0.5;
+    const leg = mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.9, 8), matBrassDk, g,
+      Math.cos(a) * 0.3, 0.42, Math.sin(a) * 0.3);
+    leg.rotation.set(Math.sin(a) * 0.3, 0, -Math.cos(a) * 0.3);
+  }
+  mesh(new THREE.CylinderGeometry(0.46, 0.24, 0.3, 14), matBrassDk, g, 0, 0.9, 0);
+  mesh(new THREE.SphereGeometry(0.34, 12, 8), matCoal, g, 0, 1.03, 0).scale.y = 0.4;
+  const flame = mesh(new THREE.ConeGeometry(0.24, 0.75, 8), matFlame, g, 0, 1.45, 0);
+  flame.name = 'flame';
+  setShadow(g, true, false); flame.castShadow = false;
+  return g;
+}
+
+// -- reading lectern with an open tome & candle -------------------
+function buildLectern(){
+  const g = new THREE.Group();
+  mesh(new THREE.CylinderGeometry(0.09, 0.14, 1.2, 8), matWoodDk, g, 0, 0.6, 0);
+  mesh(new THREE.CylinderGeometry(0.34, 0.4, 0.1, 10), matWoodDk, g, 0, 0.05, 0);
+  mesh(new THREE.BoxGeometry(0.95, 0.07, 0.7), matWood, g, 0, 1.26, 0).rotation.x = -0.5;
+  for (const s of [-1, 1])
+    mesh(new THREE.BoxGeometry(0.36, 0.05, 0.52), matPage, g, s * 0.19, 1.34, -0.03)
+      .rotation.set(-0.5, 0, s * 0.06);
+  mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.26, 8), matPage, g, -0.36, 1.5, -0.28).rotation.x = -0.15;
+  const cf = mesh(new THREE.SphereGeometry(0.05, 8, 6), matFlame, g, -0.36, 1.68, -0.31);
+  cf.scale.y = 1.9; cf.name = 'flame';
+  setShadow(g, true, false);
+  return g;
+}
+
+/* ================================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.32;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 32, 160);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 500);
+camera.position.set(13.2, 7.4, 16.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.4, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.0;
+controls.minDistance = 13;
+controls.maxDistance = 46;
+controls.maxPolarAngle = 1.42;
+
+/* ================================================================
+   ASSEMBLY & LAYOUT
+   ================================================================ */
+scene.add(buildBackdrop());
+scene.add(buildPlatform());
+const pedestal = buildPedestal();          scene.add(pedestal);
+scene.add(buildRuneCircle());
+const runeDisc = scene.getObjectByName('runeDisc');
+const orb      = pedestal.getObjectByName('orb');
+const orbCore  = pedestal.getObjectByName('orbCore');
+const halo     = pedestal.getObjectByName('halo');
+const motes    = pedestal.getObjectByName('motes');
+
+const telescope = buildTelescope();
+telescope.position.copy(polar(0.32, 5.2)); telescope.rotation.y = -0.32 + Math.PI;
+scene.add(telescope);
+
+const books = [];                                       // orbiting spellbooks
+for (let i = 0; i < 7; i++){
+  const book = buildSpellbook(pick([PAL.bookA, PAL.bookB, PAL.bookC]));
+  book.scale.setScalar(rr(0.8, 1.25));
+  scene.add(book);
+  books.push({ g: book, lid: book.getObjectByName('lid'),
+    r: rr(1.7, 2.9), h: rr(2.5, 4.5), speed: rr(0.16, 0.34) * (rand() < 0.5 ? 1 : -1),
+    a0: rr(0, Math.PI * 2), bobP: rr(0, Math.PI * 2), flapP: rr(0, Math.PI * 2) });
+}
+
+const crateSpot = polar(4.05, 6.4);                     // crate cluster + potions
+const crateA = buildCrate(1.15); crateA.position.copy(crateSpot); crateA.rotation.y = 0.4;
+const crateB = buildCrate(1.0);  crateB.position.copy(crateSpot).add(new THREE.Vector3(1.25, 0, 0.55)); crateB.rotation.y = -0.25;
+const crateC = buildCrate(0.9);  crateC.position.copy(crateSpot).add(new THREE.Vector3(0.45, 0.943, 0.25)); crateC.rotation.y = 0.9;
+scene.add(crateA, crateB, crateC);
+const potionSpots = [
+  [crateSpot.x - 0.15, 1.69, crateSpot.z - 0.15, PAL.potionA, false],
+  [crateSpot.x + 1.3, 0.82, crateSpot.z + 0.75, PAL.potionB, true],
+  [crateSpot.x + 0.9, 0, crateSpot.z + 1.5, PAL.potionC, false],
+  [crateSpot.x - 1.1, 0, crateSpot.z + 0.9, PAL.potionB, true]
+];
+for (const [x, y, z, col, tall] of potionSpots){
+  const p = buildPotion(col, tall); p.position.set(x, y, z); p.rotation.y = rr(0, Math.PI * 2);
+  scene.add(p);
+}
+
+const raven = buildRaven();                             // perched on the wall
+raven.position.copy(polar(3.55, 8.95, 1.71)); raven.rotation.y = -3.55 + Math.PI / 2;
+scene.add(raven);
+const ravenHead = raven.getObjectByName('ravenHead');
+const ravenTail = raven.getObjectByName('ravenTail');
+
+const bannerA = buildBanner(0);   bannerA.position.copy(polar(1.75, 8.9, 1.0));
+const bannerB = buildBanner(2.4); bannerB.position.copy(polar(1.75 + Math.PI, 8.9, 1.0));
+bannerA.rotation.y = -1.75; bannerB.rotation.y = -1.75 - Math.PI;
+scene.add(bannerA, bannerB);
+
+const clouds = buildStormClouds(); scene.add(clouds);
+const bolts = [buildBolt(2.3), buildBolt(5.1)];
+bolts.forEach(b => scene.add(b));
+
+const brazierA = buildBrazier(); brazierA.position.copy(polar(2.6, 6.9));
+const brazierB = buildBrazier(); brazierB.position.copy(polar(5.6, 6.9));
+scene.add(brazierA, brazierB);
+const flames = [];
+scene.traverse(o => { if (o.name === 'flame') flames.push(o); });
+
+const lectern = buildLectern();
+lectern.position.copy(polar(1.05, 5.6)); lectern.rotation.y = -1.05 + Math.PI;
+scene.add(lectern);
+
+/* ================================================================
+   LIGHTING RIG — moon key, hemisphere fill, arcane & fire accents
+   ================================================================ */
+scene.add(new THREE.HemisphereLight(0x3a4680, 0x12101e, 1.0));
+
+const moon = new THREE.DirectionalLight(PAL.moon, 2.0);
+moon.position.set(34, 42, -26);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -14; moon.shadow.camera.right = 14;
+moon.shadow.camera.top = 14;   moon.shadow.camera.bottom = -14;
+moon.shadow.camera.near = 12;  moon.shadow.camera.far = 110;
+moon.shadow.bias = -0.0006;
+scene.add(moon, moon.target);
+
+const orbLight = new THREE.PointLight(PAL.orb, 40, 34, 2);
+orbLight.position.set(0, 3.2, 0); scene.add(orbLight);
+
+const fireLightA = new THREE.PointLight(PAL.flame, 10, 11, 2);
+fireLightA.position.copy(brazierA.position).add(new THREE.Vector3(0, 1.4, 0));
+const fireLightB = fireLightA.clone();
+fireLightB.position.copy(brazierB.position).add(new THREE.Vector3(0, 1.4, 0));
+scene.add(fireLightA, fireLightB);
+
+const potionLight = new THREE.PointLight(PAL.potionA, 4, 7, 2);
+potionLight.position.copy(crateSpot).add(new THREE.Vector3(0, 1.6, 0));
+scene.add(potionLight);
+
+const lightningLight = new THREE.PointLight(PAL.bolt, 0, 220, 1.4);
+scene.add(lightningLight);
+
+/* ================================================================
+   ANIMATION LOOP — orb pulse, books, banners, storm, lightning...
+   ================================================================ */
+const clock = new THREE.Clock();
+
+function lightningEnvelope(t){
+  const tm = t % LIGHTNING_PERIOD;
+  for (const s of STRIKES){
+    const u = tm - s.t0;
+    if (u >= 0 && u < 0.55)                            // rapid double-flicker
+      return { i: Math.exp(-u * 6.5) * (0.62 + 0.38 * Math.sin(u * 78)), bolt: s.bolt };
+  }
+  return { i: 0, bolt: -1 };
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // arcane orb pulse + halo + spinning core + mote spiral
+  const pulse = 0.75 + 0.25 * Math.sin(t * 1.7);
+  matOrb.emissiveIntensity = 1.6 + 1.4 * pulse;
+  orbLight.intensity = 30 + 20 * pulse;
+  halo.scale.setScalar(3.0 + 0.8 * pulse);
+  orbCore.rotation.set(t * 0.7, t * 1.1, 0);
+  orb.position.y = 3.06 + Math.sin(t * 0.9) * 0.05;
+  motes.rotation.y = t * 0.35;
+  motes.position.y = Math.sin(t * 0.7) * 0.1;
+
+  // rune circle breathes and slowly revolves
+  runeDisc.rotation.z = t * 0.06;
+  matRune.opacity = 0.62 + 0.3 * Math.sin(t * 1.3 + 1);
+
+  // spellbooks orbit, bob and flap
+  for (const b of books){
+    const a = b.a0 + t * b.speed;
+    b.g.position.set(Math.cos(a) * b.r, b.h + Math.sin(t * 0.9 + b.bobP) * 0.22, Math.sin(a) * b.r);
+    b.g.rotation.y = -a + Math.PI / 2;
+    b.g.rotation.z = Math.sin(t * 0.6 + b.bobP) * 0.12;
+    b.lid.rotation.z = 0.34 + Math.max(0, Math.sin(t * 2.1 + b.flapP)) * 0.35;
+  }
+
+  // banner cloth wind wave (amplitude grows toward the free edge)
+  for (const bc of bannerCloths){
+    const pos = bc.geo.attributes.position;
+    for (let i = 0; i < pos.count; i++){
+      const bx = bc.base[i * 3], by = bc.base[i * 3 + 1];
+      const droop = (1.15 - by) / 2.3;                  // 0 at bar, 1 at tail
+      pos.setZ(i, Math.sin(t * 3.1 + by * 2.4 + bx * 1.5 + bc.phase) * 0.34 * droop);
+      pos.setX(i, bx + Math.sin(t * 1.6 + by * 1.2 + bc.phase) * 0.1 * droop);
+    }
+    pos.needsUpdate = true;
+    bc.geo.computeVertexNormals();
+  }
+
+  // storm swirl + gentle cluster bob
+  clouds.rotation.y = t * 0.03;
+  for (const c of clouds.children)
+    if (c.userData.bob !== undefined) c.position.y += Math.sin(t * 0.5 + c.userData.bob) * 0.002;
+
+  // periodic lightning: bolt visibility, flash light, cloud glow
+  const lz = lightningEnvelope(t);
+  bolts.forEach((b, i) => { b.visible = lz.bolt === i && lz.i > 0.22; });
+  if (lz.bolt >= 0){
+    const p = bolts[lz.bolt].userData.top;
+    lightningLight.position.set(p.x, p.y + 4, p.z);
+    lightningLight.intensity = 900 * lz.i;
+    matCloud.emissiveIntensity = 0.16 + 1.4 * lz.i;
+  } else {
+    lightningLight.intensity = 0;
+    matCloud.emissiveIntensity = 0.16;
+  }
+
+  // raven fidgets; tail flicks
+  ravenHead.rotation.y = Math.sin(t * 0.7) * 0.7 + Math.sin(t * 2.3) * 0.12;
+  ravenHead.rotation.z = Math.sin(t * 1.1) * 0.1;
+  ravenTail.rotation.x = 0.45 + Math.max(0, Math.sin(t * 1.9)) * 0.18;
+
+  // fire flicker (braziers + candle share the flame material)
+  const fl = 0.8 + 0.2 * Math.sin(t * 11) + 0.08 * Math.sin(t * 23 + 1.7);
+  matFlame.opacity = 0.65 + 0.25 * fl;
+  for (const f of flames) f.scale.y = (f.geometry.type === 'ConeGeometry' ? 1 : 1.9) * (0.85 + 0.3 * fl);
+  fireLightA.intensity = 8.5 + 4 * fl;
+  fireLightB.intensity = 11 + 3 * Math.sin(t * 9.5 + 2);
+  potionLight.intensity = 3.2 + 1.2 * Math.sin(t * 2.6);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   RESIZE
+   ================================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

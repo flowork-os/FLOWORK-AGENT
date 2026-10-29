@@ -1,0 +1,467 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cast-Iron Fire Hydrant</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e0f12; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(230,230,235,0.55); letter-spacing: .3px; user-select: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">Cast-iron fire hydrant · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
+
+/* ------------------------------------------------------------------ *
+ *  Scene / camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+
+// Neutral dark studio backdrop (soft radial gradient)
+function makeBackground() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(512, 430, 40, 512, 560, 780);
+  g.addColorStop(0.0, '#34383e');
+  g.addColorStop(0.45, '#22252a');
+  g.addColorStop(1.0, '#0c0d10');
+  x.fillStyle = g;
+  x.fillRect(0, 0, 1024, 1024);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+scene.background = makeBackground();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(1.35, 0.9, 1.55);
+
+// Procedural environment for realistic metal reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (hemisphere + key/fill/rim)
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x9db3c8, 0x3a2a20, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e6, 2.6);
+key.position.set(1.9, 2.7, 1.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -1.3;
+key.shadow.camera.right = 1.3;
+key.shadow.camera.top = 1.5;
+key.shadow.camera.bottom = -0.5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.target.position.set(0, 0.42, 0);
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x9fc0ff, 0.45);
+fill.position.set(-2.2, 1.1, -0.6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.35);
+rim.position.set(-0.8, 1.8, -2.4);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane (receives shadows only)
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(30, 30),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural chipped-paint textures
+ * ------------------------------------------------------------------ */
+function makeHydrantTextures(baseHex) {
+  const S = 1024;
+  const mk = () => { const c = document.createElement('canvas'); c.width = c.height = S; return c; };
+  const cCol = mk(), cRough = mk(), cMetal = mk(), cBump = mk();
+  const col = cCol.getContext('2d');
+  const rough = cRough.getContext('2d');
+  const metal = cMetal.getContext('2d');
+  const bump = cBump.getContext('2d');
+
+  // Base layers -----------------------------------------------------
+  col.fillStyle = baseHex;      col.fillRect(0, 0, S, S);   // red paint
+  rough.fillStyle = '#7a7a7a';  rough.fillRect(0, 0, S, S); // paint gloss ~0.48
+  metal.fillStyle = '#070707';  metal.fillRect(0, 0, S, S); // paint = dielectric
+  bump.fillStyle = '#b2b2b2';   bump.fillRect(0, 0, S, S);  // paint surface height
+
+  // Subtle paint mottling / weathering
+  for (let i = 0; i < 4200; i++) {
+    const x = Math.random() * S, y = Math.random() * S, r = Math.random() * 3 + 0.4;
+    col.fillStyle = Math.random() < 0.5 ? 'rgba(0,0,0,0.05)' : 'rgba(255,220,210,0.045)';
+    col.beginPath(); col.arc(x, y, r, 0, 7); col.fill();
+  }
+
+  function chipPath(cx, cy, r) {
+    const n = 8 + (Math.random() * 5 | 0);
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const a = i / n * Math.PI * 2;
+      const rr = r * (0.5 + Math.random() * 0.75);
+      pts.push([cx + Math.cos(a) * rr, cy + Math.sin(a) * rr]);
+    }
+    return pts;
+  }
+  function trace(ctx, pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], pts[0][1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+    ctx.closePath();
+  }
+
+  // Chips revealing bare / rusted cast iron -------------------------
+  const chipCount = 280;
+  for (let i = 0; i < chipCount; i++) {
+    const cx = Math.random() * S, cy = Math.random() * S;
+    const r = Math.pow(Math.random(), 1.8) * 40 + 3;
+    const rust = Math.random() < 0.30;
+    const g = 92 + Math.random() * 55 | 0;
+    const mcol = rust
+      ? `rgb(${118 + Math.random() * 26 | 0},${72 + Math.random() * 22 | 0},${44 + Math.random() * 16 | 0})`
+      : `rgb(${g},${g + 2},${g + 5})`;
+    const pts = chipPath(cx, cy, r);
+
+    trace(col, pts);
+    col.fillStyle = mcol; col.fill();
+    col.lineWidth = 2.2; col.strokeStyle = 'rgba(28,9,7,0.5)'; col.stroke();
+
+    trace(rough, pts);
+    rough.fillStyle = rust ? '#b2b2b2' : '#9c9c9c'; rough.fill();
+
+    trace(metal, pts);
+    metal.fillStyle = rust ? '#6c6c6c' : '#dedede'; metal.fill();
+
+    trace(bump, pts);
+    bump.fillStyle = '#8c8c8c'; bump.fill();
+  }
+
+  // Fine scratches --------------------------------------------------
+  for (let i = 0; i < 95; i++) {
+    const x0 = Math.random() * S, y0 = Math.random() * S;
+    const len = 18 + Math.random() * 130;
+    const ang = Math.random() * Math.PI * 2;
+    const x1 = x0 + Math.cos(ang) * len, y1 = y0 + Math.sin(ang) * len;
+    const mx = (x0 + x1) / 2 + (Math.random() - 0.5) * 22;
+    const my = (y0 + y1) / 2 + (Math.random() - 0.5) * 22;
+    const w = 0.5 + Math.random() * 1.4;
+    const passes = [
+      [col, 'rgba(185,185,190,0.5)'],
+      [metal, 'rgba(205,205,205,0.7)'],
+      [rough, 'rgba(150,150,150,0.55)']
+    ];
+    for (const [ctx, st] of passes) {
+      ctx.lineCap = 'round'; ctx.lineWidth = w; ctx.strokeStyle = st;
+      ctx.beginPath(); ctx.moveTo(x0, y0);
+      ctx.quadraticCurveTo(mx, my, x1, y1); ctx.stroke();
+    }
+  }
+
+  const tex = (canvas, srgb) => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = MAX_ANISO;
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+
+  return {
+    map: tex(cCol, true),
+    roughnessMap: tex(cRough, false),
+    metalnessMap: tex(cMetal, false),
+    bumpMap: tex(cBump, false)
+  };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Materials
+ * ------------------------------------------------------------------ */
+const paintTex = makeHydrantTextures('#b3291c'); // classic fire-hydrant red
+
+const paintMat = new THREE.MeshStandardMaterial({
+  map: paintTex.map,
+  roughnessMap: paintTex.roughnessMap,
+  metalnessMap: paintTex.metalnessMap,
+  bumpMap: paintTex.bumpMap,
+  bumpScale: 0.004,
+  metalness: 1.0,
+  roughness: 1.0,
+  envMapIntensity: 0.9
+});
+
+function cloneTex(t, rep) {
+  const c = t.clone();
+  c.needsUpdate = true;
+  c.wrapS = c.wrapT = THREE.RepeatWrapping;
+  c.repeat.set(rep, rep);
+  return c;
+}
+// Smaller chip scale for the small cast parts (nozzle caps)
+const paintMatSmall = new THREE.MeshStandardMaterial({
+  map: cloneTex(paintTex.map, 2.6),
+  roughnessMap: cloneTex(paintTex.roughnessMap, 2.6),
+  metalnessMap: cloneTex(paintTex.metalnessMap, 2.6),
+  bumpMap: cloneTex(paintTex.bumpMap, 2.6),
+  bumpScale: 0.003,
+  metalness: 1.0,
+  roughness: 1.0,
+  envMapIntensity: 0.9
+});
+
+const ironMat = new THREE.MeshStandardMaterial({
+  color: 0x51514f, metalness: 0.92, roughness: 0.5, envMapIntensity: 1.0
+});
+const chainMat = new THREE.MeshStandardMaterial({
+  color: 0x3c3c3e, metalness: 0.85, roughness: 0.62, envMapIntensity: 0.9
+});
+
+/* ------------------------------------------------------------------ *
+ *  Hydrant assembly
+ * ------------------------------------------------------------------ */
+const hydrant = new THREE.Group();
+
+// Cylinder helper with its axis along +Z (for outward-pointing nozzles)
+function cylZ(rTop, rBot, len, seg) {
+  const g = new THREE.CylinderGeometry(rTop, rBot, len, seg);
+  g.rotateX(Math.PI / 2);
+  return g;
+}
+
+// --- Main body profile (revolved with LatheGeometry) --------------
+const P = [];
+const p = (r, y) => P.push(new THREE.Vector2(r, y));
+p(0.002, 0.000);            // bottom center
+p(0.210, 0.000);            // flanged base — outer bottom
+p(0.210, 0.045);            // flange side
+p(0.196, 0.056);            // flange top chamfer
+p(0.196, 0.072);
+p(0.152, 0.094);            // taper into neck
+p(0.126, 0.116);
+p(0.120, 0.150);
+p(0.115, 0.200);            // barrel
+p(0.115, 0.400);
+p(0.122, 0.450);            // shoulder swell (nozzle band)
+p(0.126, 0.492);
+p(0.117, 0.534);
+p(0.104, 0.565);            // waist under bonnet
+p(0.108, 0.596);
+p(0.148, 0.610);            // bonnet flange out
+p(0.148, 0.642);
+p(0.132, 0.662);            // dome base
+const domeBaseR = 0.132, domeBaseY = 0.662, domeH = 0.120;
+for (let i = 1; i <= 14; i++) {
+  const a = (i / 14) * Math.PI / 2;
+  p(domeBaseR * Math.cos(a), domeBaseY + domeH * Math.sin(a)); // domed bonnet cap
+}
+const DOME_TOP_Y = domeBaseY + domeH; // ~0.782
+
+const body = new THREE.Mesh(new THREE.LatheGeometry(P, 100), paintMat);
+hydrant.add(body);
+
+// --- Pentagon operating nut on top of bonnet ----------------------
+const washer = new THREE.Mesh(new THREE.CylinderGeometry(0.072, 0.079, 0.016, 28), ironMat);
+washer.position.y = DOME_TOP_Y + 0.008;
+hydrant.add(washer);
+
+const nut = new THREE.Mesh(new THREE.CylinderGeometry(0.050, 0.057, 0.052, 5), ironMat);
+nut.position.y = DOME_TOP_Y + 0.008 + 0.008 + 0.026;
+nut.rotation.y = Math.PI / 10;
+hydrant.add(nut);
+
+const nutTop = new THREE.Mesh(new THREE.CylinderGeometry(0.020, 0.020, 0.014, 12), ironMat);
+nutTop.position.y = nut.position.y + 0.032;
+hydrant.add(nutTop);
+
+// --- Bolts (hex heads) around the two flanges ---------------------
+function hexBolt(r, h) {
+  return new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.05, h, 6), ironMat);
+}
+for (let i = 0; i < 8; i++) {          // base flange
+  const a = i / 8 * Math.PI * 2;
+  const b = hexBolt(0.016, 0.022);
+  b.position.set(0.184 * Math.cos(a), 0.063, 0.184 * Math.sin(a));
+  b.rotation.y = a;
+  hydrant.add(b);
+}
+for (let i = 0; i < 8; i++) {          // bonnet flange
+  const a = (i + 0.5) / 8 * Math.PI * 2;
+  const b = hexBolt(0.012, 0.017);
+  b.position.set(0.141 * Math.cos(a), 0.629, 0.141 * Math.sin(a));
+  b.rotation.y = a;
+  hydrant.add(b);
+}
+
+// --- Nozzle assembly (built along local +Z) -----------------------
+function makeNozzle(nR) {
+  const g = new THREE.Group();
+  const capR = nR * 1.22;
+
+  const boss = new THREE.Mesh(cylZ(nR * 1.46, nR * 1.52, 0.030, 30), paintMat);
+  boss.position.z = 0.006;
+
+  const collar = new THREE.Mesh(cylZ(nR * 1.16, nR * 1.30, 0.020, 30), paintMatSmall);
+  collar.position.z = 0.030;
+
+  const spout = new THREE.Mesh(cylZ(nR * 0.90, nR * 1.02, 0.055, 30), ironMat);
+  spout.position.z = 0.055;
+
+  for (let i = 0; i < 3; i++) {   // thread rings
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(nR * 0.98, 0.0035, 6, 26), ironMat);
+    ring.position.z = 0.044 + i * 0.013;
+    g.add(ring);
+  }
+
+  const cap = new THREE.Mesh(cylZ(capR, capR, 0.046, 6), paintMatSmall);
+  cap.position.z = 0.090; cap.rotation.z = Math.PI / 6;
+
+  const capFace = new THREE.Mesh(cylZ(capR * 0.74, capR * 0.9, 0.014, 6), paintMatSmall);
+  capFace.position.z = 0.118; capFace.rotation.z = Math.PI / 6;
+
+  const capNub = new THREE.Mesh(cylZ(nR * 0.26, nR * 0.26, 0.02, 12), ironMat);
+  capNub.position.z = 0.132;
+
+  const lug = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.004, 8, 18), chainMat);
+  lug.position.set(0, -capR - 0.006, 0.075); lug.rotation.y = Math.PI / 2;
+
+  g.add(boss, collar, spout, cap, capFace, capNub, lug);
+  return { group: g, eyeZ: 0.075, eyeY: -capR - 0.006 };
+}
+
+// Chain of interlocking links between two world-space points
+function makeChain(a, b) {
+  const grp = new THREE.Group();
+  const dist = a.distanceTo(b);
+  const links = Math.max(6, Math.round(dist / 0.019));
+  for (let i = 0; i < links; i++) {
+    const t = i / (links - 1);
+    const pos = new THREE.Vector3().lerpVectors(a, b, t);
+    pos.y -= Math.sin(Math.PI * t) * dist * 0.34; // gravity droop
+    const m = new THREE.Mesh(new THREE.TorusGeometry(0.011, 0.0035, 6, 14), chainMat);
+    m.position.copy(pos);
+    m.lookAt(b);
+    if (i % 2 === 0) m.rotateX(Math.PI / 2); else m.rotateY(Math.PI / 2);
+    grp.add(m);
+  }
+  return grp;
+}
+
+function addNozzle(nR, az, y, R) {
+  const nz = makeNozzle(nR);
+  nz.group.rotation.y = az;
+  nz.group.position.set(R * Math.sin(az), y, R * Math.cos(az));
+  hydrant.add(nz.group);
+
+  // world-space endpoints for the cap chain
+  const capEye = new THREE.Vector3(
+    (R + nz.eyeZ) * Math.sin(az), y + nz.eyeY, (R + nz.eyeZ) * Math.cos(az)
+  );
+  const anchor = new THREE.Vector3(
+    (R + 0.02) * Math.sin(az), y + 0.085, (R + 0.02) * Math.cos(az)
+  );
+
+  const eye = new THREE.Mesh(new THREE.TorusGeometry(0.012, 0.004, 8, 18), chainMat);
+  eye.position.copy(anchor);
+  eye.rotation.y = az; eye.rotation.x = Math.PI / 2;
+  hydrant.add(eye);
+
+  hydrant.add(makeChain(anchor, capEye));
+}
+
+const BARREL_R = 0.115;
+const ATTACH_R = 0.108;
+// Large front pumper nozzle
+addNozzle(0.055, 0, 0.300, ATTACH_R);
+// Two smaller side hose nozzles
+addNozzle(0.040, Math.PI / 2, 0.340, ATTACH_R);
+addNozzle(0.040, -Math.PI / 2, 0.340, ATTACH_R);
+
+// Shadows on every solid part of the hydrant
+hydrant.traverse((o) => {
+  if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+});
+
+scene.add(hydrant);
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.target.set(0, 0.42, 0);
+controls.minDistance = 0.8;
+controls.maxDistance = 4.0;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

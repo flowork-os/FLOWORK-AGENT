@@ -1,0 +1,1107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Marble Sleeping Hound</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #141414; }
+  canvas { display: block; }
+  #label {
+    position: fixed; left: 0; right: 0; bottom: 14px;
+    text-align: center; color: #9a938a; font: 300 12px/1.5 "Helvetica Neue", Helvetica, Arial, sans-serif;
+    letter-spacing: 0.22em; text-transform: uppercase; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="label">Sleeping Hound &mdash; Carrara Marble</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141518);
+scene.fog = new THREE.FogExp2(0x141518, 0.030);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(1.75, 1.05, 2.35);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 0.42, 0);
+controls.minDistance = 1.2;
+controls.maxDistance = 8.0;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ============================================================
+   Procedural marble textures (canvas-generated, no external assets)
+   ============================================================ */
+
+// Small deterministic value-noise helper (no external deps)
+function makeNoise(seed) {
+  let s = seed >>> 0;
+  const rnd = () => {
+    // xorshift32
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5;  s >>>= 0;
+    return s / 4294967296;
+  };
+  const P = new Uint8Array(512);
+  const perm = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) perm[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    const t = perm[i]; perm[i] = perm[j]; perm[j] = t;
+  }
+  for (let i = 0; i < 512; i++) P[i] = perm[i & 255];
+
+  const fade = t => t * t * t * (t * (t * 6 - 15) + 10);
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const grad = (h, x, y) => {
+    switch (h & 3) {
+      case 0: return  x + y;
+      case 1: return -x + y;
+      case 2: return  x - y;
+      default: return -x - y;
+    }
+  };
+  return function noise2(x, y) {
+    const X = Math.floor(x) & 255, Y = Math.floor(y) & 255;
+    const xf = x - Math.floor(x), yf = y - Math.floor(y);
+    const u = fade(xf), v = fade(yf);
+    const aa = P[P[X] + Y], ab = P[P[X] + Y + 1];
+    const ba = P[P[X + 1] + Y], bb = P[P[X + 1] + Y + 1];
+    const x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
+    const x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
+    return lerp(x1, x2, v); // roughly [-1,1]
+  };
+}
+
+const noiseA = makeNoise(1337);
+const noiseB = makeNoise(90210);
+
+function fbm(n, x, y, oct, gain) {
+  let amp = 1, freq = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * n(x * freq, y * freq);
+    norm += amp;
+    amp *= gain;
+    freq *= 2.03;
+  }
+  return sum / norm;
+}
+
+/**
+ * Carrara-like marble: warm-white base with soft grey veins that run
+ * diagonally. Returns { map, roughnessMap, bumpMap }.
+ */
+function makeMarbleTextures(size, opts) {
+  const o = Object.assign({
+    veinStrength: 1.0,
+    veinScale: 2.4,
+    diagonal: true,
+    grain: 0.05,
+    repeat: 1
+  }, opts || {});
+
+  const cAlbedo = document.createElement('canvas');
+  cAlbedo.width = cAlbedo.height = size;
+  const gA = cAlbedo.getContext('2d');
+  const imgA = gA.createImageData(size, size);
+  const dA = imgA.data;
+
+  const cRough = document.createElement('canvas');
+  cRough.width = cRough.height = size;
+  const gR = cRough.getContext('2d');
+  const imgR = gR.createImageData(size, size);
+  const dR = imgR.data;
+
+  const cBump = document.createElement('canvas');
+  cBump.width = cBump.height = size;
+  const gB = cBump.getContext('2d');
+  const imgB = gB.createImageData(size, size);
+  const dB = imgB.data;
+
+  const inv = 1 / size;
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x * inv, v = y * inv;
+
+      // Diagonal coordinate: veins sweep across at ~35 degrees
+      const ang = o.diagonal ? -0.62 : 0.0;
+      const ca = Math.cos(ang), sa = Math.sin(ang);
+      const du = (u * ca - v * sa) * o.veinScale;
+      const dv = (u * sa + v * ca) * o.veinScale;
+
+      // Warp the coordinate field so veins meander organically
+      const w1 = fbm(noiseA, du * 1.6 + 3.1, dv * 1.6 - 1.7, 4, 0.55);
+      const w2 = fbm(noiseB, du * 3.1 - 5.4, dv * 3.1 + 2.2, 3, 0.5);
+
+      // Primary vein set (turbulent sine bands along the diagonal)
+      const t = du * 6.0 + w1 * 5.2 + w2 * 1.4;
+      let vein = Math.abs(Math.sin(t));
+      vein = Math.pow(1.0 - vein, 7.0);           // thin dark filaments
+
+      // Secondary, fainter and finer vein family
+      const t2 = du * 15.5 + w2 * 7.5 + w1 * 2.0;
+      let vein2 = Math.abs(Math.sin(t2));
+      vein2 = Math.pow(1.0 - vein2, 16.0) * 0.55;
+
+      // Broad cloudy grey drifts
+      const cloud = fbm(noiseA, du * 0.9 + 11.0, dv * 0.9 - 4.0, 5, 0.5) * 0.5 + 0.5;
+
+      // Fine crystalline sparkle grain
+      const grain = fbm(noiseB, x * 0.35, y * 0.35, 2, 0.5) * 0.5 + 0.5;
+
+      let veinAmt = Math.min(1, (vein + vein2) * o.veinStrength);
+
+      // Base marble tone: very light, faintly warm
+      let r = 244, g = 242, b = 237;
+
+      // Cloud shading (subtle)
+      const cl = (cloud - 0.5) * 12.0;
+      r -= cl; g -= cl; b -= cl * 0.85;
+
+      // Vein colour: cool desaturated grey
+      const vr = 150, vg = 152, vb = 156;
+      r = r * (1 - veinAmt) + vr * veinAmt;
+      g = g * (1 - veinAmt) + vg * veinAmt;
+      b = b * (1 - veinAmt) + vb * veinAmt;
+
+      // Grain
+      const gr = (grain - 0.5) * 255 * o.grain;
+      r += gr; g += gr; b += gr;
+
+      const i = (y * size + x) * 4;
+      dA[i]     = Math.max(0, Math.min(255, r));
+      dA[i + 1] = Math.max(0, Math.min(255, g));
+      dA[i + 2] = Math.max(0, Math.min(255, b));
+      dA[i + 3] = 255;
+
+      // Roughness: polished marble is quite smooth; veins are slightly
+      // softer/duller, and there is a gentle mottling across the surface.
+      let rough = 0.26 + veinAmt * 0.20 + (cloud - 0.5) * 0.12 + (grain - 0.5) * 0.06;
+      rough = Math.max(0.08, Math.min(0.85, rough));
+      const rb = rough * 255;
+      dR[i] = rb; dR[i + 1] = rb; dR[i + 2] = rb; dR[i + 3] = 255;
+
+      // Bump: veins sit microscopically proud/recessed, plus stone grain
+      let bump = 0.5 + (grain - 0.5) * 0.55 - veinAmt * 0.18 + (cloud - 0.5) * 0.10;
+      bump = Math.max(0, Math.min(1, bump));
+      const bb = bump * 255;
+      dB[i] = bb; dB[i + 1] = bb; dB[i + 2] = bb; dB[i + 3] = 255;
+    }
+  }
+
+  gA.putImageData(imgA, 0, 0);
+  gR.putImageData(imgR, 0, 0);
+  gB.putImageData(imgB, 0, 0);
+
+  const mk = (canvas, srgb) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(o.repeat, o.repeat);
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+  };
+
+  return {
+    map: mk(cAlbedo, true),
+    roughnessMap: mk(cRough, false),
+    bumpMap: mk(cBump, false)
+  };
+}
+
+/**
+ * Chiselled ("tooth chisel") stone face: rows of overlapping gouges left by
+ * a toothed chisel, running across the plinth face. Returns bump + rough maps.
+ */
+function makeChiselTextures(size) {
+  const cBump = document.createElement('canvas');
+  cBump.width = cBump.height = size;
+  const g = cBump.getContext('2d');
+  const img = g.createImageData(size, size);
+  const d = img.data;
+
+  const cRough = document.createElement('canvas');
+  cRough.width = cRough.height = size;
+  const gr = cRough.getContext('2d');
+  const imgR = gr.createImageData(size, size);
+  const dR = imgR.data;
+
+  const cAlb = document.createElement('canvas');
+  cAlb.width = cAlb.height = size;
+  const ga = cAlb.getContext('2d');
+  const imgA = ga.createImageData(size, size);
+  const dA = imgA.data;
+
+  const inv = 1 / size;
+  const rows = 26;      // chisel passes stacked vertically
+  const toothFreq = 62; // teeth per pass across the face
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x * inv, v = y * inv;
+
+      // The mason works in slightly wandering horizontal passes
+      const wander = fbm(noiseA, u * 3.0, v * 9.0, 3, 0.5) * 0.035;
+      const rowF = (v + wander) * rows;
+      const rowIdx = Math.floor(rowF);
+      const rowFrac = rowF - rowIdx;
+
+      // Each pass is a shallow scooped channel
+      const channel = Math.sin(rowFrac * Math.PI); // 0..1..0
+
+      // Tooth ripples along the stroke, offset per pass
+      const phase = (rowIdx % 7) * 0.9 + fbm(noiseB, rowIdx * 3.7, 0.5, 2, 0.5) * 2.0;
+      const tooth = Math.sin((u * toothFreq) + phase);
+      const toothMark = 0.5 + 0.5 * tooth;
+
+      // Micro chipping / stone grit
+      const grit = fbm(noiseB, u * 190.0, v * 190.0, 3, 0.55) * 0.5 + 0.5;
+      const chunk = fbm(noiseA, u * 22.0, v * 26.0, 3, 0.5) * 0.5 + 0.5;
+
+      let h = 0.52
+        - channel * 0.34
+        + toothMark * channel * 0.22
+        + (chunk - 0.5) * 0.16
+        + (grit - 0.5) * 0.22;
+      h = Math.max(0, Math.min(1, h));
+
+      const i = (y * size + x) * 4;
+      const hb = h * 255;
+      d[i] = hb; d[i + 1] = hb; d[i + 2] = hb; d[i + 3] = 255;
+
+      // Rough-hewn stone scatters light: high roughness, deeper in the gouges
+      let rough = 0.80 + channel * 0.12 - (grit - 0.5) * 0.14;
+      rough = Math.max(0.45, Math.min(1.0, rough));
+      const rb = rough * 255;
+      dR[i] = rb; dR[i + 1] = rb; dR[i + 2] = rb; dR[i + 3] = 255;
+
+      // Raw (unpolished) marble reads slightly paler & chalkier, with dust
+      // settled in the tool grooves.
+      const dust = channel * 0.10 + (1 - grit) * 0.06;
+      const base = 236 - dust * 60 + (chunk - 0.5) * 10;
+      dA[i]     = Math.max(0, Math.min(255, base));
+      dA[i + 1] = Math.max(0, Math.min(255, base - 1));
+      dA[i + 2] = Math.max(0, Math.min(255, base - 4));
+      dA[i + 3] = 255;
+    }
+  }
+
+  g.putImageData(img, 0, 0);
+  gr.putImageData(imgR, 0, 0);
+  ga.putImageData(imgA, 0, 0);
+
+  const mk = (canvas, srgb, rx, ry) => {
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+    tex.repeat.set(rx, ry);
+    tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+    if (srgb) tex.colorSpace = THREE.SRGBColorSpace;
+    tex.needsUpdate = true;
+    return tex;
+  };
+
+  return {
+    map: mk(cAlb, true, 2, 1),
+    bumpMap: mk(cBump, false, 2, 1),
+    roughnessMap: mk(cRough, false, 2, 1)
+  };
+}
+
+/* ============================================================
+   Environment (procedural studio gradient for marble specularity)
+   ============================================================ */
+function makeStudioEnvironment() {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 256;
+  const g = c.getContext('2d');
+
+  // vertical gradient: bright soft ceiling, dim floor
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.00, '#f2f0ec');
+  grad.addColorStop(0.34, '#cfcdc8');
+  grad.addColorStop(0.52, '#6e6c69');
+  grad.addColorStop(0.72, '#2b2b2c');
+  grad.addColorStop(1.00, '#141416');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, 256, 256);
+
+  // a couple of soft "softbox" highlights for believable marble sheen
+  const blob = (x, y, r, a) => {
+    const rg = g.createRadialGradient(x, y, 0, x, y, r);
+    rg.addColorStop(0, 'rgba(255,255,255,' + a + ')');
+    rg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = rg;
+    g.fillRect(x - r, y - r, r * 2, r * 2);
+  };
+  blob(60, 46, 70, 0.95);
+  blob(190, 62, 55, 0.6);
+  blob(128, 150, 90, 0.10);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envRT = pmrem.fromEquirectangular(tex);
+  tex.dispose();
+  pmrem.dispose();
+  return envRT.texture;
+}
+
+const envMap = makeStudioEnvironment();
+scene.environment = envMap;
+
+/* ============================================================
+   Materials
+   ============================================================ */
+const marbleTex = makeMarbleTextures(512, { veinStrength: 1.0, veinScale: 2.2, repeat: 1 });
+const chiselTex = makeChiselTextures(512);
+
+// Polished carved marble (the hound + plinth top/mouldings)
+const polishedMarble = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: marbleTex.map,
+  roughnessMap: marbleTex.roughnessMap,
+  bumpMap: marbleTex.bumpMap,
+  bumpScale: 0.0025,
+  roughness: 0.30,
+  metalness: 0.0,
+  clearcoat: 0.30,
+  clearcoatRoughness: 0.42,
+  reflectivity: 0.42,
+  envMapIntensity: 0.85,
+  sheen: 0.25,
+  sheenColor: new THREE.Color(0xfff6ea),
+  sheenRoughness: 0.85
+});
+
+// Subsurface-ish variant used for the whole animal (very slight translucency
+// gives marble its characteristic waxy depth)
+const houndMarble = polishedMarble.clone();
+houndMarble.transmission = 0.0;
+houndMarble.roughness = 0.27;
+houndMarble.clearcoat = 0.34;
+houndMarble.envMapIntensity = 0.95;
+
+// Rough chiselled plinth face
+const chiselledStone = new THREE.MeshStandardMaterial({
+  color: 0xf3f1ec,
+  map: chiselTex.map,
+  bumpMap: chiselTex.bumpMap,
+  bumpScale: 0.010,
+  roughnessMap: chiselTex.roughnessMap,
+  roughness: 0.92,
+  metalness: 0.0,
+  envMapIntensity: 0.42
+});
+
+/* ============================================================
+   Geometry helpers
+   ============================================================ */
+
+// Build a smooth "loft" of elliptical cross sections along a path.
+// sections: [{ p:[x,y,z], rx, ry, roll? }]
+// Produces a closed capped tube with soft, sculptural planes.
+function loft(sections, radialSegs, capStart, capEnd, smoothSteps) {
+  // Resample sections with Catmull-Rom for smoothness
+  const pts = sections.map(s => new THREE.Vector3(s.p[0], s.p[1], s.p[2]));
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+  const N = Math.max(sections.length, smoothSteps || sections.length * 6);
+
+  // interpolate radii along parameter using piecewise cubic (simple: sample
+  // by mapping t -> section index space with smoothstep between neighbours)
+  const rxArr = sections.map(s => s.rx);
+  const ryArr = sections.map(s => s.ry);
+  const rollArr = sections.map(s => (s.roll || 0));
+
+  function sampleArr(arr, t) {
+    const f = t * (arr.length - 1);
+    const i = Math.min(arr.length - 2, Math.max(0, Math.floor(f)));
+    const u = f - i;
+    // Catmull-Rom on scalars
+    const p0 = arr[Math.max(0, i - 1)];
+    const p1 = arr[i];
+    const p2 = arr[i + 1];
+    const p3 = arr[Math.min(arr.length - 1, i + 2)];
+    const u2 = u * u, u3 = u2 * u;
+    return 0.5 * ((2 * p1) + (-p0 + p2) * u + (2 * p0 - 5 * p1 + 4 * p2 - p3) * u2 + (-p0 + 3 * p1 - 3 * p2 + p3) * u3);
+  }
+
+  const frames = curve.computeFrenetFrames(N - 1, false);
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const ringVerts = radialSegs;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const center = curve.getPoint(t);
+    const idx = Math.min(frames.normals.length - 1, i);
+    const nrm = frames.normals[idx];
+    const bin = frames.binormals[idx];
+    const tan = frames.tangents[idx];
+    const rx = Math.max(0.0006, sampleArr(rxArr, t));
+    const ry = Math.max(0.0006, sampleArr(ryArr, t));
+    const roll = sampleArr(rollArr, t);
+
+    for (let j = 0; j < ringVerts; j++) {
+      const a = (j / ringVerts) * Math.PI * 2 + roll;
+      const cx = Math.cos(a), cy = Math.sin(a);
+      // Slight "carved plane" flattening: superellipse exponent > 2 keeps
+      // broad flat facets like chisel-finished stone.
+      const e = 2.25;
+      const sx = Math.sign(cx) * Math.pow(Math.abs(cx), 2 / e);
+      const sy = Math.sign(cy) * Math.pow(Math.abs(cy), 2 / e);
+
+      const px = center.x + nrm.x * sx * rx + bin.x * sy * ry;
+      const py = center.y + nrm.y * sx * rx + bin.y * sy * ry;
+      const pz = center.z + nrm.z * sx * rx + bin.z * sy * ry;
+      positions.push(px, py, pz);
+
+      const nx = nrm.x * sx * ry + bin.x * sy * rx;
+      const ny = nrm.y * sx * ry + bin.y * sy * rx;
+      const nz = nrm.z * sx * ry + bin.z * sy * rx;
+      const nl = Math.hypot(nx, ny, nz) || 1;
+      normals.push(nx / nl, ny / nl, nz / nl);
+      uvs.push(j / ringVerts, t);
+      void tan;
+    }
+  }
+
+  for (let i = 0; i < N - 1; i++) {
+    for (let j = 0; j < ringVerts; j++) {
+      const a = i * ringVerts + j;
+      const b = i * ringVerts + ((j + 1) % ringVerts);
+      const c = (i + 1) * ringVerts + ((j + 1) % ringVerts);
+      const d = (i + 1) * ringVerts + j;
+      indices.push(a, b, d);
+      indices.push(b, c, d);
+    }
+  }
+
+  // caps
+  function addCap(ringStart, center, flip) {
+    const ci = positions.length / 3;
+    positions.push(center.x, center.y, center.z);
+    normals.push(0, flip ? -1 : 1, 0);
+    uvs.push(0.5, flip ? 0 : 1);
+    for (let j = 0; j < ringVerts; j++) {
+      const a = ringStart + j;
+      const b = ringStart + ((j + 1) % ringVerts);
+      if (flip) indices.push(ci, b, a);
+      else indices.push(ci, a, b);
+    }
+  }
+  if (capStart) addCap(0, curve.getPoint(0), true);
+  if (capEnd) addCap((N - 1) * ringVerts, curve.getPoint(1), false);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Deform a geometry by a callback in local space, then recompute normals.
+function deform(geo, fn) {
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    fn(v, i);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function mesh(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================
+   THE SCULPTURE (single centered object)
+   Units: metres. Plinth ~0.92 m long — a life-size whippet/greyhound
+   curled asleep, roughly 0.72 m nose-to-tail-tip when coiled.
+   ============================================================ */
+const sculpture = new THREE.Group();
+scene.add(sculpture);
+
+/* ---------- 1. The plinth ---------- */
+const plinth = new THREE.Group();
+sculpture.add(plinth);
+
+const PL_W = 0.98;   // x
+const PL_D = 0.56;   // z
+const PL_H = 0.20;   // y (low plinth)
+
+// Main block — rough chiselled sides
+const blockGeo = new THREE.BoxGeometry(PL_W, PL_H, PL_D, 40, 12, 26);
+// give the rough block a very slightly irregular, hand-worked silhouette
+deform(blockGeo, (v) => {
+  const onSide = Math.abs(Math.abs(v.x) - PL_W / 2) < 1e-4 || Math.abs(Math.abs(v.z) - PL_D / 2) < 1e-4;
+  const onTop = Math.abs(v.y - PL_H / 2) < 1e-4;
+  if (onSide && !onTop) {
+    const n = fbm(noiseA, v.x * 7.0 + 4.0, v.y * 9.0 + v.z * 5.0, 3, 0.5);
+    const bulge = n * 0.006;
+    if (Math.abs(Math.abs(v.x) - PL_W / 2) < 1e-4) v.x += Math.sign(v.x) * bulge;
+    if (Math.abs(Math.abs(v.z) - PL_D / 2) < 1e-4) v.z += Math.sign(v.z) * bulge;
+  }
+});
+const block = mesh(blockGeo, chiselledStone);
+block.position.y = PL_H / 2;
+plinth.add(block);
+
+// Polished top slab (where the hound lies) with a soft chamfer
+const topSlabGeo = new THREE.BoxGeometry(PL_W + 0.035, 0.030, PL_D + 0.035, 24, 3, 16);
+deform(topSlabGeo, (v) => {
+  // chamfer edges of the slab
+  const ex = Math.max(0, Math.abs(v.x) - ((PL_W + 0.035) / 2 - 0.014));
+  const ez = Math.max(0, Math.abs(v.z) - ((PL_D + 0.035) / 2 - 0.014));
+  const e = Math.max(ex, ez) / 0.014;
+  if (e > 0 && v.y > 0) v.y -= e * e * 0.010;
+});
+const topSlab = mesh(topSlabGeo, polishedMarble);
+topSlab.position.y = PL_H + 0.015;
+plinth.add(topSlab);
+
+// Polished base moulding
+const baseGeo = new THREE.BoxGeometry(PL_W + 0.075, 0.042, PL_D + 0.075, 24, 3, 16);
+deform(baseGeo, (v) => {
+  const ex = Math.max(0, Math.abs(v.x) - ((PL_W + 0.075) / 2 - 0.016));
+  const ez = Math.max(0, Math.abs(v.z) - ((PL_D + 0.075) / 2 - 0.016));
+  const e = Math.max(ex, ez) / 0.016;
+  if (e > 0) v.y += (v.y > 0 ? -1 : 1) * e * e * 0.008;
+});
+const baseM = mesh(baseGeo, polishedMarble);
+baseM.position.y = -0.021;
+plinth.add(baseM);
+
+// A thin polished fillet capping the rough block just under the slab
+const filletGeo = new THREE.BoxGeometry(PL_W + 0.010, 0.016, PL_D + 0.010, 12, 2, 8);
+const fillet = mesh(filletGeo, polishedMarble);
+fillet.position.y = PL_H - 0.008;
+plinth.add(fillet);
+
+/* ---------- 2. The hound ---------- */
+const hound = new THREE.Group();
+hound.position.y = PL_H + 0.030;   // resting on the polished slab
+sculpture.add(hound);
+
+const TOP = 0.0;   // local y of the slab surface within `hound`
+
+/*
+  Layout (local coords, hound group):
+    +X ..... toward the head end
+    -X ..... toward the hindquarters
+    The dog is curled counter-clockwise (viewed from above): the spine
+    arcs from the hips at (-0.30, .., -0.02) around to the shoulders at
+    (+0.16, .., +0.10), the neck bends down and back so the muzzle comes
+    to rest on the left forepaw near the chest.
+*/
+
+/* --- 2a. Body: chest → ribcage → loin → hips, curled --- */
+const bodySections = [
+  // p:[x,y,z]                      rx (thickness across body)  ry (height)
+  { p: [ 0.215,  TOP + 0.088, 0.052], rx: 0.052, ry: 0.062 },  // base of neck / withers front
+  { p: [ 0.150,  TOP + 0.100, 0.030], rx: 0.070, ry: 0.082 },  // shoulders (deep chest)
+  { p: [ 0.070,  TOP + 0.102, 0.000], rx: 0.079, ry: 0.092 },  // deep chest / heart girth
+  { p: [-0.015,  TOP + 0.098, -0.020], rx: 0.078, ry: 0.090 }, // mid ribcage
+  { p: [-0.100,  TOP + 0.092, -0.030], rx: 0.070, ry: 0.080 }, // last ribs
+  { p: [-0.170,  TOP + 0.086, -0.028], rx: 0.060, ry: 0.070 }, // loin (tucked)
+  { p: [-0.235,  TOP + 0.086, -0.010], rx: 0.068, ry: 0.074 }, // croup / hip
+  { p: [-0.280,  TOP + 0.076,  0.032], rx: 0.062, ry: 0.062 }, // rump curving forward
+  { p: [-0.286,  TOP + 0.062,  0.086], rx: 0.046, ry: 0.046 }  // tail root, tucked round
+];
+const bodyGeo = loft(bodySections, 34, true, true, 130);
+
+// Sculptural pass on the body: flatten the belly where it presses the stone,
+// carve a spine ridge, and suggest ribs as shallow polished planes.
+deform(bodyGeo, (v) => {
+  // flatten underside onto the plinth
+  const floor = TOP + 0.016;
+  if (v.y < floor) {
+    v.y = floor + (v.y - floor) * 0.16;
+  }
+  // spine ridge: gentle crest along the top of the back
+  const topness = THREE.MathUtils.smoothstep(v.y, TOP + 0.105, TOP + 0.175);
+  if (topness > 0) {
+    v.y += topness * 0.008;
+  }
+});
+
+// Rib planes — subtle, carved rather than anatomical
+deform(bodyGeo, (v) => {
+  const inRib = (v.x > -0.14 && v.x < 0.14);
+  if (!inRib) return;
+  const side = Math.sign(v.z + 0.02) || 1;
+  const flankY = THREE.MathUtils.smoothstep(v.y, TOP + 0.02, TOP + 0.11);
+  const fade = flankY * (1 - THREE.MathUtils.smoothstep(v.y, TOP + 0.11, TOP + 0.16));
+  const ripple = Math.sin((v.x + 0.14) * 47.0) * 0.0022 * fade;
+  v.z += side * ripple;
+  v.y += ripple * 0.4;
+});
+const body = mesh(bodyGeo, houndMarble);
+hound.add(body);
+
+/* --- 2b. Shoulder / haunch masses --- */
+// Rear haunch (the big folded thigh, upper-most, facing viewer +Z side)
+function haunch(sx, sz, mirror) {
+  const g = new THREE.SphereGeometry(0.082, 40, 30);
+  deform(g, (v) => {
+    v.x *= 1.28;                 // elongate along body
+    v.y *= 0.86;
+    v.z *= 0.62;                 // pressed flat against the flank
+    // teardrop: taper toward the stifle (front-low)
+    const t = THREE.MathUtils.clamp((v.x + 0.10) / 0.20, 0, 1);
+    v.y *= (0.82 + 0.30 * t);
+    // flat polished plane on the outer face
+    if (Math.abs(v.z) > 0.030) v.z = Math.sign(v.z) * (0.030 + (Math.abs(v.z) - 0.030) * 0.55);
+  });
+  const m = mesh(g, houndMarble);
+  m.position.set(sx, TOP + 0.070, sz);
+  m.rotation.set(0, mirror ? -0.30 : 0.30, mirror ? -0.16 : 0.16);
+  m.scale.set(1, 1, mirror ? -1 : 1);
+  return m;
+}
+hound.add(haunch(-0.212, 0.052, false));    // near-side (visible) haunch
+hound.add(haunch(-0.226, -0.062, true));    // far-side haunch, mostly hidden
+
+// Shoulder blades
+function shoulder(sx, sz, mirror) {
+  const g = new THREE.SphereGeometry(0.060, 32, 24);
+  deform(g, (v) => {
+    v.x *= 1.20;
+    v.y *= 1.00;
+    v.z *= 0.52;
+    if (Math.abs(v.z) > 0.020) v.z = Math.sign(v.z) * (0.020 + (Math.abs(v.z) - 0.020) * 0.6);
+  });
+  const m = mesh(g, houndMarble);
+  m.position.set(sx, TOP + 0.086, sz);
+  m.rotation.set(0, 0, mirror ? -0.24 : 0.24);
+  return m;
+}
+hound.add(shoulder(0.128, 0.058, false));
+hound.add(shoulder(0.112, -0.050, true));
+
+/* --- 2c. Folded legs --- */
+
+// Hind leg: hock folded back, lower leg tucked alongside the body.
+function hindLeg(zSide, mirror) {
+  const g = new THREE.Group();
+  const s = mirror ? -1 : 1;
+
+  const upper = loft([
+    { p: [-0.230, TOP + 0.086, zSide * 0.85], rx: 0.040, ry: 0.046 },
+    { p: [-0.256, TOP + 0.060, zSide * 1.00], rx: 0.034, ry: 0.038 },
+    { p: [-0.240, TOP + 0.035, zSide * 1.06], rx: 0.026, ry: 0.028 }
+  ], 22, true, true, 40);
+  g.add(mesh(upper, houndMarble));
+
+  // hock → metatarsus, running forward under the body
+  const lower = loft([
+    { p: [-0.238, TOP + 0.034, zSide * 1.05], rx: 0.024, ry: 0.026 },
+    { p: [-0.180, TOP + 0.026, zSide * 1.06], rx: 0.019, ry: 0.021 },
+    { p: [-0.112, TOP + 0.022, zSide * 1.02], rx: 0.016, ry: 0.018 },
+    { p: [-0.058, TOP + 0.020, zSide * 0.94], rx: 0.016, ry: 0.017 }
+  ], 20, true, true, 48);
+  g.add(mesh(lower, houndMarble));
+
+  // hind paw
+  g.add(paw(-0.030, TOP + 0.017, zSide * 0.90, -0.10 * s, 0.90));
+  return g;
+}
+
+// A carved paw: a rounded wedge with three shallow toe grooves.
+function paw(px, py, pz, yaw, scale) {
+  const g = new THREE.SphereGeometry(0.030, 30, 22);
+  deform(g, (v) => {
+    v.x *= 1.55;
+    v.y *= 0.62;
+    v.z *= 0.85;
+    // flatten the sole
+    if (v.y < -0.010) v.y = -0.010 + (v.y + 0.010) * 0.20;
+    // toe grooves along the front half
+    const front = THREE.MathUtils.smoothstep(v.x, 0.005, 0.042);
+    const groove = Math.sin(v.z * 150.0) * 0.0035 * front;
+    v.y -= Math.max(0, groove);
+    v.z += groove * 0.25;
+    // taper the toes
+    const t = THREE.MathUtils.smoothstep(v.x, 0.015, 0.050);
+    v.z *= (1 - 0.22 * t);
+    v.y *= (1 - 0.18 * t);
+  });
+  const m = mesh(g, houndMarble);
+  m.position.set(px, py + 0.012, pz);
+  m.rotation.y = yaw;
+  m.scale.setScalar(scale);
+  return m;
+}
+
+hound.add(hindLeg(0.062, false));
+hound.add(hindLeg(-0.070, true));
+
+// Near foreleg (the one the muzzle rests on): extends forward from the chest,
+// bends at the wrist, paw pointing forward-left.
+const foreNear = new THREE.Group();
+{
+  const upperArm = loft([
+    { p: [0.150, TOP + 0.090,  0.056], rx: 0.033, ry: 0.040 },
+    { p: [0.186, TOP + 0.058,  0.070], rx: 0.026, ry: 0.030 },
+    { p: [0.196, TOP + 0.034,  0.078], rx: 0.020, ry: 0.022 }
+  ], 22, true, true, 40);
+  foreNear.add(mesh(upperArm, houndMarble));
+
+  const foreArm = loft([
+    { p: [0.194, TOP + 0.033, 0.078], rx: 0.019, ry: 0.021 },
+    { p: [0.236, TOP + 0.026, 0.084], rx: 0.016, ry: 0.018 },
+    { p: [0.286, TOP + 0.022, 0.082], rx: 0.015, ry: 0.017 },
+    { p: [0.330, TOP + 0.020, 0.072], rx: 0.015, ry: 0.016 }
+  ], 20, true, true, 48);
+  foreNear.add(mesh(foreArm, houndMarble));
+
+  foreNear.add(paw(0.362, TOP + 0.016, 0.062, -0.24, 1.0));
+}
+hound.add(foreNear);
+
+// Far foreleg: tucked, folded tight under the chest, paw just peeking out.
+const foreFar = new THREE.Group();
+{
+  const upperArm = loft([
+    { p: [0.140, TOP + 0.086, -0.048], rx: 0.031, ry: 0.038 },
+    { p: [0.176, TOP + 0.054, -0.058], rx: 0.024, ry: 0.028 },
+    { p: [0.186, TOP + 0.032, -0.060], rx: 0.019, ry: 0.021 }
+  ], 20, true, true, 36);
+  foreFar.add(mesh(upperArm, houndMarble));
+
+  const foreArm = loft([
+    { p: [0.186, TOP + 0.031, -0.060], rx: 0.018, ry: 0.020 },
+    { p: [0.232, TOP + 0.024, -0.052], rx: 0.016, ry: 0.017 },
+    { p: [0.282, TOP + 0.021, -0.036], rx: 0.015, ry: 0.016 },
+    { p: [0.318, TOP + 0.019, -0.014], rx: 0.014, ry: 0.015 }
+  ], 20, true, true, 44);
+  foreFar.add(mesh(foreArm, houndMarble));
+
+  foreFar.add(paw(0.346, TOP + 0.015, 0.006, 0.34, 0.96));
+}
+hound.add(foreFar);
+
+/* --- 2d. Neck, head, muzzle resting on the near forepaw --- */
+
+// Neck: arcs up out of the withers, then curves down and forward so the
+// head lowers onto the paw.
+const neckGeo = loft([
+  { p: [0.196, TOP + 0.106, 0.046], rx: 0.050, ry: 0.056 },
+  { p: [0.248, TOP + 0.104, 0.044], rx: 0.043, ry: 0.048 },
+  { p: [0.296, TOP + 0.092, 0.042], rx: 0.037, ry: 0.041 },
+  { p: [0.332, TOP + 0.074, 0.042], rx: 0.033, ry: 0.036 },
+  { p: [0.352, TOP + 0.058, 0.044], rx: 0.031, ry: 0.033 }
+], 28, true, false, 70);
+deform(neckGeo, (v) => {
+  // crest along the top of the neck
+  const topness = THREE.MathUtils.smoothstep(v.y, TOP + 0.100, TOP + 0.150);
+  v.y += topness * 0.004;
+});
+hound.add(mesh(neckGeo, houndMarble));
+
+// Head group so it can be posed as a unit
+const head = new THREE.Group();
+head.position.set(0.352, TOP + 0.052, 0.046);
+head.rotation.set(0.06, -0.16, -0.30);   // tilted, cheek toward the paw
+hound.add(head);
+
+// Skull / cheeks
+const skullGeo = new THREE.SphereGeometry(0.042, 40, 30);
+deform(skullGeo, (v) => {
+  v.x *= 1.22;                       // longer front-to-back
+  v.y *= 0.90;
+  v.z *= 0.86;
+  // flat parietal planes (carved look)
+  if (v.y > 0.020) v.y = 0.020 + (v.y - 0.020) * 0.70;
+  // narrow the cheeks toward the muzzle
+  const f = THREE.MathUtils.smoothstep(v.x, 0.005, 0.048);
+  v.z *= (1 - 0.30 * f);
+  v.y *= (1 - 0.10 * f);
+  // slight brow ridge
+  if (v.x > 0.010 && v.y > 0.006 && v.y < 0.030) v.y += 0.0032;
+});
+head.add(mesh(skullGeo, houndMarble));
+
+// Muzzle: long, fine, sighthound taper
+const muzzleGeo = loft([
+  { p: [0.030, 0.004,  0.0], rx: 0.026, ry: 0.026 },
+  { p: [0.062, -0.001, 0.0], rx: 0.021, ry: 0.021 },
+  { p: [0.094, -0.006, 0.0], rx: 0.017, ry: 0.018 },
+  { p: [0.122, -0.011, 0.0], rx: 0.015, ry: 0.015 },
+  { p: [0.140, -0.015, 0.0], rx: 0.012, ry: 0.012 }
+], 26, false, true, 56);
+deform(muzzleGeo, (v) => {
+  // flatten the underside (jaw line pressed to the paw)
+  if (v.y < -0.014) v.y = -0.014 + (v.y + 0.014) * 0.42;
+  // flat polished top plane of the bridge
+  if (v.y > 0.010) v.y = 0.010 + (v.y - 0.010) * 0.78;
+});
+head.add(mesh(muzzleGeo, houndMarble));
+
+// Nose: a small polished knob with two carved nostril dimples
+const noseGeo = new THREE.SphereGeometry(0.0135, 24, 18);
+deform(noseGeo, (v) => {
+  v.x *= 0.86; v.z *= 1.10; v.y *= 0.92;
+  const front = THREE.MathUtils.smoothstep(v.x, 0.000, 0.011);
+  const dimple = Math.exp(-Math.pow((Math.abs(v.z) - 0.006) / 0.0035, 2)) * front;
+  v.x -= dimple * 0.0030;
+});
+const nose = mesh(noseGeo, houndMarble);
+nose.position.set(0.146, -0.016, 0);
+head.add(nose);
+
+// Closed eyes: shallow almond lids, carved as low relief
+function eye(zSide) {
+  const g = new THREE.SphereGeometry(0.0125, 22, 16);
+  deform(g, (v) => {
+    v.x *= 1.35;
+    v.y *= 0.52;
+    v.z *= 0.42;
+  });
+  const m = mesh(g, houndMarble);
+  m.position.set(0.028, 0.012, zSide * 0.0295);
+  m.rotation.set(0, 0, 0.22);
+  m.rotation.y = zSide * 0.30;
+  return m;
+}
+head.add(eye(1));
+head.add(eye(-1));
+
+// Eyelid slit (a thin recessed sliver reading as a closed eye)
+function eyeSlit(zSide) {
+  const g = new THREE.TorusGeometry(0.0092, 0.0016, 8, 22, Math.PI * 0.9);
+  const m = mesh(g, houndMarble);
+  m.position.set(0.029, 0.0105, zSide * 0.0345);
+  m.rotation.set(Math.PI / 2, 0, 0);
+  m.rotation.z = 0.24;
+  m.rotation.x = Math.PI / 2 + zSide * 0.35;
+  m.scale.set(1, 0.62, 1);
+  return m;
+}
+head.add(eyeSlit(1));
+head.add(eyeSlit(-1));
+
+// Ears: rose-ears folded back flat against the skull, as on a sleeping hound
+function ear(zSide) {
+  const g = new THREE.SphereGeometry(0.026, 26, 18);
+  deform(g, (v) => {
+    v.x *= 1.30;
+    v.y *= 0.92;
+    v.z *= 0.30;                 // thin, plate-like
+    // taper to a soft point at the back
+    const t = THREE.MathUtils.smoothstep(-v.x, 0.004, 0.032);
+    v.y *= (1 - 0.45 * t);
+    v.z *= (1 - 0.35 * t);
+    // slight cupped curl
+    v.z += (v.y * v.y) * 6.0 * 0.010 * zSide;
+  });
+  const m = mesh(g, houndMarble);
+  m.position.set(-0.024, 0.026, zSide * 0.026);
+  m.rotation.set(zSide * 0.55, 0.30 * zSide, -0.30);
+  return m;
+}
+head.add(ear(1));
+head.add(ear(-1));
+
+// Occipital bump
+const occ = mesh(new THREE.SphereGeometry(0.012, 18, 14), houndMarble);
+occ.position.set(-0.036, 0.026, 0);
+occ.scale.set(1.0, 0.8, 0.9);
+head.add(occ);
+
+/* --- 2e. Tail: curls around the hind paws and up along the flank --- */
+const tailGeo = loft([
+  { p: [-0.286, TOP + 0.058, 0.086], rx: 0.021, ry: 0.022 },
+  { p: [-0.256, TOP + 0.040, 0.126], rx: 0.017, ry: 0.018 },
+  { p: [-0.196, TOP + 0.028, 0.146], rx: 0.014, ry: 0.015 },
+  { p: [-0.124, TOP + 0.022, 0.140], rx: 0.012, ry: 0.012 },
+  { p: [-0.062, TOP + 0.019, 0.118], rx: 0.010, ry: 0.010 },
+  { p: [-0.012, TOP + 0.018, 0.088], rx: 0.008, ry: 0.008 },
+  { p: [ 0.028, TOP + 0.018, 0.058], rx: 0.006, ry: 0.006 },
+  { p: [ 0.056, TOP + 0.018, 0.030], rx: 0.004, ry: 0.004 }
+], 20, true, true, 120);
+deform(tailGeo, (v) => {
+  const floor = TOP + 0.010;
+  if (v.y < floor) v.y = floor + (v.y - floor) * 0.30;
+});
+hound.add(mesh(tailGeo, houndMarble));
+
+// Belly / brisket fill: a low mass closing the gap between the curled legs
+// and the chest so the silhouette reads as one carved block.
+const bellyGeo = new THREE.SphereGeometry(0.10, 36, 26);
+deform(bellyGeo, (v) => {
+  v.x *= 1.60;
+  v.y *= 0.42;
+  v.z *= 0.78;
+  if (v.y < -0.020) v.y = -0.020 + (v.y + 0.020) * 0.20;
+});
+const belly = mesh(bellyGeo, houndMarble);
+belly.position.set(0.035, TOP + 0.036, 0.006);
+hound.add(belly);
+
+// A small carved wedge under the muzzle where it meets the paw, so the
+// contact reads as stone rather than a floating head.
+const contactGeo = new THREE.SphereGeometry(0.028, 24, 18);
+deform(contactGeo, (v) => {
+  v.x *= 1.30; v.y *= 0.46; v.z *= 0.85;
+  if (v.y < -0.008) v.y = -0.008 + (v.y + 0.008) * 0.25;
+});
+const contact = mesh(contactGeo, houndMarble);
+contact.position.set(0.372, TOP + 0.026, 0.056);
+contact.rotation.y = -0.24;
+hound.add(contact);
+
+/* ---------- 3. Centre the whole sculpture ---------- */
+sculpture.updateMatrixWorld(true);
+{
+  const box = new THREE.Box3().setFromObject(sculpture);
+  const c = box.getCenter(new THREE.Vector3());
+  sculpture.position.x -= c.x;
+  sculpture.position.z -= c.z;
+  sculpture.updateMatrixWorld(true);
+
+  const box2 = new THREE.Box3().setFromObject(sculpture);
+  sculpture.position.y -= box2.min.y;   // sit exactly on the ground plane
+  sculpture.updateMatrixWorld(true);
+
+  const box3 = new THREE.Box3().setFromObject(sculpture);
+  const size = box3.getSize(new THREE.Vector3());
+  controls.target.set(0, size.y * 0.52, 0);
+  controls.update();
+}
+
+/* ============================================================
+   Ground: shadow-only catcher
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(24, 24),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0005;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// A faint radial pool of light on the "floor" to ground the piece visually
+const poolCanvas = document.createElement('canvas');
+poolCanvas.width = poolCanvas.height = 256;
+{
+  const pg = poolCanvas.getContext('2d');
+  const rg = pg.createRadialGradient(128, 128, 6, 128, 128, 126);
+  rg.addColorStop(0.00, 'rgba(120,118,114,0.55)');
+  rg.addColorStop(0.45, 'rgba(70,69,68,0.28)');
+  rg.addColorStop(1.00, 'rgba(0,0,0,0)');
+  pg.fillStyle = rg;
+  pg.fillRect(0, 0, 256, 256);
+}
+const poolTex = new THREE.CanvasTexture(poolCanvas);
+poolTex.colorSpace = THREE.SRGBColorSpace;
+const pool = new THREE.Mesh(
+  new THREE.PlaneGeometry(4.2, 4.2),
+  new THREE.MeshBasicMaterial({ map: poolTex, transparent: true, depthWrite: false })
+);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = 0.0002;
+scene.add(pool);
+
+/* ============================================================
+   Lighting: hemisphere ambience + key / fill / rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xdfe4ea, 0x1b1a19, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.5);
+key.position.set(2.4, 3.4, 2.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -1.6;
+key.shadow.camera.right = 1.6;
+key.shadow.camera.top = 1.6;
+key.shadow.camera.bottom = -1.6;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 4;
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 0.24, 0);
+
+const fill = new THREE.DirectionalLight(0xbcd0e6, 0.55);
+fill.position.set(-2.6, 1.5, 1.9);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xe8f0ff, 1.35);
+rim.position.set(-1.6, 1.9, -2.9);
+scene.add(rim);
+
+// Soft bounce from below-front, mimicking light kicking off the gallery floor
+const bounce = new THREE.PointLight(0xffe9d2, 0.42, 6, 2);
+bounce.position.set(0.9, 0.20, 1.5);
+scene.add(bounce);
+
+/* ============================================================
+   Animate
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

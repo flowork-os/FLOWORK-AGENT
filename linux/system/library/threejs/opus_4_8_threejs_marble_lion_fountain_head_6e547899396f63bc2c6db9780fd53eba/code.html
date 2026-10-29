@@ -1,0 +1,1262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Marble Lion Head — Carrara Study</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14151a; }
+  canvas { display: block; }
+  #caption {
+    position: fixed; left: 0; right: 0; bottom: 14px;
+    text-align: center;
+    font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    font-size: 13px; letter-spacing: 0.22em; text-transform: uppercase;
+    color: rgba(226, 222, 214, 0.42);
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="caption">Marble Lion Head &nbsp;·&nbsp; Veined Carrara &nbsp;·&nbsp; drag to orbit</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14151a);
+scene.fog = new THREE.Fog(0x14151a, 8.5, 20);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(0.9, 1.35, 4.15);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 1.06, 0);
+controls.minDistance = 2.1;
+controls.maxDistance = 9.0;
+controls.maxPolarAngle = Math.PI * 0.9;
+
+/* ============================================================
+   LIGHTING — museum plinth studio
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xc9d6e6, 0x2a2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.35);
+key.position.set(3.1, 5.0, 3.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 18;
+key.shadow.camera.left = -3.2;
+key.shadow.camera.right = 3.2;
+key.shadow.camera.top = 3.6;
+key.shadow.camera.bottom = -1.2;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.018;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6d4, 0.62);
+fill.position.set(-4.0, 1.9, 2.3);
+scene.add(fill);
+
+const rim = new THREE.SpotLight(0xdce6ff, 26.0, 16, Math.PI * 0.30, 0.65, 1.6);
+rim.position.set(-1.9, 3.6, -4.4);
+rim.target.position.set(0, 1.15, 0);
+scene.add(rim);
+scene.add(rim.target);
+
+const bounce = new THREE.PointLight(0xffe9cf, 3.2, 7.0, 2.0);
+bounce.position.set(0.2, 0.28, 2.0);
+scene.add(bounce);
+
+/* ============================================================
+   SHADOW-ONLY GROUND
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   PROCEDURAL MARBLE MATERIAL (veining via onBeforeCompile)
+   ============================================================ */
+const MARBLE_BASE   = new THREE.Color(0xf2efe7);
+const MARBLE_SHADE  = new THREE.Color(0xd8d3c8);
+const VEIN_GREY     = new THREE.Color(0x8d8f92);
+const VEIN_DARK     = new THREE.Color(0x5f6266);
+
+const NOISE_GLSL = /* glsl */`
+  vec3 mod289v(vec3 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+  vec4 mod289v4(vec4 x){ return x - floor(x * (1.0/289.0)) * 289.0; }
+  vec4 permute4(vec4 x){ return mod289v4(((x*34.0)+1.0)*x); }
+  vec4 taylorInvSqrt4(vec4 r){ return 1.79284291400159 - 0.85373472095314 * r; }
+
+  float snoise(vec3 v){
+    const vec2 C = vec2(1.0/6.0, 1.0/3.0);
+    const vec4 D = vec4(0.0, 0.5, 1.0, 2.0);
+    vec3 i  = floor(v + dot(v, C.yyy));
+    vec3 x0 = v - i + dot(i, C.xxx);
+    vec3 g = step(x0.yzx, x0.xyz);
+    vec3 l = 1.0 - g;
+    vec3 i1 = min(g.xyz, l.zxy);
+    vec3 i2 = max(g.xyz, l.zxy);
+    vec3 x1 = x0 - i1 + C.xxx;
+    vec3 x2 = x0 - i2 + C.yyy;
+    vec3 x3 = x0 - D.yyy;
+    i = mod289v(i);
+    vec4 p = permute4( permute4( permute4(
+               i.z + vec4(0.0, i1.z, i2.z, 1.0))
+             + i.y + vec4(0.0, i1.y, i2.y, 1.0))
+             + i.x + vec4(0.0, i1.x, i2.x, 1.0));
+    float n_ = 0.142857142857;
+    vec3 ns = n_ * D.wyz - D.xzx;
+    vec4 j = p - 49.0 * floor(p * ns.z * ns.z);
+    vec4 x_ = floor(j * ns.z);
+    vec4 y_ = floor(j - 7.0 * x_);
+    vec4 x = x_ * ns.x + ns.yyyy;
+    vec4 y = y_ * ns.x + ns.yyyy;
+    vec4 h = 1.0 - abs(x) - abs(y);
+    vec4 b0 = vec4(x.xy, y.xy);
+    vec4 b1 = vec4(x.zw, y.zw);
+    vec4 s0 = floor(b0)*2.0 + 1.0;
+    vec4 s1 = floor(b1)*2.0 + 1.0;
+    vec4 sh = -step(h, vec4(0.0));
+    vec4 a0 = b0.xzyw + s0.xzyw*sh.xxyy;
+    vec4 a1 = b1.xzyw + s1.xzyw*sh.zzww;
+    vec3 p0 = vec3(a0.xy, h.x);
+    vec3 p1 = vec3(a0.zw, h.y);
+    vec3 p2 = vec3(a1.xy, h.z);
+    vec3 p3 = vec3(a1.zw, h.w);
+    vec4 norm = taylorInvSqrt4(vec4(dot(p0,p0), dot(p1,p1), dot(p2,p2), dot(p3,p3)));
+    p0 *= norm.x; p1 *= norm.y; p2 *= norm.z; p3 *= norm.w;
+    vec4 m = max(0.6 - vec4(dot(x0,x0), dot(x1,x1), dot(x2,x2), dot(x3,x3)), 0.0);
+    m = m * m;
+    return 42.0 * dot(m*m, vec4(dot(p0,x0), dot(p1,x1), dot(p2,x2), dot(p3,x3)));
+  }
+
+  float fbm3(vec3 p){
+    float f = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) { f += a * snoise(p); p *= 2.03; a *= 0.5; }
+    return f;
+  }
+`;
+
+/**
+ * Creates a marble material.
+ * opts.rough      : base roughness (polished ~0.16, chisel-rough ~0.72)
+ * opts.veinAmt    : strength of the diagonal grey veining
+ * opts.cheekBias  : if > 0, veining is concentrated on the +X cheek (diagonal run)
+ * opts.chisel     : 0..1 amount of procedural chisel-tooth roughness breakup
+ * opts.tint       : optional base color override
+ */
+function makeMarble(opts = {}) {
+  const {
+    rough = 0.34,
+    veinAmt = 0.75,
+    cheekBias = 0.0,
+    chisel = 0.35,
+    tint = MARBLE_BASE,
+    metal = 0.0
+  } = opts;
+
+  const mat = new THREE.MeshStandardMaterial({
+    color: tint,
+    roughness: rough,
+    metalness: metal,
+    envMapIntensity: 0.55
+  });
+
+  mat.userData.uniforms = null;
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uVeinAmt   = { value: veinAmt };
+    shader.uniforms.uCheekBias = { value: cheekBias };
+    shader.uniforms.uChisel    = { value: chisel };
+    shader.uniforms.uBaseRough = { value: rough };
+    shader.uniforms.uShade     = { value: MARBLE_SHADE };
+    shader.uniforms.uVein      = { value: VEIN_GREY };
+    shader.uniforms.uVeinDark  = { value: VEIN_DARK };
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `
+        #include <common>
+        varying vec3 vObjPos;
+        varying vec3 vObjNrm;
+      `)
+      .replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        vObjPos = position;
+        vObjNrm = normalize(normal);
+      `);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `
+        #include <common>
+        varying vec3 vObjPos;
+        varying vec3 vObjNrm;
+        uniform float uVeinAmt;
+        uniform float uCheekBias;
+        uniform float uChisel;
+        uniform float uBaseRough;
+        uniform vec3  uShade;
+        uniform vec3  uVein;
+        uniform vec3  uVeinDark;
+        ${NOISE_GLSL}
+      `)
+      .replace('#include <color_fragment>', `
+        #include <color_fragment>
+        {
+          vec3 p = vObjPos;
+
+          // --- diagonal vein coordinate: sweeps down-right across the face ---
+          float diag = (p.x * 0.72 + p.y * -0.58 + p.z * 0.30) * 2.05;
+
+          // warp the vein bands with turbulence so they meander like real Carrara
+          float warp  = fbm3(p * 1.35 + vec3(11.3, 4.1, 7.7)) * 1.15;
+          float warp2 = fbm3(p * 3.9  + vec3(-3.4, 8.8, 1.2)) * 0.34;
+          float bands = sin((diag + warp + warp2) * 3.05);
+
+          // sharp thin veins: ridge function
+          float ridge = 1.0 - abs(bands);
+          float veinA = smoothstep(0.72, 0.995, ridge);
+          float veinB = smoothstep(0.90, 1.0, ridge);
+
+          // secondary hairline network
+          float net = fbm3(p * 6.2 + vec3(2.0, -5.0, 9.0));
+          float hair = smoothstep(0.42, 0.62, abs(net)) * 0.34;
+
+          // cloudy grey drift in the stone body
+          float cloud = fbm3(p * 0.95 + vec3(-6.0, 2.0, 3.0)) * 0.5 + 0.5;
+
+          // cheek concentration mask (right cheek, +X, mid height)
+          float cheekMask = 1.0;
+          if (uCheekBias > 0.001) {
+            float sideX = smoothstep(-0.05, 0.62, p.x);
+            float bandY = 1.0 - smoothstep(0.30, 0.95, abs(p.y + 0.02));
+            float frontZ = smoothstep(-0.10, 0.55, p.z);
+            cheekMask = mix(0.22, 1.55, sideX * bandY * frontZ);
+          }
+
+          float veinTotal = clamp((veinA * 0.85 + veinB * 0.75 + hair) * uVeinAmt * cheekMask, 0.0, 1.0);
+
+          vec3 stone = mix(diffuseColor.rgb, uShade, (1.0 - cloud) * 0.42);
+          stone = mix(stone, uVein, veinTotal * 0.80);
+          stone = mix(stone, uVeinDark, veinB * uVeinAmt * cheekMask * 0.42);
+
+          // faint warm patina in deep recesses (approx by downward normals)
+          float recess = smoothstep(0.15, -0.65, vObjNrm.y);
+          stone = mix(stone, stone * vec3(0.86, 0.83, 0.77), recess * 0.55);
+
+          diffuseColor.rgb = stone;
+        }
+      `)
+      .replace('#include <roughnessmap_fragment>', `
+        #include <roughnessmap_fragment>
+        {
+          vec3 pr = vObjPos;
+          // chisel-tooth micro facets: high frequency, anisotropic-ish
+          float tooth = fbm3(pr * 26.0 + vec3(5.5, 1.5, -2.5));
+          float coarse = fbm3(pr * 7.0 + vec3(-1.0, 3.0, 6.0));
+          // downward / inward facing surfaces read as unpolished chisel recesses
+          float recess = smoothstep(0.35, -0.55, vObjNrm.y);
+          float rr = uBaseRough
+                   + uChisel * (0.30 + 0.22 * tooth + 0.16 * coarse)
+                   + recess * 0.22 * uChisel;
+          roughnessFactor = clamp(rr, 0.05, 1.0);
+        }
+      `);
+
+    mat.userData.uniforms = shader.uniforms;
+  };
+
+  // ensure unique program per configuration
+  mat.customProgramCacheKey = () =>
+    'marble_' + rough.toFixed(3) + '_' + veinAmt.toFixed(3) + '_' +
+    cheekBias.toFixed(2) + '_' + chisel.toFixed(3);
+
+  return mat;
+}
+
+/* material palette */
+const matPolished  = makeMarble({ rough: 0.17, veinAmt: 0.60, cheekBias: 1.0, chisel: 0.10 });
+const matSkin      = makeMarble({ rough: 0.26, veinAmt: 0.72, cheekBias: 1.0, chisel: 0.22 });
+const matMane      = makeMarble({ rough: 0.58, veinAmt: 0.52, cheekBias: 0.0, chisel: 0.85 });
+const matManeDeep  = makeMarble({ rough: 0.72, veinAmt: 0.44, cheekBias: 0.0, chisel: 1.0,
+                                  tint: new THREE.Color(0xe6e1d6) });
+const matRough     = makeMarble({ rough: 0.78, veinAmt: 0.40, cheekBias: 0.0, chisel: 1.0,
+                                  tint: new THREE.Color(0xe2ddd2) });
+const matTooth     = makeMarble({ rough: 0.10, veinAmt: 0.10, cheekBias: 0.0, chisel: 0.02,
+                                  tint: new THREE.Color(0xfbf8f1) });
+const matEye       = makeMarble({ rough: 0.13, veinAmt: 0.22, cheekBias: 0.0, chisel: 0.05,
+                                  tint: new THREE.Color(0xefece3) });
+const matThroat    = makeMarble({ rough: 0.88, veinAmt: 0.30, cheekBias: 0.0, chisel: 1.0,
+                                  tint: new THREE.Color(0x8e887d) });
+const matPlinth    = makeMarble({ rough: 0.45, veinAmt: 0.85, cheekBias: 0.0, chisel: 0.55,
+                                  tint: new THREE.Color(0xdedacf) });
+
+const ALL_MATS = [matPolished, matSkin, matMane, matManeDeep, matRough,
+                  matTooth, matEye, matThroat, matPlinth];
+
+/* ============================================================
+   SMALL GEOMETRY HELPERS
+   ============================================================ */
+function addMesh(parent, geo, mat, pos, rot, scale) {
+  const m = new THREE.Mesh(geo, mat);
+  if (pos)   m.position.set(pos[0], pos[1], pos[2]);
+  if (rot)   m.rotation.set(rot[0], rot[1], rot[2]);
+  if (scale) {
+    if (Array.isArray(scale)) m.scale.set(scale[0], scale[1], scale[2]);
+    else m.scale.setScalar(scale);
+  }
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/** Deterministic pseudo-random (so the sculpture is stable across reloads). */
+function makeRand(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+}
+const rand = makeRand(20260720);
+
+/** Displace a geometry's vertices with layered value noise -> carved stone feel. */
+function chiselGeometry(geo, opts = {}) {
+  const {
+    amp = 0.012, freq = 7.0, octaves = 3, seed = 1.0,
+    axisBias = new THREE.Vector3(1, 1, 1), planar = 0.0
+  } = opts;
+
+  geo = geo.toNonIndexed ? geo : geo;
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  // cheap 3D value noise
+  const hash = (x, y, z) => {
+    const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7 + seed * 43.3) * 43758.5453;
+    return s - Math.floor(s);
+  };
+  const vnoise = (x, y, z) => {
+    const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+    const xf = x - xi, yf = y - yi, zf = z - zi;
+    const u = xf * xf * (3 - 2 * xf), vv = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+    const lerp = (a, b, t) => a + (b - a) * t;
+    const c000 = hash(xi, yi, zi),       c100 = hash(xi + 1, yi, zi);
+    const c010 = hash(xi, yi + 1, zi),   c110 = hash(xi + 1, yi + 1, zi);
+    const c001 = hash(xi, yi, zi + 1),   c101 = hash(xi + 1, yi, zi + 1);
+    const c011 = hash(xi, yi + 1, zi + 1), c111 = hash(xi + 1, yi + 1, zi + 1);
+    return lerp(
+      lerp(lerp(c000, c100, u), lerp(c010, c110, u), vv),
+      lerp(lerp(c001, c101, u), lerp(c011, c111, u), vv),
+      w
+    ) * 2.0 - 1.0;
+  };
+  const fbm = (x, y, z) => {
+    let f = 0, a = 0.5, fr = 1.0;
+    for (let i = 0; i < octaves; i++) {
+      f += a * vnoise(x * fr, y * fr, z * fr);
+      fr *= 2.07; a *= 0.5;
+    }
+    return f;
+  };
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    n.fromBufferAttribute(nrm, i);
+    let d = fbm(v.x * freq, v.y * freq, v.z * freq);
+    if (planar > 0.0) {
+      // quantize into flat "chiselled planes"
+      const q = Math.round(d * planar) / planar;
+      d = d * (1.0 - 0.75) + q * 0.75;
+    }
+    const k = amp * d;
+    pos.setXYZ(
+      i,
+      v.x + n.x * k * axisBias.x,
+      v.y + n.y * k * axisBias.y,
+      v.z + n.z * k * axisBias.z
+    );
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Mirror a group across X (build one side, get both). */
+function mirrorGroup(src) {
+  const clone = src.clone(true);
+  clone.scale.x *= -1;
+  clone.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  return clone;
+}
+
+/* ============================================================
+   THE SCULPTURE
+   ============================================================ */
+const lion = new THREE.Group();
+scene.add(lion);
+
+const head = new THREE.Group();
+head.position.y = 1.02;
+lion.add(head);
+
+/* ---------- 1. CRANIUM / SKULL MASS ---------- */
+{
+  const g = new THREE.SphereGeometry(0.50, 96, 72);
+  // sculpt the skull: flatten top-back, broaden cheeks, taper toward muzzle
+  const p = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const u = v.clone().normalize();
+
+    // broaden the sides (cheek bones) and shorten front-to-back
+    v.x *= 1.04 + 0.20 * Math.max(0, -u.y) * Math.abs(u.x);
+    v.z *= 0.98;
+
+    // strong flat brow shelf across the forehead front-top
+    const browZone = Math.max(0, u.z) * Math.max(0, u.y);
+    v.z += browZone * 0.075;
+    v.y += browZone * 0.03;
+
+    // flatten the crown a touch (carved block feel)
+    if (u.y > 0.55) v.y -= (u.y - 0.55) * 0.16;
+
+    // narrow the jaw underside
+    if (u.y < -0.35) {
+      const t = (-u.y - 0.35) / 0.65;
+      v.x *= 1.0 - 0.30 * t;
+      v.z *= 1.0 - 0.10 * t;
+    }
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+  chiselGeometry(g, { amp: 0.009, freq: 8.5, octaves: 3, seed: 3.1 });
+  addMesh(head, g, matSkin, [0, 0.02, 0]);
+}
+
+/* ---------- 2. BROW RIDGES (heavy furrowed stone) ---------- */
+function makeBrowRidge() {
+  // a thick torus arc, squashed into a stone shelf
+  const g = new THREE.TorusGeometry(0.185, 0.062, 22, 44, Math.PI * 0.92);
+  const p = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    v.z *= 1.55;              // deepen front-to-back
+    v.y *= 0.86;
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+  chiselGeometry(g, { amp: 0.010, freq: 16.0, octaves: 2, seed: 7.7, planar: 3 });
+  return g;
+}
+{
+  const browGeo = makeBrowRidge();
+  const browL = addMesh(head, browGeo, matSkin,
+    [-0.175, 0.135, 0.365], [0.30, 0.24, -0.30], [1, 1, 1]);
+  const browR = browL.clone();
+  browR.position.x = 0.175;
+  browR.rotation.set(0.30, -0.24, 0.30);
+  browR.scale.x = -1;
+  browR.castShadow = true; browR.receiveShadow = true;
+  head.add(browR);
+
+  // central furrow knot between the brows (the frown)
+  const knot = new THREE.SphereGeometry(0.075, 32, 24);
+  chiselGeometry(knot, { amp: 0.016, freq: 18.0, octaves: 2, seed: 2.2, planar: 2 });
+  addMesh(head, knot, matSkin, [0, 0.115, 0.435], [0, 0, 0], [1.5, 1.15, 0.85]);
+
+  // two vertical furrow grooves (as thin recessed slabs)
+  for (const sx of [-1, 1]) {
+    const gr = new THREE.CapsuleGeometry(0.017, 0.10, 6, 12);
+    chiselGeometry(gr, { amp: 0.006, freq: 20, octaves: 2, seed: 4.4 });
+    addMesh(head, gr, matRough,
+      [sx * 0.048, 0.185, 0.452], [0.18, 0, sx * 0.20], [1, 1, 0.7]);
+  }
+
+  // upper forehead ridge that ties brows into the crown
+  const shelf = new THREE.CapsuleGeometry(0.052, 0.26, 8, 20);
+  chiselGeometry(shelf, { amp: 0.010, freq: 12, octaves: 3, seed: 9.1, planar: 3 });
+  addMesh(head, shelf, matSkin, [0, 0.235, 0.345], [Math.PI / 2 + 0.30, 0, Math.PI / 2], [1, 1, 0.62]);
+}
+
+/* ---------- 3. EYES — blank, pupil-less, deep sockets ---------- */
+function buildEye(sx) {
+  const grp = new THREE.Group();
+
+  // recessed socket (dark rough marble bowl)
+  const socket = new THREE.SphereGeometry(0.098, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.62);
+  chiselGeometry(socket, { amp: 0.008, freq: 20, octaves: 2, seed: 5.5 });
+  const sm = addMesh(grp, socket, matRough, [0, 0, 0], [Math.PI * 0.52, 0, 0], [1.25, 1.0, 1.0]);
+  sm.material = matRough;
+
+  // the blank eyeball: smooth polished sphere, NO pupil
+  const ball = new THREE.SphereGeometry(0.072, 40, 32);
+  addMesh(grp, ball, matEye, [0, 0, 0.012], [0, 0, 0], [1.06, 0.98, 0.92]);
+
+  // heavy upper lid (thick carved crescent)
+  const lidU = new THREE.TorusGeometry(0.072, 0.026, 16, 30, Math.PI * 1.05);
+  chiselGeometry(lidU, { amp: 0.005, freq: 22, octaves: 2, seed: 6.6 });
+  addMesh(grp, lidU, matSkin, [0, 0.006, 0.030], [0.25, 0, -0.22 * sx], [1.16, 1.0, 0.72]);
+
+  // lower lid
+  const lidL = new THREE.TorusGeometry(0.070, 0.019, 14, 26, Math.PI * 0.85);
+  chiselGeometry(lidL, { amp: 0.004, freq: 22, octaves: 2, seed: 8.2 });
+  addMesh(grp, lidL, matSkin, [0, -0.004, 0.028], [-0.20, 0, Math.PI + 0.22 * sx], [1.12, 1.0, 0.70]);
+
+  // outer canthus wedge tying the eye into the cheek
+  const wedge = new THREE.ConeGeometry(0.034, 0.10, 5);
+  chiselGeometry(wedge, { amp: 0.006, freq: 18, octaves: 2, seed: 3.3 });
+  addMesh(grp, wedge, matSkin, [sx * 0.085, -0.008, 0.012], [Math.PI / 2, 0, -sx * 1.25], [1, 1, 0.6]);
+
+  return grp;
+}
+{
+  const eyeL = buildEye(-1);
+  eyeL.position.set(-0.185, 0.040, 0.395);
+  eyeL.rotation.set(-0.06, -0.40, 0.05);
+  head.add(eyeL);
+
+  const eyeR = buildEye(1);
+  eyeR.position.set(0.185, 0.040, 0.395);
+  eyeR.rotation.set(-0.06, 0.40, -0.05);
+  head.add(eyeR);
+}
+
+/* ---------- 4. MUZZLE, NOSE, MOUTH, THROAT ---------- */
+const muzzle = new THREE.Group();
+muzzle.position.set(0, -0.115, 0.365);
+head.add(muzzle);
+
+{
+  // upper muzzle block (whisker pads)
+  const g = new THREE.SphereGeometry(0.215, 64, 48);
+  const p = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const u = v.clone().normalize();
+    v.x *= 1.16;
+    v.z *= 0.92;
+    v.y *= 0.80;
+    // pinch the top toward the nose bridge
+    if (u.y > 0.2) v.x *= 1.0 - 0.30 * (u.y - 0.2);
+    // flare the bottom lip line forward
+    if (u.y < -0.2) v.z += 0.035 * (-u.y - 0.2);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  p.needsUpdate = true;
+  g.computeVertexNormals();
+  chiselGeometry(g, { amp: 0.007, freq: 12, octaves: 3, seed: 11.2 });
+  addMesh(muzzle, g, matPolished, [0, 0.035, 0.02]);
+
+  // nose bridge running up to the brow
+  const bridge = new THREE.CapsuleGeometry(0.062, 0.20, 10, 22);
+  chiselGeometry(bridge, { amp: 0.008, freq: 13, octaves: 3, seed: 12.4, planar: 3 });
+  addMesh(muzzle, bridge, matPolished, [0, 0.185, 0.055], [1.34, 0, 0], [1.05, 1, 0.80]);
+
+  // nose pad — broad, blunt, polished
+  const noseG = new THREE.SphereGeometry(0.088, 40, 30);
+  const np = noseG.attributes.position;
+  for (let i = 0; i < np.count; i++) {
+    v.fromBufferAttribute(np, i);
+    const u = v.clone().normalize();
+    v.y *= 0.80;
+    v.x *= 1.30;
+    v.z *= 0.85;
+    if (u.z > 0.3) v.z -= (u.z - 0.3) * 0.030;  // flatten the front plane
+    np.setXYZ(i, v.x, v.y, v.z);
+  }
+  np.needsUpdate = true;
+  noseG.computeVertexNormals();
+  chiselGeometry(noseG, { amp: 0.005, freq: 20, octaves: 2, seed: 13.5 });
+  addMesh(muzzle, noseG, matPolished, [0, 0.075, 0.180]);
+
+  // nostril slits (recessed dark wedges)
+  for (const sx of [-1, 1]) {
+    const nos = new THREE.CapsuleGeometry(0.014, 0.042, 6, 12);
+    addMesh(muzzle, nos, matThroat,
+      [sx * 0.052, 0.058, 0.222], [0.35, 0, sx * 0.55], [1, 1, 0.55]);
+  }
+
+  // philtrum groove under the nose
+  const phil = new THREE.BoxGeometry(0.020, 0.070, 0.030);
+  addMesh(muzzle, phil, matRough, [0, 0.005, 0.213]);
+}
+
+/* --- MOUTH: opened in a controlled roar --- */
+const mouth = new THREE.Group();
+mouth.position.set(0, -0.145, 0.335);
+head.add(mouth);
+
+{
+  // ---- hollow throat channel: an open tube receding into the head ----
+  const throatPts = [];
+  for (let i = 0; i <= 14; i++) {
+    const t = i / 14;
+    // radius: wide at the lips, narrowing into darkness
+    const r = 0.135 * (1 - t) + 0.030 * t + 0.030 * Math.sin(t * Math.PI);
+    const z = 0.045 - t * 0.40;
+    const y = t * 0.055;
+    throatPts.push(new THREE.Vector3(r, y, z));
+  }
+  const throatGeo = new THREE.LatheGeometry(
+    throatPts.map((v) => new THREE.Vector2(v.x, v.z)), 44
+  );
+  // Lathe builds around Y; rotate so the channel runs along -Z into the skull.
+  const tg = throatGeo.clone();
+  const tp = tg.attributes.position;
+  const tv = new THREE.Vector3();
+  for (let i = 0; i < tp.count; i++) {
+    tv.fromBufferAttribute(tp, i);
+    // map lathe (x,z ring / y depth) -> mouth space
+    tp.setXYZ(i, tv.x * 1.10, tv.z * 0.86, tv.y);
+  }
+  tp.needsUpdate = true;
+  tg.computeVertexNormals();
+  const throat = new THREE.Mesh(tg, matThroat);
+  throat.material.side = THREE.DoubleSide;
+  throat.castShadow = false;
+  throat.receiveShadow = true;
+  throat.position.set(0, -0.005, 0.0);
+  mouth.add(throat);
+
+  // dark cap deep in the throat so it reads as a true hollow
+  const cap = new THREE.SphereGeometry(0.075, 24, 16);
+  const capMesh = new THREE.Mesh(
+    cap,
+    new THREE.MeshStandardMaterial({ color: 0x2c2a27, roughness: 0.98, metalness: 0.0 })
+  );
+  capMesh.position.set(0, 0.03, -0.30);
+  capMesh.scale.set(1.2, 0.9, 1.0);
+  mouth.add(capMesh);
+
+  // ---- upper lip / palate arch ----
+  const upper = new THREE.TorusGeometry(0.145, 0.052, 20, 40, Math.PI);
+  const up = upper.attributes.position;
+  const uv3 = new THREE.Vector3();
+  for (let i = 0; i < up.count; i++) {
+    uv3.fromBufferAttribute(up, i);
+    uv3.z *= 1.5;
+    up.setXYZ(i, uv3.x, uv3.y, uv3.z);
+  }
+  up.needsUpdate = true;
+  upper.computeVertexNormals();
+  chiselGeometry(upper, { amp: 0.006, freq: 16, octaves: 2, seed: 14.6 });
+  addMesh(mouth, upper, matPolished, [0, 0.030, 0.03], [0.16, 0, 0], [1.14, 0.86, 1]);
+
+  // ---- lower jaw (dropped, controlled roar) ----
+  const jaw = new THREE.Group();
+  jaw.position.set(0, -0.055, 0.0);
+  jaw.rotation.x = -0.30;
+  mouth.add(jaw);
+
+  const lowerArch = new THREE.TorusGeometry(0.132, 0.050, 20, 40, Math.PI);
+  const lp = lowerArch.attributes.position;
+  for (let i = 0; i < lp.count; i++) {
+    uv3.fromBufferAttribute(lp, i);
+    uv3.z *= 1.45;
+    lp.setXYZ(i, uv3.x, uv3.y, uv3.z);
+  }
+  lp.needsUpdate = true;
+  lowerArch.computeVertexNormals();
+  chiselGeometry(lowerArch, { amp: 0.006, freq: 16, octaves: 2, seed: 15.7 });
+  addMesh(jaw, lowerArch, matPolished, [0, 0.0, 0.02], [0.10, 0, Math.PI], [1.08, 0.86, 1]);
+
+  // chin / jaw underside mass
+  const chin = new THREE.SphereGeometry(0.125, 40, 28);
+  chiselGeometry(chin, { amp: 0.008, freq: 13, octaves: 3, seed: 16.8 });
+  addMesh(jaw, chin, matSkin, [0, -0.058, -0.015], [0, 0, 0], [1.22, 0.72, 1.02]);
+
+  // tongue: a low sculpted slab inside the jaw
+  const tongue = new THREE.SphereGeometry(0.085, 28, 20);
+  chiselGeometry(tongue, { amp: 0.006, freq: 14, octaves: 2, seed: 17.9 });
+  const tm = addMesh(jaw, tongue, matThroat, [0, -0.012, -0.055], [0.15, 0, 0], [0.95, 0.35, 1.45]);
+  tm.castShadow = false;
+
+  /* ---- FANGS ---- */
+  function makeFang(len, rad, curve) {
+    // tapered, slightly curved canine
+    const pts = [];
+    const N = 10;
+    for (let i = 0; i <= N; i++) {
+      const t = i / N;
+      const r = rad * Math.pow(1 - t, 0.62) + 0.0025;
+      pts.push(new THREE.Vector2(Math.max(r, 0.002), t * len));
+    }
+    const g = new THREE.LatheGeometry(pts, 18);
+    // bend the tip
+    const gp = g.attributes.position;
+    const gv = new THREE.Vector3();
+    for (let i = 0; i < gp.count; i++) {
+      gv.fromBufferAttribute(gp, i);
+      const t = THREE.MathUtils.clamp(gv.y / len, 0, 1);
+      gv.z += curve * t * t * len;
+      gp.setXYZ(i, gv.x, gv.y, gv.z);
+    }
+    gp.needsUpdate = true;
+    g.computeVertexNormals();
+    return g;
+  }
+
+  // upper canines (point downward)
+  const upFang = makeFang(0.115, 0.030, -0.28);
+  for (const sx of [-1, 1]) {
+    addMesh(mouth, upFang, matTooth,
+      [sx * 0.098, 0.028, 0.055], [Math.PI, sx * 0.10, sx * 0.14], 1.0);
+  }
+  // upper incisors — small blocks along the arch
+  for (let i = -2; i <= 2; i++) {
+    if (i === 0) {
+      // slight gap at the midline handled by scale
+    }
+    const inc = makeFang(0.048, 0.017, -0.10);
+    addMesh(mouth, inc,
+      matTooth,
+      [i * 0.036, 0.030, 0.088 - Math.abs(i) * 0.006],
+      [Math.PI, 0, i * 0.06], [1, 1, 1]);
+  }
+  // upper premolars receding along the jawline
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const pm = makeFang(0.050 - i * 0.007, 0.019, -0.06);
+      addMesh(mouth, pm,
+        matTooth,
+        [sx * (0.118 + i * 0.009), 0.030, -0.010 - i * 0.055],
+        [Math.PI, 0, sx * 0.10], [1, 1, 1]);
+    }
+  }
+
+  // lower canines (point upward)
+  const loFang = makeFang(0.092, 0.026, 0.22);
+  for (const sx of [-1, 1]) {
+    addMesh(jaw, loFang, matTooth,
+      [sx * 0.086, 0.010, 0.050], [0.06, 0, -sx * 0.12], 1.0);
+  }
+  // lower incisors
+  for (let i = -2; i <= 2; i++) {
+    const inc = makeFang(0.040, 0.015, 0.08);
+    addMesh(jaw, inc, matTooth,
+      [i * 0.032, 0.008, 0.076 - Math.abs(i) * 0.005], [0.05, 0, i * 0.05], 1.0);
+  }
+  // lower premolars
+  for (const sx of [-1, 1]) {
+    for (let i = 0; i < 3; i++) {
+      const pm = makeFang(0.044 - i * 0.006, 0.017, 0.05);
+      addMesh(jaw, pm, matTooth,
+        [sx * (0.106 + i * 0.008), 0.008, -0.005 - i * 0.050], [0.04, 0, -sx * 0.08], 1.0);
+    }
+  }
+
+  // ---- lip corners / snarl folds pulling back into the cheeks ----
+  for (const sx of [-1, 1]) {
+    const fold = new THREE.CapsuleGeometry(0.030, 0.115, 8, 16);
+    chiselGeometry(fold, { amp: 0.007, freq: 16, octaves: 2, seed: 18.3 });
+    addMesh(mouth, fold,
+      matSkin, [sx * 0.170, 0.010, -0.020], [0.55, sx * 0.50, sx * 0.85], [1, 1, 0.8]);
+
+    // whisker-pad crease above the corner
+    const crease = new THREE.CapsuleGeometry(0.020, 0.090, 6, 14);
+    addMesh(mouth, crease,
+      matRough, [sx * 0.152, 0.088, 0.055], [0.30, sx * 0.35, sx * 1.05], [1, 1, 0.7]);
+  }
+}
+
+/* ---------- 5. EARS ---------- */
+function buildEar(sx) {
+  const grp = new THREE.Group();
+
+  const outer = new THREE.SphereGeometry(0.098, 32, 24, 0, Math.PI * 2, 0, Math.PI * 0.62);
+  const op = outer.attributes.position;
+  const ov = new THREE.Vector3();
+  for (let i = 0; i < op.count; i++) {
+    ov.fromBufferAttribute(op, i);
+    ov.x *= 1.0; ov.z *= 0.62;
+    op.setXYZ(i, ov.x, ov.y, ov.z);
+  }
+  op.needsUpdate = true;
+  outer.computeVertexNormals();
+  chiselGeometry(outer, { amp: 0.008, freq: 15, octaves: 2, seed: 19.4 });
+  const om = new THREE.Mesh(outer, matSkin);
+  om.rotation.x = Math.PI * 0.5;
+  om.castShadow = true; om.receiveShadow = true;
+  grp.add(om);
+
+  // inner bowl (rough recess)
+  const inner = new THREE.SphereGeometry(0.070, 28, 20, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const im = new THREE.Mesh(inner, matRough);
+  im.rotation.x = Math.PI * 0.5;
+  im.position.z = 0.020;
+  im.scale.set(1.0, 1.0, 0.55);
+  im.castShadow = false; im.receiveShadow = true;
+  grp.add(im);
+
+  // rim
+  const rimG = new THREE.TorusGeometry(0.092, 0.020, 14, 34);
+  chiselGeometry(rimG, { amp: 0.006, freq: 20, octaves: 2, seed: 20.5 });
+  addMesh(grp, rimG, matSkin, [0, 0, 0.010], [0, 0, 0], [1, 1, 0.7]);
+
+  return grp;
+}
+{
+  const earL = buildEar(-1);
+  earL.position.set(-0.335, 0.300, -0.035);
+  earL.rotation.set(0.10, -0.55, -0.42);
+  head.add(earL);
+
+  const earR = buildEar(1);
+  earR.position.set(0.335, 0.300, -0.035);
+  earR.rotation.set(0.10, 0.55, 0.42);
+  head.add(earR);
+}
+
+/* ---------- 6. THE MANE — deep symmetrical carved scrolls ---------- */
+const mane = new THREE.Group();
+mane.position.set(0, 0.0, -0.02);
+head.add(mane);
+
+/**
+ * A single carved scroll: a tapering tube swept along a logarithmic spiral,
+ * lying in a plane, then oriented outward from the skull.
+ */
+function makeScrollGeometry(turns, startR, endR, thick0, thick1, segs, tubeSegs, twistZ) {
+  const pts = [];
+  const N = segs;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const ang = t * Math.PI * 2.0 * turns;
+    const r = THREE.MathUtils.lerp(startR, endR, Math.pow(t, 0.85));
+    pts.push(new THREE.Vector3(
+      Math.cos(ang) * r,
+      Math.sin(ang) * r,
+      twistZ * t * t          // gentle lift out of plane -> deep relief
+    ));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+  const geo = new THREE.TubeGeometry(curve, N * 2, 1.0, tubeSegs, false);
+
+  // taper the tube radius manually along the tube's length
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  const rings = N * 2 + 1;
+  const ringVerts = tubeSegs + 1;
+  const P = new THREE.Vector3();
+  const Nv = new THREE.Vector3();
+  const C = new THREE.Vector3();
+
+  for (let ri = 0; ri < rings; ri++) {
+    const t = ri / (rings - 1);
+    const rad = THREE.MathUtils.lerp(thick0, thick1, Math.pow(t, 0.78));
+    // ring center = point on curve
+    curve.getPointAt(Math.min(t, 1), C);
+    for (let vi = 0; vi < ringVerts; vi++) {
+      const idx = ri * ringVerts + vi;
+      if (idx >= pos.count) continue;
+      P.fromBufferAttribute(pos, idx);
+      Nv.fromBufferAttribute(nrm, idx);
+      // current offset is unit-length (radius 1 tube)
+      const ox = P.x - C.x, oy = P.y - C.y, oz = P.z - C.z;
+      const len = Math.hypot(ox, oy, oz) || 1;
+      // flatten the scroll slightly in Z so it reads as carved relief, not a wire
+      pos.setXYZ(
+        idx,
+        C.x + (ox / len) * rad,
+        C.y + (oy / len) * rad,
+        C.z + (oz / len) * rad * 0.72
+      );
+    }
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** One mane lock = a scroll + a wedge root + a carved bead at the eye of the spiral. */
+function buildLock(cfg, seedBase) {
+  const g = new THREE.Group();
+
+  const scrollGeo = makeScrollGeometry(
+    cfg.turns, cfg.startR, cfg.endR, cfg.thick0, cfg.thick1, 60, 12, cfg.twist
+  );
+  chiselGeometry(scrollGeo, {
+    amp: cfg.chiselAmp, freq: 14, octaves: 3, seed: seedBase, planar: 3
+  });
+  const scroll = new THREE.Mesh(scrollGeo, cfg.deep ? matManeDeep : matMane);
+  scroll.castShadow = true; scroll.receiveShadow = true;
+  g.add(scroll);
+
+  // the "eye" of the scroll — a carved boss
+  const beadGeo = new THREE.SphereGeometry(cfg.thick1 * 1.65, 20, 14);
+  chiselGeometry(beadGeo, { amp: 0.008, freq: 22, octaves: 2, seed: seedBase + 0.5, planar: 2 });
+  const beadAng = Math.PI * 2.0 * cfg.turns;
+  const bead = new THREE.Mesh(beadGeo, matManeDeep);
+  bead.position.set(
+    Math.cos(beadAng) * cfg.endR,
+    Math.sin(beadAng) * cfg.endR,
+    cfg.twist
+  );
+  bead.scale.set(1, 1, 0.8);
+  bead.castShadow = true; bead.receiveShadow = true;
+  g.add(bead);
+
+  // root wedge blending the lock into the skull mass
+  const rootGeo = new THREE.ConeGeometry(cfg.thick0 * 1.5, cfg.startR * 1.7, 6);
+  chiselGeometry(rootGeo, { amp: 0.010, freq: 12, octaves: 2, seed: seedBase + 1.5, planar: 2 });
+  const root = new THREE.Mesh(rootGeo, matMane);
+  root.position.set(cfg.startR * 0.30, cfg.startR * 0.10, -cfg.thick0 * 0.6);
+  root.rotation.z = -Math.PI / 2 + 0.4;
+  root.rotation.x = 0.2;
+  root.castShadow = true; root.receiveShadow = true;
+  g.add(root);
+
+  return g;
+}
+
+/**
+ * Place mane locks in symmetric rings around the head.
+ * Each ring is defined by a polar angle band; locks spiral outward
+ * from the skull like carved waves.
+ */
+const MANE_RINGS = [
+  // radius from head center, vertical offset, count per side, size scale, tilt
+  { r: 0.560, y: 0.290, count: 3, scale: 1.00, aStart: 0.30, aEnd: 1.28, deep: false, out: 0.02 },
+  { r: 0.640, y: 0.090, count: 4, scale: 1.14, aStart: 0.14, aEnd: 1.42, deep: false, out: 0.04 },
+  { r: 0.690, y: -0.150, count: 4, scale: 1.06, aStart: 0.18, aEnd: 1.30, deep: true,  out: 0.02 },
+  { r: 0.760, y: 0.160, count: 4, scale: 1.28, aStart: 0.05, aEnd: 1.52, deep: true,  out: -0.06 },
+  { r: 0.800, y: -0.080, count: 3, scale: 1.18, aStart: 0.22, aEnd: 1.30, deep: true,  out: -0.10 }
+];
+
+let seedCounter = 21.0;
+
+MANE_RINGS.forEach((ring, ringIdx) => {
+  for (let side = 0; side < 2; side++) {
+    const sx = side === 0 ? 1 : -1;
+    for (let i = 0; i < ring.count; i++) {
+      const t = ring.count === 1 ? 0.5 : i / (ring.count - 1);
+      const az = THREE.MathUtils.lerp(ring.aStart, ring.aEnd, t); // azimuth from +Z toward side
+      const s = ring.scale * (0.92 + 0.16 * ((i * 7 + ringIdx * 3) % 5) / 4);
+
+      const cfg = {
+        turns: 0.78 + 0.22 * ((i + ringIdx) % 3) / 2,
+        startR: 0.150 * s,
+        endR: 0.036 * s,
+        thick0: 0.049 * s,
+        thick1: 0.021 * s,
+        twist: (0.045 + 0.02 * ((i + ringIdx) % 2)) * s,
+        chiselAmp: ring.deep ? 0.014 : 0.010,
+        deep: ring.deep
+      };
+
+      const lock = buildLock(cfg, (seedCounter += 1.7));
+
+      // position on an ellipsoidal shell around the skull
+      const px = Math.sin(az) * ring.r * sx * 1.02;
+      const pz = Math.cos(az) * ring.r * 0.88 - 0.10;
+      const py = ring.y + Math.cos(az) * 0.05;
+
+      lock.position.set(px, py, pz);
+
+      // face outward, and mirror handedness so the mane is symmetric
+      const outward = new THREE.Vector3(px, py * 0.35, pz + 0.10).normalize();
+      const yaw = Math.atan2(outward.x, outward.z);
+      const pitch = -Math.asin(THREE.MathUtils.clamp(outward.y, -1, 1)) * 0.7;
+
+      lock.rotation.set(pitch, yaw, 0);
+      // spiral handedness mirrors across the midline
+      lock.scale.set(sx, 1, 1);
+      // additional roll so the scroll "unrolls" downward/outward like waves
+      lock.rotateZ(sx * (0.55 + 0.35 * t + ringIdx * 0.12));
+      lock.translateZ(ring.out);
+
+      mane.add(lock);
+    }
+  }
+});
+
+/* --- crown scrolls: a symmetric fan over the top of the head --- */
+{
+  const CROWN = [
+    { x: 0.00, y: 0.470, z: 0.075, s: 1.00, roll: 0.0 },
+    { x: 0.185, y: 0.455, z: 0.030, s: 0.94, roll: 0.5 },
+    { x: 0.330, y: 0.400, z: -0.055, s: 0.92, roll: 0.9 },
+    { x: 0.120, y: 0.470, z: -0.230, s: 0.96, roll: 1.5 },
+    { x: 0.320, y: 0.360, z: -0.330, s: 1.02, roll: 2.0 }
+  ];
+  CROWN.forEach((c, i) => {
+    const sides = c.x === 0 ? [1] : [1, -1];
+    sides.forEach((sx) => {
+      const s = c.s;
+      const cfg = {
+        turns: 0.85 + 0.15 * (i % 2),
+        startR: 0.145 * s,
+        endR: 0.034 * s,
+        thick0: 0.047 * s,
+        thick1: 0.020 * s,
+        twist: 0.045 * s,
+        chiselAmp: 0.012,
+        deep: i % 2 === 1
+      };
+      const lock = buildLock(cfg, (seedCounter += 1.7));
+      lock.position.set(c.x * sx, c.y, c.z);
+      const outward = new THREE.Vector3(c.x * sx * 1.1, 0.85, c.z * 0.6).normalize();
+      lock.rotation.set(-Math.asin(THREE.MathUtils.clamp(outward.y, -1, 1)) * 0.85,
+                        Math.atan2(outward.x, outward.z), 0);
+      lock.scale.set(sx, 1, 1);
+      lock.rotateZ(sx * (0.3 + c.roll * 0.35));
+      mane.add(lock);
+    });
+  });
+}
+
+/* --- cheek ruff: locks framing the jaw, sweeping forward --- */
+{
+  const RUFF = [
+    { x: 0.470, y: -0.190, z: 0.235, s: 0.88, roll: 1.1 },
+    { x: 0.520, y: -0.330, z: 0.110, s: 0.94, roll: 1.5 },
+    { x: 0.440, y: -0.430, z: -0.020, s: 0.86, roll: 1.9 },
+    { x: 0.290, y: -0.480, z: 0.100, s: 0.78, roll: 2.3 },
+    { x: 0.120, y: -0.500, z: 0.030, s: 0.72, roll: 2.7 }
+  ];
+  RUFF.forEach((c, i) => {
+    [1, -1].forEach((sx) => {
+      const s = c.s;
+      const cfg = {
+        turns: 0.80 + 0.20 * (i % 2),
+        startR: 0.130 * s,
+        endR: 0.030 * s,
+        thick0: 0.043 * s,
+        thick1: 0.018 * s,
+        twist: 0.040 * s,
+        chiselAmp: 0.013,
+        deep: i % 2 === 0
+      };
+      const lock = buildLock(cfg, (seedCounter += 1.7));
+      lock.position.set(c.x * sx, c.y, c.z);
+      const outward = new THREE.Vector3(c.x * sx, -0.45, c.z + 0.15).normalize();
+      lock.rotation.set(-Math.asin(THREE.MathUtils.clamp(outward.y, -1, 1)) * 0.9,
+                        Math.atan2(outward.x, outward.z), 0);
+      lock.scale.set(sx, 1, 1);
+      lock.rotateZ(sx * c.roll);
+      mane.add(lock);
+    });
+  });
+}
+
+/* --- back mass of the mane: a chiselled shell so there is no hole behind --- */
+{
+  const shell = new THREE.SphereGeometry(0.72, 72, 54);
+  const p = shell.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const u = v.clone().normalize();
+    // compress the front (face lives there) and swell the back/sides
+    const front = Math.max(0, u.z);
+    v.z -= front * 0.34 * 0.72;
+    v.x *= 1.02 - front * 0.16;
+    v.y *= 0.94;
+    // slight downward extension for the ruff base
+    if (u.y < -0.4) v.y -= 0.06;
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  p.needsUpdate = true;
+  shell.computeVertexNormals();
+  chiselGeometry(shell, { amp: 0.030, freq: 6.5, octaves: 4, seed: 31.4, planar: 2 });
+  const sm = new THREE.Mesh(shell, matManeDeep);
+  sm.position.set(0, 0.0, -0.16);
+  sm.castShadow = true; sm.receiveShadow = true;
+  mane.add(sm);
+
+  // radial "wave" ridges over the back shell for extra carved rhythm
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2;
+    const ridge = new THREE.TorusGeometry(0.30 + 0.05 * (i % 3), 0.030, 10, 24, Math.PI * 0.75);
+    chiselGeometry(ridge, { amp: 0.010, freq: 16, octaves: 2, seed: 40 + i, planar: 2 });
+    const rm = new THREE.Mesh(ridge, i % 2 ? matMane : matManeDeep);
+    const rr = 0.55;
+    rm.position.set(
+      Math.cos(a) * rr * 1.0,
+      Math.sin(a) * rr * 0.86,
+      -0.42 - 0.06 * (i % 2)
+    );
+    rm.rotation.set(0.25 * Math.sin(a), 0.25 * Math.cos(a), a + Math.PI * 0.5);
+    rm.castShadow = true; rm.receiveShadow = true;
+    mane.add(rm);
+  }
+}
+
+/* ---------- 7. NECK STUB + BASE BLOCK ---------- */
+{
+  const neck = new THREE.CylinderGeometry(0.44, 0.60, 0.42, 40, 4);
+  chiselGeometry(neck, { amp: 0.018, freq: 8, octaves: 3, seed: 51.2, planar: 3 });
+  addMesh(lion, neck, matManeDeep, [0, 0.42, -0.16], [0.10, 0, 0], [1.06, 1, 0.96]);
+
+  // torus of small locks skirting the neck junction
+  for (let i = 0; i < 14; i++) {
+    const a = -Math.PI * 0.5 + (i / 13) * Math.PI * 2.0;
+    const s = 0.62;
+    const cfg = {
+      turns: 0.8, startR: 0.115 * s, endR: 0.028 * s,
+      thick0: 0.040 * s, thick1: 0.017 * s, twist: 0.035 * s,
+      chiselAmp: 0.012, deep: i % 2 === 0
+    };
+    const lock = buildLock(cfg, (seedCounter += 1.7));
+    const rr = 0.545;
+    lock.position.set(Math.cos(a) * rr, 0.44 + Math.sin(a) * 0.10, Math.sin(a) * rr * 0.80 - 0.14);
+    lock.rotation.set(0.5, a + Math.PI * 0.5, 0);
+    lock.rotateZ(1.2);
+    lion.add(lock);
+  }
+}
+
+/* base plinth (part of the same carved object: the block the head rises from) */
+{
+  const plinth = new THREE.CylinderGeometry(0.86, 0.98, 0.24, 8, 2);
+  chiselGeometry(plinth, { amp: 0.012, freq: 7, octaves: 3, seed: 61.3, planar: 4 });
+  const pm = addMesh(lion, plinth, matPlinth, [0, 0.12, -0.05], [0, Math.PI / 8, 0]);
+  pm.receiveShadow = true;
+
+  const fillet = new THREE.TorusGeometry(0.86, 0.045, 12, 40);
+  chiselGeometry(fillet, { amp: 0.006, freq: 14, octaves: 2, seed: 62.4, planar: 3 });
+  addMesh(lion, fillet, matPlinth, [0, 0.245, -0.05], [Math.PI / 2, 0, 0]);
+}
+
+/* ============================================================
+   CENTER + SCALE THE SINGLE OBJECT
+   ============================================================ */
+{
+  const box = new THREE.Box3().setFromObject(lion);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+
+  // target overall height ~1.55 world units (life-size lion head + plinth)
+  const targetH = 1.62;
+  const k = targetH / Math.max(size.y, 1e-4);
+  lion.scale.setScalar(k);
+
+  // recompute and seat on the ground, centered on X/Z
+  const box2 = new THREE.Box3().setFromObject(lion);
+  const c2 = new THREE.Vector3();
+  box2.getCenter(c2);
+  lion.position.x -= c2.x;
+  lion.position.z -= c2.z;
+  lion.position.y -= box2.min.y;
+
+  const box3 = new THREE.Box3().setFromObject(lion);
+  const c3 = new THREE.Vector3();
+  box3.getCenter(c3);
+  controls.target.set(0, c3.y + 0.10, 0);
+  rim.target.position.set(0, c3.y, 0);
+  key.target.position.set(0, c3.y * 0.9, 0);
+  scene.add(key.target);
+}
+
+/* subtle environment for marble specular response */
+{
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+
+  // procedural gradient environment (no external assets)
+  const envScene = new THREE.Scene();
+  const gradGeo = new THREE.SphereGeometry(10, 32, 24);
+  const gradMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    uniforms: {},
+    vertexShader: `
+      varying vec3 vPos;
+      void main(){ vPos = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    `,
+    fragmentShader: `
+      varying vec3 vPos;
+      void main(){
+        vec3 d = normalize(vPos);
+        float t = clamp(d.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 sky = mix(vec3(0.055,0.058,0.068), vec3(0.62,0.66,0.74), pow(t, 1.25));
+        // soft overhead studio panel
+        float panel = smoothstep(0.72, 0.98, d.y) * 1.6;
+        // warm side kick
+        float kick = smoothstep(0.55, 1.0, d.x * 0.7 + d.z * 0.5) * 0.35;
+        gl_FragColor = vec4(sky + panel + vec3(0.30,0.24,0.16) * kick, 1.0);
+      }
+    `
+  });
+  const gradMesh = new THREE.Mesh(gradGeo, gradMat);
+  envScene.add(gradMesh);
+
+  const envRT = pmrem.fromScene(envScene, 0.04);
+  scene.environment = envRT.texture;
+
+  gradGeo.dispose();
+  gradMat.dispose();
+  pmrem.dispose();
+}
+
+/* ============================================================
+   RESIZE + RENDER LOOP
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // barely-there light breathing so the marble specular stays alive
+  key.intensity = 2.35 + Math.sin(t * 0.35) * 0.06;
+  bounce.intensity = 3.2 + Math.sin(t * 0.5 + 1.0) * 0.15;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

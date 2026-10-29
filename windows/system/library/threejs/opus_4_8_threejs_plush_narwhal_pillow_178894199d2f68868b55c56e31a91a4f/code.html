@@ -1,0 +1,1257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plush Narwhal</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16171c; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(255,255,255,0.35); letter-spacing: 0.08em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Plush Narwhal &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1c22);
+scene.fog = new THREE.Fog(0x1b1c22, 9, 26);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.4, 1.9, 5.0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 2.6;
+controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI * 0.92;
+controls.target.set(0, 0.62, 0);
+
+/* ============================================================
+   Lighting: hemisphere ambient + key / fill / rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xbfd0ff, 0x2a2118, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.5);
+key.position.set(4.2, 6.0, 4.6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 22;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0007;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6e8, 0.75);
+fill.position.set(-5.0, 2.2, 3.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9ec, 1.15);
+rim.position.set(-2.4, 3.4, -5.6);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffe9d0, 0.35, 12, 2);
+bounce.position.set(0, -0.6, 1.8);
+scene.add(bounce);
+
+/* Ground: shadow-only */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.36 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.92;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   Fabric materials
+   ============================================================ */
+// Procedural fuzzy-fleece normal/roughness maps (no external assets)
+function makeFleeceMaps(size = 512, fuzz = 1.0) {
+  // Height field of soft noise blobs -> normal map + roughness variation
+  const w = size, h = size;
+  const height = new Float32Array(w * h);
+
+  // value-noise helper with deterministic hash
+  function hash2(x, y) {
+    let n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+    return n - Math.floor(n);
+  }
+  function smooth(t) { return t * t * (3 - 2 * t); }
+  function valueNoise(x, y, period) {
+    const xi = Math.floor(x), yi = Math.floor(y);
+    const xf = x - xi, yf = y - yi;
+    const wrap = (v) => ((v % period) + period) % period;
+    const x0 = wrap(xi), x1 = wrap(xi + 1), y0 = wrap(yi), y1 = wrap(yi + 1);
+    const a = hash2(x0, y0), b = hash2(x1, y0), c = hash2(x0, y1), d = hash2(x1, y1);
+    const u = smooth(xf), v = smooth(yf);
+    return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+  }
+
+  const octaves = [
+    { period: 24, amp: 0.55 },
+    { period: 56, amp: 0.30 },
+    { period: 128, amp: 0.15 }
+  ];
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      let v = 0;
+      for (const o of octaves) {
+        v += valueNoise((x / w) * o.period, (y / h) * o.period, o.period) * o.amp;
+      }
+      height[y * w + x] = v;
+    }
+  }
+
+  // Normal map
+  const nData = new Uint8Array(w * h * 4);
+  const strength = 2.6 * fuzz;
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const xm = (x - 1 + w) % w, xp = (x + 1) % w;
+      const ym = (y - 1 + h) % h, yp = (y + 1) % h;
+      const dx = (height[y * w + xp] - height[y * w + xm]) * strength;
+      const dy = (height[yp * w + x] - height[ym * w + x]) * strength;
+      let nx = -dx, ny = -dy, nz = 1.0;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const i = (y * w + x) * 4;
+      nData[i]     = Math.floor((nx * 0.5 + 0.5) * 255);
+      nData[i + 1] = Math.floor((ny * 0.5 + 0.5) * 255);
+      nData[i + 2] = Math.floor((nz * 0.5 + 0.5) * 255);
+      nData[i + 3] = 255;
+    }
+  }
+  const normalMap = new THREE.DataTexture(nData, w, h, THREE.RGBAFormat);
+  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+  normalMap.needsUpdate = true;
+
+  // Roughness map (subtle sheen breakup)
+  const rData = new Uint8Array(w * h * 4);
+  for (let i = 0; i < w * h; i++) {
+    const v = Math.max(0, Math.min(1, 0.80 + (height[i] - 0.5) * 0.35));
+    const c = Math.floor(v * 255);
+    rData[i * 4] = c; rData[i * 4 + 1] = c; rData[i * 4 + 2] = c; rData[i * 4 + 3] = 255;
+  }
+  const roughMap = new THREE.DataTexture(rData, w, h, THREE.RGBAFormat);
+  roughMap.wrapS = roughMap.wrapT = THREE.RepeatWrapping;
+  roughMap.needsUpdate = true;
+
+  return { normalMap, roughMap };
+}
+
+// Corduroy: fine parallel wales (ridges) for the tusk
+function makeCorduroyMaps(size = 256, wales = 26) {
+  const w = size, h = size;
+  const nData = new Uint8Array(w * h * 4);
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const u = x / w;
+      // ridge profile derivative -> normal in x
+      const phase = u * wales * Math.PI * 2;
+      let dx = Math.sin(phase) * 1.35;
+      // slight lengthwise fiber grain
+      const grain = (Math.sin(y * 0.9 + Math.sin(x * 0.31) * 2.0) * 0.10);
+      let nx = -dx, ny = -grain, nz = 1.0;
+      const len = Math.hypot(nx, ny, nz);
+      nx /= len; ny /= len; nz /= len;
+      const i = (y * w + x) * 4;
+      nData[i]     = Math.floor((nx * 0.5 + 0.5) * 255);
+      nData[i + 1] = Math.floor((ny * 0.5 + 0.5) * 255);
+      nData[i + 2] = Math.floor((nz * 0.5 + 0.5) * 255);
+      nData[i + 3] = 255;
+    }
+  }
+  const normalMap = new THREE.DataTexture(nData, w, h, THREE.RGBAFormat);
+  normalMap.wrapS = normalMap.wrapT = THREE.RepeatWrapping;
+  normalMap.needsUpdate = true;
+  return { normalMap };
+}
+
+const fleece = makeFleeceMaps(512, 1.0);
+const cord = makeCorduroyMaps(256, 26);
+
+function fleeceMat(color, opts = {}) {
+  const m = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(color),
+    roughness: 0.96,
+    metalness: 0.0,
+    sheen: 1.0,
+    sheenRoughness: 0.85,
+    sheenColor: new THREE.Color(opts.sheenColor || 0xffffff),
+    normalMap: fleece.normalMap.clone(),
+    normalScale: new THREE.Vector2(opts.normalScale || 0.5, opts.normalScale || 0.5),
+    roughnessMap: fleece.roughMap.clone(),
+    clearcoat: 0.0,
+    flatShading: false
+  });
+  m.normalMap.needsUpdate = true;
+  m.roughnessMap.needsUpdate = true;
+  const rep = opts.repeat || 5;
+  m.normalMap.repeat.set(rep, rep);
+  m.roughnessMap.repeat.set(rep, rep);
+  return m;
+}
+
+const MAT = {
+  body:      fleeceMat(0x8f95d6, { repeat: 6, normalScale: 0.55, sheenColor: 0xd9dcff }),
+  belly:     fleeceMat(0xf3ead7, { repeat: 7, normalScale: 0.45, sheenColor: 0xfff6e6 }),
+  fin:       fleeceMat(0x848ace, { repeat: 8, normalScale: 0.6,  sheenColor: 0xd9dcff }),
+  fluke:     fleeceMat(0x8a90d2, { repeat: 8, normalScale: 0.5,  sheenColor: 0xd9dcff }),
+  cheek:     fleeceMat(0xecaab4, { repeat: 10, normalScale: 0.7, sheenColor: 0xffdde3 }),
+  thread:    new THREE.MeshStandardMaterial({ color: 0xe9e4f5, roughness: 0.62, metalness: 0.0 }),
+  threadDark:new THREE.MeshStandardMaterial({ color: 0xd8d2ee, roughness: 0.62, metalness: 0.0 }),
+  threadCream:new THREE.MeshStandardMaterial({ color: 0xcfc4a8, roughness: 0.65, metalness: 0.0 }),
+  button:    new THREE.MeshPhysicalMaterial({
+               color: 0x0a0a10, roughness: 0.08, metalness: 0.0,
+               clearcoat: 1.0, clearcoatRoughness: 0.05, reflectivity: 0.6
+             }),
+  mouth:     new THREE.MeshStandardMaterial({ color: 0x6f74ab, roughness: 0.7 }),
+  tusk:      new THREE.MeshPhysicalMaterial({
+               color: 0xf2e6cd, roughness: 0.82, metalness: 0.0,
+               sheen: 0.9, sheenRoughness: 0.7, sheenColor: new THREE.Color(0xfff4df),
+               normalMap: cord.normalMap, normalScale: new THREE.Vector2(0.85, 0.85)
+             })
+};
+MAT.tusk.normalMap.repeat.set(1, 6);
+MAT.tusk.normalMap.needsUpdate = true;
+
+/* ============================================================
+   Helpers
+   ============================================================ */
+
+// Smooth "stitch line" of little dashes laid along a set of points, oriented to a surface normal
+function makeStitchLine(points, normals, opts = {}) {
+  const group = new THREE.Group();
+  const dashLen = opts.dashLen ?? 0.052;
+  const gap = opts.gap ?? 0.038;
+  const radius = opts.radius ?? 0.011;
+  const material = opts.material || MAT.thread;
+  const lift = opts.lift ?? 0.012;
+
+  // Build a curve and walk it at even arc-length
+  const curve = new THREE.CatmullRomCurve3(points, opts.closed ?? false, 'centripetal', 0.5);
+  const total = curve.getLength();
+  const step = dashLen + gap;
+  const count = Math.max(2, Math.floor(total / step));
+
+  const dashGeo = new THREE.CapsuleGeometry(radius, dashLen, 3, 6);
+
+  // Normal lookup by nearest sample index
+  const nrm = normals && normals.length === points.length ? normals : null;
+
+  for (let i = 0; i < count; i++) {
+    const t = (i + 0.5) / count;
+    const p = curve.getPointAt(Math.min(0.999999, t));
+    const tan = curve.getTangentAt(Math.min(0.999999, t)).normalize();
+
+    // interpolate a normal
+    let n;
+    if (nrm) {
+      const f = t * (nrm.length - 1);
+      const i0 = Math.floor(f), i1 = Math.min(nrm.length - 1, i0 + 1);
+      n = nrm[i0].clone().lerp(nrm[i1], f - i0).normalize();
+    } else {
+      n = new THREE.Vector3(0, 1, 0);
+    }
+    if (Math.abs(n.dot(tan)) > 0.98) n.set(0, 1, 0);
+
+    const dash = new THREE.Mesh(dashGeo, material);
+    dash.position.copy(p).addScaledVector(n, lift);
+    // capsule's long axis is +Y -> align to tangent
+    dash.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan);
+    dash.castShadow = false;
+    dash.receiveShadow = false;
+    group.add(dash);
+  }
+  return group;
+}
+
+/* ============================================================
+   Body profile — plump narwhal
+   Axis: +Z = forward (snout), -Z = tail
+   ============================================================ */
+const NOSE_Z = 1.32;
+const TAIL_Z = -1.62;
+
+// radius profile as function of z
+function bodyRadius(z) {
+  // normalized 0 at tail end, 1 at nose
+  const t = (z - TAIL_Z) / (NOSE_Z - TAIL_Z); // 0..1
+  // peak girth around t = 0.62 (front-heavy, classic plushie)
+  const peak = 0.62;
+  let r;
+  if (t >= peak) {
+    const u = (t - peak) / (1 - peak);          // 0..1 toward nose
+    r = Math.pow(Math.max(0, Math.cos(u * Math.PI * 0.5)), 0.62);
+    r = 0.52 * r + 0.055 * (1 - u);             // rounded snout, never zero until tip
+    if (u > 0.985) r = 0.045;
+  } else {
+    const u = (peak - t) / peak;                // 0..1 toward tail
+    r = 0.52 * Math.pow(Math.max(0, Math.cos(u * Math.PI * 0.46)), 0.85);
+    r = r * (1 - 0.10 * u) + 0.055 * (1 - u * 0.9);
+    if (u > 0.97) r = Math.max(0.052, r);
+  }
+  return Math.max(0.045, r);
+}
+
+// slight belly droop / back arc
+function bodyCenterY(z) {
+  const t = (z - TAIL_Z) / (NOSE_Z - TAIL_Z);
+  return -0.06 * Math.sin(t * Math.PI) + 0.05 * Math.pow(Math.max(0, t - 0.6) / 0.4, 2) * -0.4;
+}
+
+// cross-section shaping: wider than tall at belly, slightly egg-shaped
+function sectionScale(z, theta) {
+  const t = (z - TAIL_Z) / (NOSE_Z - TAIL_Z);
+  const wide = 1.0 + 0.10 * Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0, t))), 1.2);
+  // theta: 0 = +Y (top), PI = -Y (bottom)
+  const cosT = Math.cos(theta);
+  const belly = 1.0 + 0.055 * Math.max(0, -cosT);   // fuller belly
+  const backFlat = 1.0 - 0.02 * Math.max(0, cosT);
+  return { sx: wide, sy: belly * backFlat };
+}
+
+// Stuffed-plush lumpiness (very subtle, seam-aware)
+function plushWobble(z, theta) {
+  const t = (z - TAIL_Z) / (NOSE_Z - TAIL_Z);
+  return 0.012 * Math.sin(theta * 3.0 + t * 7.0) * Math.sin(t * Math.PI)
+       + 0.008 * Math.sin(theta * 5.0 - t * 4.0) * Math.sin(t * Math.PI);
+}
+
+// Full body position for spherical-ish params
+function bodyPoint(z, theta, inflate = 0) {
+  const rBase = bodyRadius(z) + inflate;
+  const { sx, sy } = sectionScale(z, theta);
+  const r = rBase + plushWobble(z, theta) * (rBase > 0.12 ? 1 : 0);
+  const x = Math.sin(theta) * r * sx;
+  const y = Math.cos(theta) * r * sy + bodyCenterY(z);
+  return new THREE.Vector3(x, y, z);
+}
+
+/* Build body as a lathe-like parametric grid (custom BufferGeometry) */
+function buildBodyGeometry(zSegs = 150, thetaSegs = 72, inflate = 0) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const zs = [];
+  for (let i = 0; i <= zSegs; i++) {
+    // ease sampling toward the ends for smoother caps
+    const s = i / zSegs;
+    const eased = 0.5 - 0.5 * Math.cos(s * Math.PI);
+    zs.push(THREE.MathUtils.lerp(TAIL_Z, NOSE_Z, eased * 0.5 + s * 0.5));
+  }
+
+  for (let i = 0; i <= zSegs; i++) {
+    const z = zs[i];
+    for (let j = 0; j <= thetaSegs; j++) {
+      const theta = (j / thetaSegs) * Math.PI * 2;
+      const p = bodyPoint(z, theta, inflate);
+      positions.push(p.x, p.y, p.z);
+      uvs.push(j / thetaSegs, i / zSegs);
+      normals.push(0, 0, 0);
+    }
+  }
+  const rowLen = thetaSegs + 1;
+  for (let i = 0; i < zSegs; i++) {
+    for (let j = 0; j < thetaSegs; j++) {
+      const a = i * rowLen + j;
+      const b = a + 1;
+      const c = a + rowLen;
+      const d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const narwhal = new THREE.Group();
+narwhal.position.y = 0.18;
+scene.add(narwhal);
+
+const bodyGeo = buildBodyGeometry(160, 80, 0);
+const body = new THREE.Mesh(bodyGeo, MAT.body);
+body.castShadow = true;
+body.receiveShadow = true;
+narwhal.add(body);
+
+/* ============================================================
+   Cream underbelly panel — a separate sewn-on patch,
+   slightly inflated so it sits proud of the body like real fabric.
+   ============================================================ */
+function buildBellyPanel() {
+  const zSegs = 96, thetaSegs = 40;
+  const zStart = -1.12, zEnd = 1.06;
+  const positions = [], uvs = [], indices = [];
+
+  // panel half-width in theta, tapering at both ends
+  function halfWidth(t) {
+    // t normalized 0..1 along panel
+    const e = Math.sin(Math.PI * Math.min(1, Math.max(0, t)));
+    return THREE.MathUtils.lerp(0.30, 1.02, Math.pow(e, 0.62));
+  }
+
+  for (let i = 0; i <= zSegs; i++) {
+    const t = i / zSegs;
+    const z = THREE.MathUtils.lerp(zStart, zEnd, t);
+    const hw = halfWidth(t);
+    for (let j = 0; j <= thetaSegs; j++) {
+      const a = (j / thetaSegs) * 2 - 1; // -1..1
+      const theta = Math.PI + a * hw;    // centered on bottom (theta = PI)
+      const p = bodyPoint(z, theta, 0.017);
+      positions.push(p.x, p.y, p.z);
+      uvs.push(j / thetaSegs, i / zSegs);
+    }
+  }
+  const rowLen = thetaSegs + 1;
+  for (let i = 0; i < zSegs; i++) {
+    for (let j = 0; j < thetaSegs; j++) {
+      const a = i * rowLen + j, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return { geo: g, zStart, zEnd, halfWidth };
+}
+
+const bellyInfo = buildBellyPanel();
+const belly = new THREE.Mesh(bellyInfo.geo, MAT.belly);
+belly.castShadow = true;
+belly.receiveShadow = true;
+narwhal.add(belly);
+
+/* Stitching around the belly panel edges (both sides) */
+function bellyEdgeStitch(sign) {
+  const pts = [], nrms = [];
+  const N = 90;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const z = THREE.MathUtils.lerp(bellyInfo.zStart, bellyInfo.zEnd, t);
+    const hw = bellyInfo.halfWidth(t);
+    const theta = Math.PI + sign * hw;
+    const p = bodyPoint(z, theta, 0.018);
+    const pOut = bodyPoint(z, theta, 0.08);
+    pts.push(p);
+    nrms.push(pOut.sub(p).normalize());
+  }
+  return makeStitchLine(pts, nrms, {
+    dashLen: 0.042, gap: 0.036, radius: 0.0095,
+    material: MAT.threadCream, lift: 0.006
+  });
+}
+narwhal.add(bellyEdgeStitch(1));
+narwhal.add(bellyEdgeStitch(-1));
+
+/* ============================================================
+   Topstitched spine seam (along the back, nose -> tail)
+   ============================================================ */
+function spineSeam() {
+  const pts = [], nrms = [];
+  const N = 130;
+  const z0 = -1.50, z1 = 1.16;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const z = THREE.MathUtils.lerp(z0, z1, t);
+    const p = bodyPoint(z, 0, 0.012);
+    const pOut = bodyPoint(z, 0, 0.09);
+    pts.push(p);
+    nrms.push(pOut.sub(p).normalize());
+  }
+  return makeStitchLine(pts, nrms, {
+    dashLen: 0.058, gap: 0.040, radius: 0.0125,
+    material: MAT.thread, lift: 0.007
+  });
+}
+narwhal.add(spineSeam());
+
+/* A faint seam ridge under the topstitching (the folded fabric) */
+function seamRidge() {
+  const N = 130;
+  const pts = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const z = THREE.MathUtils.lerp(-1.50, 1.16, t);
+    pts.push(bodyPoint(z, 0, 0.004));
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
+  const g = new THREE.TubeGeometry(curve, 180, 0.016, 8, false);
+  const m = new THREE.Mesh(g, MAT.body);
+  m.castShadow = false;
+  m.receiveShadow = true;
+  return m;
+}
+narwhal.add(seamRidge());
+
+/* ============================================================
+   Head details: melon bump, eyes (shank buttons), cheeks, mouth
+   ============================================================ */
+
+// helper: place object on body surface at (z, theta)
+function placeOnBody(obj, z, theta, offset = 0) {
+  const p = bodyPoint(z, theta, offset);
+  const pOut = bodyPoint(z, theta, offset + 0.06);
+  const n = pOut.clone().sub(p).normalize();
+  obj.position.copy(p);
+  obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), n);
+  return n;
+}
+
+// Blush felt cheek circles
+function makeCheek(sign) {
+  const g = new THREE.Group();
+  const disc = new THREE.Mesh(
+    new THREE.CircleGeometry(0.115, 40),
+    MAT.cheek
+  );
+  disc.material.side = THREE.DoubleSide;
+  disc.castShadow = false;
+  disc.receiveShadow = true;
+  // give the felt a tiny thickness with a squashed cylinder behind
+  const felt = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.115, 0.112, 0.016, 40),
+    MAT.cheek
+  );
+  felt.rotation.x = Math.PI / 2;
+  felt.position.z = -0.008;
+  felt.castShadow = false;
+  felt.receiveShadow = true;
+  g.add(felt);
+  disc.position.z = 0.0005;
+  g.add(disc);
+  placeOnBody(g, 0.70, sign * Math.PI * 0.50, 0.006);
+  // nudge downward on the face
+  return g;
+}
+const cheekL = makeCheek(1);
+const cheekR = makeCheek(-1);
+narwhal.add(cheekL, cheekR);
+
+// Cheek stitch rings
+function cheekStitchRing(cheek) {
+  const pts = [], nrms = [];
+  const N = 26;
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * 0.112, Math.sin(a) * 0.112, 0.012));
+    nrms.push(new THREE.Vector3(0, 0, 1));
+  }
+  const ring = makeStitchLine(pts, nrms, {
+    dashLen: 0.024, gap: 0.020, radius: 0.006,
+    material: MAT.threadCream, lift: 0.0, closed: true
+  });
+  cheek.add(ring);
+}
+cheekStitchRing(cheekL);
+cheekStitchRing(cheekR);
+
+// Shiny black shank buttons for eyes
+function makeButtonEye(sign) {
+  const g = new THREE.Group();
+
+  // button disc (slightly domed)
+  const discGeo = new THREE.CylinderGeometry(0.083, 0.088, 0.030, 48, 1, false);
+  const disc = new THREE.Mesh(discGeo, MAT.button);
+  disc.rotation.x = Math.PI / 2;
+  disc.castShadow = true;
+  disc.receiveShadow = true;
+  g.add(disc);
+
+  // domed face
+  const dome = new THREE.Mesh(
+    new THREE.SphereGeometry(0.083, 40, 24, 0, Math.PI * 2, 0, Math.PI * 0.42),
+    MAT.button
+  );
+  dome.rotation.x = Math.PI / 2;
+  dome.position.z = 0.0138;
+  dome.scale.set(1, 1, 0.52);
+  dome.castShadow = true;
+  g.add(dome);
+
+  // subtle rim bevel ring
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.078, 0.008, 12, 48),
+    MAT.button
+  );
+  ring.position.z = 0.016;
+  g.add(ring);
+
+  // fabric pucker where the shank pulls the fleece in
+  const pucker = new THREE.Mesh(
+    new THREE.TorusGeometry(0.104, 0.020, 10, 44),
+    MAT.body
+  );
+  pucker.position.z = -0.012;
+  pucker.receiveShadow = true;
+  g.add(pucker);
+
+  placeOnBody(g, 0.79, sign * Math.PI * 0.34, 0.004);
+  // raise the eyes a bit (above cheeks)
+  const up = new THREE.Vector3(0, 1, 0);
+  g.position.addScaledVector(up, 0.055);
+  return g;
+}
+narwhal.add(makeButtonEye(1), makeButtonEye(-1));
+
+// Small embroidered smile
+function makeSmile() {
+  const pts = [], nrms = [];
+  const N = 22;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const a = THREE.MathUtils.lerp(-0.42, 0.42, t);
+    const z = 1.075 - Math.abs(a) * 0.10;
+    const theta = Math.PI + a * 0.62;
+    const p = bodyPoint(z, theta, 0.012);
+    const po = bodyPoint(z, theta, 0.07);
+    pts.push(p);
+    nrms.push(po.sub(p).normalize());
+  }
+  return makeStitchLine(pts, nrms, {
+    dashLen: 0.075, gap: 0.012, radius: 0.010,
+    material: MAT.mouth, lift: 0.0
+  });
+}
+narwhal.add(makeSmile());
+
+// Blowhole: a tiny stitched slit on top of the head
+function makeBlowhole() {
+  const pts = [], nrms = [];
+  for (let i = 0; i <= 8; i++) {
+    const t = i / 8;
+    const x = THREE.MathUtils.lerp(-0.045, 0.045, t);
+    const z = 0.86;
+    const theta = x / 0.5;
+    const p = bodyPoint(z, theta, 0.008);
+    const po = bodyPoint(z, theta, 0.07);
+    pts.push(p); nrms.push(po.sub(p).normalize());
+  }
+  return makeStitchLine(pts, nrms, {
+    dashLen: 0.05, gap: 0.010, radius: 0.009,
+    material: MAT.mouth, lift: 0.0
+  });
+}
+narwhal.add(makeBlowhole());
+
+/* ============================================================
+   Spiral corduroy tusk — twisted ivory cone
+   ============================================================ */
+function buildTusk() {
+  const group = new THREE.Group();
+
+  const LEN = 1.30;
+  const R0 = 0.078;     // base radius
+  const R1 = 0.007;     // tip radius
+  const SEGS = 260;
+  const RADIAL = 34;
+  const FLUTES = 3;     // number of spiral ridges
+  const TWISTS = 3.5;   // full rotations along length
+
+  const positions = [], uvs = [], indices = [];
+
+  for (let i = 0; i <= SEGS; i++) {
+    const t = i / SEGS;
+    const y = t * LEN;
+    const baseR = THREE.MathUtils.lerp(R0, R1, Math.pow(t, 0.82));
+    const twist = t * TWISTS * Math.PI * 2;
+    // gentle upward curve of the tusk
+    const bendY = Math.pow(t, 2.0) * 0.045;
+    const rippleAmp = 0.20 * (1 - t * 0.55);
+
+    for (let j = 0; j <= RADIAL; j++) {
+      const a = (j / RADIAL) * Math.PI * 2;
+      // spiral flute profile
+      const flute = 1.0 + rippleAmp * Math.pow(Math.max(0, Math.sin(FLUTES * (a) + twist * 2.0)), 1.6) * 0.5
+                        - rippleAmp * 0.32 * Math.pow(Math.max(0, -Math.sin(FLUTES * (a) + twist * 2.0)), 1.4);
+      const r = baseR * flute;
+      positions.push(Math.cos(a) * r, y, Math.sin(a) * r + bendY * 0.0);
+      uvs.push(j / RADIAL, t);
+    }
+  }
+  const rowLen = RADIAL + 1;
+  for (let i = 0; i < SEGS; i++) {
+    for (let j = 0; j < RADIAL; j++) {
+      const a = i * rowLen + j, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+  // cap the base
+  const capCenterIdx = positions.length / 3;
+  positions.push(0, 0, 0); uvs.push(0.5, 0);
+  for (let j = 0; j < RADIAL; j++) {
+    indices.push(capCenterIdx, j + 1, j);
+  }
+  // round the tip
+  const tipIdx = positions.length / 3;
+  positions.push(0, LEN + 0.018, 0); uvs.push(0.5, 1);
+  const lastRow = SEGS * rowLen;
+  for (let j = 0; j < RADIAL; j++) {
+    indices.push(tipIdx, lastRow + j, lastRow + j + 1);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+
+  const tusk = new THREE.Mesh(g, MAT.tusk);
+  tusk.castShadow = true;
+  tusk.receiveShadow = true;
+  group.add(tusk);
+
+  // spiral topstitch following one of the flute grooves
+  const spts = [], snrm = [];
+  const SN = 150;
+  for (let i = 0; i <= SN; i++) {
+    const t = i / SN;
+    const y = t * LEN * 0.97;
+    const baseR = THREE.MathUtils.lerp(R0, R1, Math.pow(t, 0.82));
+    const twist = t * TWISTS * Math.PI * 2;
+    // groove angle: where sin(FLUTES*a + 2*twist) is minimal
+    const a = (-Math.PI / 2 - 2 * twist) / FLUTES;
+    const r = baseR * 0.94;
+    spts.push(new THREE.Vector3(Math.cos(a) * r, y, Math.sin(a) * r));
+    snrm.push(new THREE.Vector3(Math.cos(a), 0.15, Math.sin(a)).normalize());
+  }
+  const spiralStitch = makeStitchLine(spts, snrm, {
+    dashLen: 0.030, gap: 0.024, radius: 0.0058,
+    material: MAT.threadCream, lift: 0.004
+  });
+  group.add(spiralStitch);
+
+  // fabric collar where the tusk is sewn into the head
+  const collar = new THREE.Mesh(
+    new THREE.TorusGeometry(0.088, 0.024, 12, 44),
+    MAT.body
+  );
+  collar.rotation.x = Math.PI / 2;
+  collar.position.y = 0.012;
+  collar.castShadow = true;
+  collar.receiveShadow = true;
+  group.add(collar);
+
+  const collarPts = [], collarN = [];
+  for (let i = 0; i < 24; i++) {
+    const a = (i / 24) * Math.PI * 2;
+    collarPts.push(new THREE.Vector3(Math.cos(a) * 0.108, 0.016, Math.sin(a) * 0.108));
+    collarN.push(new THREE.Vector3(Math.cos(a) * 0.3, 1, Math.sin(a) * 0.3).normalize());
+  }
+  group.add(makeStitchLine(collarPts, collarN, {
+    dashLen: 0.030, gap: 0.026, radius: 0.0075,
+    material: MAT.thread, lift: 0.0, closed: true
+  }));
+
+  return group;
+}
+
+const tusk = buildTusk();
+// mount on the upper snout, angled forward and slightly up
+{
+  const mountZ = 1.16;
+  const mountTheta = Math.PI * 0.14; // slightly above center-front, tilted up
+  const p = bodyPoint(mountZ, mountTheta, -0.02);
+  tusk.position.copy(p);
+  // point mostly +Z with a slight upward tilt
+  const dir = new THREE.Vector3(0, 0.30, 1).normalize();
+  tusk.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+}
+narwhal.add(tusk);
+
+/* ============================================================
+   Pectoral flippers — soft, slightly quilted paddles
+   ============================================================ */
+function buildFlipper(sign) {
+  const g = new THREE.Group();
+
+  const LEN = 0.46, W = 0.24, TH = 0.075;
+  const NU = 34, NV = 22;
+  const positions = [], uvs = [], indices = [];
+
+  function outline(u) {
+    // u: 0 (root) .. 1 (tip). half-width profile
+    return W * Math.pow(Math.sin(Math.PI * (0.14 + u * 0.80)), 0.75) * (1 - 0.30 * u);
+  }
+  function thickness(u, v) {
+    const edge = 1 - Math.pow(Math.abs(v), 2.1);
+    return TH * edge * (1 - 0.55 * Math.pow(u, 1.5));
+  }
+
+  for (let i = 0; i <= NU; i++) {
+    const u = i / NU;
+    const hw = outline(u);
+    const sweep = u * u * 0.10;
+    for (let j = 0; j <= NV; j++) {
+      const v = (j / NV) * 2 - 1;
+      const x = u * LEN;
+      const z = v * hw + sweep;
+      // two shells: build as a closed loop by angle instead
+      positions.push(x, 0, z);
+      uvs.push(u, j / NV);
+    }
+  }
+  // Build a closed puffed shell: duplicate for top and bottom
+  const single = positions.length / 3;
+  for (let k = 0; k < single; k++) {
+    positions.push(positions[k * 3], positions[k * 3 + 1], positions[k * 3 + 2]);
+    uvs.push(uvs[k * 2], uvs[k * 2 + 1]);
+  }
+  // apply thickness
+  for (let i = 0; i <= NU; i++) {
+    for (let j = 0; j <= NV; j++) {
+      const idx = i * (NV + 1) + j;
+      const u = i / NU, v = (j / NV) * 2 - 1;
+      const th = thickness(u, v);
+      positions[idx * 3 + 1] = th;
+      const idx2 = single + idx;
+      positions[idx2 * 3 + 1] = -th * 0.85;
+    }
+  }
+  const rowLen = NV + 1;
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      const a = i * rowLen + j, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+      const A = single + a, B = single + b, C = single + c, D = single + d;
+      indices.push(A, B, C, B, D, C);
+    }
+  }
+  // seal edges (j = 0 and j = NV) and tip (i = NU) and root (i = 0)
+  for (let i = 0; i < NU; i++) {
+    const a0 = i * rowLen, a1 = (i + 1) * rowLen;
+    indices.push(a0, single + a0, a1);
+    indices.push(a1, single + a0, single + a1);
+    const b0 = i * rowLen + NV, b1 = (i + 1) * rowLen + NV;
+    indices.push(b0, b1, single + b0);
+    indices.push(b1, single + b1, single + b0);
+  }
+  for (let j = 0; j < NV; j++) {
+    const t0 = NU * rowLen + j, t1 = t0 + 1;
+    indices.push(t0, t1, single + t0);
+    indices.push(t1, single + t1, single + t0);
+    const r0 = j, r1 = j + 1;
+    indices.push(r0, single + r0, r1);
+    indices.push(r1, single + r0, single + r1);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const fin = new THREE.Mesh(geo, MAT.fin);
+  fin.castShadow = true;
+  fin.receiveShadow = true;
+  g.add(fin);
+
+  // edge stitching around the flipper silhouette
+  const pts = [], nrms = [];
+  const NE = 40;
+  for (let i = 0; i <= NE; i++) {
+    const u = i / NE;
+    const hw = outline(u);
+    const sweep = u * u * 0.10;
+    pts.push(new THREE.Vector3(u * LEN, 0.004, hw + sweep + 0.006));
+    nrms.push(new THREE.Vector3(0, 1, 0.25).normalize());
+  }
+  for (let i = NE; i >= 0; i--) {
+    const u = i / NE;
+    const hw = outline(u);
+    const sweep = u * u * 0.10;
+    pts.push(new THREE.Vector3(u * LEN, 0.004, -hw + sweep - 0.006));
+    nrms.push(new THREE.Vector3(0, 1, -0.25).normalize());
+  }
+  g.add(makeStitchLine(pts, nrms, {
+    dashLen: 0.032, gap: 0.028, radius: 0.0072,
+    material: MAT.thread, lift: 0.006
+  }));
+
+  // orient: root at body, sweeping back and down
+  g.rotation.y = sign * (Math.PI * 0.5 + 0.62);
+  g.rotation.z = -0.30;
+  g.rotation.x = sign * 0.12;
+
+  const holder = new THREE.Group();
+  holder.add(g);
+  const p = bodyPoint(0.30, sign * Math.PI * 0.62, -0.02);
+  holder.position.copy(p);
+  return holder;
+}
+narwhal.add(buildFlipper(1), buildFlipper(-1));
+
+/* ============================================================
+   Tail flukes — flat quilted fabric with edge stitching
+   ============================================================ */
+function buildFlukes() {
+  const g = new THREE.Group();
+
+  const SPAN = 0.62;     // half span (each side)
+  const CHORD = 0.44;
+  const TH = 0.048;
+  const NU = 30, NV = 34;
+  const positions = [], uvs = [], indices = [];
+
+  // fluke half outline: x = spanwise (0..1), returns [leadZ, trailZ]
+  function chordProfile(u) {
+    // u = 0 at center, 1 at tip
+    const lead = 0.16 - 0.10 * u;                          // front edge (+z)
+    const trail = -CHORD * (0.55 + 0.55 * Math.pow(1 - u, 0.6)) * (1 - 0.35 * u);
+    return [lead, trail];
+  }
+  function spanX(u) {
+    return SPAN * Math.pow(u, 0.86);
+  }
+  function quilt(u, v) {
+    // subtle puffed quilting between stitch lines
+    return Math.sin(u * Math.PI * 3.0) * 0.20 + Math.sin(v * Math.PI * 2.0) * 0.18;
+  }
+
+  // Build both wings in a single grid: i across full span (-1..1)
+  for (let i = 0; i <= NU; i++) {
+    const s = (i / NU) * 2 - 1;       // -1..1
+    const u = Math.abs(s);
+    const sign = s < 0 ? -1 : 1;
+    const x = spanX(u) * sign;
+    const [lead, trail] = chordProfile(u);
+    // notch in the middle of the trailing edge
+    const notch = Math.exp(-Math.pow(u / 0.18, 2)) * 0.15;
+    for (let j = 0; j <= NV; j++) {
+      const v = j / NV;               // 0 = trailing, 1 = leading
+      const z = THREE.MathUtils.lerp(trail + notch, lead, v);
+      const droop = -Math.pow(u, 2.2) * 0.06;
+      positions.push(x, droop, z);
+      uvs.push(i / NU, v);
+    }
+  }
+  const single = positions.length / 3;
+  for (let k = 0; k < single; k++) {
+    positions.push(positions[k * 3], positions[k * 3 + 1], positions[k * 3 + 2]);
+    uvs.push(uvs[k * 2], uvs[k * 2 + 1]);
+  }
+  for (let i = 0; i <= NU; i++) {
+    const s = (i / NU) * 2 - 1;
+    const u = Math.abs(s);
+    for (let j = 0; j <= NV; j++) {
+      const v = j / NV;
+      const idx = i * (NV + 1) + j;
+      const edgeFade = Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0.001, v))), 0.55)
+                     * (1 - Math.pow(u, 3.2));
+      const th = TH * (0.55 + 0.45 * Math.max(0, quilt(u, v))) * edgeFade + 0.004;
+      positions[idx * 3 + 1] += th;
+      positions[(single + idx) * 3 + 1] -= th;
+    }
+  }
+  const rowLen = NV + 1;
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      const a = i * rowLen + j, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+      const A = single + a, B = single + b, C = single + c, D = single + d;
+      indices.push(A, B, C, B, D, C);
+    }
+  }
+  // seal the perimeter
+  for (let i = 0; i < NU; i++) {
+    const a0 = i * rowLen, a1 = (i + 1) * rowLen;             // trailing edge (j=0)
+    indices.push(a0, single + a0, a1);
+    indices.push(a1, single + a0, single + a1);
+    const b0 = i * rowLen + NV, b1 = (i + 1) * rowLen + NV;   // leading edge
+    indices.push(b0, b1, single + b0);
+    indices.push(b1, single + b1, single + b0);
+  }
+  for (let j = 0; j < NV; j++) {
+    const l0 = j, l1 = j + 1;                                  // left tip (i=0)
+    indices.push(l0, single + l0, l1);
+    indices.push(l1, single + l0, single + l1);
+    const r0 = NU * rowLen + j, r1 = r0 + 1;                   // right tip
+    indices.push(r0, r1, single + r0);
+    indices.push(r1, single + r1, single + r0);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const fluke = new THREE.Mesh(geo, MAT.fluke);
+  fluke.castShadow = true;
+  fluke.receiveShadow = true;
+  g.add(fluke);
+
+  // --- edge stitching around the whole fluke silhouette ---
+  const edgePts = [], edgeN = [];
+  const NE = 46;
+  // leading edge, left tip -> right tip
+  for (let i = 0; i <= NE; i++) {
+    const s = (i / NE) * 2 - 1;
+    const u = Math.abs(s), sign = s < 0 ? -1 : 1;
+    const x = spanX(u) * sign;
+    const [lead] = chordProfile(u);
+    const droop = -Math.pow(u, 2.2) * 0.06;
+    edgePts.push(new THREE.Vector3(x, droop + 0.026, lead - 0.028));
+    edgeN.push(new THREE.Vector3(0, 1, 0));
+  }
+  // trailing edge, right tip -> left tip
+  for (let i = NE; i >= 0; i--) {
+    const s = (i / NE) * 2 - 1;
+    const u = Math.abs(s), sign = s < 0 ? -1 : 1;
+    const x = spanX(u) * sign;
+    const [, trail] = chordProfile(u);
+    const notch = Math.exp(-Math.pow(u / 0.18, 2)) * 0.15;
+    const droop = -Math.pow(u, 2.2) * 0.06;
+    edgePts.push(new THREE.Vector3(x, droop + 0.026, trail + notch + 0.028));
+    edgeN.push(new THREE.Vector3(0, 1, 0));
+  }
+  const topStitch = makeStitchLine(edgePts, edgeN, {
+    dashLen: 0.036, gap: 0.030, radius: 0.0078,
+    material: MAT.thread, lift: 0.0, closed: true
+  });
+  g.add(topStitch);
+  const botStitch = topStitch.clone();
+  botStitch.scale.y = -1;
+  botStitch.position.y = -0.004;
+  g.add(botStitch);
+
+  // --- quilting lines radiating along the flukes ---
+  for (const frac of [0.30, 0.58, 0.84]) {
+    for (const sgn of [1, -1]) {
+      const qp = [], qn = [];
+      const NQ = 16;
+      const u = frac;
+      const x = spanX(u) * sgn;
+      const [lead, trail] = chordProfile(u);
+      const notch = Math.exp(-Math.pow(u / 0.18, 2)) * 0.15;
+      const droop = -Math.pow(u, 2.2) * 0.06;
+      for (let j = 0; j <= NQ; j++) {
+        const v = j / NQ;
+        const z = THREE.MathUtils.lerp(trail + notch + 0.05, lead - 0.05, v);
+        qp.push(new THREE.Vector3(x, droop + 0.030, z));
+        qn.push(new THREE.Vector3(0, 1, 0));
+      }
+      const q = makeStitchLine(qp, qn, {
+        dashLen: 0.028, gap: 0.026, radius: 0.0062,
+        material: MAT.threadDark, lift: 0.0
+      });
+      g.add(q);
+      const qb = q.clone();
+      qb.scale.y = -1;
+      qb.position.y = -0.006;
+      g.add(qb);
+    }
+  }
+
+  return g;
+}
+
+const flukes = buildFlukes();
+{
+  const p = bodyPoint(TAIL_Z + 0.06, 0, 0);
+  flukes.position.set(0, bodyCenterY(TAIL_Z + 0.06) + 0.01, TAIL_Z + 0.02);
+  flukes.rotation.x = -0.16;
+}
+narwhal.add(flukes);
+
+// small stitched seam where the flukes meet the body
+{
+  const pts = [], nrms = [];
+  const N = 44;
+  for (let i = 0; i <= N; i++) {
+    const theta = (i / N) * Math.PI * 2;
+    const z = TAIL_Z + 0.13;
+    const p = bodyPoint(z, theta, 0.012);
+    const po = bodyPoint(z, theta, 0.07);
+    pts.push(p); nrms.push(po.sub(p).normalize());
+  }
+  narwhal.add(makeStitchLine(pts, nrms, {
+    dashLen: 0.030, gap: 0.026, radius: 0.0080,
+    material: MAT.thread, lift: 0.0, closed: true
+  }));
+}
+
+/* ============================================================
+   Dorsal ridge (narwhals have a low ridge, not a fin) —
+   a small quilted bump sewn along the back
+   ============================================================ */
+function buildDorsalRidge() {
+  const g = new THREE.Group();
+  const z0 = -0.55, z1 = 0.05;
+  const NU = 40, NV = 14;
+  const positions = [], uvs = [], indices = [];
+  for (let i = 0; i <= NU; i++) {
+    const t = i / NU;
+    const z = THREE.MathUtils.lerp(z0, z1, t);
+    const hgt = 0.075 * Math.pow(Math.sin(Math.PI * t), 0.85);
+    for (let j = 0; j <= NV; j++) {
+      const a = (j / NV) * Math.PI - Math.PI / 2;   // -90..90 around the ridge
+      const theta = a * 0.30;
+      const base = bodyPoint(z, theta, 0.0);
+      const out = bodyPoint(z, theta, 0.06).sub(base).normalize();
+      const bulge = hgt * Math.cos(a) * Math.cos(a);
+      const p = base.clone().addScaledVector(out, bulge + 0.004);
+      positions.push(p.x, p.y, p.z);
+      uvs.push(j / NV, t);
+    }
+  }
+  const rowLen = NV + 1;
+  for (let i = 0; i < NU; i++) {
+    for (let j = 0; j < NV; j++) {
+      const a = i * rowLen + j, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, MAT.fin);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  g.add(m);
+  return g;
+}
+narwhal.add(buildDorsalRidge());
+
+/* ============================================================
+   A tiny fabric care-tag sewn into the tail seam (plushie charm)
+   ============================================================ */
+{
+  const tag = new THREE.Group();
+  const tagGeo = new THREE.BoxGeometry(0.10, 0.075, 0.006);
+  const tagMat = new THREE.MeshStandardMaterial({ color: 0xf6f2e8, roughness: 0.9 });
+  const tagMesh = new THREE.Mesh(tagGeo, tagMat);
+  tagMesh.castShadow = true;
+  tagMesh.receiveShadow = true;
+  tag.add(tagMesh);
+  // fold at the top
+  const fold = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.004, 0.004, 0.10, 8),
+    tagMat
+  );
+  fold.rotation.z = Math.PI / 2;
+  fold.position.y = 0.037;
+  tag.add(fold);
+  // stripes
+  for (const yy of [0.012, -0.004, -0.020]) {
+    const s = new THREE.Mesh(
+      new THREE.BoxGeometry(0.058, 0.006, 0.0075),
+      new THREE.MeshStandardMaterial({ color: 0x9aa0d8, roughness: 0.85 })
+    );
+    s.position.set(0, yy, 0);
+    tag.add(s);
+  }
+  const p = bodyPoint(-1.28, Math.PI * 0.72, 0.01);
+  tag.position.copy(p);
+  tag.rotation.set(0.25, -0.9, -0.5);
+  narwhal.add(tag);
+}
+
+/* ============================================================
+   Center & seat the object
+   ============================================================ */
+{
+  const box = new THREE.Box3().setFromObject(narwhal);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  // recenter horizontally, keep a nice sitting height above the shadow plane
+  narwhal.position.x -= center.x;
+  narwhal.position.z -= center.z;
+  const minY = box.min.y;
+  narwhal.position.y += (-0.90 - minY);
+  const box2 = new THREE.Box3().setFromObject(narwhal);
+  const c2 = new THREE.Vector3();
+  box2.getCenter(c2);
+  controls.target.copy(c2);
+  controls.update();
+}
+
+/* small pedestal shadow catcher already added; give a soft contact darkening */
+const contact = new THREE.Mesh(
+  new THREE.CircleGeometry(1.5, 48),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.14 })
+);
+contact.rotation.x = -Math.PI / 2;
+contact.position.y = -0.914;
+scene.add(contact);
+
+/* ============================================================
+   Resize / Render loop
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // gentle floating bob, like a plushie being gently swayed
+  narwhal.rotation.z = Math.sin(t * 0.55) * 0.018;
+  narwhal.rotation.x = Math.sin(t * 0.41 + 1.2) * 0.012;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

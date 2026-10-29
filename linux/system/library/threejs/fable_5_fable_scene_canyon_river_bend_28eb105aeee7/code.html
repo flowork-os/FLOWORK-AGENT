@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canyon River Bend</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#e9b98b}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================ config / palette ================================ */
+const SEED        = 28417;          // reproducible layout
+const WORLD       = 170;            // terrain span (square)
+const WATER_Y     = 0.35;           // river surface height
+const RIM_FOG     = 0xeec49a;       // warm haze / horizon color
+const STRATA = ['#7c3527','#a34a2c','#c26436','#d97e42','#e39a58','#ecb677','#f2cf96'];
+const PAL = {
+  waterJade : 0x2f9e8a,  riverDeep : 0x1c5f52,
+  cactus    : 0x4d7f49,  cactusDim : 0x3f6a3c,
+  scrub     : 0x7c8a4e,  wood      : 0x8a5a33,
+  woodDark  : 0x6b431f,  snag      : 0x5c4a3a,
+  hawk      : 0x3d2b1e,  blossom   : 0xf2e8c8,
+  skyTop    : '#5e8fbf', skyMid    : '#a9c4d6', skyLow : '#f2c493', skyBase : '#e59f66'
+};
+
+/* ================================ prng / helpers ================================ */
+function mulberry32(a){ return function(){ a|=0; a=(a+0x6D2B79F5)|0;
+  let t=Math.imul(a^(a>>>15),1|a); t=(t+Math.imul(t^(t>>>7),61|t))^t;
+  return ((t^(t>>>14))>>>0)/4294967296; }; }
+const rng = mulberry32(SEED);
+const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
+const lerp=(a,b,t)=>a+(b-a)*t;
+function smooth(a,b,v){ const t=clamp((v-a)/(b-a),0,1); return t*t*(3-2*t); }
+
+/* seeded value noise + fbm (all terrain relief flows through this) */
+const noiseGrid=new Float32Array(256*256);
+for(let i=0;i<noiseGrid.length;i++) noiseGrid[i]=rng();
+function vnoise(x,y){
+  const x0=Math.floor(x), y0=Math.floor(y), fx=x-x0, fy=y-y0;
+  const sx=fx*fx*(3-2*fx), sy=fy*fy*(3-2*fy);
+  const at=(ix,iy)=>noiseGrid[((iy&255)<<8)|(ix&255)];
+  return lerp(lerp(at(x0,y0),at(x0+1,y0),sx), lerp(at(x0,y0+1),at(x0+1,y0+1),sx), sy);
+}
+function fbm(x,y){
+  let v=0,a=0.5,f=1;
+  for(let o=0;o<4;o++){ v+=a*vnoise(x*f,y*f); f*=2.13; a*=0.5; }
+  return v/0.9375; // ~0..1
+}
+
+/* ================================ procedural textures ================================ */
+function makeCanvas(w,h){ const c=document.createElement('canvas'); c.width=w; c.height=h; return c; }
+
+/* layered sandstone striations, used on arch + buttes */
+function makeStrataTexture(){
+  const c=makeCanvas(512,512), g=c.getContext('2d');
+  g.fillStyle='#c26436'; g.fillRect(0,0,512,512);
+  let y=0, band=0;
+  while(y<512){
+    const h=10+rng()*26;
+    g.fillStyle=STRATA[band%STRATA.length];
+    g.fillRect(0,y,512,h+2);
+    g.globalAlpha=0.25; g.fillStyle=rng()<0.5?'#5f2a1e':'#f5d9a8';
+    g.fillRect(0,y+h*0.65,512,2+rng()*3); g.globalAlpha=1;
+    y+=h; band+=(rng()<0.8)?1:2;
+  }
+  g.globalAlpha=0.12;
+  for(let i=0;i<900;i++){ g.fillStyle=rng()<0.5?'#4a2418':'#ffe6b8';
+    g.fillRect(rng()*512,rng()*512,1+rng()*3,1+rng()*2); }
+  g.globalAlpha=1;
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+/* soft jade ripple streaks for the river surface */
+function makeRippleTexture(){
+  const c=makeCanvas(256,256), g=c.getContext('2d');
+  g.fillStyle='#2f9e8a'; g.fillRect(0,0,256,256);
+  for(let i=0;i<70;i++){
+    const y=rng()*256, len=30+rng()*90, x=rng()*256;
+    g.strokeStyle=rng()<0.6?'rgba(210,245,230,0.20)':'rgba(16,70,60,0.22)';
+    g.lineWidth=1+rng()*2; g.beginPath();
+    g.moveTo(x,y); g.quadraticCurveTo(x+len*0.5,y+(rng()-0.5)*8,x+len,y); g.stroke();
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.colorSpace=THREE.SRGBColorSpace;
+  t.repeat.set(6,6);
+  return t;
+}
+
+/* puffy painterly cloud sprite */
+function makeCloudTexture(){
+  const c=makeCanvas(256,128), g=c.getContext('2d');
+  g.clearRect(0,0,256,128);
+  for(let i=0;i<26;i++){
+    const x=30+rng()*196, y=45+rng()*45, r=12+rng()*22;
+    const gr=g.createRadialGradient(x,y,2,x,y,r);
+    gr.addColorStop(0,'rgba(255,246,230,0.55)'); gr.addColorStop(1,'rgba(255,246,230,0)');
+    g.fillStyle=gr; g.beginPath(); g.arc(x,y,r,0,6.283); g.fill();
+  }
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+/* warm afternoon gradient for the sky dome */
+function makeSkyTexture(){
+  const c=makeCanvas(4,512), g=c.getContext('2d');
+  const gr=g.createLinearGradient(0,0,0,512);
+  gr.addColorStop(0.00,PAL.skyTop); gr.addColorStop(0.42,PAL.skyMid);
+  gr.addColorStop(0.62,PAL.skyLow); gr.addColorStop(1.00,PAL.skyBase);
+  g.fillStyle=gr; g.fillRect(0,0,4,512);
+  const t=new THREE.CanvasTexture(c); t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+
+/* ================================ materials ================================ */
+const strataTex=makeStrataTexture(), rippleTex=makeRippleTexture();
+const MAT = {
+  terrain : new THREE.MeshStandardMaterial({ vertexColors:true, roughness:0.96, metalness:0 }),
+  rock    : new THREE.MeshStandardMaterial({ map:strataTex, roughness:0.92, metalness:0 }),
+  water   : new THREE.MeshStandardMaterial({ color:0xffffff, map:rippleTex,
+              roughness:0.22, metalness:0.05, transparent:true, opacity:0.9 }),
+  cactus  : new THREE.MeshStandardMaterial({ color:PAL.cactus, roughness:0.8, flatShading:true }),
+  cactusDim:new THREE.MeshStandardMaterial({ color:PAL.cactusDim, roughness:0.95 }),
+  flower  : new THREE.MeshStandardMaterial({ color:0xc9354e, roughness:0.55 }),
+  scrub   : new THREE.MeshStandardMaterial({ color:PAL.scrub, roughness:1, flatShading:true }),
+  boulder : new THREE.MeshStandardMaterial({ color:0xffffff, roughness:0.95, flatShading:true }),
+  wood    : new THREE.MeshStandardMaterial({ color:PAL.wood, roughness:0.85 }),
+  woodDark: new THREE.MeshStandardMaterial({ color:PAL.woodDark, roughness:0.9 }),
+  snag    : new THREE.MeshStandardMaterial({ color:PAL.snag, roughness:1, flatShading:true }),
+  hawk    : new THREE.MeshStandardMaterial({ color:PAL.hawk, roughness:1, side:THREE.DoubleSide }),
+  blossom : new THREE.MeshStandardMaterial({ color:PAL.blossom, roughness:0.6 })
+};
+
+/* ================================ river course (gooseneck) ================================ */
+const RIVER_PTS=[[-95,-34],[-58,-30],[-24,-33],[6,-29],[26,-24],[40,-15],[46,-4],
+                 [45,7],[37,17],[22,23],[2,27],[-28,31],[-62,29],[-95,33]];
+const riverCurve=new THREE.CatmullRomCurve3(
+  RIVER_PTS.map(p=>new THREE.Vector3(p[0],WATER_Y,p[1])),false,'catmullrom',0.5);
+const riverSamples=riverCurve.getSpacedPoints(260);
+function riverDist(x,z){
+  let d=Infinity;
+  for(let i=0;i<riverSamples.length;i++){
+    const dx=x-riverSamples[i].x, dz=z-riverSamples[i].z;
+    const q=dx*dx+dz*dz; if(q<d) d=q;
+  }
+  return Math.sqrt(d);
+}
+
+/* canyon profile: carved channel, benched banks, terraced strata walls, high rim */
+function terrainHeight(x,z){
+  const d=riverDist(x,z);
+  const bank=smooth(6,13,d), wall=smooth(13,34,d), rim=smooth(34,62,d);
+  let h=-1.9+bank*5.4+wall*12.5+rim*5.0;
+  h+=(fbm(x*0.018+3.1,z*0.018+7.7)-0.5)*11*wall;
+  h+=(fbm(x*0.085+11,z*0.085+5)-0.5)*2.2*(0.2+0.8*wall);
+  const s=2.35, k=h/s, f=k-Math.floor(k);
+  h=lerp(h,(Math.floor(k)+smooth(0.3,0.7,f))*s,0.62);   // soft rock terraces
+  return h;
+}
+function terrainSlope(x,z){
+  const e=1.4;
+  const dx=terrainHeight(x+e,z)-terrainHeight(x-e,z);
+  const dz=terrainHeight(x,z+e)-terrainHeight(x,z-e);
+  return Math.sqrt(dx*dx+dz*dz)/(2*e);
+}
+
+/* ================================ builder: terrain ================================ */
+function buildTerrain(){
+  const geo=new THREE.PlaneGeometry(WORLD,WORLD,150,150);
+  geo.rotateX(-Math.PI/2);
+  const pos=geo.attributes.position, colors=[];
+  const col=new THREE.Color(), c2=new THREE.Color();
+  const wet=new THREE.Color('#7d5a3c'), algae=new THREE.Color('#5e8a6a'), sage=new THREE.Color('#6f8f5a');
+  for(let i=0;i<pos.count;i++){
+    const x=pos.getX(i), z=pos.getZ(i);
+    const h=terrainHeight(x,z), d=riverDist(x,z);
+    pos.setY(i,h);
+    if(h<WATER_Y+0.3){                                  // wet shore / shallows
+      col.copy(wet).lerp(algae,fbm(x*0.09,z*0.09)*0.7);
+    }else{
+      const band=(h+(fbm(x*0.06+9,z*0.06+2)-0.5)*3.2)/2.5;
+      const bi=Math.floor(band);
+      const i0=bi<=6?clamp(bi,0,6):4+((bi-7)%3);      // caprock cycles warm tans
+      const i1=clamp(i0+1,0,6);
+      col.set(STRATA[i0]); c2.set(STRATA[i1]);
+      col.lerp(c2,(band-i0)*0.4);
+      col.offsetHSL(0,(fbm(x*0.2,z*0.2)-0.5)*0.06,(fbm(x*0.13+40,z*0.13)-0.5)*0.08);
+      if(h<2.2&&d<12) col.lerp(sage,0.35*(1-h/2.2));    // green scrubline at banks
+    }
+    colors.push(col.r,col.g,col.b);
+  }
+  geo.setAttribute('color',new THREE.Float32BufferAttribute(colors,3));
+  geo.computeVertexNormals();
+  const m=new THREE.Mesh(geo,MAT.terrain);
+  m.receiveShadow=true; m.castShadow=true;
+  return m;
+}
+
+/* ================================ builder: river water ================================ */
+function buildRiver(){
+  const g=new THREE.Group();
+  const surf=new THREE.Mesh(new THREE.PlaneGeometry(WORLD,WORLD,1,1),MAT.water);
+  surf.rotation.x=-Math.PI/2; surf.position.y=WATER_Y; surf.receiveShadow=true;
+  const bed=new THREE.Mesh(new THREE.PlaneGeometry(WORLD,WORLD,1,1),
+    new THREE.MeshStandardMaterial({ color:PAL.riverDeep, roughness:1 }));
+  bed.rotation.x=-Math.PI/2; bed.position.y=-2.15;
+  g.add(bed,surf);
+  return g;
+}
+
+/* ================================ builder: natural rock arch ================================ */
+function buildRockArch(){
+  const g=new THREE.Group();
+  const pierGeo=new THREE.CylinderGeometry(2.1,3.1,7.5,9,3);
+  for(const sx of [-6.5,6.5]){
+    const p=new THREE.Mesh(pierGeo,MAT.rock);
+    p.position.set(sx,3.0,0); p.rotation.y=rng()*Math.PI;
+    g.add(p);
+  }
+  const span=new THREE.Mesh(new THREE.TorusGeometry(6.5,2.05,10,26,Math.PI),MAT.rock);
+  span.position.y=6.4; g.add(span);
+  const capGeo=new THREE.DodecahedronGeometry(1.5,0);
+  for(let i=0;i<4;i++){
+    const c=new THREE.Mesh(capGeo,MAT.rock);
+    const a=lerp(0.25,Math.PI-0.25,i/3);
+    c.position.set(-Math.cos(a)*6.5,6.4+Math.sin(a)*6.5+0.9,(rng()-0.5)*1.2);
+    c.scale.setScalar(0.7+rng()*0.7); c.rotation.set(rng()*3,rng()*3,rng()*3);
+    g.add(c);
+  }
+  for(let i=0;i<5;i++){                                 // rubble at the feet
+    const r=new THREE.Mesh(capGeo,MAT.rock);
+    r.position.set((rng()<0.5?-1:1)*(5+rng()*3),0.2,(rng()-0.5)*4);
+    r.scale.setScalar(0.5+rng()*0.6); r.rotation.set(rng()*3,rng()*3,rng()*3);
+    g.add(r);
+  }
+  g.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.receiveShadow=true; } });
+  return g;
+}
+
+/* ================================ builder: stacked butte ================================ */
+function buildButte(scale){
+  const g=new THREE.Group();
+  let y=0, r=6.5*scale;
+  const tiers=4+Math.floor(rng()*2);
+  for(let i=0;i<tiers;i++){
+    const h=(2.6+rng()*2.4)*scale, rTop=r*(0.78+rng()*0.12);
+    const t=new THREE.Mesh(new THREE.CylinderGeometry(rTop,r,h,10,1),MAT.rock);
+    t.position.y=y+h/2; t.rotation.y=rng()*Math.PI;
+    t.position.x=(rng()-0.5)*0.8*scale; t.position.z=(rng()-0.5)*0.8*scale;
+    g.add(t); y+=h*0.96; r=rTop*0.94;
+  }
+  const cap=new THREE.Mesh(new THREE.SphereGeometry(r*1.05,10,6),MAT.rock);
+  cap.position.y=y; cap.scale.y=0.45; g.add(cap);
+  g.traverse(o=>{ if(o.isMesh){ o.castShadow=true; o.receiveShadow=true; } });
+  return g;
+}
+
+/* ================================ builder: saguaro cactus ================================ */
+function buildSaguaro(){
+  const g=new THREE.Group();
+  const trunkH=4.6+rng()*3.2;
+  const trunk=new THREE.Mesh(new THREE.CapsuleGeometry(0.55,trunkH,4,10),MAT.cactus);
+  trunk.position.y=trunkH/2+0.55; g.add(trunk);
+  const arms=1+Math.floor(rng()*3);
+  for(let i=0;i<arms;i++){
+    const side=(i%2===0?1:-1), ay=1.8+rng()*(trunkH-2.2);
+    const yaw=rng()*Math.PI*2;
+    const stub=new THREE.Mesh(new THREE.CapsuleGeometry(0.32,0.7,4,8),MAT.cactus);
+    stub.rotation.z=side*Math.PI/2; stub.position.set(side*0.8,ay,0);
+    const upH=1.3+rng()*1.7;
+    const up=new THREE.Mesh(new THREE.CapsuleGeometry(0.34,upH,4,8),MAT.cactus);
+    up.position.set(side*1.3,ay+upH/2+0.25,0);
+    const armGrp=new THREE.Group(); armGrp.add(stub,up); armGrp.rotation.y=yaw;
+    if(rng()<0.4){                                      // spring blossom crown
+      const b=new THREE.Mesh(new THREE.SphereGeometry(0.22,6,5),MAT.blossom);
+      b.position.set(side*1.3,ay+upH+0.62,0); armGrp.add(b);
+    }
+    g.add(armGrp);
+  }
+  g.traverse(o=>{ if(o.isMesh){ o.castShadow=true; } });
+  const s=0.8+rng()*0.5; g.scale.setScalar(s); g.rotation.y=rng()*Math.PI*2;
+  return g;
+}
+
+/* ================================ builder: weathered snag ================================ */
+function buildSnag(){
+  const g=new THREE.Group();
+  let y=0, lean=(rng()-0.5)*0.5;
+  for(let i=0;i<3;i++){
+    const h=1.6+rng()*1.4, r=0.34-(i*0.09);
+    const seg=new THREE.Mesh(new THREE.CylinderGeometry(r*0.8,r,h,6),MAT.snag);
+    seg.position.set(Math.sin(lean)*y*0.4,y+h/2,0);
+    seg.rotation.z=lean*(0.5+i*0.4);
+    g.add(seg); y+=h*0.9;
+  }
+  for(let i=0;i<3;i++){
+    const b=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.11,1.4+rng(),5),MAT.snag);
+    b.position.set((rng()-0.5)*0.6,1.6+rng()*2.2,(rng()-0.5)*0.6);
+    b.rotation.set((rng()-0.5)*2.4,rng()*6.3,(rng()-0.5)*2.4);
+    g.add(b);
+  }
+  g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+  g.rotation.y=rng()*Math.PI*2;
+  return g;
+}
+
+/* ================================ builder: ocotillo ================================ */
+function buildOcotillo(){
+  const g=new THREE.Group();
+  const canes=6+Math.floor(rng()*4);
+  for(let i=0;i<canes;i++){
+    const len=2.6+rng()*1.8, tilt=0.28+rng()*0.4, yaw=(i/canes)*Math.PI*2+rng()*0.5;
+    const cane=new THREE.Mesh(new THREE.CylinderGeometry(0.025,0.06,len,5),MAT.cactusDim);
+    cane.position.y=len/2;
+    const arm=new THREE.Group(); arm.add(cane);
+    arm.rotation.set(0,yaw,tilt);
+    if(rng()<0.75){                                     // scarlet flower tip
+      const tip=new THREE.Mesh(new THREE.ConeGeometry(0.09,0.42,5),
+        MAT.flower);
+      tip.position.y=len+0.15; arm.add(tip);
+    }
+    g.add(arm);
+  }
+  g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+  g.scale.setScalar(0.8+rng()*0.5);
+  return g;
+}
+
+/* ================================ builder: prickly pear ================================ */
+function buildPricklyPear(){
+  const g=new THREE.Group();
+  const padGeo=new THREE.SphereGeometry(0.55,8,6);
+  const pads=4+Math.floor(rng()*4);
+  for(let i=0;i<pads;i++){
+    const p=new THREE.Mesh(padGeo,MAT.cactus);
+    const a=rng()*Math.PI*2, r=rng()*0.7;
+    p.position.set(Math.cos(a)*r,0.4+rng()*0.9,Math.sin(a)*r);
+    p.scale.set(0.9+rng()*0.4,1.1+rng()*0.4,0.28);
+    p.rotation.y=a+(rng()-0.5)*0.8; p.rotation.z=(rng()-0.5)*0.5;
+    p.castShadow=true; g.add(p);
+    if(rng()<0.35){                                     // magenta fruit
+      const f=new THREE.Mesh(new THREE.SphereGeometry(0.09,5,4),MAT.flower);
+      f.position.copy(p.position).y+=0.62; g.add(f);
+    }
+  }
+  g.scale.setScalar(0.75+rng()*0.6); g.rotation.y=rng()*Math.PI*2;
+  return g;
+}
+
+/* ================================ builder: overlook cairn ================================ */
+function buildCairn(){
+  const g=new THREE.Group();
+  let y=0;
+  const stones=5+Math.floor(rng()*2);
+  for(let i=0;i<stones;i++){
+    const r=0.85-(i*0.13)+rng()*0.06;
+    const s=new THREE.Mesh(new THREE.DodecahedronGeometry(r,0),MAT.rock);
+    s.position.set((rng()-0.5)*0.15,y+r*0.55,(rng()-0.5)*0.15);
+    s.scale.y=0.6; s.rotation.y=rng()*Math.PI;
+    s.castShadow=true; s.receiveShadow=true;
+    g.add(s); y+=r*0.72;
+  }
+  return g;
+}
+
+/* ================================ builder: drifting raft ================================ */
+function buildRaft(){
+  const g=new THREE.Group();
+  const plank=new THREE.BoxGeometry(0.55,0.14,3.4);
+  for(let i=0;i<5;i++){
+    const p=new THREE.Mesh(plank,MAT.wood);
+    p.position.set((i-2)*0.6,0,(rng()-0.5)*0.12);
+    g.add(p);
+  }
+  const beam=new THREE.BoxGeometry(3.1,0.14,0.4);
+  for(const z of [-1.25,1.25]){
+    const b=new THREE.Mesh(beam,MAT.woodDark);
+    b.position.set(0,0.14,z); g.add(b);
+  }
+  const barrel=new THREE.Mesh(new THREE.CylinderGeometry(0.34,0.34,0.62,10),MAT.woodDark);
+  barrel.position.set(-0.5,0.45,-0.4); g.add(barrel);
+  const pack=new THREE.Mesh(new THREE.SphereGeometry(0.4,8,6),
+    new THREE.MeshStandardMaterial({ color:0xb0603a, roughness:1 }));
+  pack.position.set(0.55,0.32,0.35); pack.scale.y=0.7; g.add(pack);
+  const shaft=new THREE.Mesh(new THREE.CylinderGeometry(0.04,0.04,1.9,6),MAT.wood);
+  shaft.position.set(1.15,0.6,0.2); shaft.rotation.z=-0.9; shaft.rotation.x=0.3;
+  const blade=new THREE.Mesh(new THREE.BoxGeometry(0.05,0.55,0.3),MAT.woodDark);
+  blade.position.set(1.9,0.28,0.45); blade.rotation.z=-0.9;
+  g.add(shaft,blade);
+  g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+  return g;
+}
+
+/* ================================ builder: soaring hawk ================================ */
+function buildHawk(){
+  const g=new THREE.Group();
+  const body=new THREE.Mesh(new THREE.ConeGeometry(0.2,1.15,6),MAT.hawk);
+  body.rotation.x=Math.PI/2; g.add(body);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.16,6,5),MAT.hawk);
+  head.position.z=0.62; g.add(head);
+  const tail=new THREE.Mesh(new THREE.BoxGeometry(0.52,0.03,0.5),MAT.hawk);
+  tail.position.z=-0.68; g.add(tail);
+  const wingGeo=new THREE.BoxGeometry(1.5,0.035,0.55);
+  const wl=new THREE.Mesh(wingGeo,MAT.hawk), wr=new THREE.Mesh(wingGeo,MAT.hawk);
+  wl.position.x=-0.8; wl.rotation.z= 0.12;
+  wr.position.x= 0.8; wr.rotation.z=-0.12;
+  g.add(wl,wr);
+  g.userData.wings=[wl,wr];
+  g.traverse(o=>{ if(o.isMesh) o.castShadow=true; });
+  return g;
+}
+
+/* ================================ builder: sky, clouds, dust ================================ */
+function buildSkyDome(){
+  const m=new THREE.Mesh(new THREE.SphereGeometry(340,24,16),
+    new THREE.MeshBasicMaterial({ map:makeSkyTexture(), side:THREE.BackSide, fog:false }));
+  return m;
+}
+function buildClouds(){
+  const g=new THREE.Group(), tex=makeCloudTexture(), drifters=[];
+  for(let i=0;i<6;i++){
+    const s=new THREE.Sprite(new THREE.SpriteMaterial({ map:tex, transparent:true,
+      opacity:0.4+rng()*0.25, depthWrite:false }));
+    const bx=(rng()-0.5)*360;
+    s.position.set(bx,95+rng()*40,(rng()-0.5)*320);
+    s.scale.set(46+rng()*30,15+rng()*8,1);
+    g.add(s); drifters.push({ spr:s, bx, sp:0.8+rng()*0.9 });
+  }
+  g.userData.drifters=drifters;
+  return g;
+}
+function buildDust(){
+  const n=220, pts=new Float32Array(n*3);
+  for(let i=0;i<n;i++){
+    pts[i*3]=(rng()-0.5)*140; pts[i*3+1]=1+rng()*30; pts[i*3+2]=(rng()-0.5)*140;
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pts,3));
+  const dot=makeCanvas(32,32), dg=dot.getContext('2d');
+  const gr=dg.createRadialGradient(16,16,1,16,16,15);
+  gr.addColorStop(0,'rgba(255,220,170,1)'); gr.addColorStop(1,'rgba(255,220,170,0)');
+  dg.fillStyle=gr; dg.fillRect(0,0,32,32);
+  const m=new THREE.Points(geo,new THREE.PointsMaterial({ color:0xffd9a0, size:0.6,
+    map:new THREE.CanvasTexture(dot), transparent:true, opacity:0.25,
+    depthWrite:false, blending:THREE.AdditiveBlending }));
+  m.userData.base=pts.slice();
+  return m;
+}
+
+/* ================================ instanced scatter props ================================ */
+function scatterMatrices(count,test){
+  const out=[]; let tries=0;
+  while(out.length<count&&tries<count*40){
+    tries++;
+    const x=(rng()-0.5)*(WORLD-14), z=(rng()-0.5)*(WORLD-14);
+    const h=terrainHeight(x,z), s=terrainSlope(x,z), d=riverDist(x,z);
+    if(test(h,s,d)) out.push({x,z,h});
+  }
+  return out;
+}
+function buildScrub(){
+  const spots=scatterMatrices(70,(h,s,d)=>h>0.8&&h<18&&s<0.55&&d>7.5);
+  const geo=new THREE.IcosahedronGeometry(0.8,0);
+  const mesh=new THREE.InstancedMesh(geo,MAT.scrub,spots.length);
+  const mtx=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler();
+  const v=new THREE.Vector3(), sc=new THREE.Vector3(), col=new THREE.Color();
+  spots.forEach((p,i)=>{
+    e.set(0,rng()*Math.PI*2,0); q.setFromEuler(e);
+    const s=0.7+rng()*0.9;
+    sc.set(s,s*(0.5+rng()*0.3),s); v.set(p.x,p.h+0.25,p.z);
+    mtx.compose(v,q,sc); mesh.setMatrixAt(i,mtx);
+    col.setHSL(0.21+rng()*0.05,0.32,0.3+rng()*0.12); mesh.setColorAt(i,col);
+  });
+  mesh.castShadow=true;
+  return mesh;
+}
+function buildBoulders(){
+  const spots=scatterMatrices(46,(h,s,d)=>h>0.4&&h<12&&d>6.5&&d<26);
+  const geo=new THREE.DodecahedronGeometry(1,0);
+  const mesh=new THREE.InstancedMesh(geo,MAT.boulder,spots.length);
+  const mtx=new THREE.Matrix4(), q=new THREE.Quaternion(), e=new THREE.Euler();
+  const v=new THREE.Vector3(), sc=new THREE.Vector3(), col=new THREE.Color();
+  spots.forEach((p,i)=>{
+    e.set(rng()*3,rng()*3,rng()*3); q.setFromEuler(e);
+    const s=0.5+rng()*1.4;
+    sc.set(s,s*(0.7+rng()*0.4),s); v.set(p.x,p.h+s*0.3,p.z);
+    mtx.compose(v,q,sc); mesh.setMatrixAt(i,mtx);
+    col.set(STRATA[1+Math.floor(rng()*4)]).offsetHSL(0,-0.08,(rng()-0.5)*0.08);
+    mesh.setColorAt(i,col);
+  });
+  mesh.castShadow=true; mesh.receiveShadow=true;
+  return mesh;
+}
+
+/* ================================ renderer / scene / camera ================================ */
+const renderer=new THREE.WebGLRenderer({ antialias:true });
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.08;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.fog=new THREE.Fog(RIM_FOG,110,300);
+
+const camera=new THREE.PerspectiveCamera(48,innerWidth/innerHeight,0.5,900);
+camera.position.set(76,54,96);
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,6,0);
+controls.enableDamping=true; controls.dampingFactor=0.06;
+controls.autoRotate=true; controls.autoRotateSpeed=0.9;
+controls.minDistance=55; controls.maxDistance=165;
+controls.minPolarAngle=0.25; controls.maxPolarAngle=1.18;
+
+/* ================================ assembly / layout ================================ */
+scene.add(buildTerrain());
+scene.add(buildRiver());
+scene.add(buildSkyDome());
+
+const arch=buildRockArch();
+{ const ax=-6, az=-2;
+  arch.position.set(ax,terrainHeight(ax,az)-1.1,az);
+  arch.rotation.y=0.35; }
+scene.add(arch);
+
+const buttePlacements=[[-55,-62,1.15],[62,-52,0.9],[-48,60,1.0]];
+for(const [bx,bz,bs] of buttePlacements){
+  const b=buildButte(bs);
+  b.position.set(bx,terrainHeight(bx,bz)-1.2,bz);
+  scene.add(b);
+}
+
+const cactusSpots=scatterMatrices(11,(h,s,d)=>h>1.4&&h<9&&s<0.42&&d>8&&d<30);
+for(const p of cactusSpots){
+  const c=buildSaguaro();
+  c.position.set(p.x,p.h-0.3,p.z);
+  scene.add(c);
+}
+const snagSpots=scatterMatrices(3,(h,s,d)=>h>10&&h<20&&s<0.5&&d>26);
+for(const p of snagSpots){
+  const s=buildSnag(); s.position.set(p.x,p.h-0.1,p.z); scene.add(s);
+}
+const ocotilloSpots=scatterMatrices(6,(h,s,d)=>h>2&&h<12&&s<0.45&&d>9&&d<34);
+for(const p of ocotilloSpots){
+  const o=buildOcotillo(); o.position.set(p.x,p.h-0.1,p.z); scene.add(o);
+}
+const pearSpots=scatterMatrices(7,(h,s,d)=>h>1&&h<8&&s<0.5&&d>7.5&&d<26);
+for(const p of pearSpots){
+  const pp=buildPricklyPear(); pp.position.set(p.x,p.h-0.15,p.z); scene.add(pp);
+}
+const cairn=buildCairn();
+{ const cx=-30, cz=-4;                                   // overlook on the gooseneck mesa
+  cairn.position.set(cx,terrainHeight(cx,cz)-0.2,cz); }
+scene.add(cairn);
+
+scene.add(buildScrub());
+scene.add(buildBoulders());
+
+const raft=buildRaft();
+scene.add(raft);
+
+const hawks=[];
+const thermal=[[0,46,16,0.16,0],[8,54,23,0.13,2.2],[-10,60,29,0.11,4.4]];
+for(const [cx,hy,rad,spd,ph] of thermal){
+  const hk=buildHawk(); hk.scale.setScalar(1.9);
+  scene.add(hk);
+  hawks.push({ grp:hk, cx, cz:0, hy, rad, spd, ph });
+}
+
+const clouds=buildClouds(); scene.add(clouds);
+const dust=buildDust(); scene.add(dust);
+
+/* ================================ lighting rig ================================ */
+const sun=new THREE.DirectionalLight(0xffc27d,2.5);       // warm raking afternoon key
+sun.position.set(-92,58,-38);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left=-115; sun.shadow.camera.right=115;
+sun.shadow.camera.top=115;   sun.shadow.camera.bottom=-115;
+sun.shadow.camera.near=10;   sun.shadow.camera.far=340;
+sun.shadow.bias=-0.0006;     sun.shadow.normalBias=2.2;
+scene.add(sun, sun.target);
+
+const hemi=new THREE.HemisphereLight(0x8fc3e8,0xd19a63,0.55);  // sky/ground fill
+scene.add(hemi);
+const bounce=new THREE.DirectionalLight(0xffd9b0,0.35);        // canyon-wall bounce
+bounce.position.set(70,26,55);
+scene.add(bounce);
+const coolRim=new THREE.DirectionalLight(0xaec6ff,0.18);       // faint east skylight
+coolRim.position.set(40,80,-60);
+scene.add(coolRim);
+
+/* ================================ animation loop ================================ */
+const clock=new THREE.Clock();
+const tangent=new THREE.Vector3();
+function animate(){
+  requestAnimationFrame(animate);
+  const t=clock.getElapsedTime();
+
+  rippleTex.offset.x=t*0.022;                            // jade current shimmer
+  rippleTex.offset.y=t*0.009;
+
+  const rt=(0.32+t*0.012)%1;                             // raft drifting downstream
+  const rp=riverCurve.getPointAt(rt);
+  riverCurve.getTangentAt(rt,tangent);
+  raft.position.set(rp.x,WATER_Y+0.1+Math.sin(t*1.25)*0.06,rp.z);
+  raft.rotation.set(Math.sin(t*0.9)*0.03,Math.atan2(tangent.x,tangent.z),Math.sin(t*1.1)*0.045);
+
+  for(const h of hawks){                                 // hawks circling thermals
+    const a=h.ph+t*h.spd;
+    h.grp.position.set(h.cx+Math.cos(a)*h.rad,h.hy+Math.sin(t*0.3+h.ph)*2.2,h.cz+Math.sin(a)*h.rad);
+    h.grp.rotation.y=-a;                                 // heading along the circle
+    h.grp.rotation.z=0.3;                                // banked into the turn
+    const flap=Math.sin(t*1.7+h.ph)*0.08;
+    h.grp.userData.wings[0].rotation.z= 0.12+flap;
+    h.grp.userData.wings[1].rotation.z=-0.12-flap;
+  }
+
+  for(const d of clouds.userData.drifters){              // slow cloud drift
+    d.spr.position.x=(((d.bx+t*d.sp)+210)%420+420)%420-210;
+  }
+
+  const dp=dust.geometry.attributes.position, base=dust.userData.base;
+  for(let i=0;i<dp.count;i++){                           // warm dust motes rising
+    dp.setY(i,1+((base[i*3+1]+t*0.5)%30));
+    dp.setX(i,base[i*3]+Math.sin(t*0.4+i)*0.8);
+  }
+  dp.needsUpdate=true;
+
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ================================ resize ================================ */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

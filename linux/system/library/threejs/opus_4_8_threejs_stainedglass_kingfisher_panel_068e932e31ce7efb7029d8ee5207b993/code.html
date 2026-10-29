@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Stained-Glass Kingfisher</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0c10; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    color: rgba(220,230,245,0.42); font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    letter-spacing: 0.09em; text-transform: uppercase; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Stained-Glass Kingfisher &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   RENDERER / SCENE / CAMERA
+   ========================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0d12);
+scene.fog = new THREE.FogExp2(0x0b0d12, 0.028);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(2.35, 1.05, 4.05);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.62;
+controls.target.set(0, 0.86, 0);
+controls.minDistance = 1.8;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.94;
+
+/* ============================================================================
+   PALETTE — cobalt, turquoise, burnt orange, milky white, black bead
+   ========================================================================== */
+const GLASS = {
+  cobalt:      0x1a3fb0,
+  cobaltDeep:  0x11256e,
+  azure:       0x2f6fd8,
+  turquoise:   0x18b7c4,
+  turquoiseLt: 0x54e0dc,
+  teal:        0x0e7f92,
+  orange:      0xd9601b,
+  orangeDeep:  0xa53c0d,
+  amber:       0xf0932f,
+  rust:        0x7d2b09,
+  milk:        0xf2ece1,
+  milkCool:    0xdfe6ea,
+  ink:         0x08090c
+};
+const LEAD_COLOR = 0x0c0d11;
+
+/* ============================================================================
+   MATERIALS
+   ========================================================================== */
+const glassCache = new Map();
+function glassMat(hex, opts = {}) {
+  const key = hex + '|' + JSON.stringify(opts);
+  if (glassCache.has(key)) return glassCache.get(key);
+  const c = new THREE.Color(hex);
+  const m = new THREE.MeshPhysicalMaterial({
+    color: c,
+    transparent: true,
+    opacity: opts.opacity !== undefined ? opts.opacity : 0.9,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.24,
+    metalness: 0.0,
+    transmission: opts.transmission !== undefined ? opts.transmission : 0.62,
+    thickness: opts.thickness !== undefined ? opts.thickness : 0.14,
+    ior: 1.52,
+    attenuationColor: c,
+    attenuationDistance: opts.atten !== undefined ? opts.atten : 0.55,
+    clearcoat: 0.85,
+    clearcoatRoughness: 0.16,
+    emissive: c,
+    emissiveIntensity: opts.emissive !== undefined ? opts.emissive : 0.34,
+    side: THREE.DoubleSide,
+    flatShading: true,
+    depthWrite: true
+  });
+  glassCache.set(key, m);
+  return m;
+}
+
+const leadMat = new THREE.MeshStandardMaterial({
+  color: LEAD_COLOR,
+  roughness: 0.55,
+  metalness: 0.42,
+  emissive: 0x000000,
+  flatShading: false
+});
+
+const beadMat = new THREE.MeshPhysicalMaterial({
+  color: 0x05060a,
+  roughness: 0.06,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03,
+  ior: 1.7,
+  reflectivity: 0.9
+});
+
+const highlightMat = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 });
+
+/* ============================================================================
+   HELPERS — building panes and lead came
+   ========================================================================== */
+
+// Vector helpers
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+
+/**
+ * Build a flat-ish polygon pane from an ordered 2D outline in the XY plane,
+ * extruded slightly in Z, then optionally bowed (domed) along Z by a curve.
+ */
+function makePane(points2D, {
+  depth = 0.045,
+  bevel = 0.006,
+  color = GLASS.cobalt,
+  matOpts = {},
+  bow = 0,          // how much the pane domes outward in +Z at its centroid
+  bowAxis = 'radial'
+} = {}) {
+  const shape = new THREE.Shape();
+  shape.moveTo(points2D[0][0], points2D[0][1]);
+  for (let i = 1; i < points2D.length; i++) shape.lineTo(points2D[i][0], points2D[i][1]);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth,
+    bevelEnabled: bevel > 0,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 1,
+    curveSegments: 4,
+    steps: 1
+  });
+  geo.translate(0, 0, -depth * 0.5);
+
+  if (bow !== 0) {
+    // compute planar centroid & max radius for a smooth dome
+    geo.computeBoundingBox();
+    const bb = geo.boundingBox;
+    const cx = (bb.min.x + bb.max.x) * 0.5;
+    const cy = (bb.min.y + bb.max.y) * 0.5;
+    const rx = Math.max(1e-4, (bb.max.x - bb.min.x) * 0.5);
+    const ry = Math.max(1e-4, (bb.max.y - bb.min.y) * 0.5);
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const u = (x - cx) / rx, v = (y - cy) / ry;
+      let d = Math.min(1, Math.sqrt(u * u + v * v));
+      if (bowAxis === 'x') d = Math.min(1, Math.abs(u));
+      const dome = Math.cos(d * Math.PI * 0.5); // 1 at center → 0 at rim
+      pos.setZ(i, z + bow * dome);
+    }
+    pos.needsUpdate = true;
+  }
+  geo.computeVertexNormals();
+  return new THREE.Mesh(geo, glassMat(color, matOpts));
+}
+
+/**
+ * Lead came outline: a tube that follows a closed 2D polygon in XY, sitting at z=0.
+ */
+function makeLeadOutline(points2D, {
+  radius = 0.013,
+  closed = true,
+  z = 0,
+  bow = 0
+} = {}) {
+  const pts = points2D.map(p => {
+    let zz = z;
+    if (bow !== 0) zz = z + bow;
+    return V(p[0], p[1], zz);
+  });
+  const curve = new THREE.CatmullRomCurve3(pts, closed, 'catmullrom', 0.02);
+  const tubular = Math.max(24, Math.min(300, pts.length * 10));
+  const geo = new THREE.TubeGeometry(curve, tubular, radius, 6, closed);
+  const m = new THREE.Mesh(geo, leadMat);
+  m.castShadow = true;
+  return m;
+}
+
+/** Straight lead line between arbitrary 3D points (came ribs). */
+function makeLeadPath(pts3, radius = 0.011, closed = false) {
+  const curve = new THREE.CatmullRomCurve3(pts3, closed, 'catmullrom', 0.05);
+  const geo = new THREE.TubeGeometry(curve, Math.max(20, pts3.length * 12), radius, 6, closed);
+  const m = new THREE.Mesh(geo, leadMat);
+  m.castShadow = true;
+  return m;
+}
+
+/** Convert a 2D outline (array of [x,y]) into a lead outline at given z. */
+function leadFrom2D(points2D, radius, z) {
+  return makeLeadOutline(points2D, { radius: radius, z: z, closed: true });
+}
+
+/** Resample a polygon so tube geometry is smooth and evenly spaced. */
+function densify(points2D, perSeg = 3) {
+  const out = [];
+  const n = points2D.length;
+  for (let i = 0; i < n; i++) {
+    const a = points2D[i], b = points2D[(i + 1) % n];
+    for (let s = 0; s < perSeg; s++) {
+      const t = s / perSeg;
+      out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]);
+    }
+  }
+  return out;
+}
+
+/* ============================================================================
+   THE KINGFISHER  — one group, built from stained-glass panes + lead came
+   Orientation: bird dives head-down-forward; +Y up, body long axis tilted.
+   Local design space: head near y≈+0.55, tail tip near y≈-0.75 (teardrop).
+   ========================================================================== */
+
+const bird = new THREE.Group();
+
+// ---- The ornament "plate": all panes live near z=0 with slight doming ------
+const ornament = new THREE.Group();
+
+const SHELL_D = 0.055;   // pane thickness
+const LEAD_R  = 0.0155;  // main outline lead radius
+const RIB_R   = 0.0105;  // interior lead radius
+
+/* --------------------------------------------------------------------------
+   1. BODY — teardrop silhouette (head at top, tapering to tail point)
+   -------------------------------------------------------------------------- */
+
+// Teardrop master silhouette (used for the crown/back cobalt panes)
+function teardrop(n = 64, w = 0.42, topY = 0.62, botY = -0.86, bulge = 0.30) {
+  // parametric: rounded head at top, sharp point at bottom
+  const pts = [];
+  for (let i = 0; i <= n; i++) {
+    const t = i / n;                       // 0..1 down the right side
+    const y = topY + (botY - topY) * t;
+    // width profile: fat near top-third, tapering to a point
+    const s = Math.sin(Math.pow(t, 0.72) * Math.PI);
+    const width = w * Math.pow(s, 0.85) * (1 - bulge * t * t * 0.25);
+    pts.push([width, y]);
+  }
+  const left = [];
+  for (let i = n; i >= 0; i--) left.push([-pts[i][0], pts[i][1]]);
+  return pts.concat(left.slice(1, left.length - 1));
+}
+
+/* ---- BODY PANES ---------------------------------------------------------- */
+// The body is divided into graphic stained-glass segments:
+//   crown/back  : cobalt + azure
+//   cheek strip : burnt orange
+//   throat      : milky white
+//   breast      : burnt orange / amber
+//   spine flash : turquoise (the kingfisher's electric back stripe)
+
+const bodyPanes = new THREE.Group();
+
+// -- crown (top of head) --
+const crown = [
+  [0.00, 0.655], [0.13, 0.625], [0.225, 0.545], [0.265, 0.44],
+  [0.20, 0.40], [0.09, 0.375], [-0.04, 0.375], [-0.155, 0.405],
+  [-0.235, 0.455], [-0.225, 0.555], [-0.135, 0.63]
+];
+const crownMesh = makePane(crown, { depth: SHELL_D, color: GLASS.cobaltDeep, bow: 0.075, matOpts: { emissive: 0.30, opacity: 0.94 } });
+bodyPanes.add(crownMesh);
+
+// -- crown accent (turquoise speckle band across the cap) --
+const crownAccent = [
+  [-0.20, 0.455], [-0.07, 0.415], [0.075, 0.415], [0.20, 0.452],
+  [0.175, 0.505], [0.03, 0.478], [-0.10, 0.482], [-0.185, 0.505]
+];
+bodyPanes.add(makePane(crownAccent, { depth: SHELL_D * 1.06, color: GLASS.turquoiseLt, bow: 0.082, matOpts: { emissive: 0.55, opacity: 0.9 } }));
+
+// -- upper back / mantle (cobalt) --
+const mantle = [
+  [-0.235, 0.455], [-0.155, 0.405], [-0.04, 0.375], [0.09, 0.375], [0.20, 0.40], [0.265, 0.44],
+  [0.30, 0.30], [0.30, 0.13], [0.255, -0.02],
+  [0.05, -0.05], [-0.15, -0.03], [-0.30, 0.05], [-0.325, 0.22], [-0.30, 0.37]
+];
+bodyPanes.add(makePane(mantle, { depth: SHELL_D, color: GLASS.cobalt, bow: 0.095, matOpts: { emissive: 0.30, opacity: 0.93 } }));
+
+// -- electric turquoise spine stripe (the kingfisher signature) --
+const spine = [
+  [-0.055, 0.375], [0.055, 0.378], [0.075, 0.16], [0.07, -0.05],
+  [0.035, -0.30], [0.00, -0.50], [-0.03, -0.30], [-0.06, -0.05], [-0.07, 0.16]
+];
+bodyPanes.add(makePane(spine, { depth: SHELL_D * 1.12, color: GLASS.turquoise, bow: 0.115, matOpts: { emissive: 0.62, opacity: 0.88, transmission: 0.7 } }));
+
+// -- flank left (azure) --
+const flankL = [
+  [-0.30, 0.05], [-0.15, -0.03], [0.05, -0.05], [0.255, -0.02],
+  [0.215, -0.22], [0.13, -0.42], [0.02, -0.60],
+  [-0.09, -0.44], [-0.20, -0.24], [-0.28, -0.07]
+];
+bodyPanes.add(makePane(flankL, { depth: SHELL_D, color: GLASS.azure, bow: 0.085, matOpts: { emissive: 0.32, opacity: 0.92 } }));
+
+// -- lower body → tail taper (deep cobalt) --
+const lowerBody = [
+  [0.215, -0.22], [0.13, -0.42], [0.02, -0.60], [-0.09, -0.44], [-0.20, -0.24],
+  [-0.13, -0.40], [-0.06, -0.62], [-0.015, -0.80], [0.03, -0.62], [0.10, -0.40]
+];
+bodyPanes.add(makePane(lowerBody, { depth: SHELL_D * 0.9, color: GLASS.cobaltDeep, bow: 0.06, matOpts: { emissive: 0.26, opacity: 0.95 } }));
+
+/* ---- FACE PANES (front-facing, slightly proud in +Z) --------------------- */
+
+// -- burnt-orange cheek / ear covert patch (left) --
+const cheekL = [
+  [-0.245, 0.50], [-0.145, 0.415], [-0.045, 0.375], [-0.05, 0.29],
+  [-0.13, 0.245], [-0.235, 0.265], [-0.30, 0.345], [-0.30, 0.44]
+];
+bodyPanes.add(makePane(cheekL, { depth: SHELL_D * 1.04, color: GLASS.orange, bow: 0.088, matOpts: { emissive: 0.50, opacity: 0.9 } }));
+
+// -- burnt-orange cheek / ear covert patch (right) --
+const cheekR = cheekL.map(p => [-p[0], p[1]]).reverse();
+bodyPanes.add(makePane(cheekR, { depth: SHELL_D * 1.04, color: GLASS.orangeDeep, bow: 0.088, matOpts: { emissive: 0.46, opacity: 0.9 } }));
+
+// -- MILKY WHITE THROAT PATCH (the hero white pane) --
+const throat = [
+  [0.00, 0.335], [0.115, 0.30], [0.175, 0.20], [0.155, 0.075],
+  [0.075, -0.02], [-0.045, -0.045], [-0.155, 0.02], [-0.195, 0.145],
+  [-0.155, 0.265], [-0.075, 0.33]
+];
+bodyPanes.add(makePane(throat, {
+  depth: SHELL_D * 1.16, color: GLASS.milk, bow: 0.125,
+  matOpts: { emissive: 0.58, opacity: 0.95, transmission: 0.5, roughness: 0.42, atten: 0.9 }
+}));
+
+// -- small cool-white collar spur beside throat --
+const collar = [
+  [-0.195, 0.145], [-0.155, 0.02], [-0.045, -0.045], [-0.09, -0.145],
+  [-0.20, -0.13], [-0.265, -0.02], [-0.26, 0.09]
+];
+bodyPanes.add(makePane(collar, { depth: SHELL_D, color: GLASS.milkCool, bow: 0.07, matOpts: { emissive: 0.42, opacity: 0.92, roughness: 0.4 } }));
+
+// -- burnt-orange breast pane (right of throat) --
+const breast = [
+  [0.175, 0.20], [0.155, 0.075], [0.075, -0.02], [0.09, -0.16],
+  [0.20, -0.20], [0.27, -0.09], [0.265, 0.06], [0.24, 0.17]
+];
+bodyPanes.add(makePane(breast, { depth: SHELL_D, color: GLASS.amber, bow: 0.075, matOpts: { emissive: 0.52, opacity: 0.9 } }));
+
+// -- lower belly wedge (rust) --
+const belly = [
+  [-0.09, -0.145], [0.09, -0.16], [0.20, -0.20], [0.13, -0.35],
+  [0.00, -0.45], [-0.13, -0.34], [-0.20, -0.20]
+];
+bodyPanes.add(makePane(belly, { depth: SHELL_D, color: GLASS.rust, bow: 0.06, matOpts: { emissive: 0.38, opacity: 0.93 } }));
+
+ornament.add(bodyPanes);
+
+/* ---- BODY LEAD CAME ------------------------------------------------------ */
+const bodyLead = new THREE.Group();
+const leadZFront = SHELL_D * 0.52;
+const leadZBack = -SHELL_D * 0.52;
+
+// outline lead around each face pane (front side, so lines read graphically)
+[
+  { p: crown,       r: LEAD_R,  z: 0.088 },
+  { p: crownAccent, r: RIB_R,   z: 0.098 },
+  { p: mantle,      r: LEAD_R,  z: 0.100 },
+  { p: spine,       r: RIB_R,   z: 0.122 },
+  { p: flankL,      r: LEAD_R,  z: 0.092 },
+  { p: lowerBody,   r: RIB_R,   z: 0.070 },
+  { p: cheekL,      r: RIB_R,   z: 0.098 },
+  { p: cheekR,      r: RIB_R,   z: 0.098 },
+  { p: throat,      r: LEAD_R,  z: 0.132 },
+  { p: collar,      r: RIB_R,   z: 0.082 },
+  { p: breast,      r: RIB_R,   z: 0.086 },
+  { p: belly,       r: RIB_R,   z: 0.070 }
+].forEach(o => {
+  const dense = densify(o.p, 2);
+  bodyLead.add(leadFrom2D(dense, o.r, o.z));
+  bodyLead.add(leadFrom2D(dense, o.r * 0.82, -o.z * 0.55));
+});
+
+// Master silhouette lead — the strong graphic border of the whole teardrop
+const silhouette = teardrop(52, 0.325, 0.665, -0.845, 0.28);
+bodyLead.add(makeLeadOutline(silhouette, { radius: LEAD_R * 1.35, z: 0.0, closed: true }));
+
+ornament.add(bodyLead);
+
+/* ---- BODY VOLUME: a soft dark shell behind the panes so the bird reads 3D -- */
+{
+  const shellShape = new THREE.Shape();
+  shellShape.moveTo(silhouette[0][0], silhouette[0][1]);
+  for (let i = 1; i < silhouette.length; i++) shellShape.lineTo(silhouette[i][0], silhouette[i][1]);
+  shellShape.closePath();
+  const shellGeo = new THREE.ExtrudeGeometry(shellShape, {
+    depth: 0.10, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.022, bevelSegments: 3, steps: 1, curveSegments: 4
+  });
+  shellGeo.translate(0, 0, -0.05);
+  // dome it into a lens so the bird has real body
+  {
+    const pos = shellGeo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const u = x / 0.34, v = (y + 0.09) / 0.78;
+      const d = Math.min(1, Math.sqrt(u * u + v * v));
+      const dome = Math.cos(d * Math.PI * 0.5);
+      pos.setZ(i, z + Math.sign(z || 1) * 0.0 + (z > 0 ? dome * 0.055 : -dome * 0.055));
+    }
+    pos.needsUpdate = true;
+    shellGeo.computeVertexNormals();
+  }
+  const shell = new THREE.Mesh(shellGeo, new THREE.MeshStandardMaterial({
+    color: 0x0a0d14, roughness: 0.62, metalness: 0.35, side: THREE.DoubleSide
+  }));
+  shell.castShadow = true;
+  shell.receiveShadow = true;
+  shell.scale.set(0.985, 0.99, 1);
+  ornament.add(shell);
+}
+
+/* --------------------------------------------------------------------------
+   2. BEAK — long dagger bill, dark lead-edged with amber glass core
+   -------------------------------------------------------------------------- */
+const beak = new THREE.Group();
+{
+  // upper mandible: tapered wedge
+  const upper = new THREE.Mesh(
+    new THREE.ConeGeometry(0.052, 0.60, 4, 1),
+    glassMat(GLASS.ink, { emissive: 0.05, opacity: 1.0, transmission: 0.0, roughness: 0.35 })
+  );
+  upper.geometry.translate(0, -0.30, 0);
+  upper.rotation.z = Math.PI;     // point upward/forward
+  upper.rotation.y = Math.PI / 4;
+  upper.scale.set(1.0, 1.0, 0.62);
+  upper.castShadow = true;
+  beak.add(upper);
+
+  // amber glass inlay along the bill so it glows when backlit
+  const inlay = new THREE.Mesh(
+    new THREE.ConeGeometry(0.030, 0.50, 4, 1),
+    glassMat(GLASS.amber, { emissive: 0.7, opacity: 0.9, transmission: 0.75, thickness: 0.2 })
+  );
+  inlay.geometry.translate(0, -0.25, 0);
+  inlay.rotation.z = Math.PI;
+  inlay.rotation.y = Math.PI / 4;
+  inlay.scale.set(1.0, 1.0, 0.5);
+  inlay.position.z = 0.028;
+  beak.add(inlay);
+
+  // came ridge along the top of the bill
+  const ridge = makeLeadPath([V(0, 0.02, 0.03), V(0, 0.20, 0.028), V(0, 0.40, 0.02), V(0, 0.575, 0.008)], 0.010);
+  beak.add(ridge);
+
+  // base collar of lead where bill meets face
+  const collarTorus = new THREE.Mesh(new THREE.TorusGeometry(0.058, 0.013, 6, 20), leadMat);
+  collarTorus.rotation.x = Math.PI / 2;
+  collarTorus.scale.set(1, 0.62, 1);
+  collarTorus.position.y = 0.015;
+  collarTorus.castShadow = true;
+  beak.add(collarTorus);
+
+  beak.position.set(0, 0.44, 0.055);
+  beak.rotation.x = 0.30;
+  beak.rotation.z = 0.0;
+}
+ornament.add(beak);
+
+/* --------------------------------------------------------------------------
+   3. EYE — single black glass bead in a lead bezel (both sides for symmetry;
+      the "single black glass eye bead" is the hero on the near cheek)
+   -------------------------------------------------------------------------- */
+function makeEye(side) {
+  const g = new THREE.Group();
+
+  const bezel = new THREE.Mesh(new THREE.TorusGeometry(0.052, 0.0135, 8, 24), leadMat);
+  bezel.castShadow = true;
+  g.add(bezel);
+
+  const bead = new THREE.Mesh(new THREE.SphereGeometry(0.046, 32, 24), beadMat);
+  bead.position.z = 0.012;
+  bead.scale.set(1, 1, 0.82);
+  bead.castShadow = true;
+  g.add(bead);
+
+  // tiny specular fleck so the bead reads as glass
+  const fleck = new THREE.Mesh(new THREE.SphereGeometry(0.0095, 10, 8), highlightMat);
+  fleck.position.set(-0.016 * side, 0.017, 0.049);
+  g.add(fleck);
+
+  // amber iris ring peeking behind the bead when backlit
+  const iris = new THREE.Mesh(
+    new THREE.RingGeometry(0.030, 0.049, 26),
+    glassMat(GLASS.amber, { emissive: 0.9, opacity: 0.85, transmission: 0.8 })
+  );
+  iris.position.z = -0.006;
+  g.add(iris);
+
+  return g;
+}
+{
+  const eyeL = makeEye(1);
+  eyeL.position.set(-0.175, 0.42, 0.145);
+  eyeL.rotation.y = -0.45;
+  eyeL.rotation.x = 0.05;
+  ornament.add(eyeL);
+
+  const eyeR = makeEye(-1);
+  eyeR.position.set(0.175, 0.42, 0.145);
+  eyeR.rotation.y = 0.45;
+  eyeR.rotation.x = 0.05;
+  ornament.add(eyeR);
+}
+
+/* --------------------------------------------------------------------------
+   4. WINGS — swept back tight against the body, completing the teardrop.
+      Each wing is a fan of leaded glass feather panes.
+   -------------------------------------------------------------------------- */
+function buildWing(side) {
+  const wing = new THREE.Group();
+
+  // feather definition: [rootX, rootY, tipX, tipY, width, color, glow]
+  const feathers = [
+    { r: [0.02, 0.30], t: [0.30, -0.70], w: 0.075, c: GLASS.turquoise,  g: 0.60, d: 1.00 },
+    { r: [0.05, 0.24], t: [0.40, -0.58], w: 0.082, c: GLASS.cobalt,     g: 0.34, d: 0.94 },
+    { r: [0.07, 0.16], t: [0.47, -0.42], w: 0.086, c: GLASS.azure,      g: 0.38, d: 0.88 },
+    { r: [0.08, 0.06], t: [0.50, -0.24], w: 0.084, c: GLASS.cobaltDeep, g: 0.30, d: 0.82 },
+    { r: [0.08, -0.04], t: [0.485, -0.06], w: 0.078, c: GLASS.teal,     g: 0.44, d: 0.76 },
+    { r: [0.07, -0.14], t: [0.43, 0.09], w: 0.070, c: GLASS.turquoiseLt, g: 0.55, d: 0.70 }
+  ];
+
+  feathers.forEach((f, i) => {
+    const rx = f.r[0], ry = f.r[1], tx = f.t[0], ty = f.t[1];
+    // local axis
+    const dx = tx - rx, dy = ty - ry;
+    const len = Math.hypot(dx, dy);
+    const nx = -dy / len, ny = dx / len;   // normal to the feather axis
+    const w = f.w;
+
+    // leaf-shaped quad-ish outline (root narrow → mid wide → tip point)
+    const p = (t, off) => [rx + dx * t + nx * off, ry + dy * t + ny * off];
+    const outline = [
+      p(0.0, w * 0.24),
+      p(0.22, w * 0.85),
+      p(0.52, w * 1.0),
+      p(0.80, w * 0.72),
+      p(1.0, 0.0),
+      p(0.80, -w * 0.72),
+      p(0.52, -w * 1.0),
+      p(0.22, -w * 0.85),
+      p(0.0, -w * 0.24)
+    ];
+
+    const zBase = 0.012 * (i + 1);
+    const pane = makePane(outline, {
+      depth: 0.032,
+      bevel: 0.004,
+      color: f.c,
+      bow: 0.045,
+      matOpts: { emissive: f.g, opacity: 0.9, transmission: 0.72, thickness: 0.1 }
+    });
+    pane.position.z = zBase;
+    wing.add(pane);
+
+    // lead came around the feather
+    const dense = densify(outline, 2);
+    const lead = leadFrom2D(dense, 0.0092, zBase + 0.019);
+    wing.add(lead);
+    const leadBack = leadFrom2D(dense, 0.0078, zBase - 0.019);
+    wing.add(leadBack);
+
+    // central rachis lead line
+    wing.add(makeLeadPath([
+      V(rx, ry, zBase + 0.024),
+      V(rx + dx * 0.45, ry + dy * 0.45, zBase + 0.03),
+      V(tx, ty, zBase + 0.02)
+    ], 0.0062));
+  });
+
+  // shoulder covert cluster — 3 small panes that hide the feather roots
+  const coverts = [
+    { o: [[-0.02, 0.34], [0.13, 0.30], [0.155, 0.16], [0.02, 0.16], [-0.06, 0.24]], c: GLASS.cobaltDeep, g: 0.30 },
+    { o: [[0.02, 0.16], [0.155, 0.16], [0.16, 0.02], [0.03, 0.00], [-0.03, 0.07]], c: GLASS.turquoise, g: 0.55 },
+    { o: [[0.03, 0.00], [0.16, 0.02], [0.135, -0.14], [0.02, -0.15], [-0.01, -0.07]], c: GLASS.orange, g: 0.48 }
+  ];
+  coverts.forEach((cv, i) => {
+    const m = makePane(cv.o, {
+      depth: 0.036, color: cv.c, bow: 0.05,
+      matOpts: { emissive: cv.g, opacity: 0.92, transmission: 0.66 }
+    });
+    m.position.z = 0.095 + i * 0.004;
+    wing.add(m);
+    const dense = densify(cv.o, 2);
+    wing.add(leadFrom2D(dense, 0.0098, 0.115 + i * 0.004));
+  });
+
+  // wing outline lead: strong sweep line from shoulder to primary tips
+  wing.add(makeLeadPath([
+    V(-0.03, 0.34, 0.12),
+    V(0.12, 0.31, 0.11),
+    V(0.24, 0.20, 0.10),
+    V(0.36, 0.04, 0.085),
+    V(0.45, -0.18, 0.07),
+    V(0.44, -0.44, 0.055),
+    V(0.33, -0.68, 0.045)
+  ], 0.0125));
+
+  // orient: swept back along the body, splayed slightly
+  wing.scale.x = side;
+  wing.position.set(side * 0.12, 0.06, -0.03);
+  wing.rotation.y = side * 0.62;
+  wing.rotation.z = side * -0.10;
+  wing.rotation.x = -0.06;
+  return wing;
+}
+
+const wingL = buildWing(1);
+const wingR = buildWing(-1);
+ornament.add(wingL, wingR);
+
+/* --------------------------------------------------------------------------
+   5. TAIL — short stubby fan at the trailing point of the teardrop
+   -------------------------------------------------------------------------- */
+{
+  const tail = new THREE.Group();
+  const nT = 5;
+  for (let i = 0; i < nT; i++) {
+    const t = (i / (nT - 1)) * 2 - 1;             // -1..1
+    const ang = t * 0.34;
+    const len = 0.30 - Math.abs(t) * 0.07;
+    const w = 0.042;
+    const outline = [
+      [-w * 0.5, 0], [w * 0.5, 0],
+      [w * 0.62, -len * 0.55], [w * 0.34, -len],
+      [-w * 0.34, -len], [-w * 0.62, -len * 0.55]
+    ];
+    const col = (i % 2 === 0) ? GLASS.cobaltDeep : GLASS.teal;
+    const pane = makePane(outline, {
+      depth: 0.028, color: col, bow: 0.03,
+      matOpts: { emissive: 0.34, opacity: 0.92, transmission: 0.7 }
+    });
+    const g = new THREE.Group();
+    g.add(pane);
+    const dense = densify(outline, 2);
+    g.add(leadFrom2D(dense, 0.0088, 0.017));
+    g.add(leadFrom2D(dense, 0.0075, -0.017));
+    g.rotation.z = ang;
+    g.position.z = -0.012 * Math.abs(t);
+    tail.add(g);
+  }
+  tail.position.set(0, -0.775, 0.0);
+  ornament.add(tail);
+}
+
+/* --------------------------------------------------------------------------
+   6. FEET — tiny folded lead legs tucked under the belly (dive posture)
+   -------------------------------------------------------------------------- */
+{
+  const feet = new THREE.Group();
+  for (const s of [-1, 1]) {
+    const leg = makeLeadPath([
+      V(s * 0.055, -0.35, 0.085),
+      V(s * 0.085, -0.44, 0.10),
+      V(s * 0.060, -0.51, 0.085),
+      V(s * 0.020, -0.545, 0.065)
+    ], 0.0095);
+    feet.add(leg);
+    for (let k = 0; k < 3; k++) {
+      const a = -0.30 + k * 0.30;
+      const toe = makeLeadPath([
+        V(s * 0.020, -0.545, 0.065),
+        V(s * (0.020 + 0.030 * Math.cos(a)), -0.575 - 0.018 * k, 0.070 + 0.020 * Math.sin(a)),
+        V(s * (0.020 + 0.052 * Math.cos(a)), -0.600 - 0.020 * k, 0.062 + 0.032 * Math.sin(a))
+      ], 0.0062);
+      feet.add(toe);
+    }
+  }
+  ornament.add(feet);
+}
+
+/* --------------------------------------------------------------------------
+   7. BACKING HALO — a faint cool pane behind the bird that catches the
+      backlight and makes the colored glass glow (still one object: child).
+   -------------------------------------------------------------------------- */
+{
+  const halo = new THREE.Mesh(
+    new THREE.CircleGeometry(0.70, 64),
+    new THREE.MeshBasicMaterial({
+      color: 0x2b6bd8, transparent: true, opacity: 0.10,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  halo.position.set(0, -0.06, -0.32);
+  ornament.add(halo);
+
+  const halo2 = new THREE.Mesh(
+    new THREE.CircleGeometry(0.40, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0x7fe3e0, transparent: true, opacity: 0.10,
+      side: THREE.DoubleSide, blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  halo2.position.set(0, 0.10, -0.30);
+  ornament.add(halo2);
+}
+
+/* --------------------------------------------------------------------------
+   8. HANGING RING — the ornament's lead loop at the crown
+   -------------------------------------------------------------------------- */
+{
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.055, 0.0125, 8, 28), leadMat);
+  ring.position.set(0, 0.735, 0.0);
+  ring.castShadow = true;
+  ornament.add(ring);
+
+  const stub = new THREE.Mesh(new THREE.CylinderGeometry(0.014, 0.018, 0.06, 10), leadMat);
+  stub.position.set(0, 0.678, 0);
+  stub.castShadow = true;
+  ornament.add(stub);
+}
+
+/* -------------------------------------------------------------------------- */
+bird.add(ornament);
+
+// Dive attitude: tipped head-down and rotated for a dynamic reading
+bird.rotation.z = 0.20;
+bird.rotation.x = -0.16;
+bird.position.set(0, 0.92, 0);
+bird.scale.setScalar(1.15);
+
+// shadow flags for all meshes
+bird.traverse(o => {
+  if (o.isMesh) {
+    o.castShadow = true;
+    if (o.material && o.material.transparent && o.material.transmission > 0) {
+      o.receiveShadow = false;
+    } else {
+      o.receiveShadow = true;
+    }
+  }
+});
+
+scene.add(bird);
+
+/* ============================================================================
+   GROUND — shadow-only plane
+   ========================================================================== */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// faint reflective disc so the object doesn't float in a void
+const disc = new THREE.Mesh(
+  new THREE.CircleGeometry(3.2, 64),
+  new THREE.MeshStandardMaterial({ color: 0x11151d, roughness: 0.72, metalness: 0.22 })
+);
+disc.rotation.x = -Math.PI / 2;
+disc.position.y = -0.002;
+disc.receiveShadow = true;
+scene.add(disc);
+
+/* ============================================================================
+   LIGHTING — backlight is the star; key + fill + rim
+   ========================================================================== */
+const hemi = new THREE.HemisphereLight(0x9fd8ff, 0x14181f, 0.42);
+scene.add(hemi);
+
+scene.add(new THREE.AmbientLight(0x334055, 0.30));
+
+// KEY (front-left, casts the soft shadow)
+const key = new THREE.DirectionalLight(0xfff2e0, 2.0);
+key.position.set(3.2, 4.4, 3.6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 20;
+key.shadow.camera.left = -3;
+key.shadow.camera.right = 3;
+key.shadow.camera.top = 3;
+key.shadow.camera.bottom = -3;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.018;
+key.shadow.radius = 3.5;
+scene.add(key);
+
+// FILL (cool, from camera-right low)
+const fill = new THREE.DirectionalLight(0x88b6ff, 0.55);
+fill.position.set(-3.6, 1.4, 2.2);
+scene.add(fill);
+
+// BACKLIGHT — the cathedral window behind the glass
+const backlight = new THREE.SpotLight(0xdfe9ff, 90, 14, Math.PI * 0.34, 0.6, 1.6);
+backlight.position.set(0, 1.55, -3.4);
+backlight.target.position.set(0, 0.95, 0);
+scene.add(backlight);
+scene.add(backlight.target);
+
+// warm rim from behind-below to separate the silhouette
+const rim = new THREE.SpotLight(0xffb46a, 42, 12, Math.PI * 0.4, 0.75, 1.7);
+rim.position.set(-2.2, 0.35, -2.6);
+rim.target.position.set(0, 0.9, 0);
+scene.add(rim);
+scene.add(rim.target);
+
+// a cool point light tucked right behind the ornament to bloom the panes
+const glow = new THREE.PointLight(0x6fd8ff, 3.2, 4.2, 2.0);
+glow.position.set(0, 1.0, -0.55);
+scene.add(glow);
+
+// visible "window" panel behind the bird providing the backlight source look
+{
+  const win = new THREE.Mesh(
+    new THREE.PlaneGeometry(3.0, 3.0, 1, 1),
+    new THREE.MeshBasicMaterial({ color: 0x1b2f52, transparent: true, opacity: 0.5 })
+  );
+  win.position.set(0, 1.4, -3.5);
+  scene.add(win);
+
+  const winGlow = new THREE.Mesh(
+    new THREE.CircleGeometry(1.25, 64),
+    new THREE.MeshBasicMaterial({
+      color: 0xbcd8ff, transparent: true, opacity: 0.30,
+      blending: THREE.AdditiveBlending, depthWrite: false
+    })
+  );
+  winGlow.position.set(0, 1.25, -3.42);
+  scene.add(winGlow);
+}
+
+/* ============================================================================
+   ANIMATE
+   ========================================================================== */
+let t0 = performance.now();
+function animate() {
+  requestAnimationFrame(animate);
+  const now = performance.now();
+  const t = (now - t0) * 0.001;
+
+  // gentle pendulum sway, as if the ornament hangs from its lead ring
+  ornament.rotation.z = Math.sin(t * 0.6) * 0.035;
+  ornament.rotation.x = Math.sin(t * 0.43 + 1.1) * 0.022;
+  bird.position.y = 0.92 + Math.sin(t * 0.75) * 0.018;
+
+  // backlight breathes slightly so the glass shimmers
+  backlight.intensity = 90 + Math.sin(t * 0.9) * 12;
+  glow.intensity = 3.2 + Math.sin(t * 1.3 + 0.6) * 0.55;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,708 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Claymation Pancake Stack</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17171c; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1b21);
+scene.fog = new THREE.Fog(0x1b1b21, 24, 60);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(6.2, 4.6, 7.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 1.55, 0);
+controls.minDistance = 4.5;
+controls.maxDistance = 22;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Deterministic pseudo-random + value noise helpers
+ * ------------------------------------------------------------------ */
+function makeRng(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5;  s >>>= 0;
+    return s / 4294967296;
+  };
+}
+const rng = makeRng(20260720);
+
+// simple 3D value noise (hash-lattice + smoothstep) — used for clay lumpiness
+function hash3(x, y, z) {
+  let h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453123;
+  return h - Math.floor(h);
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function noise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = smooth(xf), v = smooth(yf), w = smooth(zf);
+  function c(dx, dy, dz) { return hash3(xi + dx, yi + dy, zi + dz); }
+  const x00 = c(0,0,0) * (1-u) + c(1,0,0) * u;
+  const x10 = c(0,1,0) * (1-u) + c(1,1,0) * u;
+  const x01 = c(0,0,1) * (1-u) + c(1,0,1) * u;
+  const x11 = c(0,1,1) * (1-u) + c(1,1,1) * u;
+  const y0 = x00 * (1-v) + x10 * v;
+  const y1 = x01 * (1-v) + x11 * v;
+  return (y0 * (1-w) + y1 * w) * 2 - 1; // [-1,1]
+}
+function fbm(x, y, z, oct = 3) {
+  let a = 1, f = 1, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += noise3(x * f, y * f, z * f) * a;
+    norm += a;
+    a *= 0.5; f *= 2.03;
+  }
+  return sum / norm;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Materials — matte plasticine clay + glossy syrup
+ * ------------------------------------------------------------------ */
+function clayMat(color, opts = {}) {
+  return new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(color),
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.82,
+    metalness: 0.0,
+    clearcoat: opts.clearcoat !== undefined ? opts.clearcoat : 0.16,
+    clearcoatRoughness: 0.62,
+    sheen: 0.35,
+    sheenRoughness: 0.9,
+    sheenColor: new THREE.Color(0xffd9a8),
+    flatShading: !!opts.flat
+  });
+}
+
+const matPancakeTop    = clayMat(0xc8813c, { roughness: 0.78 });
+const matPancakeSide   = clayMat(0xe0b070, { roughness: 0.86 });
+const matPancakeBottom = clayMat(0xb06a2c, { roughness: 0.8 });
+const matToastPatch    = clayMat(0x9c5a24, { roughness: 0.74 });
+
+const matSyrup = new THREE.MeshPhysicalMaterial({
+  color: 0x8a3f0b,
+  roughness: 0.09,
+  metalness: 0.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  transmission: 0.35,
+  thickness: 0.9,
+  ior: 1.47,
+  attenuationColor: new THREE.Color(0x6d2c05),
+  attenuationDistance: 0.8,
+  specularIntensity: 1.0
+});
+
+const matButter = new THREE.MeshPhysicalMaterial({
+  color: 0xf6e08a,
+  roughness: 0.35,
+  metalness: 0.0,
+  clearcoat: 0.55,
+  clearcoatRoughness: 0.25,
+  sheen: 0.4,
+  sheenColor: new THREE.Color(0xfff3c0)
+});
+
+const matPlate = clayMat(0xdedad2, { roughness: 0.9, clearcoat: 0.1 });
+
+/* ------------------------------------------------------------------ *
+ *  Root group — the ONE object
+ * ------------------------------------------------------------------ */
+const stack = new THREE.Group();
+scene.add(stack);
+
+/* ------------------------------------------------------------------ *
+ *  Pancake builder
+ *  Lathe-ish revolved profile displaced by noise -> hand-molded blob,
+ *  then thumbprint dimples pressed into the top surface.
+ * ------------------------------------------------------------------ */
+function makeThumbprints(count, radius, seed) {
+  const r = makeRng(seed);
+  const prints = [];
+  for (let i = 0; i < count; i++) {
+    const a = r() * Math.PI * 2;
+    const d = radius * (0.18 + 0.78 * Math.sqrt(r()));
+    prints.push({
+      x: Math.cos(a) * d,
+      z: Math.sin(a) * d,
+      r: radius * (0.11 + r() * 0.13),
+      depth: 0.022 + r() * 0.05,
+      // slightly elliptical, rotated — like a real finger press
+      ang: r() * Math.PI,
+      ecc: 0.55 + r() * 0.5
+    });
+  }
+  return prints;
+}
+
+function pancakeProfile(t, height, radius, edgeWave) {
+  // t in [0,1] from bottom rim path to top center: build a rounded-edge disc
+  // returns [radialFactor, yFactor]
+  return null; // (unused placeholder — profile handled inline below)
+}
+
+/**
+ * Builds one pancake as a displaced "capsule disc":
+ * a sphere squashed vertically, radius-graded so the sides bulge,
+ * plus noise, plus finger dimples on top.
+ */
+function buildPancake(opts) {
+  const {
+    radius = 1.6,
+    height = 0.46,
+    wobble = 0.055,
+    seed = 1,
+    printCount = 14,
+    detail = 168
+  } = opts;
+
+  const geo = new THREE.SphereGeometry(1, detail, Math.floor(detail * 0.55));
+  const pos = geo.attributes.position;
+  const prints = makeThumbprints(printCount, radius, seed * 977 + 13);
+  const r = makeRng(seed * 7919 + 101);
+
+  // per-pancake low-frequency rim distortion (uneven, hand-pinched outline)
+  const rimA = 0.5 + r(), rimB = 0.5 + r(), rimPh1 = r() * 6.28, rimPh2 = r() * 6.28;
+  const lean = (r() - 0.5) * 0.14;
+
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+
+    // squash sphere into a thick disc with soft, slightly bulging edge
+    const yUnit = v.y;                       // -1..1
+    const horiz = Math.hypot(v.x, v.z) + 1e-6;
+    // radial profile: keep near-full radius until close to poles => flat top/bottom
+    const flat = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(yUnit), 3.1)), 0.34);
+    const nx = (v.x / horiz), nz = (v.z / horiz);
+    const theta = Math.atan2(nz, nx);
+
+    // uneven outline
+    const rimWobble =
+      Math.sin(theta * 3 + rimPh1) * 0.035 * rimA +
+      Math.sin(theta * 5 - rimPh2) * 0.022 * rimB +
+      Math.sin(theta * 2 + rimPh2 * 1.7) * 0.030;
+
+    let R = radius * flat * (1 + rimWobble);
+    let Y = yUnit * height * 0.5;
+
+    // gravity slump: bottom slightly wider, top slightly narrower
+    R *= 1 + (-yUnit) * 0.045;
+
+    let px = nx * R;
+    let pz = nz * R;
+    let py = Y;
+
+    // soft clay lumpiness (fbm), stronger on the sides
+    const sideness = Math.pow(1 - Math.abs(yUnit), 1.5);
+    const n = fbm(px * 1.5 + seed * 10, py * 3.2, pz * 1.5, 3);
+    const bump = n * wobble * (0.45 + sideness);
+    px += nx * bump;
+    pz += nz * bump;
+    py += n * wobble * 0.35 * (1 - sideness);
+
+    // extra fine grain everywhere — plasticine texture
+    const grain = fbm(px * 9.0 - seed * 4, py * 9.0, pz * 9.0, 2) * 0.008;
+    px += nx * grain; pz += nz * grain; py += grain * 0.6;
+
+    // thumbprint dimples pressed into the top face
+    if (yUnit > 0.05) {
+      const topMask = smooth(Math.min(1, (yUnit - 0.05) / 0.55));
+      for (let k = 0; k < prints.length; k++) {
+        const p = prints[k];
+        let dx = px - p.x, dz = pz - p.z;
+        // rotate into the print's ellipse frame
+        const ca = Math.cos(p.ang), sa = Math.sin(p.ang);
+        const ex = (dx * ca + dz * sa) / p.ecc;
+        const ez = (-dx * sa + dz * ca);
+        const dist = Math.hypot(ex, ez);
+        if (dist < p.r) {
+          const f = Math.cos((dist / p.r) * Math.PI * 0.5);
+          const press = Math.pow(f, 1.6) * p.depth * topMask;
+          py -= press;
+          // little raised lip around the press, like squeezed clay
+          px += (dx / (dist + 1e-4)) * press * 0.12;
+          pz += (dz / (dist + 1e-4)) * press * 0.12;
+        }
+      }
+    }
+    // a couple of dimples underneath too
+    if (yUnit < -0.35) {
+      const b = fbm(px * 2.6 + 40, 5.0, pz * 2.6 + 40, 2);
+      py += b * 0.02;
+    }
+
+    // slight overall lean/skew so the stack is charmingly off-kilter
+    px += lean * (py / Math.max(height, 0.001)) * 0.5;
+
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+
+  // vertex colors: browned top/bottom, pale batter sides, random toasty patches
+  const colTop = new THREE.Color(0xc07835);
+  const colDeep = new THREE.Color(0x9d5b22);
+  const colSide = new THREE.Color(0xe6b978);
+  const colBase = new THREE.Color(0xb26c2c);
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  const bb = geo.boundingBox;
+  const yMin = bb.min.y, yMax = bb.max.y;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const t = (v.y - yMin) / Math.max(1e-6, (yMax - yMin)); // 0 bottom, 1 top
+    // side band mask
+    const sideBand = Math.exp(-Math.pow((t - 0.5) / 0.24, 2));
+    c.copy(colTop).lerp(colBase, 1 - smooth(Math.min(1, t * 1.15)));
+    c.lerp(colSide, sideBand * 0.85);
+    // toasted blotches driven by noise
+    const blot = fbm(v.x * 2.2 + seed * 3, v.y * 1.2, v.z * 2.2 - seed, 3);
+    const toast = smooth(Math.min(1, Math.max(0, (blot + 0.12) * 1.7))) * (t > 0.55 || t < 0.2 ? 1 : 0.25);
+    c.lerp(colDeep, toast * 0.45);
+    // subtle clay mottling
+    const m = 1 + fbm(v.x * 6, v.y * 6, v.z * 6, 2) * 0.06;
+    colors[i * 3 + 0] = Math.min(1, c.r * m);
+    colors[i * 3 + 1] = Math.min(1, c.g * m);
+    colors[i * 3 + 2] = Math.min(1, c.b * m);
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const mat = matPancakeTop.clone();
+  mat.vertexColors = true;
+  mat.color.set(0xffffff);
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.userData.radius = radius;
+  mesh.userData.height = height;
+  return mesh;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Three pancakes, each leaning a little — a wobbly tower
+ * ------------------------------------------------------------------ */
+const pancakeSpecs = [
+  { radius: 1.72, height: 0.52, seed: 3,  prints: 16, tilt: [ 0.030, -0.022], offset: [ 0.00, 0.00], rot: 0.4 },
+  { radius: 1.58, height: 0.50, seed: 11, prints: 14, tilt: [-0.055,  0.040], offset: [ 0.10, 0.07], rot: 2.1 },
+  { radius: 1.40, height: 0.47, seed: 23, prints: 13, tilt: [ 0.070, -0.050], offset: [-0.09, 0.13], rot: 4.3 }
+];
+
+const pancakes = [];
+let yCursor = 0;
+pancakeSpecs.forEach((s, i) => {
+  const cake = buildPancake({
+    radius: s.radius,
+    height: s.height,
+    wobble: 0.058 - i * 0.006,
+    seed: s.seed,
+    printCount: s.prints
+  });
+  const holder = new THREE.Group();
+  holder.add(cake);
+  yCursor += s.height * 0.5 + (i === 0 ? 0.02 : 0.0);
+  holder.position.set(s.offset[0], yCursor, s.offset[1]);
+  holder.rotation.set(s.tilt[0], s.rot, s.tilt[1]);
+  yCursor += s.height * 0.5 - 0.055; // slight squash where they press together
+  stack.add(holder);
+  pancakes.push({ holder, cake, spec: s });
+});
+
+const topSpec = pancakeSpecs[2];
+const topHolder = pancakes[2].holder;
+const topY = topHolder.position.y + topSpec.height * 0.5 - 0.03;
+const topCenter = new THREE.Vector3(topHolder.position.x, topY, topHolder.position.z);
+
+/* ------------------------------------------------------------------ *
+ *  Butter pat — a soft rounded cube, sagging & melting at the bottom
+ * ------------------------------------------------------------------ */
+function buildButter() {
+  const size = 0.52;
+  const geo = new THREE.BoxGeometry(size, size * 0.78, size, 26, 22, 26);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  const half = new THREE.Vector3(size * 0.5, size * 0.39, size * 0.5);
+
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    // round the cube: push toward a superellipsoid
+    const nx = v.x / half.x, ny = v.y / half.y, nz = v.z / half.z;
+    const p = 3.4;
+    const d = Math.pow(Math.pow(Math.abs(nx), p) + Math.pow(Math.abs(ny), p) + Math.pow(Math.abs(nz), p), 1 / p);
+    const scale = d > 1e-5 ? (1 / d) : 1;
+    const k = 0.72; // blend of cube <-> rounded form
+    let px = v.x * (1 - k) + v.x * scale * k;
+    let py = v.y * (1 - k) + v.y * scale * k;
+    let pz = v.z * (1 - k) + v.z * scale * k;
+
+    // melting: the lower half spreads outward and slumps down
+    const t = 1 - (py + half.y) / (half.y * 2); // 0 top -> 1 bottom
+    const melt = Math.pow(Math.max(0, t), 2.2);
+    const spread = 1 + melt * 0.65;
+    px *= spread; pz *= spread;
+    py -= melt * 0.055;
+
+    // asymmetric lean — one corner is softer/more melted
+    const dir = Math.atan2(pz, px);
+    px += melt * 0.10 * Math.cos(dir + 0.7);
+    pz += melt * 0.10 * Math.sin(dir + 0.7);
+
+    // hand-molded lumps + finger nicks
+    const n = fbm(px * 6.0 + 5, py * 6.0, pz * 6.0 + 9, 3);
+    px += n * 0.018; py += n * 0.014; pz += n * 0.018;
+    const n2 = fbm(px * 2.4 - 3, py * 2.4, pz * 2.4 + 2, 2);
+    py += n2 * 0.020;
+
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, matButter);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+const butter = buildButter();
+butter.position.set(topCenter.x - 0.10, topCenter.y + 0.16, topCenter.z + 0.06);
+butter.rotation.set(0.06, 0.62, -0.09);
+stack.add(butter);
+
+// a little melted butter puddle spreading out under the pat
+function buildButterPuddle() {
+  const geo = new THREE.CircleGeometry(0.46, 96);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const d = Math.hypot(v.x, v.z);
+    const a = Math.atan2(v.z, v.x);
+    const lobe = 1 + Math.sin(a * 3 + 0.8) * 0.16 + Math.sin(a * 5 - 1.6) * 0.10;
+    const nx = d > 1e-5 ? v.x / d : 0, nz = d > 1e-5 ? v.z / d : 0;
+    const R = d * lobe;
+    const y = 0.035 * Math.pow(Math.max(0, 1 - d / 0.46), 0.7) + fbm(v.x * 8, 1.3, v.z * 8, 2) * 0.006;
+    pos.setXYZ(i, nx * R, y, nz * R);
+  }
+  geo.computeVertexNormals();
+  const m = new THREE.MeshPhysicalMaterial({
+    color: 0xf0cf62,
+    roughness: 0.16,
+    metalness: 0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
+    transparent: true,
+    opacity: 0.94
+  });
+  const mesh = new THREE.Mesh(geo, m);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+const puddle = buildButterPuddle();
+puddle.position.set(topCenter.x - 0.08, topCenter.y + 0.055, topCenter.z + 0.05);
+stack.add(puddle);
+
+/* ------------------------------------------------------------------ *
+ *  Syrup — a glossy pool on top + drizzle ribbons + hanging drips
+ * ------------------------------------------------------------------ */
+function buildSyrupPool(radius, seedN) {
+  const geo = new THREE.CircleGeometry(radius, 120);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const d = Math.hypot(v.x, v.z);
+    const a = Math.atan2(v.z, v.x);
+    const lobe = 1
+      + Math.sin(a * 2 + seedN) * 0.10
+      + Math.sin(a * 4 - seedN * 1.7) * 0.07
+      + Math.sin(a * 7 + 2.0) * 0.035;
+    const nx = d > 1e-5 ? v.x / d : 0, nz = d > 1e-5 ? v.z / d : 0;
+    const R = d * lobe;
+    const t = Math.max(0, 1 - d / radius);
+    const y = 0.05 * Math.pow(t, 0.55) + fbm(v.x * 7 + seedN, 2.2, v.z * 7, 2) * 0.008;
+    pos.setXYZ(i, nx * R, y, nz * R);
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, matSyrup);
+  mesh.castShadow = false;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+const syrupPool = buildSyrupPool(1.16, 1.3);
+syrupPool.position.set(topCenter.x + 0.03, topCenter.y + 0.045, topCenter.z - 0.02);
+stack.add(syrupPool);
+
+// Drizzle ribbon: a tube that starts on the top pool, runs over the rim
+// of the stack and slides down the sides, thinning as it goes.
+function buildDrip(startAngle, opts = {}) {
+  const {
+    startR = 0.72,
+    endY = 0.22,
+    thick = 0.085,
+    seedN = 1,
+    wiggle = 0.14
+  } = opts;
+
+  const r2 = makeRng(Math.floor(seedN * 1000) + 7);
+  const pts = [];
+  const steps = 26;
+  const startY = topCenter.y + 0.05;
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const y = THREE.MathUtils.lerp(startY, endY, Math.pow(t, 0.92));
+    // radius profile: hug the top surface, bulge out over the rim, then hug the sides
+    let R;
+    if (t < 0.22) {
+      R = THREE.MathUtils.lerp(startR, 1.34, t / 0.22);
+    } else {
+      const s = (t - 0.22) / 0.78;
+      // follow roughly the outer silhouette of the stack (widens toward bottom)
+      R = THREE.MathUtils.lerp(1.36, 1.66, Math.pow(s, 0.75));
+    }
+    const ang = startAngle + Math.sin(t * 5.0 + seedN) * wiggle * (0.3 + t) + t * 0.10;
+    const x = Math.cos(ang) * R + fbm(t * 4 + seedN, 1, 2, 2) * 0.03;
+    const z = Math.sin(ang) * R + fbm(t * 4 - seedN, 3, 4, 2) * 0.03;
+    pts.push(new THREE.Vector3(x, y, z));
+  }
+  // final hanging droplet tip
+  const last = pts[pts.length - 1].clone();
+  pts.push(new THREE.Vector3(last.x, last.y - 0.16, last.z));
+
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.4);
+  const tubularSegments = 150;
+  const geo = new THREE.TubeGeometry(curve, tubularSegments, thick, 14, false);
+
+  // taper + gravity-swell the tube radius along its length
+  const pos = geo.attributes.position;
+  const radialSegments = 14;
+  const v = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  for (let i = 0; i <= tubularSegments; i++) {
+    const t = i / tubularSegments;
+    curve.getPoint(t, center);
+    // fat where it pools, thin midway, bulbous at the drop
+    let s = 1.0;
+    s *= THREE.MathUtils.lerp(1.25, 0.62, Math.min(1, t * 1.5));
+    s *= 1 + 0.55 * Math.exp(-Math.pow((t - 0.985) / 0.045, 2));  // droplet
+    s *= 1 + 0.22 * Math.sin(t * 17 + seedN * 3) * 0.5;           // uneven flow
+    for (let j = 0; j <= radialSegments; j++) {
+      const idx = i * (radialSegments + 1) + j;
+      v.fromBufferAttribute(pos, idx);
+      v.sub(center).multiplyScalar(s).add(center);
+      pos.setXYZ(idx, v.x, v.y, v.z);
+    }
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, matSyrup);
+  mesh.castShadow = true;
+  return mesh;
+}
+
+const dripDefs = [
+  { a: 0.55,  endY: 0.30, thick: 0.090, seed: 1.2, wiggle: 0.12 },
+  { a: 2.35,  endY: 0.78, thick: 0.072, seed: 2.7, wiggle: 0.18 },
+  { a: 3.75,  endY: 0.16, thick: 0.082, seed: 4.1, wiggle: 0.10 },
+  { a: 5.30,  endY: 1.05, thick: 0.062, seed: 5.9, wiggle: 0.20 }
+];
+dripDefs.forEach(d => {
+  const m = buildDrip(d.a, { endY: d.endY, thick: d.thick, seedN: d.seed, wiggle: d.wiggle, startR: 0.55 + rng() * 0.3 });
+  m.position.x += topCenter.x * 0.5;
+  m.position.z += topCenter.z * 0.5;
+  stack.add(m);
+});
+
+// a few loose syrup beads clinging to the sides
+for (let i = 0; i < 7; i++) {
+  const a = rng() * Math.PI * 2;
+  const y = 0.28 + rng() * 1.05;
+  const R = 1.52 + rng() * 0.10;
+  const s = 0.045 + rng() * 0.05;
+  const bead = new THREE.Mesh(new THREE.SphereGeometry(1, 20, 16), matSyrup);
+  bead.scale.set(s, s * (1.25 + rng() * 0.5), s);
+  bead.position.set(Math.cos(a) * R, y, Math.sin(a) * R);
+  bead.castShadow = true;
+  stack.add(bead);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Syrup that has pooled on the plate around the base
+ * ------------------------------------------------------------------ */
+function buildBasePool() {
+  const geo = new THREE.CircleGeometry(2.35, 140);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const d = Math.hypot(v.x, v.z);
+    const a = Math.atan2(v.z, v.x);
+    const lobe = 1 + Math.sin(a * 3 + 0.4) * 0.13 + Math.sin(a * 5 - 2.1) * 0.08 + Math.sin(a * 2 + 1.1) * 0.10;
+    const nx = d > 1e-5 ? v.x / d : 0, nz = d > 1e-5 ? v.z / d : 0;
+    const R = d * lobe;
+    const t = Math.max(0, 1 - d / 2.35);
+    const y = 0.028 * Math.pow(t, 0.35) + 0.012 * Math.pow(Math.max(0, 1 - d / 2.35), 6);
+    pos.setXYZ(i, nx * R, y, nz * R);
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, matSyrup);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+const basePool = buildBasePool();
+basePool.position.y = 0.055;
+stack.add(basePool);
+
+/* ------------------------------------------------------------------ *
+ *  Hand-pinched clay plate the stack sits on
+ * ------------------------------------------------------------------ */
+function buildPlate() {
+  const geo = new THREE.CylinderGeometry(3.0, 2.66, 0.16, 128, 6, false);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const d = Math.hypot(v.x, v.z);
+    if (d > 1e-4) {
+      const a = Math.atan2(v.z, v.x);
+      const wob = 1 + Math.sin(a * 3 + 0.6) * 0.016 + Math.sin(a * 6 - 1.2) * 0.010 + Math.sin(a * 2) * 0.014;
+      const n = fbm(v.x * 3, v.y * 3, v.z * 3, 2);
+      const R = d * wob + n * 0.02;
+      v.x = (v.x / d) * R; v.z = (v.z / d) * R;
+      v.y += n * 0.012;
+    }
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, matPlate);
+  mesh.receiveShadow = true;
+  mesh.castShadow = true;
+  return mesh;
+}
+const plate = buildPlate();
+plate.position.y = -0.02;
+stack.add(plate);
+
+/* Center the whole assembly on the origin horizontally */
+stack.position.x = -0.02;
+stack.position.z = -0.03;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere ambience + key / fill / rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xfff0dc, 0x2a2320, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1d8, 2.5);
+key.position.set(5.0, 7.2, 4.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 4;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.022;
+const sc = key.shadow.camera;
+sc.near = 0.5; sc.far = 30;
+sc.left = -7; sc.right = 7; sc.top = 7; sc.bottom = -7;
+sc.updateProjectionMatrix();
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fc4ff, 0.55);
+fill.position.set(-6.0, 3.0, 3.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffc98a, 1.5);
+rim.position.set(-3.2, 4.5, -6.5);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffb673, 0.5, 12, 2);
+bounce.position.set(0.4, 0.6, 2.0);
+scene.add(bounce);
+
+/* Shadow-catching ground */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.101;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* Faint studio floor tint so the object isn't floating in pure void */
+const floorTint = new THREE.Mesh(
+  new THREE.CircleGeometry(16, 96),
+  new THREE.MeshStandardMaterial({ color: 0x24242b, roughness: 1.0, metalness: 0.0 })
+);
+floorTint.rotation.x = -Math.PI / 2;
+floorTint.position.y = -0.105;
+floorTint.receiveShadow = true;
+scene.add(floorTint);
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // gentle stop-motion-ish breathing wobble of the whole stack
+  stack.rotation.z = Math.sin(t * 0.7) * 0.006;
+  stack.rotation.x = Math.cos(t * 0.55) * 0.005;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

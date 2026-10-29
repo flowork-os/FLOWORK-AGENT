@@ -1,0 +1,701 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glowing Mushroom Forest</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #05101a; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==================== 1 · CONFIG & PALETTE ==================== */
+const SEED = 90210;
+// Shallow pool: the basin is carved into the terrain and the water disc rim stays buried under the shore.
+const POOL = { x: -8.0, z: 7.0, r: 5.0, water: 6.4, edge: 8.6, depth: 1.5, level: -0.35 };
+const GLOW  = { teal: 0x3af0d4, violet: 0xb268ff, amber: 0xffb040 };
+const FLESH = { teal: 0x11393c, violet: 0x2d1646, amber: 0x40270f };
+const PAL = {
+  fog: 0x06151f, stalk: 0xc4d6c8, bark: 0x0d1215, wood: 0x4b3a27,
+  moss: 0x306139, rock: 0x2f373e, stone: 0x3c4a4e, fern: 0x2b6247, water: 0x123c47
+};
+// Hero mushrooms: position, height, cap radius, dome flatness, lean, palette key, point-light power.
+const GIANTS = [
+  { id: 1, x:  0.5, z:  -1.5, h: 13.0, capR: 4.6, dome: 0.60, lean: [-0.9,  0.7], hue: 'teal',   li: 210 },
+  { id: 2, x: -9.5, z:  -3.5, h: 10.2, capR: 3.7, dome: 0.66, lean: [ 0.8, -0.5], hue: 'violet', li: 160 },
+  { id: 3, x:  8.0, z:   3.0, h:  7.4, capR: 2.9, dome: 0.72, lean: [ 0.5,  0.6], hue: 'amber',  li: 120 },
+  { id: 4, x:  9.5, z:  -9.5, h: 10.8, capR: 3.5, dome: 0.58, lean: [-0.7, -0.4], hue: 'violet', li: 150 },
+  { id: 5, x:  4.0, z:  14.0, h:  6.2, capR: 2.6, dome: 0.70, lean: [ 0.4,  0.5], hue: 'teal',   li:  95 }
+];
+// Second tier: same builder, smaller, emissive-only so the point-light count stays low.
+const MEDIUMS = [
+  { id: 11, x: -13.5, z:  -8.5, h: 4.6, capR: 1.9, dome: 0.72, lean: [ 0.3,  0.2], hue: 'amber'  },
+  { id: 12, x:   8.5, z:  10.5, h: 3.4, capR: 1.5, dome: 0.80, lean: [-0.2,  0.3], hue: 'violet' },
+  { id: 13, x:  -6.5, z: -11.5, h: 5.0, capR: 2.1, dome: 0.66, lean: [ 0.3, -0.3], hue: 'teal'   },
+  { id: 14, x:  13.5, z:   1.5, h: 4.0, capR: 1.7, dome: 0.74, lean: [-0.3,  0.2], hue: 'teal'   },
+  { id: 15, x: -14.5, z:  -1.0, h: 3.2, capR: 1.4, dome: 0.82, lean: [ 0.2,  0.2], hue: 'violet' },
+  { id: 16, x:   2.5, z: -13.5, h: 5.4, capR: 2.3, dome: 0.62, lean: [-0.3, -0.2], hue: 'amber'  },
+  { id: 17, x:  -3.5, z:  -6.5, h: 2.8, capR: 1.2, dome: 0.86, lean: [ 0.2, -0.1], hue: 'amber'  },
+  { id: 18, x: -15.5, z:   9.5, h: 4.2, capR: 1.8, dome: 0.70, lean: [-0.2,  0.3], hue: 'teal'   }
+];
+const TREES = [[-20, -15], [-7, -24], [8, -23], [-27, -6], [18, -19], [26, -8], [-22, 4]];
+const LOGS = [
+  { x:  3.5, z:  8.5, len: 8.0, rad: 0.62, rot:  0.42 },
+  { x:  6.0, z: -6.5, len: 6.5, rad: 0.52, rot: -1.15 },
+  { x: 13.0, z:  7.0, len: 5.5, rad: 0.46, rot:  0.85 }
+];
+const PATH_PTS = [[15, 15], [10, 10.5], [5.5, 8.0], [1.5, 5.5], [-2.0, 1.0], [-5.0, -3.0], [-6.5, -9.0], [-9.0, -15.5]];
+
+/* ==================== 2 · PRNG & MATH HELPERS ==================== */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const clamp = (v, a, b) => v < a ? a : (v > b ? b : v);
+const smooth = k => k * k * (3 - 2 * k);
+const rr = (r, a, b) => a + (b - a) * r();
+const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
+const HUES = ['teal', 'violet', 'amber'];
+const hash2 = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7 + SEED * 0.0131) * 43758.5453; return s - Math.floor(s); };
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), u = smooth(x - xi), v = smooth(y - yi);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v - 0.5;
+}
+// Terrain height, shared by the ground mesh and every prop so nothing floats or sinks.
+function groundY(x, z) {
+  const d = Math.hypot(x - POOL.x, z - POOL.z), damp = clamp((d - POOL.r) / 5, 0.15, 1);
+  const n = (0.90 * vnoise(x * 0.052, z * 0.052) + 0.34 * vnoise(x * 0.155 + 5.3, z * 0.155 - 2.1)) * damp;
+  return n - POOL.depth * smooth(clamp((POOL.edge - d) / (POOL.edge - POOL.r), 0, 1));
+}
+// Bend a lathe trunk sideways with a quadratic falloff so tall stalks lean organically.
+function bendGeometry(geo, h, lx, lz) {
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const k = clamp(p.getY(i) / h, 0, 1) ** 2;
+    p.setX(i, p.getX(i) + lx * k); p.setZ(i, p.getZ(i) + lz * k);
+  }
+  p.needsUpdate = true; geo.computeVertexNormals();
+}
+// Poisson-ish scatter: keep a registry of occupied discs and reject overlapping picks.
+const occupied = [];
+const reserve = (x, z, r) => occupied.push({ x, z, r });
+function tryPlace(r, rMin, rMax, radius, tries = 40) {
+  for (let i = 0; i < tries; i++) {
+    const a = r() * 6.283, d = rMin + (rMax - rMin) * Math.sqrt(r());
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    if (Math.hypot(x - POOL.x, z - POOL.z) < POOL.edge + radius) continue;
+    let ok = true;
+    for (const o of occupied) { if (Math.hypot(x - o.x, z - o.z) < o.r + radius) { ok = false; break; } }
+    if (ok) { reserve(x, z, radius); return { x, z }; }
+  }
+  return null;
+}
+
+/* ==================== 3 · PROCEDURAL TEXTURES ==================== */
+function canvas2d(w, h) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return { c, x: c.getContext('2d') };
+}
+function toTex(c, rx = 1, ry = 1, srgb = true) {
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); t.anisotropy = 4;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+// Mossy forest floor: dark humus mottled with lichen patches, leaf litter and pale spore dust.
+function makeGroundCanvas() {
+  const { c, x } = canvas2d(512, 512);
+  x.fillStyle = '#101d16'; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2600; i++) {
+    const px = rand() * 512, py = rand() * 512, n = vnoise(px * 0.02, py * 0.02) + 0.5;
+    x.fillStyle = `rgba(${34 + n * 40 | 0},${60 + n * 62 | 0},${40 + n * 30 | 0},0.13)`;
+    x.beginPath(); x.arc(px, py, rr(rand, 6, 34), 0, 6.283); x.fill();
+  }
+  for (let i = 0; i < 900; i++) {
+    x.fillStyle = `rgba(${58 + rand() * 40 | 0},${40 + rand() * 26 | 0},${28 + rand() * 20 | 0},0.22)`;
+    x.beginPath(); x.arc(rand() * 512, rand() * 512, rr(rand, 1.5, 7), 0, 6.283); x.fill();
+  }
+  for (let i = 0; i < 420; i++) {
+    x.fillStyle = `rgba(120,${210 + rand() * 40 | 0},200,${0.05 + rand() * 0.12})`;
+    x.beginPath(); x.arc(rand() * 512, rand() * 512, rr(rand, 0.7, 2.2), 0, 6.283); x.fill();
+  }
+  return c;
+}
+// Cap skin: streaked radially (canvas X wraps around the lathe) and freckled with glowing pores.
+function makeCapCanvas(base, glow) {
+  const { c, x } = canvas2d(512, 256);
+  x.fillStyle = base; x.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 74; i++) {
+    const g = x.createLinearGradient(0, 0, 0, 256);
+    g.addColorStop(0, 'rgba(255,255,255,0)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+    g.addColorStop(0.55, `rgba(255,255,255,${0.05 + rand() * 0.09})`);
+    x.fillStyle = g; x.fillRect(rand() * 512, 0, rr(rand, 2, 9), 256);
+  }
+  for (let i = 0; i < 210; i++) {
+    const px = rand() * 512, py = rand() * 256, r = rr(rand, 1.5, 6.5);
+    const g = x.createRadialGradient(px, py, 0, px, py, r);
+    g.addColorStop(0, glow); g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.globalAlpha = 0.32 + rand() * 0.5;
+    x.beginPath(); x.arc(px, py, r, 0, 6.283); x.fill();
+  }
+  x.globalAlpha = 1;
+  return c;
+}
+// Fine vertical stripes -> radial gills and fibrous stalks once wrapped around a lathe.
+function makeStripeCanvas(dark, light, n) {
+  const { c, x } = canvas2d(512, 64);
+  x.fillStyle = dark; x.fillRect(0, 0, 512, 64);
+  for (let i = 0; i < n; i++) {
+    x.fillStyle = light; x.globalAlpha = 0.35 + rand() * 0.5;
+    x.fillRect(i * (512 / n) + rand() * 1.6, 0, 512 / n * 0.42, 64);
+  }
+  x.globalAlpha = 1;
+  return c;
+}
+// Soft round falloff, reused for spores, motes, stone halos and pool reflections.
+function makeGlowCanvas() {
+  const { c, x } = canvas2d(128, 128);
+  const g = x.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+  g.addColorStop(0.6, 'rgba(255,255,255,0.13)'); g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 128, 128);
+  return c;
+}
+// Tangent-space ripple normals for the pool surface.
+function makeRippleCanvas() {
+  const { c, x } = canvas2d(256, 256), img = x.createImageData(256, 256);
+  for (let j = 0; j < 256; j++) for (let i = 0; i < 256; i++) {
+    const u = i / 256 * 6.283, v = j / 256 * 6.283, k = (j * 256 + i) * 4;
+    const dx = Math.cos(u * 3 + Math.sin(v * 2)) * 0.5 + Math.cos(u * 7 - v * 3) * 0.25;
+    const dz = Math.cos(v * 4 + Math.sin(u * 3)) * 0.5 + Math.cos(v * 6 + u * 2) * 0.25;
+    img.data[k] = 128 + dx * 40; img.data[k + 1] = 128 + dz * 40; img.data[k + 2] = 255; img.data[k + 3] = 255;
+  }
+  x.putImageData(img, 0, 0);
+  return c;
+}
+// Night dome: gradient sky, stars, and three soft bioluminescent hazes low on the horizon.
+function makeSkyCanvas() {
+  const { c, x } = canvas2d(1024, 512), g = x.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0.00, '#01040a'); g.addColorStop(0.42, '#061524'); g.addColorStop(0.70, '#0b2b3a');
+  g.addColorStop(0.86, '#123f48'); g.addColorStop(1.00, '#07181e');
+  x.fillStyle = g; x.fillRect(0, 0, 1024, 512);
+  for (let i = 0; i < 620; i++) {
+    const py = rand() * 300, a = (1 - py / 340) * (0.25 + rand() * 0.75);
+    x.fillStyle = `rgba(214,232,255,${a.toFixed(3)})`;
+    x.beginPath(); x.arc(rand() * 1024, py, rand() * 1.25 + 0.35, 0, 6.283); x.fill();
+  }
+  for (const [px, col] of [[190, '#1c8f86'], [520, '#6a3fa8'], [830, '#8a5a25']]) {
+    const rg = x.createRadialGradient(px, 430, 0, px, 430, 250);
+    rg.addColorStop(0, col); rg.addColorStop(1, 'rgba(0,0,0,0)');
+    x.globalAlpha = 0.42; x.fillStyle = rg; x.fillRect(px - 250, 180, 500, 332);
+  }
+  x.globalAlpha = 1;
+  return c;
+}
+const SKY_CANVAS = makeSkyCanvas();
+const TEX = {
+  ground: toTex(makeGroundCanvas(), 9, 9), glow: toTex(makeGlowCanvas()),
+  gills: toTex(makeStripeCanvas('#101418', '#e8fff8', 96)), stalk: toTex(makeStripeCanvas('#5b6b60', '#dfeade', 42)),
+  bark: toTex(makeStripeCanvas('#141a1c', '#3d4a44', 34), 3, 1), ripple: toTex(makeRippleCanvas(), 2.2, 2.2, false)
+};
+
+/* ==================== 4 · MATERIALS ==================== */
+const capMats = {}, gillMats = {}, ringMats = {}, spotMats = {};
+for (const key of HUES) {
+  const glowCol = new THREE.Color(GLOW[key]);
+  const skin = toTex(makeCapCanvas('#' + new THREE.Color(FLESH[key]).getHexString(), '#' + glowCol.getHexString()));
+  capMats[key] = new THREE.MeshStandardMaterial({ map: skin, emissiveMap: skin, emissive: glowCol,
+    emissiveIntensity: 0.85, roughness: 0.62, metalness: 0.0 });
+  gillMats[key] = new THREE.MeshStandardMaterial({ color: 0x0a0f12, emissive: glowCol, emissiveMap: TEX.gills,
+    emissiveIntensity: 2.4, roughness: 0.85, side: THREE.DoubleSide });
+  ringMats[key] = new THREE.MeshBasicMaterial({ color: glowCol, transparent: true, opacity: 0.9 });
+  spotMats[key] = new THREE.MeshStandardMaterial({ color: 0x101418, emissive: glowCol, emissiveIntensity: 2.0, roughness: 0.4 });
+}
+const MAT = {
+  ground: new THREE.MeshStandardMaterial({ map: TEX.ground, color: 0x86a68d, roughness: 0.97,
+    emissive: new THREE.Color(0x0a2a24), emissiveIntensity: 0.38 }),
+  stalk: new THREE.MeshStandardMaterial({ map: TEX.stalk, color: PAL.stalk, roughness: 0.72,
+    emissive: new THREE.Color(0x18302c), emissiveIntensity: 0.6 }),
+  bark: new THREE.MeshStandardMaterial({ map: TEX.bark, color: PAL.bark, roughness: 0.95 }),
+  wood: new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.9, emissive: new THREE.Color(0x1a1109), emissiveIntensity: 0.8 }),
+  moss: new THREE.MeshStandardMaterial({ color: PAL.moss, roughness: 1.0, flatShading: true,
+    emissive: new THREE.Color(0x16402d), emissiveIntensity: 0.8 }),
+  rock: new THREE.MeshStandardMaterial({ color: PAL.rock, roughness: 0.92, flatShading: true }),
+  stone: new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.55, metalness: 0.05,
+    emissive: new THREE.Color(0x2f8f84), emissiveIntensity: 0.9 }),
+  fern: new THREE.MeshStandardMaterial({ color: PAL.fern, roughness: 0.8, side: THREE.DoubleSide,
+    emissive: new THREE.Color(0x15503f), emissiveIntensity: 0.8 }),
+  water: new THREE.MeshStandardMaterial({ color: PAL.water, roughness: 0.05, metalness: 0.6, envMapIntensity: 2.0,
+    normalMap: TEX.ripple, normalScale: new THREE.Vector2(0.15, 0.15), transparent: true, opacity: 0.86 }),
+  glowAdd: new THREE.MeshBasicMaterial({ map: TEX.glow, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false })
+};
+function addGlowMat(hex, opacity) {
+  const m = MAT.glowAdd.clone();
+  m.color = new THREE.Color(hex); m.opacity = opacity;
+  return m;
+}
+
+/* ==================== 5 · BUILDERS ==================== */
+// (a) Giant bioluminescent mushroom: bent lathe stalk, domed cap, glowing gills, rim ring, freckles.
+function buildGiantMushroom(spec, withLight) {
+  const rng = mulberry32(SEED + spec.id * 977), g = new THREE.Group(), dm = new THREE.Object3D();
+  const glow = GLOW[spec.hue], h = spec.h, capR = spec.capR, capH = capR * spec.dome;
+  const lx = spec.lean[0], lz = spec.lean[1];
+  // per-mushroom material clones so every cap can breathe on its own phase
+  const capMat = capMats[spec.hue].clone(), gillMat = gillMats[spec.hue].clone(), ringMat = ringMats[spec.hue].clone();
+  const prof = [];
+  for (let i = 0; i <= 18; i++) {
+    const t = i / 18, r = capR * (0.115 + 0.105 * (1 - t) ** 2.2) * (1 + 0.045 * Math.sin(t * 9 + spec.id));
+    prof.push(new THREE.Vector2(Math.max(0.06, r), t * h));
+  }
+  const stalkGeo = new THREE.LatheGeometry(prof, 26);
+  bendGeometry(stalkGeo, h, lx, lz);
+  const stalk = new THREE.Mesh(stalkGeo, MAT.stalk);
+  stalk.castShadow = stalk.receiveShadow = true; g.add(stalk);
+  // annulus skirt left behind by the torn veil
+  const skirtY = h * 0.68, sk = capR * 0.24;
+  const skirt = new THREE.Mesh(new THREE.LatheGeometry([new THREE.Vector2(sk * 0.5, 0.12),
+    new THREE.Vector2(sk * 1.5, -0.02), new THREE.Vector2(sk * 1.7, -0.22)], 22), MAT.stalk);
+  skirt.position.set(lx * (skirtY / h) ** 2, skirtY, lz * (skirtY / h) ** 2);
+  skirt.castShadow = true; g.add(skirt);
+  // the cap assembly rides the bent tip and tilts along the stalk tangent
+  const cap = new THREE.Group();
+  cap.position.set(lx, h, lz); cap.rotation.set(Math.atan(2 * lz / h), 0, -Math.atan(2 * lx / h));
+  g.add(cap);
+  const capPts = [], gillPts = [], rimY = capH * Math.cos(1.86);
+  for (let i = 0; i <= 24; i++) {
+    const a = 1.86 * i / 24;
+    capPts.push(new THREE.Vector2(Math.max(0.02, capR * Math.sin(a)), capH * Math.cos(a)));
+  }
+  for (let i = 0; i <= 10; i++) {
+    const t = i / 10;
+    gillPts.push(new THREE.Vector2(Math.max(0.05, capR * 0.93 * (1 - t)), -0.20 + t * capH * 0.46));
+  }
+  const capMesh = new THREE.Mesh(new THREE.LatheGeometry(capPts, 44), capMat);
+  capMesh.castShadow = capMesh.receiveShadow = true; cap.add(capMesh);
+  cap.add(new THREE.Mesh(new THREE.LatheGeometry(gillPts, 44), gillMat));
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(capR * 0.955, capR * 0.032, 7, 52), ringMat);
+  rim.rotation.x = Math.PI / 2; rim.position.y = rimY + 0.02; cap.add(rim);
+  // glowing freckles scattered over the dome, batched into one instanced draw
+  const nSpot = 10 + Math.floor(rng() * 7);
+  const spots = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 8, 6), spotMats[spec.hue], nSpot);
+  for (let i = 0; i < nSpot; i++) {
+    const a = rr(rng, 0.28, 1.32), phi = rng() * 6.283, s = capR * rr(rng, 0.05, 0.115);
+    dm.position.set(capR * Math.sin(a) * Math.cos(phi) * 1.01, capH * Math.cos(a) * 1.02, capR * Math.sin(a) * Math.sin(phi) * 1.01);
+    dm.rotation.set(0, phi, 0); dm.scale.set(s, s * 0.45, s); dm.updateMatrix();
+    spots.setMatrixAt(i, dm.matrix);
+  }
+  cap.add(spots);
+  // spore threads dangling from the cap rim
+  for (let i = 0; i < 4; i++) {
+    const a = rng() * 6.283, len = rr(rng, 0.5, 1.5) * spec.dome * 2;
+    const th = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.004, len, 4), ringMat);
+    th.position.set(Math.cos(a) * capR * 0.86, rimY - len / 2, Math.sin(a) * capR * 0.86);
+    cap.add(th);
+  }
+  const under = new THREE.Mesh(new THREE.CircleGeometry(capR * 1.25, 26), addGlowMat(glow, 0.5));
+  under.rotation.x = Math.PI / 2; under.position.y = rimY - 0.35; cap.add(under);
+  let light = null;
+  if (withLight) {
+    light = new THREE.PointLight(glow, spec.li, capR * 11 + 14, 2);
+    light.position.y = -capR * 0.35; cap.add(light);
+  }
+  g.position.set(spec.x, groundY(spec.x, spec.z) - 0.12, spec.z); reserve(spec.x, spec.z, capR * 0.55 + 0.8);
+  pulses.push({ spec, cap: capMat, gill: gillMat, ring: ringMat, under: under.material, light,
+    phase: rng() * 6.283, speed: rr(rng, 0.42, 0.72) });
+  return g;
+}
+// (b) Curling fern frond as one ribbon geometry, so a whole thicket costs a single draw call.
+function makeFrondGeometry(len, width, curl, leaflets) {
+  const N = 26, pos = [], nor = [], uv = [], idx = [];
+  let x = 0, y = 0;
+  for (let i = 0; i <= N; i++) {
+    const t = i / N, th = curl * t * t;
+    const w = Math.max(0.012, width * Math.sin(Math.PI * t ** 0.62) * (0.55 + 0.45 * Math.abs(Math.sin(t * Math.PI * leaflets))));
+    pos.push(x, y, -w, x, y, w);
+    nor.push(-Math.cos(th), Math.sin(th), 0, -Math.cos(th), Math.sin(th), 0);
+    uv.push(t, 0, t, 1);
+    if (i < N) { const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+    x += Math.sin(th) * (len / N); y += Math.cos(th) * (len / N);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  return geo;
+}
+function buildFerns(rng, count) {
+  const data = [];
+  for (let i = 0; i < count; i++) {
+    const p = tryPlace(rng, 3, 19, 1.5);
+    if (!p) continue;
+    const base = rr(rng, 0.8, 1.3), gy = groundY(p.x, p.z);
+    for (let f = 0; f < 6; f++) {
+      const a = (f / 6) * 6.283 + rng() * 0.6;
+      data.push({ x: p.x + Math.cos(a) * 0.24, y: gy, z: p.z + Math.sin(a) * 0.24, rotY: a,
+        tilt: rr(rng, 0.20, 0.5), scale: base * rr(rng, 0.8, 1.2), phase: rng() * 6.283 });
+    }
+  }
+  const mesh = new THREE.InstancedMesh(makeFrondGeometry(2.6, 0.34, 2.35, 9), MAT.fern, data.length);
+  mesh.castShadow = true; mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  swayers.push({ mesh, data, amp: 0.07 });
+  return mesh;
+}
+// (c) Mossy fallen log crusted with glowing shelf fungi.
+function buildFallenLog(spec, rng) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(spec.rad, spec.rad * 0.8, spec.len, 14, 3), MAT.wood);
+  trunk.rotation.z = Math.PI / 2; trunk.castShadow = trunk.receiveShadow = true; g.add(trunk);
+  for (let i = 0; i < 9; i++) {
+    const patch = new THREE.Mesh(new THREE.SphereGeometry(spec.rad * rr(rng, 0.55, 0.95), 7, 5), MAT.moss);
+    patch.position.set(rr(rng, -0.42, 0.42) * spec.len, spec.rad * 0.55, rr(rng, -0.5, 0.5) * spec.rad);
+    patch.scale.set(1.5, 0.42, 1.1); patch.castShadow = true; g.add(patch);
+  }
+  for (let i = 0; i < 8; i++) {
+    const s = rr(rng, 0.14, 0.30), side = rng() < 0.5 ? 1 : -1;
+    const shelf = new THREE.Mesh(new THREE.CylinderGeometry(s * 2.4, s * 1.1, s * 0.6, 12), capMats[pick(rng, HUES)]);
+    shelf.position.set(rr(rng, -0.45, 0.45) * spec.len, spec.rad * rr(rng, -0.1, 0.5), side * spec.rad * 0.85);
+    shelf.rotation.x = side * rr(rng, 0.5, 1.0); shelf.castShadow = true; g.add(shelf);
+  }
+  g.position.set(spec.x, groundY(spec.x, spec.z) + spec.rad * 0.72, spec.z);
+  g.rotation.set(rr(rng, -0.05, 0.05), spec.rot, 0); reserve(spec.x, spec.z, spec.len * 0.5);
+  return g;
+}
+// (d) Twisted leafless tree: recursive tube branches forming near-black silhouettes at the tree line.
+function buildTwistedTree(cx, cz, rng) {
+  const g = new THREE.Group();
+  function branch(from, dir, len, rad, depth) {
+    const pts = [from.clone()], d = dir.clone();
+    let p = from.clone();
+    for (let i = 0; i < 3; i++) {
+      d.applyAxisAngle(new THREE.Vector3(0, 1, 0), rr(rng, -0.5, 0.5));
+      d.x += rr(rng, -0.22, 0.22); d.z += rr(rng, -0.22, 0.22); d.normalize();
+      p = p.clone().addScaledVector(d, len / 3);
+      pts.push(p.clone());
+    }
+    const tube = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 10, Math.max(0.04, rad), 6, false), MAT.bark);
+    tube.castShadow = true; g.add(tube);
+    if (depth <= 0) return;
+    for (let i = 0; i < 2; i++) {
+      const nd = d.clone();
+      nd.applyAxisAngle(new THREE.Vector3(0, 1, 0), rng() * 6.283);
+      nd.x += rr(rng, -0.75, 0.75); nd.z += rr(rng, -0.75, 0.75); nd.y = Math.max(0.35, nd.y * 0.85);
+      branch(p, nd.normalize(), len * rr(rng, 0.52, 0.7), rad * 0.55, depth - 1);
+    }
+  }
+  branch(new THREE.Vector3(), new THREE.Vector3(rr(rng, -0.15, 0.15), 1, rr(rng, -0.15, 0.15)).normalize(),
+    rr(rng, 7.5, 11.5), rr(rng, 0.55, 0.85), 2);
+  const flare = new THREE.Mesh(new THREE.ConeGeometry(1.5, 2.2, 9, 1, true), MAT.bark);
+  flare.position.y = 1.0; g.add(flare);
+  for (let i = 0; i < 5; i++) {
+    const s = rr(rng, 0.2, 0.42), a = rng() * 6.283;
+    const shelf = new THREE.Mesh(new THREE.CylinderGeometry(s * 2.2, s, s * 0.5, 10), capMats[pick(rng, HUES)]);
+    shelf.position.set(Math.cos(a) * 0.62, rr(rng, 0.8, 4.2), Math.sin(a) * 0.62);
+    shelf.rotation.set(Math.sin(a) * 0.7, 0, Math.cos(a) * -0.7);
+    g.add(shelf);
+  }
+  g.position.set(cx, groundY(cx, cz) - 0.3, cz);
+  g.rotation.y = rng() * 6.283; reserve(cx, cz, 2.6);
+  return g;
+}
+// (e) Winding path of luminous stepping stones sampled off a Catmull-Rom curve.
+function buildSteppingPath(rng) {
+  const g = new THREE.Group(), slots = [], dm = new THREE.Object3D(), col = new THREE.Color();
+  const curve = new THREE.CatmullRomCurve3(PATH_PTS.map(([x, z]) => new THREE.Vector3(x, 0, z)));
+  for (let i = 0; i <= 26; i++) {
+    const t = i / 26, p = curve.getPoint(t), tan = curve.getTangent(t), off = vnoise(t * 7, 3.1) * 1.5;
+    const px = p.x - tan.z * off, pz = p.z + tan.x * off;
+    if (Math.hypot(px - POOL.x, pz - POOL.z) < POOL.edge) continue;
+    slots.push({ x: px, z: pz, y: groundY(px, pz), s: rr(rng, 0.55, 0.92), rot: rng() * 6.283 });
+    reserve(px, pz, 0.9);
+  }
+  const stones = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 0.82, 0.34, 9), MAT.stone, slots.length);
+  const halos = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 20), MAT.glowAdd, slots.length);
+  stones.castShadow = stones.receiveShadow = true;
+  slots.forEach((s, i) => {
+    dm.position.set(s.x, s.y + 0.04, s.z); dm.rotation.set(0, s.rot, 0);
+    dm.scale.set(s.s, 1, s.s); dm.updateMatrix();
+    stones.setMatrixAt(i, dm.matrix);
+    halos.setColorAt(i, col.setHex(GLOW[HUES[i % 3]]));
+  });
+  halos.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  if (halos.instanceColor) halos.instanceColor.needsUpdate = true;
+  g.add(stones); g.add(halos); pathHalos = { mesh: halos, slots };
+  return g;
+}
+// (f) Shallow pool: water disc, sunken pebbles, shore rocks and additive mushroom reflections.
+function buildPool(rng) {
+  const g = new THREE.Group(), dm = new THREE.Object3D();
+  const water = new THREE.Mesh(new THREE.CircleGeometry(POOL.water, 72), MAT.water);
+  water.rotation.x = -Math.PI / 2; water.position.set(POOL.x, POOL.level, POOL.z);
+  water.receiveShadow = true; g.add(water);
+  // broad teal sheen: the bulk of the light the pool bounces back into the forest
+  const sheen = new THREE.Mesh(new THREE.CircleGeometry(POOL.water * 0.97, 48), addGlowMat(0x2fd8c6, 0.6));
+  sheen.rotation.x = -Math.PI / 2; sheen.position.set(POOL.x, POOL.level + 0.015, POOL.z);
+  g.add(sheen); reflections.push({ disc: sheen, base: 0.6, src: 0, wob: 0.03 });
+  const pebbleGeo = new THREE.IcosahedronGeometry(1, 0);
+  const pebbles = new THREE.InstancedMesh(pebbleGeo, MAT.rock, 46);
+  for (let i = 0; i < 46; i++) {
+    const a = rng() * 6.283, d = Math.sqrt(rng()) * POOL.water * 0.92, s = rr(rng, 0.12, 0.36);
+    const px = POOL.x + Math.cos(a) * d, pz = POOL.z + Math.sin(a) * d;
+    dm.position.set(px, groundY(px, pz) + s * 0.4, pz);
+    dm.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    dm.scale.set(s * 1.4, s * 0.7, s); dm.updateMatrix();
+    pebbles.setMatrixAt(i, dm.matrix);
+  }
+  g.add(pebbles);
+  // the shore ring is cut from the same luminous mineral as the stepping stones, outlining the water
+  const shore = new THREE.InstancedMesh(pebbleGeo, MAT.stone, 40);
+  for (let i = 0; i < 40; i++) {
+    const a = rng() * 6.283, d = POOL.edge + rr(rng, -0.9, 1.4), s = rr(rng, 0.22, 0.66);
+    const px = POOL.x + Math.cos(a) * d, pz = POOL.z + Math.sin(a) * d;
+    dm.position.set(px, groundY(px, pz) + s * 0.3, pz);
+    dm.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    dm.scale.set(s * 1.3, s * 0.8, s); dm.updateMatrix();
+    shore.setMatrixAt(i, dm.matrix);
+    reserve(px, pz, s);
+  }
+  shore.castShadow = shore.receiveShadow = true; g.add(shore);
+  // smeared images of the nearby caps, each tied to the pulse of its source mushroom
+  const refSpecs = [{ x: -3.0, z: -2.2, r: 4.4, hue: 'violet', src: 1 },
+    { x: 2.2, z: 1.4, r: 3.4, hue: 'teal', src: 0 }, { x: -0.8, z: 4.0, r: 2.3, hue: 'amber', src: 2 }];
+  for (const rs of refSpecs) {
+    const disc = new THREE.Mesh(new THREE.CircleGeometry(rs.r, 28), addGlowMat(GLOW[rs.hue], 0.9));
+    disc.rotation.x = -Math.PI / 2;
+    disc.position.set(POOL.x + rs.x, POOL.level + 0.03, POOL.z + rs.z);
+    g.add(disc); reflections.push({ disc, base: 0.9, src: rs.src, wob: 0.1 });
+  }
+  const poolLight = new THREE.PointLight(0x5fe6d8, 150, 26, 2);
+  poolLight.position.set(POOL.x, POOL.level + 1.6, POOL.z);
+  g.add(poolLight);
+  return g;
+}
+// (g) Clusters of small toadstools, batched into one instanced mesh per glow colour.
+function buildToadstools(rng, clusters) {
+  const g = new THREE.Group(), stems = [], caps = { teal: [], violet: [], amber: [] }, dm = new THREE.Object3D();
+  for (let c = 0; c < clusters; c++) {
+    const p = tryPlace(rng, 3.5, 19, 1.2);
+    if (!p) continue;
+    const hue = pick(rng, HUES), n = 4 + Math.floor(rng() * 5);
+    for (let i = 0; i < n; i++) {
+      const a = rng() * 6.283, d = Math.sqrt(rng()) * 1.05, s = rr(rng, 0.20, 0.44), tilt = rr(rng, -0.22, 0.22);
+      const px = p.x + Math.cos(a) * d, pz = p.z + Math.sin(a) * d, gy = groundY(px, pz);
+      dm.rotation.set(tilt, rng() * 6.283, tilt * 0.7);
+      dm.position.set(px, gy + s * 1.1, pz); dm.scale.set(s * 0.32, s * 2.2, s * 0.32); dm.updateMatrix();
+      stems.push(dm.matrix.clone());
+      dm.position.set(px, gy + s * 2.1, pz); dm.scale.setScalar(s); dm.updateMatrix();
+      caps[hue].push(dm.matrix.clone());
+    }
+  }
+  const stemMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1.25, 1, 7), MAT.stalk, stems.length);
+  stems.forEach((m, i) => stemMesh.setMatrixAt(i, m));
+  stemMesh.castShadow = true; g.add(stemMesh);
+  for (const hue of HUES) {
+    const list = caps[hue];
+    if (!list.length) continue;
+    const mesh = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 12, 8, 0, 6.283, 0, 1.75), capMats[hue], list.length);
+    list.forEach((m, i) => mesh.setMatrixAt(i, m));
+    mesh.castShadow = true; g.add(mesh);
+  }
+  return g;
+}
+// (h) Loose rocks and glowing mineral crumbs strewn across the forest floor.
+function buildFloorDebris(rng) {
+  const g = new THREE.Group(), dm = new THREE.Object3D(), col = new THREE.Color(), spots = [];
+  const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), MAT.rock, 60);
+  for (let i = 0; i < 60; i++) {
+    const a = rng() * 6.283, d = 4 + Math.sqrt(rng()) * 24, s = rr(rng, 0.16, 0.62);
+    const px = Math.cos(a) * d, pz = Math.sin(a) * d;
+    dm.position.set(px, groundY(px, pz) + s * 0.35, pz);
+    dm.rotation.set(rng() * 3, rng() * 3, rng() * 3);
+    dm.scale.set(s * 1.3, s * 0.75, s); dm.updateMatrix();
+    rocks.setMatrixAt(i, dm.matrix);
+  }
+  rocks.castShadow = rocks.receiveShadow = true; g.add(rocks);
+  while (spots.length < 96) {
+    const a = rng() * 6.283, d = 3 + Math.sqrt(rng()) * 22;
+    const px = Math.cos(a) * d, pz = Math.sin(a) * d;
+    if (Math.hypot(px - POOL.x, pz - POOL.z) < POOL.water) continue;
+    spots.push({ x: px, z: pz, s: rr(rng, 0.16, 0.5), rot: rng() * 6.283 });
+  }
+  const crumbs = new THREE.InstancedMesh(new THREE.CircleGeometry(1, 10), addGlowMat(0xffffff, 0.7), spots.length);
+  spots.forEach((c, i) => {
+    dm.position.set(c.x, groundY(c.x, c.z) + 0.05, c.z);
+    dm.rotation.set(-Math.PI / 2, 0, c.rot); dm.scale.setScalar(c.s); dm.updateMatrix();
+    crumbs.setMatrixAt(i, dm.matrix);
+    crumbs.setColorAt(i, col.setHex(GLOW[HUES[i % 3]]));
+  });
+  if (crumbs.instanceColor) crumbs.instanceColor.needsUpdate = true;
+  g.add(crumbs);  return g;
+}
+// (i) Drifting spore field: additive points that rise, sway and wrap back to the floor.
+function buildSpores(rng, count, opts) {
+  const pos = new Float32Array(count * 3), colArr = new Float32Array(count * 3);
+  const state = [], col = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const a = rng() * 6.283, d = Math.sqrt(rng()) * opts.radius;
+    const x = Math.cos(a) * d, z = Math.sin(a) * d;
+    pos[i * 3] = x; pos[i * 3 + 1] = rng() * opts.height; pos[i * 3 + 2] = z;
+    col.setHex(GLOW[pick(rng, HUES)]);
+    colArr[i * 3] = col.r; colArr[i * 3 + 1] = col.g; colArr[i * 3 + 2] = col.b;
+    state.push({ x, z, rise: rr(rng, opts.rise * 0.5, opts.rise), sway: rr(rng, 0.25, 0.9), phase: rng() * 6.283 });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+  const pts = new THREE.Points(geo, new THREE.PointsMaterial({ size: opts.size, map: TEX.glow, vertexColors: true,
+    transparent: true, opacity: opts.opacity, blending: THREE.AdditiveBlending, depthWrite: false }));
+  pts.frustumCulled = false; drifters.push({ geo, state, height: opts.height });
+  return pts;
+}
+
+/* ============ 6 · RENDERER, SCENE, CAMERA, ENVIRONMENT ============ */
+const pulses = [], swayers = [], drifters = [], reflections = [];
+let pathHalos = null;
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene(); scene.fog = new THREE.FogExp2(PAL.fog, 0.0195);
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 400);
+camera.position.set(21, 15, 29);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 5.0, 0); controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.75;
+controls.minDistance = 22; controls.maxDistance = 58;
+controls.maxPolarAngle = Math.PI * 0.487;
+controls.update();
+// The night-sky equirect drives both the visible dome and the PMREM reflections on the water.
+const skyTex = toTex(SKY_CANVAS);
+skyTex.mapping = THREE.EquirectangularReflectionMapping;
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromEquirectangular(skyTex).texture; pmrem.dispose();
+const dome = new THREE.Mesh(new THREE.SphereGeometry(160, 40, 24),
+  new THREE.MeshBasicMaterial({ map: toTex(SKY_CANVAS), side: THREE.BackSide, fog: false, depthWrite: false }));
+scene.add(dome);
+
+/* ==================== 7 · ASSEMBLY & LAYOUT ==================== */
+const world = new THREE.Group(); scene.add(world);
+const groundGeo = new THREE.PlaneGeometry(96, 96, 130, 130);
+groundGeo.rotateX(-Math.PI / 2);
+const gp = groundGeo.attributes.position;
+for (let i = 0; i < gp.count; i++) gp.setY(i, groundY(gp.getX(i), gp.getZ(i)));
+gp.needsUpdate = true; groundGeo.computeVertexNormals();
+const ground = new THREE.Mesh(groundGeo, MAT.ground);
+ground.receiveShadow = true; world.add(ground);
+for (const [tx, tz] of TREES) world.add(buildTwistedTree(tx, tz, mulberry32(SEED + tx * 71 + tz * 13 + 500)));
+for (const spec of GIANTS) world.add(buildGiantMushroom(spec, true));
+for (const spec of MEDIUMS) world.add(buildGiantMushroom(spec, false));
+world.add(buildPool(rand));
+LOGS.forEach((spec, i) => world.add(buildFallenLog(spec, mulberry32(SEED + i * 313 + 7))));
+world.add(buildSteppingPath(mulberry32(SEED + 4021)));
+world.add(buildToadstools(mulberry32(SEED + 8123), 18));
+world.add(buildFerns(mulberry32(SEED + 6611), 22));
+world.add(buildFloorDebris(mulberry32(SEED + 2277)));
+world.add(buildSpores(mulberry32(SEED + 1450), 900, { radius: 26, height: 20, rise: 0.55, size: 0.42, opacity: 0.85 }));
+world.add(buildSpores(mulberry32(SEED + 9902), 160, { radius: 20, height: 7, rise: 0.16, size: 1.05, opacity: 0.6 }));
+
+/* ==================== 8 · LIGHTING RIG ==================== */
+const moon = new THREE.DirectionalLight(0x9dc0ff, 1.35);
+moon.position.set(30, 32, 8);
+moon.castShadow = true; moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -34; moon.shadow.camera.right = 34;
+moon.shadow.camera.top = 34; moon.shadow.camera.bottom = -34;
+moon.shadow.camera.near = 4; moon.shadow.camera.far = 110;
+moon.shadow.bias = -0.0006; moon.shadow.normalBias = 0.035; scene.add(moon);
+scene.add(new THREE.HemisphereLight(0x2b5f74, 0x10281c, 0.75));
+scene.add(new THREE.AmbientLight(0x2a4a58, 0.35));
+// Warm counter-fill from the amber side keeps shadowed halves from going flat black.
+const counter = new THREE.DirectionalLight(0xffb469, 0.28);
+counter.position.set(-24, 12, -20);
+scene.add(counter);
+
+/* ==================== 9 · ANIMATION LOOP ==================== */
+const clock = new THREE.Clock(), dummy = new THREE.Object3D(), pulseLevels = [1, 1, 1];
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.getElapsedTime();
+  // (1) caps breathe: emissive strength and their point lights swell together
+  for (const p of pulses) {
+    const k = 0.5 + 0.5 * Math.sin(t * p.speed + p.phase);
+    p.cap.emissiveIntensity = 0.62 + 0.5 * k;
+    p.gill.emissiveIntensity = 1.9 + 1.2 * k;
+    p.ring.opacity = 0.72 + 0.26 * k;
+    p.under.opacity = 0.34 + 0.28 * k;
+    if (p.light) p.light.intensity = p.spec.li * (0.72 + 0.42 * k);
+    if (p.spec.id <= 3) pulseLevels[p.spec.id - 1] = k;
+  }
+  // (2) spores and low motes rise, sway sideways and wrap back to the floor
+  for (const d of drifters) {
+    const arr = d.geo.attributes.position.array;
+    for (let i = 0; i < d.state.length; i++) {
+      const s = d.state[i];
+      let y = arr[i * 3 + 1] + s.rise * dt;
+      if (y > d.height) y -= d.height;
+      arr[i * 3 + 1] = y;
+      arr[i * 3] = s.x + Math.sin(t * 0.32 * s.sway + s.phase) * 1.5 * s.sway;
+      arr[i * 3 + 2] = s.z + Math.cos(t * 0.27 * s.sway + s.phase * 1.7) * 1.5 * s.sway;
+    }
+    d.geo.attributes.position.needsUpdate = true;
+  }
+  // (3) fern fronds sway in a slow ground breeze
+  for (const sw of swayers) {
+    for (let i = 0; i < sw.data.length; i++) {
+      const f = sw.data[i], s = Math.sin(t * 0.62 + f.phase) * sw.amp;
+      dummy.position.set(f.x, f.y, f.z); dummy.rotation.set(f.tilt + s, f.rotY, s * 0.7);
+      dummy.scale.setScalar(f.scale); dummy.updateMatrix();
+      sw.mesh.setMatrixAt(i, dummy.matrix);
+    }
+    sw.mesh.instanceMatrix.needsUpdate = true;
+  }
+  // (4) pool ripples scroll while the reflected cap-light breathes with its source
+  MAT.water.normalMap.offset.set(t * 0.012, t * 0.0085);
+  MAT.water.normalScale.setScalar(0.13 + 0.05 * Math.sin(t * 0.5));
+  for (const rf of reflections) {
+    const k = pulseLevels[rf.src];
+    rf.disc.scale.set(1 + rf.wob * Math.sin(t * 0.9 + rf.src * 2.1), 0.9 + 0.2 * k, 1);
+    rf.disc.material.opacity = rf.base * (0.55 + 0.55 * k);
+  }
+  // (5) a glow travels along the stepping-stone path
+  for (let i = 0; i < pathHalos.slots.length; i++) {
+    const s = pathHalos.slots[i], k = 0.5 + 0.5 * Math.sin(t * 1.25 - i * 0.55);
+    dummy.position.set(s.x, s.y + 0.09, s.z); dummy.rotation.set(-Math.PI / 2, 0, s.rot);
+    dummy.scale.setScalar(s.s * (1.55 + 0.5 * k)); dummy.updateMatrix();
+    pathHalos.mesh.setMatrixAt(i, dummy.matrix);
+  }
+  pathHalos.mesh.instanceMatrix.needsUpdate = true;
+  // (6) the horizon haze turns very slowly, keeping the backdrop alive
+  dome.rotation.y = t * 0.004;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ==================== 10 · RESIZE ==================== */
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

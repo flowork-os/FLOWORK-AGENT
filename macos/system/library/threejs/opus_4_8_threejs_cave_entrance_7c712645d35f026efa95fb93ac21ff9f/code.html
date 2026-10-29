@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cave Entrance — Procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0b0c0e; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  #caption {
+    position: fixed; left: 16px; bottom: 14px;
+    font: 12px/1.4 -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+    color: rgba(210,205,195,0.55); letter-spacing: 0.06em;
+    text-transform: uppercase; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div id="caption">Cave Entrance · procedural · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ *  Scene & camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0c0e);
+scene.fog = new THREE.FogExp2(0x0b0c0e, 0.011);
+
+const camera = new THREE.PerspectiveCamera(43, window.innerWidth / window.innerHeight, 0.1, 200);
+
+/* ------------------------------------------------------------------ *
+ *  Deterministic noise helpers  (no Math.random / Date used)
+ * ------------------------------------------------------------------ */
+function hash3(i, j, k) {
+  let n = Math.imul(i, 374761393) ^ Math.imul(j, 668265263) ^ Math.imul(k, 1274126177);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  n ^= n >>> 16;
+  return (n >>> 0) / 4294967296;
+}
+function valueNoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+  const c000 = hash3(xi, yi, zi),     c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi), c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1), c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  const x00 = c000 + (c100 - c000) * u, x10 = c010 + (c110 - c010) * u;
+  const x01 = c001 + (c101 - c001) * u, x11 = c011 + (c111 - c011) * u;
+  const y0 = x00 + (x10 - x00) * v, y1 = x01 + (x11 - x01) * v;
+  return y0 + (y1 - y0) * w;
+}
+function fbm(x, y, z, oct) {
+  oct = oct || 4;
+  let a = 0, amp = 0.5, f = 1, norm = 0;
+  for (let i = 0; i < oct; i++) { a += amp * valueNoise(x * f, y * f, z * f); norm += amp; amp *= 0.5; f *= 2; }
+  return a / norm;
+}
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+// tiny seeded rng for scatter
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(20260706);
+
+/* ------------------------------------------------------------------ *
+ *  The single object (a Group holding the whole cave formation)
+ * ------------------------------------------------------------------ */
+const cave = new THREE.Group();
+cave.name = 'CaveEntrance';
+
+// Shared geometry parameters
+const OUT_SCALE = new THREE.Vector3(5.6, 3.9, 3.7);
+const OUT_OFFSET = new THREE.Vector3(0, 2.15, 0);
+const caveDir = new THREE.Vector3(0, -0.42, 1).normalize();
+
+// craggy radius + inward niche carving as a pure function of direction
+function radiusAt(dx, dy, dz) {
+  const big  = (fbm(dx * 1.25 + 5.2, dy * 1.25 + 1.7, dz * 1.25 - 3.1, 4) - 0.5) * 2;
+  const med  = (fbm(dx * 2.80 - 2.0, dy * 2.80 + 4.0, dz * 2.80 + 2.0, 4) - 0.5) * 2;
+  const fine = (fbm(dx * 6.00,       dy * 6.00,       dz * 6.00,       3) - 0.5) * 2;
+  const craggy = 0.30 * big + 0.13 * med + 0.05 * fine;
+  const c = dx * caveDir.x + dy * caveDir.y + dz * caveDir.z;
+  const infl = smoothstep(0.60, 0.93, c);
+  const r = 1 + craggy * (1 - 0.55 * infl) - infl * 0.62;
+  return [r, infl];
+}
+
+// compute mouth anchor (surface point at the niche floor)
+const [anchorR] = radiusAt(caveDir.x, caveDir.y, caveDir.z);
+const anchor = caveDir.clone().multiplyScalar(anchorR).multiply(OUT_SCALE).add(OUT_OFFSET);
+
+/* ---------- 1. Main rock outcrop with carved niche ---------------- */
+function buildOutcrop() {
+  const detail = 5;
+  let geo = new THREE.IcosahedronGeometry(1, detail);
+  geo.deleteAttribute('normal');
+  geo.deleteAttribute('uv');
+
+  const pos = geo.attributes.position;
+  const N = pos.count;
+  const colors = new Float32Array(N * 3);
+
+  const dir = new THREE.Vector3();
+  const tmp = new THREE.Vector3();
+  const col = new THREE.Color();
+
+  const cLight = new THREE.Color(0x8a7f70);
+  const cMid   = new THREE.Color(0x6b6153);
+  const cDark  = new THREE.Color(0x3f382f);
+  const cDamp  = new THREE.Color(0x23221c);
+  const cMoss  = new THREE.Color(0x323a28);
+
+  for (let i = 0; i < N; i++) {
+    dir.set(pos.getX(i), pos.getY(i), pos.getZ(i)).normalize();
+    const [r, infl] = radiusAt(dir.x, dir.y, dir.z);
+    tmp.copy(dir).multiplyScalar(r).multiply(OUT_SCALE).add(OUT_OFFSET);
+    if (tmp.y < 0.03) tmp.y = 0.03; // flatten base onto ground plane
+    pos.setXYZ(i, tmp.x, tmp.y, tmp.z);
+
+    // layered / stratified sedimentary banding, warped for realism
+    const warp = (fbm(tmp.x * 0.20, tmp.y * 0.15, tmp.z * 0.20, 3) - 0.5) * 3.0;
+    const strata = 0.5 + 0.5 * Math.sin(tmp.y * 1.8 + warp);
+    const cav = fbm(tmp.x * 0.45 + 9, tmp.y * 0.45, tmp.z * 0.45 - 4, 4);
+    const moss = smoothstep(0.10, 0.50, infl) * (1 - smoothstep(0.60, 0.95, infl));
+
+    col.copy(cMid).lerp(cLight, strata);
+    col.lerp(cDark, (1 - cav) * 0.5);
+    col.lerp(cMoss, moss * 0.35);
+    col.lerp(cDamp, infl * 0.85);       // damp, dark transition around the mouth
+
+    colors[i * 3] = col.r; colors[i * 3 + 1] = col.g; colors[i * 3 + 2] = col.b;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo = mergeVertices(geo);            // weld duplicated verts -> smooth shading
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.93, metalness: 0.02
+  });
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+cave.add(buildOutcrop());
+
+/* ---------- 2. Dark recessed tunnel behind the mouth -------------- */
+function buildTunnel() {
+  const around = 54, slices = 28;
+  const ax = 1.05, ay = 1.28;
+  const positions = [], colors = [], indices = [];
+  const A = new THREE.Color(0x151410), B = new THREE.Color(0x050509);
+  const c = new THREE.Color();
+
+  const centerOf = (t) => ({
+    x: anchor.x + Math.sin(t * 3.0) * 0.35 * t,
+    y: anchor.y - t * 0.35 + Math.sin(t * 2.0) * 0.10,
+    z: (anchor.z - 0.05) - t * 3.9
+  });
+
+  for (let s = 0; s < slices; s++) {
+    const t = s / (slices - 1);
+    const cc = centerOf(t);
+    const taper = 1 - 0.30 * t;
+    const frontFade = smoothstep(0.0, 0.14, t);
+    for (let a = 0; a < around; a++) {
+      const ang = a / around * Math.PI * 2;
+      const nz = (fbm(Math.cos(ang) * 1.6 + s * 0.35, Math.sin(ang) * 1.6, s * 0.35 + 3, 3) - 0.5) * 2;
+      const rr = 1 + nz * 0.16 * frontFade;
+      const ex = Math.cos(ang) * ax * taper * rr;
+      const ey = Math.sin(ang) * ay * taper * rr;
+      const zn = (fbm(Math.cos(ang) * 1.2 + 7, Math.sin(ang) * 1.2, s * 0.5, 2) - 0.5) * 0.25 * frontFade;
+      positions.push(cc.x + ex, cc.y + ey, cc.z + zn);
+
+      const litFront = 1 - t;
+      const topf = 0.5 + 0.5 * Math.sin(ang);
+      c.copy(A).lerp(B, t * 0.9).multiplyScalar(0.7 + 0.6 * litFront * topf);
+      colors.push(c.r, c.g, c.b);
+    }
+  }
+
+  // deep dark back cap
+  const backCenter = centerOf(1);
+  const centerIndex = slices * around;
+  positions.push(backCenter.x, backCenter.y, backCenter.z - 0.25);
+  colors.push(0.015, 0.015, 0.025);
+
+  for (let s = 0; s < slices - 1; s++) {
+    for (let a = 0; a < around; a++) {
+      const a0 = s * around + a, a1 = s * around + (a + 1) % around;
+      const b0 = (s + 1) * around + a, b1 = (s + 1) * around + (a + 1) % around;
+      indices.push(a0, b0, a1, a1, b0, b1);
+    }
+  }
+  const cs = slices - 1;
+  for (let a = 0; a < around; a++) {
+    indices.push(cs * around + a, centerIndex, cs * around + (a + 1) % around);
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.5, metalness: 0.05, side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(g, mat);
+  mesh.receiveShadow = true;
+  return mesh;
+}
+cave.add(buildTunnel());
+
+/* ---------- 3. Rock builder for framing rocks & rubble ------------ */
+function makeRock(radius, detail, seed) {
+  const geo = new THREE.IcosahedronGeometry(radius, detail);
+  geo.deleteAttribute('uv');
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3(), dir = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.set(pos.getX(i), pos.getY(i), pos.getZ(i));
+    dir.copy(v).normalize();
+    const n1 = (fbm(dir.x * 2.2 + seed, dir.y * 2.2, dir.z * 2.2, 3) - 0.5) * 2;
+    const n2 = (fbm(dir.x * 4.5, dir.y * 4.5 + seed, dir.z * 4.5, 3) - 0.5) * 2;
+    const rr = radius * (1 + 0.28 * n1 + 0.12 * n2);
+    v.copy(dir).multiplyScalar(rr);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals(); // faceted, chipped-rock look
+  return geo;
+}
+function rockMat(color, rough) {
+  return new THREE.MeshStandardMaterial({ color, roughness: rough, metalness: 0.02 });
+}
+
+/* ---------- 4. Overhang lip, jamb rocks, threshold ---------------- */
+// pronounced overhang above the mouth (reinforces the natural niche lip)
+const overhang = new THREE.Mesh(
+  makeRock(1.0, 3, 77),
+  rockMat(new THREE.Color(0x5a5247).lerp(new THREE.Color(0x33322b), 0.35).getHex(), 0.8)
+);
+overhang.position.set(0.0, anchor.y + 1.2, anchor.z + 0.35);
+overhang.scale.set(2.45, 0.85, 1.45);
+overhang.rotation.set(0.1, 0.0, 0.05);
+overhang.castShadow = true; overhang.receiveShadow = true;
+cave.add(overhang);
+
+// side jamb rocks framing the opening
+for (const sx of [-1, 1]) {
+  const j = new THREE.Mesh(
+    makeRock(1.0, 3, sx > 0 ? 101 : 113),
+    rockMat(new THREE.Color(0x554d42).lerp(new THREE.Color(0x2f2c25), 0.35).getHex(), 0.78)
+  );
+  j.position.set(sx * 1.55, anchor.y - 0.15, anchor.z + 0.18);
+  j.scale.set(0.85, 2.15, 0.95);
+  j.rotation.set(0.0, sx * 0.2, sx * 0.08);
+  j.castShadow = true; j.receiveShadow = true;
+  cave.add(j);
+}
+
+// wet threshold rock at the base of the mouth
+const threshold = new THREE.Mesh(
+  makeRock(1.0, 2, 201),
+  rockMat(new THREE.Color(0x453f36).lerp(new THREE.Color(0x2a2923), 0.45).getHex(), 0.55)
+);
+threshold.position.set(0.2, 0.32, anchor.z + 0.55);
+threshold.scale.set(1.75, 0.5, 1.15);
+threshold.rotation.set(0, 0.3, 0);
+threshold.castShadow = true; threshold.receiveShadow = true;
+cave.add(threshold);
+
+/* ---------- 5. Scattered rubble & boulders at the base ------------ */
+const bouldPalette = [0x6a6156, 0x746a5e, 0x565045, 0x4a463c, 0x39382f];
+for (let i = 0; i < 32; i++) {
+  const big = rand() < 0.16;
+  const radius = big ? 0.5 + rand() * 0.5 : 0.12 + rand() * 0.34;
+  const geo = makeRock(radius, big ? 2 : 1, i * 13.7 + 3);
+
+  const px = (rand() * 2 - 1) * 4.3;
+  const pz = anchor.z + 0.35 + rand() * 3.9;
+  const distMouth = Math.hypot(px, pz - anchor.z);
+  const damp = smoothstep(2.4, 0.4, distMouth);
+
+  const col = new THREE.Color(bouldPalette[Math.floor(rand() * bouldPalette.length)]);
+  if (rand() < 0.35) col.lerp(new THREE.Color(0x3f4a30), 0.22 + rand() * 0.25); // moss
+  col.lerp(new THREE.Color(0x2a2924), damp * 0.5);                              // damp near mouth
+
+  const m = new THREE.Mesh(geo, rockMat(col.getHex(), 0.9 - damp * 0.35));
+  m.position.set(px, radius * 0.6, pz);
+  m.rotation.set(rand() * 6.28, rand() * 6.28, rand() * 6.28);
+  m.scale.set(1 + (rand() * 0.5 - 0.25), 0.7 + rand() * 0.4, 1 + (rand() * 0.5 - 0.25));
+  m.castShadow = true; m.receiveShadow = true;
+  cave.add(m);
+}
+
+scene.add(cave);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane — receives shadows only
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(160, 160),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting — Hemisphere fill + directional key + fill + rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x5b6472, 0x2a2620, 0.5);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1dc, 2.5);
+key.position.set(6.0, 9.5, 7.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 42;
+key.shadow.camera.left = -11;
+key.shadow.camera.right = 11;
+key.shadow.camera.top = 11;
+key.shadow.camera.bottom = -11;
+key.shadow.bias = -0.0003;
+key.shadow.normalBias = 0.03;
+key.shadow.radius = 4;
+key.target.position.set(0, 1.4, 0.8);
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x8fb3ff, 0.35);
+fill.position.set(-7.5, 4.0, 5.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbfd0ff, 0.9);
+rim.position.set(-4.5, 5.5, -8.5);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Camera position + OrbitControls
+ * ------------------------------------------------------------------ */
+camera.position.set(7.8, anchor.y + 2.5, 10.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, anchor.y + 0.1, 0);
+controls.minDistance = 5;
+controls.maxDistance = 30;
+controls.minPolarAngle = 0.2;
+controls.maxPolarAngle = 1.52; // keep camera above the ground
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,605 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Penny Arcade Pier</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#141031}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* =====================================================================
+   CONFIG / PALETTE — "Penny Arcade Pier", seaside Victorian whimsy, dusk
+   ===================================================================== */
+const SEED = 190407;
+const PAL = {
+  fog:      0x241d40, seaDeep: 0x16324a,
+  duskKey:  0xff9a5e, hemiSky: 0x4a4a85, hemiGnd: 0x2c2018,
+  timber:   0x3a2c1e, ironDark: 0x23262c, cream: 0xe9dfc8,
+  crimson:  0x8e2f3c, teal: 0x1f6f6a, brass: 0xb98a3c,
+  gold:     0xc79a3f, velvet: 0x5a2050, horseWhite: 0xeee7d9,
+  bulbWarm: 0xffd9a0, glowBlue: 0x9fd8ff, gull: 0xd8d4cf
+};
+const DECK_W = 30, DECK_D = 22, SEA_Y = -2.4;
+
+/* =====================================================================
+   PRNG / SMALL HELPERS — all randomness routed through mulberry32
+   ===================================================================== */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rand = mulberry32(SEED);
+const rr = (lo,hi)=>lo+rand()*(hi-lo);
+const box = (w,h,d)=>new THREE.BoxGeometry(w,h,d);
+const cyl = (rt,rb,h,s=14)=>new THREE.CylinderGeometry(rt,rb,h,s);
+function mesh(geo,mat,x=0,y=0,z=0,rx=0,ry=0,rz=0){
+  const m=new THREE.Mesh(geo,mat);
+  m.position.set(x,y,z); m.rotation.set(rx,ry,rz);
+  m.castShadow=true; m.receiveShadow=true; return m;
+}
+function std(color,rough=0.8,metal=0){return new THREE.MeshStandardMaterial({color,roughness:rough,metalness:metal});}
+
+/* =====================================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ===================================================================== */
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 46, 210);
+scene.background = new THREE.Color(PAL.fog);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth/innerHeight, 0.1, 600);
+camera.position.set(16.5, 8.5, 17.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.3, -0.5);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 12; controls.maxDistance = 45;
+controls.minPolarAngle = 0.25; controls.maxPolarAngle = 1.42;
+
+/* =====================================================================
+   PROCEDURAL CANVAS TEXTURES
+   ===================================================================== */
+function canvasTex(w,h,painter,repX=1,repY=1){
+  const c=document.createElement('canvas'); c.width=w; c.height=h;
+  painter(c.getContext('2d'),w,h);
+  const t=new THREE.CanvasTexture(c);
+  t.colorSpace=THREE.SRGBColorSpace; t.anisotropy=4;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping; t.repeat.set(repX,repY);
+  return t;
+}
+const shade=(r,g,b,s)=>`rgb(${(r*s)|0},${(g*s)|0},${(b*s)|0})`;
+
+// weathered boardwalk planks with staggered joints, grain and nails
+const deckTex = canvasTex(1024,1024,(g)=>{
+  g.fillStyle='#241a10'; g.fillRect(0,0,1024,1024);
+  const rows=14, rh=1024/rows;
+  for(let r=0;r<rows;r++){
+    const y=r*rh; let x=-rand()*260;
+    while(x<1024){
+      const len=240+rand()*320, s=0.72+rand()*0.5;
+      g.fillStyle=shade(112,88,58,s);
+      g.fillRect(x+3,y+3,len-6,rh-7);
+      g.strokeStyle='rgba(30,20,10,0.35)'; g.lineWidth=2;
+      for(let k=0;k<7;k++){
+        const gy=y+6+rand()*(rh-12);
+        g.beginPath(); g.moveTo(x+8,gy);
+        g.bezierCurveTo(x+len*0.3,gy+rr(-4,4),x+len*0.7,gy+rr(-4,4),x+len-8,gy);
+        g.stroke();
+      }
+      g.fillStyle='#1b130b';
+      g.beginPath(); g.arc(x+12,y+rh*0.3,3.4,0,7); g.arc(x+12,y+rh*0.7,3.4,0,7); g.fill();
+      x+=len;
+    }
+  }
+},2,2);
+
+// dusk sky gradient with faint stars and cloud streaks
+const skyTex = canvasTex(512,1024,(g)=>{
+  const gr=g.createLinearGradient(0,0,0,1024);
+  gr.addColorStop(0,'#0a0d2c'); gr.addColorStop(0.34,'#2c2154');
+  gr.addColorStop(0.52,'#6e3d68'); gr.addColorStop(0.62,'#c96b4e');
+  gr.addColorStop(0.68,'#f0a35e'); gr.addColorStop(0.78,'#3c3055'); gr.addColorStop(1,'#131230');
+  g.fillStyle=gr; g.fillRect(0,0,512,1024);
+  g.fillStyle='rgba(255,255,240,0.8)';
+  for(let i=0;i<90;i++){const s=rand()*1.5+0.4; g.fillRect(rand()*512,rand()*360,s,s);}
+  for(let i=0;i<14;i++){
+    g.fillStyle=`rgba(240,150,110,${rr(0.05,0.16)})`;
+    const y=430+rand()*180, w=rr(80,260);
+    g.beginPath(); g.ellipse(rand()*512,y,w,rr(4,10),0,0,7); g.fill();
+  }
+});
+
+// candy-striped awning cloth
+const awningTex = canvasTex(256,256,(g)=>{
+  for(let i=0;i<8;i++){g.fillStyle=i%2?'#a83a46':'#efe4cb'; g.fillRect(i*32,0,32,256);}
+  g.fillStyle='rgba(0,0,0,0.12)'; g.fillRect(0,236,256,20);
+},4,1);
+
+function signTex(w,h,painter){
+  const t=canvasTex(w,h,painter); t.wrapS=t.wrapT=THREE.ClampToEdgeWrapping; return t;
+}
+const fasciaSign = signTex(1024,160,(g)=>{
+  g.fillStyle='#123f38'; g.fillRect(0,0,1024,160);
+  g.strokeStyle='#d9b45a'; g.lineWidth=6; g.strokeRect(10,10,1004,140);
+  g.lineWidth=2; g.strokeRect(24,24,976,112);
+  g.fillStyle='#ecd58a'; g.font='bold 92px Georgia,serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText('PENNY ARCADE',512,84);
+  g.fillStyle='#d9b45a';
+  g.beginPath(); g.arc(58,80,10,0,7); g.arc(966,80,10,0,7); g.fill();
+});
+const zaraSign = signTex(512,128,(g)=>{
+  g.fillStyle='#3d1440'; g.fillRect(0,0,512,128);
+  g.strokeStyle='#e0b558'; g.lineWidth=5; g.strokeRect(8,8,496,112);
+  g.fillStyle='#f2d488'; g.font='bold 56px Georgia,serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText('MADAME ZARA',256,44);
+  g.font='italic 34px Georgia,serif'; g.fillText('· FORTUNES TOLD ·',256,94);
+});
+const strengthSign = signTex(512,128,(g)=>{
+  g.fillStyle='#7c1f2b'; g.fillRect(0,0,512,128);
+  g.strokeStyle='#f0d9a0'; g.lineWidth=5; g.strokeRect(8,8,496,112);
+  g.fillStyle='#f5e6bd'; g.font='bold 52px Georgia,serif';
+  g.textAlign='center'; g.textBaseline='middle';
+  g.fillText('TEST YOUR',256,42); g.fillText('STRENGTH',256,92);
+});
+const playSign = signTex(256,256,(g)=>{
+  g.fillStyle='#8e2f3c'; g.fillRect(0,0,256,256);
+  g.strokeStyle='#efe0bd'; g.lineWidth=6; g.strokeRect(10,10,236,236);
+  g.fillStyle='#f5e8c8'; g.textAlign='center'; g.textBaseline='middle';
+  g.font='bold 110px Georgia,serif'; g.fillText('1d',128,92);
+  g.font='bold 44px Georgia,serif'; g.fillText('A PLAY',128,182);
+});
+
+/* =====================================================================
+   SHARED MATERIALS
+   ===================================================================== */
+const MAT = {
+  deck: new THREE.MeshStandardMaterial({map:deckTex,bumpMap:deckTex,bumpScale:0.03,roughness:0.9}),
+  timber: std(PAL.timber,0.9), iron: std(PAL.ironDark,0.55,0.85),
+  brass: std(PAL.brass,0.32,0.95), cream: std(PAL.cream,0.7),
+  crimson: std(PAL.crimson,0.65), teal: std(PAL.teal,0.6),
+  gold: std(PAL.gold,0.35,0.9), velvet: std(PAL.velvet,0.95),
+  horse: std(PAL.horseWhite,0.55), skin: std(0xd8a077,0.75),
+  awning: new THREE.MeshStandardMaterial({map:awningTex,roughness:0.85,side:THREE.DoubleSide}),
+  glass: new THREE.MeshStandardMaterial({color:0xbfd8e0,roughness:0.08,metalness:0.1,transparent:true,opacity:0.16,side:THREE.DoubleSide}),
+  lantern: new THREE.MeshStandardMaterial({color:PAL.bulbWarm,emissive:PAL.bulbWarm,emissiveIntensity:2.2,roughness:0.4}),
+  crystal: new THREE.MeshStandardMaterial({color:PAL.glowBlue,emissive:PAL.glowBlue,emissiveIntensity:2.6,roughness:0.15}),
+  sea: std(PAL.seaDeep,0.32,0.55), gull: std(PAL.gull,0.8),
+  darkOpen: new THREE.MeshStandardMaterial({color:0x1a0f08,emissive:0x38180a,emissiveIntensity:0.5,roughness:1})
+};
+
+/* =====================================================================
+   BUILDER — pier deck, railings, pilings
+   ===================================================================== */
+function buildPierDeck(){
+  const g=new THREE.Group();
+  const top=mesh(new THREE.PlaneGeometry(DECK_W,DECK_D),MAT.deck,0,0,0,-Math.PI/2);
+  top.castShadow=false; g.add(top);
+  g.add(mesh(box(DECK_W,0.5,DECK_D),MAT.timber,0,-0.26,0));
+  // railing posts (instanced) along front, sides and open back corners
+  const posts=[];
+  for(let x=-14.6;x<=14.6;x+=1.46) posts.push([x,10.85]);
+  for(let z=-10.85;z<=10.85;z+=1.45){posts.push([-14.6,z]); posts.push([14.6,z]);}
+  for(let x=-14.6;x<=-12.2;x+=1.2) posts.push([x,-10.85]);
+  for(let x=12.2;x<=14.6;x+=1.2) posts.push([x,-10.85]);
+  const inst=new THREE.InstancedMesh(box(0.09,1.05,0.09),MAT.cream,posts.length);
+  const dm=new THREE.Matrix4();
+  posts.forEach((p,i)=>{dm.setPosition(p[0],0.52,p[1]); inst.setMatrixAt(i,dm);});
+  inst.castShadow=true; g.add(inst);
+  const railTop=(w,d,x,z,ry=0)=>{g.add(mesh(box(w,0.1,d),MAT.cream,x,1.06,z,0,ry)); g.add(mesh(box(w*0.99,0.05,d*0.6),MAT.cream,x,0.6,z,0,ry));};
+  railTop(29.4,0.14,0,10.85); railTop(0.14,21.9,-14.6,0); railTop(0.14,21.9,14.6,0);
+  railTop(3.2,0.14,-13.3,-10.85); railTop(3.2,0.14,13.3,-10.85);
+  // barnacled pilings marching into the sea
+  const pil=[];
+  for(let x=-14;x<=14;x+=3.6){pil.push([x,10.6]); pil.push([x,-10.6]);}
+  for(let z=-7;z<=7;z+=3.5){pil.push([-14.2,z]); pil.push([14.2,z]);}
+  const pInst=new THREE.InstancedMesh(cyl(0.24,0.3,3.8,10),MAT.timber,pil.length);
+  const o=new THREE.Object3D();
+  pil.forEach((p,i)=>{
+    o.position.set(p[0],-2.1,p[1]); o.rotation.set(rr(-0.03,0.03),0,rr(-0.03,0.03));
+    o.updateMatrix(); pInst.setMatrixAt(i,o.matrix);
+  });
+  pInst.castShadow=true; g.add(pInst);
+  return g;
+}
+
+/* =====================================================================
+   BUILDER — arcade facade with chasing fascia bulbs
+   ===================================================================== */
+let fasciaBulbs, fasciaCount;
+function buildArcadeFacade(){
+  const g=new THREE.Group();
+  g.add(mesh(box(23,5.2,2.6),std(0x274a44,0.85),0,2.6,-1.3));
+  g.add(mesh(box(23.6,0.35,3.2),MAT.timber,0,5.35,-1.3));           // cornice
+  g.add(mesh(box(23.6,0.3,3.4),std(0x1d3833,0.9),0,6.35,-1.4));     // roof slab
+  // glowing stall openings with brass frames
+  for(let i=-1;i<=1;i++){
+    g.add(mesh(box(4.6,3.5,0.25),MAT.darkOpen,i*7,1.95,0.06));
+    g.add(mesh(box(4.9,0.18,0.3),MAT.brass,i*7,3.75,0.1));
+    g.add(mesh(box(0.18,3.6,0.3),MAT.brass,i*7-2.4,1.95,0.1));
+    g.add(mesh(box(0.18,3.6,0.3),MAT.brass,i*7+2.4,1.95,0.1));
+  }
+  // fascia board with painted sign
+  g.add(mesh(box(23.4,1.3,0.25),std(0x123f38,0.8),0,5.95,0.05));
+  const sign=mesh(new THREE.PlaneGeometry(21.5,1.15),new THREE.MeshBasicMaterial({map:fasciaSign}),0,5.95,0.19);
+  sign.castShadow=false; g.add(sign);
+  // striped canopy over the stalls
+  g.add(mesh(new THREE.PlaneGeometry(23,2.1),MAT.awning,0,4.72,1.15,-0.4));
+  // pennant flags on the roofline
+  for(let i=-2;i<=2;i++){
+    g.add(mesh(cyl(0.02,0.02,1.2,6),MAT.iron,i*5.4,7.05,-1.4));
+    g.add(mesh(new THREE.ConeGeometry(0.16,0.55,4),i%2?MAT.crimson:MAT.teal,i*5.4,7.5,-1.15,Math.PI/2));
+  }
+  // chasing bulbs: along fascia top edge and down both ends
+  const pts=[];
+  for(let x=-11.4;x<=11.4;x+=0.6) pts.push([x,6.68,0.12]);
+  for(let y=1.0;y<=5.6;y+=0.62){pts.push([-11.65,y,0.12]); pts.push([11.65,y,0.12]);}
+  fasciaCount=pts.length;
+  fasciaBulbs=new THREE.InstancedMesh(new THREE.SphereGeometry(0.085,10,8),new THREE.MeshBasicMaterial({color:0xffffff}),fasciaCount);
+  const o=new THREE.Object3D(), c=new THREE.Color(1,1,1);
+  pts.forEach((p,i)=>{o.position.set(p[0],p[1],p[2]); o.updateMatrix(); fasciaBulbs.setMatrixAt(i,o.matrix); fasciaBulbs.setColorAt(i,c);});
+  g.add(fasciaBulbs);
+  return g;
+}
+
+/* =====================================================================
+   BUILDER — Madame Zara's mechanical fortune-teller booth
+   ===================================================================== */
+let zaraArms, crystalBall, crystalLight, zaraHead;
+function buildFortuneBooth(){
+  const g=new THREE.Group();
+  g.add(mesh(box(1.7,1.0,1.25),std(0x4a2318,0.7),0,0.5,0));            // mahogany cabinet
+  g.add(mesh(box(1.78,0.08,1.33),MAT.brass,0,1.02,0));
+  g.add(mesh(box(0.5,0.16,0.06),MAT.brass,0,0.62,0.64));               // coin slot tray
+  // glass case with brass corner posts
+  g.add(mesh(box(1.6,1.35,1.15),MAT.glass,0,1.75,0));
+  [[-0.78,-0.55],[0.78,-0.55],[-0.78,0.55],[0.78,0.55]].forEach(p=>{
+    g.add(mesh(cyl(0.045,0.045,1.4,8),MAT.brass,p[0],1.75,p[1]));
+  });
+  g.add(mesh(box(1.8,0.14,1.35),std(0x4a2318,0.7),0,2.5,0));
+  // scalloped crest + sign + finial
+  g.add(mesh(box(1.8,0.55,0.12),MAT.velvet,0,2.82,0.6));
+  const s=mesh(new THREE.PlaneGeometry(1.7,0.44),new THREE.MeshBasicMaterial({map:zaraSign}),0,2.82,0.67);
+  s.castShadow=false; g.add(s);
+  g.add(mesh(new THREE.SphereGeometry(0.11,10,8),MAT.gold,0,3.2,0.6));
+  // the turbaned automaton behind her counter
+  const a=new THREE.Group(); a.position.set(0,1.06,-0.18);
+  a.add(mesh(cyl(0.3,0.42,0.7,12),MAT.velvet,0,0.35,0));               // robed torso
+  zaraHead=mesh(new THREE.SphereGeometry(0.19,14,12),MAT.skin,0,0.86,0);
+  a.add(zaraHead);
+  a.add(mesh(new THREE.SphereGeometry(0.23,14,10),MAT.teal,0,1.0,0));  // turban wrap
+  a.add(mesh(new THREE.SphereGeometry(0.07,8,8),new THREE.MeshStandardMaterial({color:0xffe08a,emissive:0xffc24a,emissiveIntensity:1.6}),0,1.02,0.2));
+  a.add(mesh(new THREE.ConeGeometry(0.045,0.3,6),MAT.cream,0,1.28,0.18,0.25));
+  zaraArms=new THREE.Group();
+  zaraArms.add(mesh(cyl(0.05,0.06,0.5,8),MAT.velvet,-0.24,0.42,0.22,0.9,0,0.7));
+  zaraArms.add(mesh(cyl(0.05,0.06,0.5,8),MAT.velvet,0.24,0.42,0.22,0.9,0,-0.7));
+  zaraArms.add(mesh(new THREE.SphereGeometry(0.06,8,8),MAT.skin,-0.38,0.33,0.36));
+  zaraArms.add(mesh(new THREE.SphereGeometry(0.06,8,8),MAT.skin,0.38,0.33,0.36));
+  a.add(zaraArms);
+  crystalBall=mesh(new THREE.SphereGeometry(0.15,16,14),MAT.crystal,0,0.28,0.34);
+  a.add(crystalBall);
+  a.add(mesh(cyl(0.09,0.12,0.1,10),MAT.brass,0,0.16,0.34));
+  crystalLight=new THREE.PointLight(PAL.glowBlue,4,4.5,2);
+  crystalLight.position.set(0,0.45,0.4); a.add(crystalLight);
+  g.add(a);
+  return g;
+}
+
+/* =====================================================================
+   BUILDER — strength-test high striker with bell tower
+   ===================================================================== */
+let strikerPuck, strikerBell, strikerMallet;
+function buildStrengthTester(){
+  const g=new THREE.Group();
+  g.add(mesh(box(1.7,0.24,1.7),MAT.timber,0,0.12,0));
+  g.add(mesh(cyl(0.3,0.34,0.22,12),MAT.iron,0,0.34,0.62));            // striking anvil pad
+  const tower=mesh(box(0.3,4.7,0.3),MAT.crimson,0,2.6,0); g.add(tower);
+  for(let y=0.8;y<4.6;y+=0.42) g.add(mesh(box(0.4,0.06,0.06),MAT.cream,0,y,0.16)); // gradations
+  g.add(mesh(box(0.05,4.4,0.05),MAT.brass,-0.2,2.5,0.2));             // puck guide rails
+  g.add(mesh(box(0.05,4.4,0.05),MAT.brass,0.2,2.5,0.2));
+  const sb=mesh(new THREE.PlaneGeometry(1.5,0.4),new THREE.MeshBasicMaterial({map:strengthSign}),0,3.1,0.24);
+  sb.castShadow=false; g.add(sb);
+  // bell housed under a little shingled cap
+  strikerBell=new THREE.Group(); strikerBell.position.set(0,5.05,0.1);
+  const bellPts=[new THREE.Vector2(0.02,0.4),new THREE.Vector2(0.13,0.36),new THREE.Vector2(0.2,0.26),new THREE.Vector2(0.25,0.14),new THREE.Vector2(0.3,0.04),new THREE.Vector2(0.26,0)];
+  strikerBell.add(mesh(new THREE.LatheGeometry(bellPts,16),MAT.brass,0,-0.35,0));
+  g.add(strikerBell);
+  g.add(mesh(new THREE.ConeGeometry(0.55,0.45,8),MAT.teal,0,5.32,0.05));
+  g.add(mesh(new THREE.SphereGeometry(0.08,8,8),MAT.gold,0,5.58,0.05));
+  strikerPuck=mesh(cyl(0.16,0.16,0.14,12),MAT.gold,0,0.55,0.2); g.add(strikerPuck);
+  // swinging mallet pivoted beside the pad
+  strikerMallet=new THREE.Group(); strikerMallet.position.set(0.75,0.28,0.62);
+  strikerMallet.add(mesh(cyl(0.035,0.045,1.3,8),MAT.timber,0,0.65,0));
+  strikerMallet.add(mesh(cyl(0.16,0.16,0.42,10),MAT.iron,0,1.32,0,0,0,Math.PI/2));
+  strikerMallet.rotation.z=-1.9;
+  g.add(strikerMallet);
+  return g;
+}
+
+/* =====================================================================
+   BUILDER — carousel horse on a brass pole
+   ===================================================================== */
+let horseBob;
+function buildCarouselHorse(){
+  const g=new THREE.Group();
+  g.add(mesh(cyl(1.35,1.45,0.2,20),MAT.crimson,0,0.1,0));
+  g.add(mesh(new THREE.TorusGeometry(1.35,0.045,8,28),MAT.gold,0,0.21,0,Math.PI/2));
+  g.add(mesh(cyl(0.05,0.05,3.3,10),MAT.brass,0,1.85,0));               // the brass pole
+  g.add(mesh(new THREE.SphereGeometry(0.12,10,8),MAT.gold,0,3.55,0));
+  horseBob=new THREE.Group(); horseBob.position.y=1.25;
+  const h=new THREE.Group();
+  const body=mesh(new THREE.CapsuleGeometry(0.3,0.75,6,12),MAT.horse,0,0,0,Math.PI/2);
+  h.add(body);
+  h.add(mesh(cyl(0.16,0.24,0.55,10),MAT.horse,0,0.34,0.42,-0.65));     // arched neck
+  h.add(mesh(box(0.2,0.22,0.46),MAT.horse,0,0.62,0.66,0.5));           // head
+  h.add(mesh(box(0.14,0.15,0.2),MAT.horse,0,0.5,0.84,0.5));            // muzzle
+  h.add(mesh(new THREE.ConeGeometry(0.05,0.16,6),MAT.horse,-0.07,0.8,0.62));
+  h.add(mesh(new THREE.ConeGeometry(0.05,0.16,6),MAT.horse,0.07,0.8,0.62));
+  for(let i=0;i<5;i++) h.add(mesh(box(0.07,0.16,0.12),MAT.gold,0,0.52-i*0.07,0.38-i*0.1,rr(-0.3,0.3))); // mane curls
+  h.add(mesh(new THREE.ConeGeometry(0.1,0.55,8),MAT.gold,0,0.16,-0.62,1.9)); // flowing tail
+  h.add(mesh(box(0.36,0.06,0.52),MAT.teal,0,0.3,-0.02));               // blanket
+  h.add(mesh(box(0.3,0.09,0.38),MAT.crimson,0,0.36,-0.02));            // saddle
+  h.add(mesh(new THREE.TorusGeometry(0.33,0.02,6,20),MAT.gold,0,0.02,-0.02,0,Math.PI/2));
+  function leg(x,z,hip,knee){
+    const L=new THREE.Group(); L.position.set(x,-0.16,z); L.rotation.x=hip;
+    L.add(mesh(cyl(0.07,0.055,0.34,8),MAT.horse,0,-0.17,0));
+    const lo=new THREE.Group(); lo.position.y=-0.34; lo.rotation.x=knee;
+    lo.add(mesh(cyl(0.05,0.04,0.32,8),MAT.horse,0,-0.16,0));
+    lo.add(mesh(cyl(0.05,0.06,0.09,8),MAT.gold,0,-0.34,0));
+    L.add(lo); return L;
+  }
+  h.add(leg(-0.16,0.4,-1.15,1.9)); h.add(leg(0.16,0.44,-0.9,2.1));     // front legs tucked
+  h.add(leg(-0.16,-0.4,0.75,0.4)); h.add(leg(0.16,-0.44,0.95,0.3));    // rear legs kicked back
+  horseBob.add(h); g.add(horseBob);
+  return g;
+}
+
+/* =====================================================================
+   BUILDER — cast-iron lamp post / draped bulb strings
+   ===================================================================== */
+function buildLampPost(){
+  const g=new THREE.Group();
+  g.add(mesh(cyl(0.3,0.38,0.22,12),MAT.iron,0,0.11,0));
+  g.add(mesh(cyl(0.14,0.26,0.5,12),MAT.iron,0,0.45,0));
+  g.add(mesh(cyl(0.07,0.1,3.9,10),MAT.iron,0,2.6,0));                  // fluted column
+  g.add(mesh(new THREE.TorusGeometry(0.12,0.03,6,14),MAT.iron,0,4.5,0,Math.PI/2));
+  g.add(mesh(cyl(0.02,0.16,0.3,8),MAT.iron,0,4.72,0));
+  g.add(mesh(new THREE.SphereGeometry(0.24,14,12),MAT.lantern,0,5.0,0));
+  g.add(mesh(new THREE.ConeGeometry(0.14,0.2,10),MAT.iron,0,5.26,0));
+  return g;
+}
+function buildBulbStrings(anchors){
+  const pts=[];
+  anchors.forEach(([a,b])=>{
+    const n=Math.round(a.distanceTo(b)/0.72);
+    for(let i=1;i<n;i++){
+      const u=i/n, p=a.clone().lerp(b,u);
+      p.y-=1.05*4*u*(1-u)*(0.9+rand()*0.2);
+      pts.push(p);
+    }
+  });
+  const inst=new THREE.InstancedMesh(new THREE.SphereGeometry(0.075,10,8),new THREE.MeshBasicMaterial({color:0xffd9a0}),pts.length);
+  const o=new THREE.Object3D();
+  pts.forEach((p,i)=>{o.position.copy(p); o.updateMatrix(); inst.setMatrixAt(i,o.matrix);});
+  return inst;
+}
+
+/* =====================================================================
+   BUILDER — brass telescope, bench, gull, small props
+   ===================================================================== */
+let telescopeYaw;
+function buildTelescope(){
+  const g=new THREE.Group();
+  g.add(mesh(cyl(0.28,0.36,0.1,12),MAT.iron,0,0.05,0));
+  g.add(mesh(cyl(0.07,0.1,1.05,10),MAT.iron,0,0.6,0));
+  telescopeYaw=new THREE.Group(); telescopeYaw.position.y=1.16;
+  telescopeYaw.add(mesh(new THREE.SphereGeometry(0.09,10,8),MAT.brass,0,0,0));
+  const tube=new THREE.Group(); tube.rotation.x=-0.18; telescopeYaw.add(tube);
+  tube.add(mesh(cyl(0.085,0.085,0.85,12),MAT.brass,0,0,0.28,Math.PI/2));
+  tube.add(mesh(cyl(0.12,0.1,0.3,12),MAT.brass,0,0,0.82,Math.PI/2));
+  tube.add(mesh(cyl(0.05,0.06,0.16,10),MAT.iron,0,0,-0.2,Math.PI/2));
+  g.add(telescopeYaw);
+  g.add(mesh(box(0.26,0.3,0.16),MAT.iron,0,0.85,-0.18));               // coin box
+  return g;
+}
+function buildBench(){
+  const g=new THREE.Group();
+  [[-0.85],[0.85]].forEach(([x])=>{
+    g.add(mesh(box(0.08,0.44,0.5),MAT.iron,x,0.22,0));
+    g.add(mesh(box(0.08,0.5,0.08),MAT.iron,x,0.68,-0.24,0.15));
+  });
+  for(let i=0;i<4;i++) g.add(mesh(box(1.9,0.05,0.1),MAT.teal,0,0.46,0.18-i*0.13));
+  for(let i=0;i<3;i++) g.add(mesh(box(1.9,0.05,0.09),MAT.teal,0,0.6+i*0.16,-0.27-i*0.025,0.15));
+  return g;
+}
+const gulls=[];
+function buildGull(){
+  const g=new THREE.Group();
+  g.add(mesh(new THREE.CapsuleGeometry(0.09,0.24,4,8),MAT.gull,0,0,0,Math.PI/2));
+  g.add(mesh(new THREE.ConeGeometry(0.035,0.14,6),std(0xe0a03c,0.7),0,0.01,0.24,Math.PI/2));
+  const wL=new THREE.Group(), wR=new THREE.Group();
+  wL.add(mesh(box(0.55,0.02,0.2),MAT.gull,-0.29,0,0));
+  wR.add(mesh(box(0.55,0.02,0.2),MAT.gull,0.29,0,0));
+  g.add(wL); g.add(wR); g.userData={wL,wR};
+  return g;
+}
+function buildBarrel(){
+  const g=new THREE.Group();
+  g.add(mesh(cyl(0.3,0.26,0.62,12),MAT.timber,0,0.31,0));
+  g.add(mesh(new THREE.TorusGeometry(0.3,0.02,6,16),MAT.iron,0,0.5,0,Math.PI/2));
+  g.add(mesh(new THREE.TorusGeometry(0.3,0.02,6,16),MAT.iron,0,0.14,0,Math.PI/2));
+  for(let i=0;i<6;i++) g.add(mesh(new THREE.SphereGeometry(0.055,8,8),i%2?MAT.crimson:MAT.cream,rr(-0.16,0.16),0.66,rr(-0.16,0.16)));
+  return g;
+}
+function buildLifeRing(){
+  const g=new THREE.Group();
+  g.add(mesh(new THREE.TorusGeometry(0.3,0.085,10,22),MAT.cream,0,0,0));
+  for(let i=0;i<4;i++){
+    const a=i*Math.PI/2+Math.PI/4;
+    g.add(mesh(box(0.16,0.18,0.05),MAT.crimson,Math.cos(a)*0.3,Math.sin(a)*0.3,0,0,0,a));
+  }
+  return g;
+}
+function buildPlaySign(){
+  const g=new THREE.Group();
+  const b=mesh(new THREE.PlaneGeometry(0.8,0.8),new THREE.MeshBasicMaterial({map:playSign,side:THREE.DoubleSide}),0,0.62,0.13,-0.18);
+  g.add(b);
+  g.add(mesh(box(0.06,1.1,0.06),MAT.timber,-0.34,0.5,0,0.35));
+  g.add(mesh(box(0.06,1.1,0.06),MAT.timber,0.34,0.5,0,0.35));
+  g.add(mesh(box(0.06,1.1,0.06),MAT.timber,-0.34,0.5,0.28,-0.2));
+  g.add(mesh(box(0.06,1.1,0.06),MAT.timber,0.34,0.5,0.28,-0.2));
+  return g;
+}
+
+/* =====================================================================
+   SEA, SKY DOME AND SETTING SUN
+   ===================================================================== */
+const seaGeo=new THREE.PlaneGeometry(620,620,72,72);
+const sea=new THREE.Mesh(seaGeo,MAT.sea);
+sea.rotation.x=-Math.PI/2; sea.position.y=SEA_Y; sea.receiveShadow=true;
+scene.add(sea);
+const seaBase=Float32Array.from(seaGeo.attributes.position.array);
+
+const dome=new THREE.Mesh(new THREE.SphereGeometry(280,32,20),
+  new THREE.MeshBasicMaterial({map:skyTex,side:THREE.BackSide,fog:false}));
+dome.position.y=-4; scene.add(dome);
+
+const sun=new THREE.Mesh(new THREE.CircleGeometry(15,28),
+  new THREE.MeshBasicMaterial({color:0xffc07a,fog:false,transparent:true,opacity:0.9,blending:THREE.AdditiveBlending}));
+sun.position.set(-205,6,-125); sun.lookAt(0,2,0); scene.add(sun);
+
+/* =====================================================================
+   ASSEMBLY / LAYOUT
+   ===================================================================== */
+const place=(g,x,z,ry=0)=>{g.position.set(x,0,z); g.rotation.y=ry; scene.add(g); return g;};
+place(buildPierDeck(),0,0);
+place(buildArcadeFacade(),0,-7.5);
+place(buildFortuneBooth(),-8.2,-3.4,0.38);
+place(buildStrengthTester(),7.6,-3.0,-0.35);
+place(buildCarouselHorse(),-0.7,-0.9,0.6);
+const lampPosts=[[-12.6,4.6],[12.6,4.6],[-12.6,-4.6],[12.6,-4.6]];
+lampPosts.forEach(p=>place(buildLampPost(),p[0],p[1]));
+const V=(x,y,z)=>new THREE.Vector3(x,y,z);
+scene.add(buildBulbStrings([
+  [V(-12.6,4.85,4.6),V(12.6,4.85,4.6)],
+  [V(-12.6,4.85,-4.6),V(12.6,4.85,-4.6)],
+  [V(-12.6,4.85,4.6),V(-12.6,4.85,-4.6)],
+  [V(12.6,4.85,4.6),V(12.6,4.85,-4.6)]
+]));
+place(buildTelescope(),4.4,9.7,0.2);
+place(buildBench(),-5.2,8.9,Math.PI);
+place(buildBench(),9.8,8.6,Math.PI+0.3);
+place(buildBarrel(),-11.6,0.6); place(buildBarrel(),11.3,1.9,1.2);
+const ring=buildLifeRing(); ring.position.set(7.4,0.62,10.83); scene.add(ring);
+place(buildPlaySign(),-3.6,-5.6,0.5);
+for(let i=0;i<4;i++){
+  const gl=buildGull(); scene.add(gl);
+  gulls.push({g:gl,r:rr(9,15),h:rr(7,10.5),sp:rr(0.14,0.24),ph:rand()*6.28,wf:rr(5,7)});
+}
+
+/* =====================================================================
+   LIGHTING RIG — low dusk sun, indigo fill, warm sources
+   ===================================================================== */
+const hemi=new THREE.HemisphereLight(PAL.hemiSky,PAL.hemiGnd,0.55); scene.add(hemi);
+const key=new THREE.DirectionalLight(PAL.duskKey,2.4);
+key.position.set(-30,13,-17); key.castShadow=true;
+key.shadow.mapSize.set(2048,2048);
+key.shadow.camera.left=-20; key.shadow.camera.right=20;
+key.shadow.camera.top=20; key.shadow.camera.bottom=-20;
+key.shadow.camera.near=2; key.shadow.camera.far=90;
+key.shadow.bias=-0.0004;
+scene.add(key); scene.add(key.target);
+const arcadeGlow=new THREE.PointLight(0xffb066,12,16,2);
+arcadeGlow.position.set(0,3.0,-6.4); scene.add(arcadeGlow);
+const lampLights=[];
+[[-12.6,4.6],[12.6,4.6]].forEach(p=>{
+  const l=new THREE.PointLight(0xffc37e,7,12,2);
+  l.position.set(p[0],5.0,p[1]); scene.add(l); lampLights.push(l);
+});
+
+/* =====================================================================
+   ANIMATION LOOP — chase bulbs, gallop bob, gulls, sea, striker, glow
+   ===================================================================== */
+const clock=new THREE.Clock();
+const C_ON=new THREE.Color(2.6,1.9,1.0), C_OFF=new THREE.Color(0.38,0.22,0.12);
+let lastStep=-1;
+const puckCycle=(t)=>{                     // 7 s loop: whack, ding, drop
+  const p=t%7;
+  if(p<0.35) return 0.55;
+  if(p<1.15){const u=(p-0.35)/0.8; return 0.55+3.95*Math.sin(u*Math.PI/2);}
+  if(p<2.35){const u=(p-1.15)/1.2; return Math.max(0.55,4.5-3.95*u*u);}
+  return 0.55;
+};
+function animate(){
+  const t=clock.getElapsedTime();
+  // 1 — bulbs chase in sequence along the arcade fascia
+  const step=Math.floor(t*7)%3;
+  if(step!==lastStep){
+    for(let i=0;i<fasciaCount;i++) fasciaBulbs.setColorAt(i,(i+step)%3===0?C_ON:C_OFF);
+    fasciaBulbs.instanceColor.needsUpdate=true; lastStep=step;
+  }
+  // 2 — carousel horse bobs and swings gently on its brass pole
+  horseBob.position.y=1.25+0.3*Math.sin(t*1.5);
+  horseBob.rotation.y=0.15*Math.sin(t*0.5);
+  // 3 — gulls wheel over the pier, wings beating
+  gulls.forEach(gu=>{
+    const a=gu.ph+t*gu.sp;
+    gu.g.position.set(Math.cos(a)*gu.r,gu.h+Math.sin(t*0.7+gu.ph)*0.5,Math.sin(a)*gu.r-2);
+    gu.g.rotation.y=-a-Math.PI/2;
+    const f=Math.sin(t*gu.wf+gu.ph)*0.55;
+    gu.g.userData.wL.rotation.z=f; gu.g.userData.wR.rotation.z=-f;
+  });
+  // 4 — slow rolling swell on the sea
+  const pos=seaGeo.attributes.position;
+  for(let i=0;i<pos.count;i++){
+    const x=seaBase[i*3], y=seaBase[i*3+1];
+    pos.array[i*3+2]=0.16*Math.sin(x*0.08+t*0.9)+0.12*Math.sin(y*0.1+t*0.7)+0.05*Math.sin((x+y)*0.22+t*1.6);
+  }
+  pos.needsUpdate=true; seaGeo.computeVertexNormals();
+  // 5 — strength tester: mallet swing, puck flight, bell wobble
+  const p7=t%7;
+  strikerMallet.rotation.z=p7<0.35?-1.9+1.75*Math.sin((p7/0.35)*Math.PI/2):-1.9+1.75*Math.max(0,1-(p7-0.35)/1.4);
+  strikerPuck.position.y=puckCycle(t);
+  strikerBell.rotation.z=p7>1.15?0.16*Math.sin((p7-1.15)*26)*Math.exp(-(p7-1.15)*3.2):0;
+  // 6 — Madame Zara sways, her crystal ball breathes light
+  zaraArms.rotation.y=0.16*Math.sin(t*0.8);
+  zaraHead.rotation.z=0.1*Math.sin(t*0.8+1.2);
+  const pulse=1.9+1.1*Math.sin(t*2.3);
+  MAT.crystal.emissiveIntensity=pulse; crystalLight.intensity=3+1.6*Math.sin(t*2.3);
+  crystalBall.scale.setScalar(1+0.05*Math.sin(t*2.3));
+  // 7 — gas-lamp flicker and telescope drift
+  lampLights.forEach((l,i)=>{l.intensity=7+0.5*Math.sin(t*13.7+i*2.6)+0.35*Math.sin(t*7.3+i);});
+  telescopeYaw.rotation.y=0.35*Math.sin(t*0.16);
+  controls.update();
+  renderer.render(scene,camera);
+}
+renderer.setAnimationLoop(animate);
+
+/* =====================================================================
+   RESIZE
+   ===================================================================== */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Chrome Spider Bot — Liquid Chrome</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0c0d10; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ---------------------------------------------------------------------------
+   Scene + Camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+
+// Neutral dark studio backdrop (soft radial gradient)
+function makeBackdrop() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(512, 430, 80, 512, 560, 760);
+  g.addColorStop(0.0, '#3a3e48');
+  g.addColorStop(0.45, '#22242b');
+  g.addColorStop(1.0, '#0b0c0f');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1024, 1024);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeBackdrop();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.8, 3.0, 6.4);
+
+/* ---------------------------------------------------------------------------
+   Environment map for chrome reflections (fully procedural studio room)
+--------------------------------------------------------------------------- */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere fill + directional key + fill + rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xcadcff, 0x1a1b1f, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(6, 9.5, 5.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -4.5;
+key.shadow.camera.right = 4.5;
+key.shadow.camera.top = 4.5;
+key.shadow.camera.bottom = -4.5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fbcff, 0.7);
+fill.position.set(-6.5, 3.5, 3.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.7);
+rim.position.set(-3.5, 4.5, -6.5);
+scene.add(rim);
+
+const glint = new THREE.PointLight(0xffffff, 6.0, 22, 2.0);
+glint.position.set(2.5, 2.2, 3.5);
+scene.add(glint);
+
+/* ---------------------------------------------------------------------------
+   Materials — liquid chrome
+--------------------------------------------------------------------------- */
+const chrome = new THREE.MeshPhysicalMaterial({
+  color: 0xf6f8fc,
+  metalness: 1.0,
+  roughness: 0.055,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  envMapIntensity: 1.7
+});
+
+const dropletMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 1.0,
+  roughness: 0.015,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.02,
+  envMapIntensity: 2.15
+});
+
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0e1016,
+  metalness: 0.25,
+  roughness: 0.07,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.05,
+  envMapIntensity: 1.3
+});
+
+/* ---------------------------------------------------------------------------
+   Build the ONE spider
+--------------------------------------------------------------------------- */
+const spider = new THREE.Group();
+scene.add(spider);
+
+const droplets = []; // animated beads that roll along the limbs
+
+// -- Teardrop profile (lathe) for the abdomen ------------------------------
+function makeTeardropGeometry() {
+  const cps = [
+    [0.0010, 0.86], [0.140, 0.72], [0.300, 0.50], [0.450, 0.20],
+    [0.550, -0.12], [0.570, -0.42], [0.470, -0.68], [0.290, -0.85], [0.0010, -0.93]
+  ].map(p => new THREE.Vector3(p[0], p[1], 0));
+  const curve = new THREE.CatmullRomCurve3(cps);
+  const pts3 = curve.getPoints(90);
+  const pts2 = pts3.map(p => new THREE.Vector2(Math.max(p.x, 0.0008), p.y));
+  return new THREE.LatheGeometry(pts2, 96);
+}
+
+// Abdomen (mirror-smooth teardrop)
+const abdomen = new THREE.Mesh(makeTeardropGeometry(), chrome);
+abdomen.rotation.x = Math.PI / 2 + 0.16;   // lay it along Z, tail lifted a touch
+abdomen.position.set(0, 0.46, -0.80);
+abdomen.castShadow = true;
+abdomen.receiveShadow = true;
+spider.add(abdomen);
+
+// Cephalothorax (front body / head-thorax)
+const ceph = new THREE.Mesh(new THREE.SphereGeometry(1, 56, 40), chrome);
+ceph.scale.set(0.60, 0.34, 0.72);
+ceph.position.set(0, 0.35, 0.55);
+ceph.castShadow = true;
+ceph.receiveShadow = true;
+spider.add(ceph);
+
+// Pedicel (waist connecting the two body sections)
+const pedicel = new THREE.Mesh(new THREE.SphereGeometry(1, 32, 24), chrome);
+pedicel.scale.set(0.19, 0.17, 0.24);
+pedicel.position.set(0, 0.37, 0.02);
+pedicel.castShadow = true;
+spider.add(pedicel);
+
+// Eyes (eight, spider-style cluster)
+const eyeDefs = [
+  [0.10, 0.52, 1.05, 0.056], [-0.10, 0.52, 1.05, 0.056],
+  [0.21, 0.54, 0.96, 0.040], [-0.21, 0.54, 0.96, 0.040],
+  [0.085, 0.60, 0.92, 0.033], [-0.085, 0.60, 0.92, 0.033],
+  [0.255, 0.59, 0.88, 0.028], [-0.255, 0.59, 0.88, 0.028]
+];
+for (const [x, y, z, r] of eyeDefs) {
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), eyeMat);
+  eye.position.set(x, y, z);
+  eye.castShadow = true;
+  spider.add(eye);
+}
+
+// Chelicerae / fangs
+for (const s of [-1, 1]) {
+  const fang = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.24, 14), chrome);
+  fang.position.set(0.11 * s, 0.19, 1.10);
+  fang.rotation.set(0.9, 0, -0.25 * s);
+  fang.castShadow = true;
+  spider.add(fang);
+}
+
+// -- Leg builder -----------------------------------------------------------
+function segmentMesh(a, b, r1, r2) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(r2, r1, len, 22, 1);
+  geo.translate(0, len / 2, 0);
+  const m = new THREE.Mesh(geo, chrome);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  m.position.copy(a);
+  m.castShadow = true;
+  return m;
+}
+
+function makeLeg() {
+  const leg = new THREE.Group();
+
+  // Jointed, arched profile (leg extends along +X, up is +Y). Ends in a pin.
+  const P = [
+    new THREE.Vector3(0.00, 0.00, 0.00),
+    new THREE.Vector3(0.55, 0.46, 0.00),
+    new THREE.Vector3(1.25, 0.63, 0.00),
+    new THREE.Vector3(1.86, -0.16, 0.00),
+    new THREE.Vector3(2.16, -1.35, 0.00)
+  ];
+  const R = [0.150, 0.115, 0.085, 0.050, 0.007]; // taper to a fine pin tip
+
+  // shoulder / coxa joint
+  const shoulder = new THREE.Mesh(new THREE.SphereGeometry(0.185, 30, 22), chrome);
+  shoulder.castShadow = true;
+  leg.add(shoulder);
+
+  for (let i = 0; i < P.length - 1; i++) {
+    leg.add(segmentMesh(P[i], P[i + 1], R[i], R[i + 1]));
+    if (i > 0) {
+      const joint = new THREE.Mesh(new THREE.SphereGeometry(R[i] * 1.3, 24, 18), chrome);
+      joint.position.copy(P[i]);
+      joint.castShadow = true;
+      leg.add(joint);
+    }
+  }
+
+  // pin-tip accent
+  const pin = new THREE.Mesh(new THREE.SphereGeometry(0.012, 12, 10), chrome);
+  pin.position.copy(P[4]);
+  leg.add(pin);
+
+  // beaded droplet accents that roll along the limb
+  const dropSegs = [0, 1, 3];
+  dropSegs.forEach((si, k) => {
+    const a = P[si].clone();
+    const b = P[si + 1].clone();
+    const rAvg = (R[si] + R[si + 1]) / 2;
+    const dropR = 0.028 + 0.018 * (k % 2);
+    const bead = new THREE.Mesh(new THREE.SphereGeometry(dropR, 22, 16), dropletMat);
+    bead.castShadow = true;
+    leg.add(bead);
+
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const perp = new THREE.Vector3(-dir.y, dir.x, 0).normalize().multiplyScalar(k % 2 ? 1 : -1);
+    droplets.push({
+      mesh: bead, a, b, perp,
+      off: rAvg + dropR * 0.55,
+      phase: si * 0.7 + k * 0.55,
+      speed: 0.55 + 0.12 * k
+    });
+  });
+
+  return leg;
+}
+
+// Place 8 legs (4 per side), fanned front-to-back
+const legDefs = [
+  { z: 0.95, yaw: 54 },
+  { z: 0.50, yaw: 20 },
+  { z: 0.05, yaw: -16 },
+  { z: -0.40, yaw: -50 }
+];
+const ATTACH_X = 0.45;
+const ATTACH_Y = 0.36;
+
+for (const def of legDefs) {
+  const right = makeLeg();
+  right.position.set(ATTACH_X, ATTACH_Y, def.z);
+  right.rotation.y = THREE.MathUtils.degToRad(-def.yaw);
+  spider.add(right);
+
+  const left = makeLeg();
+  left.position.set(-ATTACH_X, ATTACH_Y, def.z);
+  left.rotation.y = Math.PI + THREE.MathUtils.degToRad(def.yaw);
+  spider.add(left);
+}
+
+// A few static beaded accents on the body
+const bodyBeads = [
+  [0.05, 0.72, -0.55, 0.05], [-0.16, 0.66, -1.05, 0.045],
+  [0.20, 0.60, -1.25, 0.038], [0.0, 0.66, 0.55, 0.036],
+  [-0.22, 0.44, 0.30, 0.030]
+];
+for (const [x, y, z, r] of bodyBeads) {
+  const b = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), dropletMat);
+  b.position.set(x, y, z);
+  b.castShadow = true;
+  spider.add(b);
+}
+
+/* ---------------------------------------------------------------------------
+   Ground plane — only receives shadows
+--------------------------------------------------------------------------- */
+const FOOT_Y = ATTACH_Y - 1.35;
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(40, 72),
+  new THREE.ShadowMaterial({ opacity: 0.4 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = FOOT_Y;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, 0.05, -0.15);
+controls.minDistance = 3.2;
+controls.maxDistance = 18;
+controls.maxPolarAngle = Math.PI * 0.5 + 0.16;
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Animation loop
+--------------------------------------------------------------------------- */
+const clock = new THREE.Clock();
+const tmp = new THREE.Vector3();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // droplets bead and roll (ping-pong) along the limbs
+  for (const d of droplets) {
+    const s = d.phase + t * d.speed;
+    const tt = Math.abs((s % 2) - 1);
+    tmp.lerpVectors(d.a, d.b, tt).addScaledVector(d.perp, d.off);
+    d.mesh.position.copy(tmp);
+  }
+
+  // subtle idle life
+  spider.position.y = Math.sin(t * 0.9) * 0.012;
+  spider.rotation.z = Math.sin(t * 0.5) * 0.008;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------------------------------------------------------------------------
+   Resize
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

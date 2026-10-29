@@ -1,0 +1,630 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Japanese Tea House Room</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#e6dac2}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   JAPANESE TEA HOUSE ROOM — serene minimalist, entirely procedural.
+   config/palette -> prng/helpers -> textures -> materials -> builders ->
+   assembly -> lighting -> render setup -> animation loop -> resize
+   ========================================================================== */
+
+/* ---------- 1. CONFIG & PALETTE ------------------------------------------ */
+const CONFIG = { seed: 41007, roomW: 10, roomD: 9, roomH: 3.3, eave: 6.8, shadowRes: 2048,
+                 fog: 0xe7dcc4, fogDensity: 0.017 };
+const PAL = {
+  tatami: 0xcabf8c, tatamiEdge: 0x33302a, plaster: 0xded3ba, postWood: 0x9a7148,
+  darkWood: 0x5f4529, deckWood: 0xb08a58, paper: 0xfff4de, iron: 0x38352f,
+  celadon: 0x7e948b, cream: 0xeee6d6, matcha: 0x86a545, bamboo: 0xc7bb72,
+  moss: 0x5f7d46, gravel: 0xa9a394, stone: 0x8e8d86, maple: 0xc25334,
+  silk: 0xa89268, ink: 0x2c2a28, foliage: 0x51703f, sun: 0xffd8a2
+};
+
+/* ---------- 2. SEEDED PRNG & GEOMETRY HELPERS ---------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + rand() * (b - a);
+const shaded = (m) => { m.castShadow = true; m.receiveShadow = true; return m; };
+const noCast = (m) => { m.castShadow = false; return m; };
+function box(w, h, d, mat, x = 0, y = 0, z = 0){
+  const m = shaded(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+  m.position.set(x, y, z); return m;
+}
+const cyl = (rt, rb, h, mat, seg = 12) =>
+  shaded(new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat));
+const lathe = (profile, mat, seg = 22) =>
+  shaded(new THREE.Mesh(new THREE.LatheGeometry(profile.map(p => new THREE.Vector2(p[0], p[1])), seg), mat));
+function tube(pts, radius, mat, seg = 26){
+  const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p[0], p[1], p[2])));
+  return shaded(new THREE.Mesh(new THREE.TubeGeometry(curve, seg, radius, 6, false), mat));
+}
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES -------------------------------- */
+const newCanvas = (s) => { const c = document.createElement('canvas'); c.width = c.height = s; return c; };
+function finishTex(canvas, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+/** Two woven tatami mats with dark cloth edging, tiled across the floor. */
+function texTatami(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#cdc290'; g.fillRect(0, 0, S, S);
+  for (let mat = 0; mat < 2; mat++){
+    const x0 = mat * S / 2;
+    g.fillStyle = '#c6ba85'; g.fillRect(x0 + 6, 4, S / 2 - 12, S - 8);
+    g.strokeStyle = 'rgba(150,138,96,0.55)'; g.lineWidth = 1.4;
+    for (let y = 12; y < S - 8; y += 5){
+      g.beginPath(); g.moveTo(x0 + 8, y + Math.sin(y * 0.3) * 0.7); g.lineTo(x0 + S / 2 - 8, y); g.stroke();
+    }
+    for (let i = 0; i < 220; i++){
+      g.fillStyle = `rgba(${190 + rand() * 50 | 0},${178 + rand() * 45 | 0},${120 + rand() * 40 | 0},${rand() * 0.35})`;
+      g.fillRect(x0 + 8 + rand() * (S / 2 - 16), 6 + rand() * (S - 12), 2 + rand() * 14, 1.6);
+    }
+    g.fillStyle = '#312e28'; g.fillRect(x0 + 1, 0, 7, S); g.fillRect(x0 + S / 2 - 8, 0, 7, S);
+    g.fillStyle = 'rgba(90,84,66,0.5)'; g.fillRect(x0, 0, 2, S);
+  }
+  return finishTex(c, 5, 5);   // one tile == two 1.0 x 1.8 m mats
+}
+/** Shoji panel: warm rice paper, fibre flecks and a dark lattice grid. */
+function texShoji(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#fff5e2'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 700; i++){
+    g.strokeStyle = `rgba(214,198,168,${rand() * 0.35})`; g.lineWidth = 0.6 + rand();
+    g.beginPath(); const x = rand() * S, y = rand() * S;
+    g.moveTo(x, y); g.lineTo(x + rr(-26, 26), y + rr(-6, 6)); g.stroke();
+  }
+  g.fillStyle = '#6a4e30';
+  for (let i = 0; i <= 4; i++) g.fillRect(i * (S - 7) / 4, 0, 7, S);
+  for (let i = 0; i <= 6; i++) g.fillRect(0, i * (S - 7) / 6, S, 7);
+  return finishTex(c, 1, 1);
+}
+/** Sand-plaster wall with a faint straw fleck. */
+function texPlaster(){
+  const S = 256, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#e0d5bc'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 2600; i++){
+    g.fillStyle = rand() > 0.5 ? `rgba(196,182,152,${rand() * 0.5})` : `rgba(246,240,224,${rand() * 0.5})`;
+    g.fillRect(rand() * S, rand() * S, 1 + rand() * 4, 1 + rand() * 2);
+  }
+  return finishTex(c, 3, 2);
+}
+/** Straight-grained pale timber for posts, beams and the veranda deck. */
+function texWood(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#b28c5c'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 150; i++){
+    const y = rand() * S;
+    g.strokeStyle = `rgba(${110 + rand() * 60 | 0},${78 + rand() * 44 | 0},${44 + rand() * 30 | 0},${0.14 + rand() * 0.4})`;
+    g.lineWidth = 0.6 + rand() * 2.2; g.beginPath(); g.moveTo(0, y);
+    for (let x = 0; x <= S; x += 40) g.lineTo(x, y + Math.sin((x + i * 30) * 0.011) * 3.4);
+    g.stroke();
+  }
+  return finishTex(c, 2, 2);
+}
+/** Hanging scroll: silk mounting, sumi-e bamboo and a calligraphy column. */
+function texScroll(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#a89268'; g.fillRect(0, 0, S, S);
+  g.fillStyle = '#f2ecdc'; g.fillRect(46, 78, S - 92, S - 150);
+  g.strokeStyle = 'rgba(60,58,54,0.85)';
+  for (let s = 0; s < 3; s++){
+    const bx = 150 + s * 62;
+    g.lineWidth = 6 - s; g.beginPath(); g.moveTo(bx, 350);
+    for (let k = 0; k <= 6; k++) g.lineTo(bx + Math.sin(k * 0.5 + s) * 7, 350 - k * 40);
+    g.stroke();
+    for (let l = 0; l < 4; l++){
+      const ly = 150 + l * 46 + s * 12;
+      g.lineWidth = 3; g.beginPath(); g.moveTo(bx, ly);
+      g.quadraticCurveTo(bx + (l % 2 ? 44 : -44), ly - 16, bx + (l % 2 ? 74 : -74), ly + 12); g.stroke();
+    }
+  }
+  g.fillStyle = 'rgba(40,38,36,0.9)';
+  for (let i = 0; i < 5; i++){
+    const y = 130 + i * 44;
+    g.fillRect(392, y, 4 + rand() * 22, 5); g.fillRect(396, y + 12, 3 + rand() * 16, 5);
+    g.fillRect(390 + rand() * 8, y + 22, 4 + rand() * 12, 5);
+  }
+  g.fillStyle = '#9c3a30'; g.fillRect(396, 400, 26, 30);
+  g.fillStyle = '#6d5c3c'; g.fillRect(46, 78, S - 92, 5); g.fillRect(46, S - 77, S - 92, 5);
+  return finishTex(c, 1, 1);
+}
+/** Raked gravel for the garden, with concentric rake furrows. */
+function texGravel(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#d5cfc2'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 5200; i++){
+    g.fillStyle = `rgba(${150 + rand() * 90 | 0},${146 + rand() * 86 | 0},${132 + rand() * 80 | 0},${rand() * 0.6})`;
+    g.fillRect(rand() * S, rand() * S, 1 + rand() * 3, 1 + rand() * 3);
+  }
+  g.strokeStyle = 'rgba(150,144,130,0.5)'; g.lineWidth = 3;
+  for (let r = 26; r < 400; r += 26){
+    g.beginPath(); g.arc(160, 300, r, 0, Math.PI * 2); g.stroke();
+  }
+  return finishTex(c, 2, 2);
+}
+/** Soft radial sprite shared by steam and floating dust. */
+function texSpark(){
+  const S = 64, c = newCanvas(S), g = c.getContext('2d');
+  const grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.4, 'rgba(255,255,255,0.34)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* ---------- 4. SHARED MATERIALS ------------------------------------------ */
+const TEX = { tatami: texTatami(), shoji: texShoji(), plaster: texPlaster(), wood: texWood(),
+              scroll: texScroll(), gravel: texGravel(), spark: texSpark() };
+const std = (o) => new THREE.MeshStandardMaterial(o);
+const MAT = {
+  tatami:  std({ map: TEX.tatami, color: PAL.tatami, roughness: 0.95 }),
+  plaster: std({ map: TEX.plaster, color: PAL.plaster, roughness: 0.98 }),
+  post:    std({ map: TEX.wood, color: PAL.postWood, roughness: 0.72 }),
+  dark:    std({ map: TEX.wood, color: PAL.darkWood, roughness: 0.78 }),
+  deck:    std({ map: TEX.wood, color: PAL.deckWood, roughness: 0.66 }),
+  paper:   std({ map: TEX.shoji, color: PAL.paper, emissive: 0xffe6bb, emissiveMap: TEX.shoji,
+             emissiveIntensity: 0.95, roughness: 0.94, side: THREE.DoubleSide }),
+  scroll:  std({ map: TEX.scroll, roughness: 0.92, side: THREE.DoubleSide }),
+  iron:    std({ color: PAL.iron, roughness: 0.52, metalness: 0.72 }),
+  celadon: std({ color: PAL.celadon, roughness: 0.28, metalness: 0.04 }),
+  cream:   std({ color: PAL.cream, roughness: 0.42 }),
+  matcha:  std({ color: PAL.matcha, roughness: 0.6 }),
+  bamboo:  std({ color: PAL.bamboo, roughness: 0.6 }),
+  moss:    std({ color: PAL.moss, roughness: 0.95 }),
+  gravel:  std({ map: TEX.gravel, color: PAL.gravel, roughness: 1.0 }),
+  stone:   std({ color: PAL.stone, roughness: 0.94 }),
+  maple:   std({ color: PAL.maple, roughness: 0.84, side: THREE.DoubleSide }),
+  leaf:    std({ color: PAL.foliage, roughness: 0.86, side: THREE.DoubleSide }),
+  silk:    std({ color: PAL.silk, roughness: 0.6 })
+};
+
+/* ---------- 5. BUILDER FUNCTIONS ----------------------------------------- */
+/** Tatami floor, plaster walls, timber frame, ceiling boards and the eave. */
+function buildRoomShell(){
+  const g = new THREE.Group(), { roomW: W, roomD: D, roomH: H, eave: E } = CONFIG;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), MAT.tatami);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  // Ceiling boards run to a deep eave so the room reads as a sheltered interior.
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(W + 1.4, D / 2 + E), MAT.post);
+  ceil.rotation.x = Math.PI / 2; ceil.position.set(0, H, (E - D / 2) / 2); g.add(noCast(ceil));
+  for (let i = 0; i < 7; i++)
+    g.add(noCast(box(0.1, 0.1, D / 2 + E - 0.2, MAT.dark, -4.2 + i * 1.4, H - 0.06, (E - D / 2) / 2)));
+  g.add(noCast(box(W + 1.4, 0.22, 0.18, MAT.dark, 0, H - 0.11, E - 0.09)));   // eave fascia
+  // Back wall stops short of the garden doorway; side returns and transoms frame the screens.
+  g.add(noCast(box(6.0, H, 0.18, MAT.plaster, -2.0, H / 2, -D / 2)));
+  g.add(noCast(box(4.0, 0.5, 0.18, MAT.plaster, 3.0, H - 0.25, -D / 2)));
+  for (const s of [-1, 1]){
+    g.add(noCast(box(0.18, H, 2.4, MAT.plaster, s * W / 2, H / 2, -D / 2 + 1.2)));
+    g.add(noCast(box(0.18, 0.52, 7.0, MAT.plaster, s * W / 2, H - 0.26, 1.0)));
+  }
+  g.add(noCast(box(6.0, 0.2, 0.22, MAT.dark, -2.0, 0.1, -D / 2 + 0.1)));
+  // Corner and mid posts plus the head beam that carries the screens.
+  for (const [px, pz] of [[-W / 2 + 0.12, -D / 2 + 0.12], [W / 2 - 0.12, -D / 2 + 0.12],
+                          [-W / 2 + 0.12, D / 2 - 0.12], [W / 2 - 0.12, D / 2 - 0.12], [0.9, -D / 2 + 0.12]])
+    g.add(box(0.24, H, 0.24, MAT.post, px, H / 2, pz));
+  g.add(noCast(box(W, 0.2, 0.2, MAT.post, 0, H - 0.34, D / 2 - 0.12)));
+  // Engawa veranda: raised deck boards in front of the room, with a threshold rail.
+  for (let i = 0; i < 7; i++)
+    g.add(box(W + 0.9, 0.09, 0.28, MAT.deck, 0, 0.045, D / 2 + 0.2 + i * 0.3));
+  g.add(box(W + 0.9, 0.14, 0.14, MAT.dark, 0, 0.07, D / 2 + 0.06));
+  return g;
+}
+
+/** Row of sliding shoji screens; panels listed in `open` are slid away entirely. */
+function buildShojiWall(width, height, panels, open = []){
+  const g = new THREE.Group(), pw = width / panels;
+  g.add(noCast(box(width, 0.1, 0.14, MAT.dark, 0, height + 0.05, 0)));
+  g.add(noCast(box(width, 0.1, 0.14, MAT.dark, 0, 0.05, 0)));
+  for (let i = 0; i < panels; i++){
+    if (open.includes(i)) continue;
+    const px = -width / 2 + pw * (i + 0.5), zf = open.includes(i - 1) ? 0.07 : 0;
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(pw - 0.06, height - 0.14), MAT.paper);
+    pane.position.set(px, height / 2, zf); g.add(pane);
+    const frame = new THREE.Group();
+    frame.add(noCast(box(pw - 0.02, 0.07, 0.05, MAT.dark, 0, height - 0.09, 0)),
+              noCast(box(pw - 0.02, 0.07, 0.05, MAT.dark, 0, 0.09, 0)),
+              noCast(box(0.06, height - 0.16, 0.05, MAT.dark, -(pw - 0.05) / 2, height / 2, 0)),
+              noCast(box(0.06, height - 0.16, 0.05, MAT.dark, (pw - 0.05) / 2, height / 2, 0)));
+    frame.position.set(px, 0, zf + 0.03); g.add(frame);
+  }
+  return g;
+}
+
+/** Tokonoma alcove: raised floor, hanging scroll and an ikebana arrangement. */
+function buildTokonoma(w = 2.6, h = 2.5){
+  const g = new THREE.Group();
+  g.add(noCast(box(w, h, 0.1, MAT.plaster, 0, h / 2, -0.42)));
+  g.add(box(w, 0.16, 0.86, MAT.dark, 0, 0.08, 0));
+  for (const s of [-1, 1]) g.add(box(0.16, h, 0.86, MAT.post, s * (w / 2 - 0.08), h / 2, 0));
+  g.add(box(w, 0.2, 0.9, MAT.post, 0, h - 0.1, 0));
+  g.add(box(w - 0.3, 0.14, 0.16, MAT.dark, 0, h - 0.26, 0.36));
+  // Hanging scroll with its top and bottom rollers.
+  const scroll = new THREE.Group();
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(0.82, 1.62), MAT.scroll);
+  sheet.position.y = -0.86; sheet.castShadow = true; scroll.add(sheet);
+  const rodTop = cyl(0.035, 0.035, 0.94, MAT.dark, 10), rodBot = cyl(0.045, 0.045, 0.98, MAT.dark, 10);
+  rodTop.rotation.z = rodBot.rotation.z = Math.PI / 2; rodBot.position.y = -1.68;
+  scroll.add(rodTop, rodBot);
+  scroll.position.set(-0.12, h - 0.34, -0.34); g.add(scroll); g.userData.scroll = scroll;
+  // Ikebana: celadon vase, three branches and two blossoms.
+  const ike = new THREE.Group();
+  ike.add(lathe([[0.001, 0], [0.13, 0.01], [0.16, 0.09], [0.13, 0.24], [0.09, 0.32], [0.1, 0.35]], MAT.celadon, 18));
+  const stems = [[[0, 0.3, 0], [0.05, 0.62, 0.04], [0.16, 0.9, 0.02]],
+                 [[0, 0.3, 0], [-0.12, 0.55, -0.05], [-0.3, 0.72, -0.02]],
+                 [[0, 0.3, 0], [0.03, 0.5, -0.08], [0.1, 0.64, -0.24]]];
+  for (const s of stems) ike.add(tube(s, 0.012, MAT.leaf, 14));
+  for (const [lx, ly, lz, sc] of [[0.16, 0.9, 0.02, 1], [-0.3, 0.72, -0.02, 0.8], [0.1, 0.64, -0.24, 0.7]]){
+    const bloom = new THREE.Mesh(new THREE.SphereGeometry(0.06 * sc, 10, 8), MAT.cream);
+    bloom.position.set(lx, ly, lz); bloom.scale.y = 0.7; ike.add(bloom);
+    for (let k = 0; k < 4; k++){
+      const leaf = new THREE.Mesh(new THREE.CircleGeometry(0.07 * sc, 6), MAT.leaf);
+      leaf.position.set(lx + rr(-0.1, 0.1), ly - rr(0.06, 0.24), lz + rr(-0.08, 0.08));
+      leaf.rotation.set(rr(-1.2, 1.2), rr(0, 3.1), rr(-0.6, 0.6)); ike.add(leaf);
+    }
+  }
+  ike.position.set(0.72, 0.16, 0.06); g.add(ike); g.userData.ikebana = ike;
+  return g;
+}
+
+/** Staggered chigaidana display shelves beside the alcove. */
+function buildChigaidana(w = 1.5, h = 2.4){
+  const g = new THREE.Group();
+  g.add(noCast(box(w, h, 0.1, MAT.plaster, 0, h / 2, -0.42)));
+  for (const s of [-1, 1]) g.add(box(0.1, h, 0.8, MAT.post, s * (w / 2 - 0.05), h / 2, 0));
+  g.add(box(w, 0.2, 0.84, MAT.post, 0, h - 0.1, 0));
+  g.add(box(w * 0.62, 0.06, 0.66, MAT.dark, -w * 0.18, 1.34, -0.04));
+  g.add(box(w * 0.62, 0.06, 0.66, MAT.dark, w * 0.18, 0.94, -0.04));
+  g.add(box(0.07, 0.42, 0.6, MAT.post, 0.06, 1.14, -0.04));
+  const jar = lathe([[0.001, 0], [0.1, 0.01], [0.13, 0.1], [0.11, 0.2], [0.07, 0.24], [0.08, 0.26]], MAT.celadon, 16);
+  jar.position.set(-w * 0.3, 1.37, -0.02); g.add(jar);
+  const bookA = box(0.3, 0.05, 0.22, MAT.silk, w * 0.2, 1.0, -0.02);
+  const bookB = box(0.28, 0.05, 0.2, MAT.cream, w * 0.2, 1.05, -0.01);
+  g.add(bookA, bookB);
+  const incense = cyl(0.055, 0.07, 0.1, MAT.iron, 12); incense.position.set(-w * 0.05, 1.42, 0.2); g.add(incense);
+  return g;
+}
+
+/** Low chabudai table carrying the full tea service, mid-ceremony. */
+function buildTeaTable(){
+  const g = new THREE.Group(), top = box(1.6, 0.06, 0.94, MAT.post, 0, 0.34, 0);
+  g.add(top, box(1.5, 0.04, 0.84, MAT.dark, 0, 0.3, 0));
+  for (const sx of [-0.66, 0.66]) for (const sz of [-0.34, 0.34])
+    g.add(box(0.07, 0.34, 0.07, MAT.dark, sx, 0.17, sz));
+  // Two chawan tea bowls, one already whisked.
+  const bowls = [];
+  for (const [bx, bz, filled] of [[-0.42, 0.12, true], [0.02, -0.24, false]]){
+    const b = new THREE.Group();
+    b.add(lathe([[0.001, 0], [0.05, 0], [0.06, 0.02], [0.11, 0.09], [0.12, 0.13], [0.115, 0.135],
+                 [0.105, 0.1], [0.05, 0.03], [0.001, 0.025]], MAT.celadon, 20));
+    if (filled){
+      const tea = new THREE.Mesh(new THREE.CircleGeometry(0.098, 20), MAT.matcha);
+      tea.rotation.x = -Math.PI / 2; tea.position.y = 0.1; b.add(tea); b.userData.tea = tea;
+    }
+    b.position.set(bx, 0.37, bz); g.add(b); bowls.push(b);
+  }
+  g.userData.bowls = bowls;
+  // Natsume tea caddy, bamboo whisk and scoop, folded silk cloth.
+  const caddy = lathe([[0.001, 0], [0.055, 0.005], [0.06, 0.06], [0.055, 0.075]], MAT.dark, 16);
+  const lid = lathe([[0.001, 0], [0.058, 0.004], [0.055, 0.035]], MAT.dark, 16);
+  caddy.position.set(0.36, 0.37, 0.16); lid.position.set(0.36, 0.445, 0.16); g.add(caddy, lid);
+  const whisk = new THREE.Group();
+  whisk.add(cyl(0.035, 0.035, 0.09, MAT.bamboo, 12));
+  for (let i = 0; i < 14; i++){
+    const a = (i / 14) * Math.PI * 2, tine = cyl(0.004, 0.005, 0.075, MAT.cream, 4);
+    tine.position.set(Math.cos(a) * 0.03, 0.075, Math.sin(a) * 0.03);
+    tine.rotation.set(Math.sin(a) * 0.3, 0, -Math.cos(a) * 0.3); whisk.add(tine);
+  }
+  whisk.position.set(-0.16, 0.415, -0.06); g.add(whisk);
+  g.add(tube([[-0.02, 0, 0], [0.06, 0.004, 0.01], [0.12, 0.016, 0.02]], 0.007, MAT.bamboo, 10)
+    .translateX(0.5).translateY(0.375).translateZ(-0.12));
+  g.add(box(0.2, 0.02, 0.16, MAT.silk, 0.58, 0.38, 0.24));
+  // Small lacquer plate of two wagashi sweets.
+  const plate = lathe([[0.001, 0], [0.12, 0.006], [0.13, 0.022]], MAT.dark, 18);
+  plate.position.set(-0.02, 0.37, 0.3); g.add(plate);
+  for (const [sx, sz, col] of [[-0.05, 0.28, 0xe9b8c4], [0.04, 0.33, 0xdcd5a8]]){
+    const sweet = new THREE.Mesh(new THREE.SphereGeometry(0.045, 12, 9), std({ color: col, roughness: 0.72 }));
+    sweet.position.set(sx, 0.4, sz); sweet.scale.y = 0.62; g.add(shaded(sweet));
+  }
+  return g;
+}
+
+/** Iron kettle resting on a ceramic brazier of glowing charcoal. */
+function buildKettleBrazier(){
+  const g = new THREE.Group();
+  g.add(lathe([[0.001, 0], [0.24, 0.01], [0.27, 0.1], [0.26, 0.3], [0.22, 0.36], [0.23, 0.38]], MAT.cream, 22));
+  const ash = new THREE.Mesh(new THREE.CircleGeometry(0.21, 20), std({ color: 0x8f8878, roughness: 1 }));
+  ash.rotation.x = -Math.PI / 2; ash.position.y = 0.3; g.add(ash);
+  const coalMat = std({ color: 0x3a2a22, emissive: 0xff7a2c, emissiveIntensity: 0.7, roughness: 0.95 });
+  const coals = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.045, 0), coalMat, 12);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 12; i++){
+    const a = rand() * Math.PI * 2, r = rand() * 0.15;
+    d.position.set(Math.cos(a) * r, 0.32, Math.sin(a) * r);
+    d.rotation.set(rand() * 3, rand() * 3, rand() * 3); d.scale.setScalar(rr(0.7, 1.3));
+    d.updateMatrix(); coals.setMatrixAt(i, d.matrix);
+  }
+  g.add(coals); g.userData.coals = coals;
+  // Tetsubin kettle body, lid, knob and bail handle.
+  const body = lathe([[0.001, 0], [0.14, 0.005], [0.21, 0.08], [0.24, 0.18], [0.22, 0.28],
+                      [0.15, 0.34], [0.11, 0.36], [0.115, 0.375]], MAT.iron, 22);
+  body.position.y = 0.36; g.add(body);
+  const lid = lathe([[0.001, 0.03], [0.06, 0.026], [0.11, 0.012], [0.125, 0]], MAT.iron, 18);
+  lid.position.y = 0.735; g.add(lid);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.028, 10, 8), MAT.iron);
+  knob.position.y = 0.775; g.add(shaded(knob));
+  const bail = new THREE.Mesh(new THREE.TorusGeometry(0.19, 0.014, 6, 18, Math.PI), MAT.iron);
+  bail.position.y = 0.72; bail.rotation.y = 0.4; g.add(shaded(bail));
+  g.add(tube([[0.2, 0.6, 0], [0.29, 0.63, 0], [0.34, 0.69, 0]], 0.028, MAT.iron, 12));
+  return g;
+}
+
+/** Small bonsai pine on a low display stand. */
+function buildBonsai(){
+  const g = new THREE.Group();
+  g.add(box(0.72, 0.06, 0.5, MAT.dark, 0, 0.26, 0));
+  for (const sx of [-0.28, 0.28]) for (const sz of [-0.18, 0.18])
+    g.add(box(0.05, 0.26, 0.05, MAT.dark, sx, 0.13, sz));
+  const pot = box(0.5, 0.13, 0.34, MAT.celadon, 0, 0.36, 0); g.add(pot);
+  const soil = new THREE.Mesh(new THREE.PlaneGeometry(0.44, 0.28), MAT.moss);
+  soil.rotation.x = -Math.PI / 2; soil.position.y = 0.425; g.add(soil);
+  const trunk = tube([[-0.04, 0.42, 0], [0.02, 0.55, 0.03], [-0.06, 0.66, 0.01], [0.05, 0.76, -0.02]], 0.035, MAT.dark, 20);
+  g.add(trunk);
+  const canopy = new THREE.Group();
+  for (const [cx, cy, cz, s] of [[0.13, 0.8, -0.02, 1], [-0.14, 0.72, 0.05, 0.72], [0.02, 0.88, 0.07, 0.6]]){
+    const pad = new THREE.Mesh(new THREE.IcosahedronGeometry(0.13 * s + 0.05, 1), MAT.leaf);
+    pad.position.set(cx, cy, cz); pad.scale.set(1.5, 0.6, 1.3); canopy.add(shaded(pad));
+    canopy.add(tube([[0.0, cy - 0.06, 0], [cx * 0.6, cy - 0.02, cz * 0.6], [cx, cy, cz]], 0.014, MAT.dark, 10));
+  }
+  g.add(canopy); g.userData.canopy = canopy;
+  const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.06, 0), MAT.stone);
+  rock.position.set(0.16, 0.45, 0.06); rock.scale.set(1, 0.7, 1.2); g.add(shaded(rock));
+  return g;
+}
+
+/** Raked gravel garden seen through the open screen: rocks, moss, lantern, maple. */
+function buildRockGarden(){
+  const g = new THREE.Group();
+  const bed = new THREE.Mesh(new THREE.PlaneGeometry(7.5, 8.5), MAT.gravel);
+  bed.rotation.x = -Math.PI / 2; bed.position.y = -0.06; bed.receiveShadow = true; g.add(bed);
+  for (const [rx, rz, s, ry] of [[0.4, 0.9, 1.0, 0.4], [-1.2, -0.4, 0.62, 1.2], [1.4, -0.6, 0.46, 2.1],
+                                 [-0.6, 1.9, 0.4, 0.8], [1.9, 1.3, 0.3, 1.6]]){
+    const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(0.42 * s, 0), MAT.stone);
+    rock.position.set(rx, 0.42 * s * 0.42, rz); rock.rotation.set(rr(0, 1), ry, rr(0, 1));
+    rock.scale.set(1.2, 0.86, 1); g.add(shaded(rock));
+    const moss = new THREE.Mesh(new THREE.CircleGeometry(0.55 * s, 12), MAT.moss);
+    moss.rotation.x = -Math.PI / 2; moss.position.set(rx, -0.05, rz); g.add(moss);
+  }
+  // Stone lantern (ishidoro) with a faintly glowing firebox.
+  const lantern = new THREE.Group();
+  lantern.add(cyl(0.11, 0.15, 0.62, MAT.stone, 10));
+  const plate = cyl(0.26, 0.22, 0.07, MAT.stone, 10); plate.position.y = 0.34; lantern.add(plate);
+  const fire = box(0.3, 0.28, 0.3, MAT.stone, 0, 0.52, 0); lantern.add(fire);
+  const glow = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.2, 0.22),
+    new THREE.MeshBasicMaterial({ color: 0xffd79a, transparent: true, opacity: 0.85 }));
+  glow.position.y = 0.52; lantern.add(glow); lantern.userData.glow = glow;
+  const roof = cyl(0.04, 0.32, 0.2, MAT.stone, 6); roof.position.y = 0.75; lantern.add(roof);
+  const cap = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), MAT.stone);
+  cap.position.y = 0.88; lantern.add(shaded(cap));
+  lantern.position.set(-0.6, 0.31, 1.6); g.add(lantern); g.userData.lantern = lantern;
+  // Slender maple with layered red foliage.
+  const maple = new THREE.Group();
+  maple.add(tube([[0, 0, 0], [0.06, 0.6, 0.04], [-0.03, 1.1, 0.02], [0.08, 1.5, -0.04]], 0.055, MAT.dark, 20));
+  for (const [mx, my, mz, s] of [[0.24, 1.62, 0.06, 1], [-0.22, 1.42, -0.1, 0.78], [0.06, 1.82, -0.06, 0.66]]){
+    const pad = new THREE.Mesh(new THREE.IcosahedronGeometry(0.34 * s, 1), MAT.maple);
+    pad.position.set(mx, my, mz); pad.scale.set(1.3, 0.7, 1.2); maple.add(shaded(pad));
+  }
+  maple.position.set(1.0, 0, 1.6); g.add(maple); g.userData.maple = maple;
+  // Bamboo fence closing the garden's far side.
+  for (let i = 0; i < 18; i++){
+    const p = cyl(0.045, 0.05, 1.5, MAT.bamboo, 7);
+    p.position.set(-3.2 + i * 0.36, 0.72, -2.6); g.add(p);
+  }
+  for (const ry of [0.4, 1.2])
+    g.add(box(6.6, 0.05, 0.05, MAT.dark, -0.15, ry, -2.52));
+  const shrub = new THREE.Mesh(new THREE.IcosahedronGeometry(0.44, 1), MAT.moss);
+  shrub.position.set(-2.5, 0.3, -1.5); shrub.scale.y = 0.7; g.add(shaded(shrub));
+  return g;
+}
+
+/** Paper andon floor lamp glowing in the corner. */
+function buildAndon(){
+  const g = new THREE.Group(), lampMat = MAT.paper.clone();
+  lampMat.emissiveIntensity = 1.5;
+  g.add(box(0.44, 0.06, 0.44, MAT.dark, 0, 0.03, 0));
+  for (const [sx, sz] of [[-0.17, -0.17], [0.17, -0.17], [-0.17, 0.17], [0.17, 0.17]])
+    g.add(box(0.04, 1.0, 0.04, MAT.dark, sx, 0.53, sz));
+  for (const [px, pz, ry] of [[0, -0.17, 0], [0, 0.17, 0], [-0.17, 0, Math.PI / 2], [0.17, 0, Math.PI / 2]]){
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(0.32, 0.86), lampMat);
+    pane.position.set(px, 0.55, pz); pane.rotation.y = ry; g.add(pane);
+  }
+  g.add(box(0.5, 0.05, 0.5, MAT.dark, 0, 1.06, 0));
+  g.userData.lampMat = lampMat;
+  return g;
+}
+
+/** Flat zabuton sitting cushion. */
+function buildZabuton(color){
+  const g = new THREE.Group();
+  const pad = new THREE.Mesh(new THREE.BoxGeometry(0.62, 0.1, 0.62), std({ color, roughness: 0.94 }));
+  pad.position.y = 0.06; g.add(shaded(pad));
+  for (const [sx, sz] of [[-0.28, -0.28], [0.28, -0.28], [-0.28, 0.28], [0.28, 0.28]]){
+    const tuft = new THREE.Mesh(new THREE.SphereGeometry(0.03, 8, 6), MAT.cream);
+    tuft.position.set(sx, 0.1, sz); g.add(tuft);
+  }
+  return g;
+}
+
+/* ---------- 6. SCENE ASSEMBLY & LAYOUT ----------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.fog);
+scene.fog = new THREE.FogExp2(CONFIG.fog, CONFIG.fogDensity);
+scene.add(buildRoomShell());
+/** Place a built group so the layout reads as one line per structure. */
+const place = (group, x, z, ry = 0, y = 0) =>
+  (group.position.set(x, y, z), group.rotation.y = ry, scene.add(group), group);
+
+// Screens: two back panels are slid aside onto the garden, the side walls glow shut.
+place(buildShojiWall(6.5, 2.7, 4), -4.98, 1.25, Math.PI / 2);
+place(buildShojiWall(7.0, 2.7, 4), 4.98, 1.0, -Math.PI / 2);
+place(buildShojiWall(4.0, 2.7, 3, [1, 2]), 3.0, -4.48);
+const tokonoma = place(buildTokonoma(2.6, 2.5), -2.6, -4.06);
+place(buildChigaidana(1.5, 2.4), -0.55, -4.06);
+const teaTable = place(buildTeaTable(), 0.25, 1.0, -0.12);
+const kettle = place(buildKettleBrazier(), -1.55, 0.35);
+const bonsai = place(buildBonsai(), 3.4, -1.9, -0.5);
+const garden = place(buildRockGarden(), 3.8, -8.2, -0.1, -0.3);
+const andon = place(buildAndon(), 3.2, 1.8, 0.3);
+place(buildZabuton(0x8d6f57), 1.55, 1.75, 0.2);
+place(buildZabuton(0x6f6a5c), -0.55, 2.15, -0.3);
+
+// Stone step down to the garden plus a few loose props left out from the ceremony.
+scene.add(box(2.5, 0.3, 0.9, MAT.stone, 3.6, -0.16, -5.1));
+const rolled = box(0.07, 0.07, 0.7, MAT.silk, -3.6, 0.06, -2.6);
+rolled.rotation.y = 0.5; scene.add(rolled);
+const waterJar = lathe([[0.001, 0], [0.15, 0.01], [0.18, 0.12], [0.15, 0.26], [0.12, 0.3], [0.13, 0.32]], MAT.celadon, 18);
+waterJar.position.set(-2.5, 0, 1.9); scene.add(waterJar);
+const ladle = tube([[0, 0.34, 0], [0.02, 0.4, 0.16], [0.04, 0.42, 0.34]], 0.011, MAT.bamboo, 12);
+ladle.position.set(-2.5, 0, 1.9); scene.add(ladle);
+
+/** Additive point cloud used for kettle steam and floating dust. */
+function makePoints(count, color, size, opacity, spread, x, y, z){
+  const pos = new Float32Array(count * 3), seeds = new Float32Array(count);
+  for (let i = 0; i < count; i++){
+    pos[i * 3] = rr(-spread.x, spread.x); pos[i * 3 + 1] = rr(0, spread.y);
+    pos[i * 3 + 2] = rr(-spread.z, spread.z); seeds[i] = rand();
+  }
+  const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const p = new THREE.Points(geo, new THREE.PointsMaterial({ color, size, map: TEX.spark, transparent: true,
+    opacity, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+  p.userData.seeds = seeds; p.userData.spread = spread;
+  p.position.set(x, y, z); scene.add(p); return p;
+}
+const steam = makePoints(130, 0xfff8ec, 0.2, 0.5, { x: 0.14, y: 1.35, z: 0.14 }, -1.55, 0.8, 0.35);
+const dust = makePoints(180, 0xffe9c4, 0.05, 0.4, { x: 3.4, y: 2.6, z: 3.2 }, -1.4, 0.2, 1.2);
+
+/* ---------- 7. LIGHTING RIG ---------------------------------------------- */
+scene.add(new THREE.HemisphereLight(0xf6e6c8, 0x8a7f68, 1.25), new THREE.AmbientLight(0xfff1d8, 0.5));
+// Key: low afternoon sun entering through the opened screens; the only shadow caster.
+const sun = new THREE.DirectionalLight(PAL.sun, 2.1);
+sun.position.set(-5.5, 8.0, -7.5); sun.castShadow = true; sun.shadow.mapSize.set(CONFIG.shadowRes, CONFIG.shadowRes);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -12; sun.shadow.camera.right = sun.shadow.camera.top = 12;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 40; sun.shadow.bias = -0.0013;
+sun.target.position.set(0.6, 0, 0.4); scene.add(sun, sun.target);
+/** Soft interior practical, positioned and added in one call. */
+const practical = (color, intensity, dist, x, y, z) => {
+  const l = new THREE.PointLight(color, intensity, dist, 1.8);
+  l.position.set(x, y, z); scene.add(l); return l;
+};
+const shojiGlowL = practical(0xffe3b4, 9, 10, -4.3, 1.6, 1.2);
+const shojiGlowR = practical(0xffe7bd, 9, 10, 4.3, 1.6, 1.0);
+const andonLight = practical(0xffd79a, 4.5, 4.5, 3.7, 1.0, 1.4);
+const alcoveLight = practical(0xffeccb, 3.2, 4.5, -2.6, 1.9, -3.2);
+practical(0xfff4dd, 3.5, 12, 3.6, 3.0, -7.0);   // open sky over the rock garden
+const emberLight = practical(0xff9a4a, 1.6, 1.8, -1.55, 0.45, 0.35);
+practical(0xfff0d4, 3.0, 7, 0.3, 2.6, 2.0);   // gentle bounce off the ceiling boards
+
+/* ---------- 8. RENDERER, CAMERA, CONTROLS -------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 0.98;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 120);
+camera.position.set(2.4, 2.6, 8.9);
+const controls = new OrbitControls(camera, renderer.domElement);   // gentle auto-orbit of the room
+controls.target.set(0.1, 0.95, -0.9);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.6;
+controls.minDistance = 7; controls.maxDistance = 15;
+controls.minPolarAngle = 0.75; controls.maxPolarAngle = 1.44;
+controls.update();
+
+/* ---------- 9. ANIMATION LOOP -------------------------------------------- */
+const clock = new THREE.Clock();
+const gardenLantern = garden.userData.lantern, maple = garden.userData.maple;
+const teaSurface = teaTable.userData.bowls[0].userData.tea;
+
+function driftPoints(pts, t, rise, swirl){
+  const arr = pts.geometry.attributes.position.array, seeds = pts.userData.seeds, sp = pts.userData.spread;
+  for (let i = 0; i < seeds.length; i++){
+    const s = seeds[i];
+    arr[i * 3 + 1] = ((arr[i * 3 + 1] + rise * (0.35 + s)) % sp.y + sp.y) % sp.y;
+    arr[i * 3] += Math.sin(t * (0.4 + s) + s * 9) * swirl;
+    arr[i * 3 + 2] += Math.cos(t * (0.3 + s) + s * 7) * swirl;
+    if (arr[i * 3] > sp.x) arr[i * 3] -= sp.x * 2; else if (arr[i * 3] < -sp.x) arr[i * 3] += sp.x * 2;
+    if (arr[i * 3 + 2] > sp.z) arr[i * 3 + 2] -= sp.z * 2; else if (arr[i * 3 + 2] < -sp.z) arr[i * 3 + 2] += sp.z * 2;
+  }
+  pts.geometry.attributes.position.needsUpdate = true;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime(), dt = Math.min(clock.getDelta(), 0.05);
+
+  // (a) Steam curls off the kettle while the charcoal breathes underneath.
+  driftPoints(steam, t, dt * 0.34, dt * 0.05);
+  steam.material.opacity = 0.46 + Math.sin(t * 0.9) * 0.09;
+  kettle.userData.coals.material.emissiveIntensity = 0.6 + Math.sin(t * 2.3) * 0.18 + Math.sin(t * 5.7) * 0.07;
+  emberLight.intensity = 1.6 + Math.sin(t * 2.3) * 0.4;
+
+  // (b) Afternoon light shifts across the paper screens and the haze shaft.
+  const day = 0.86 + Math.sin(t * 0.28) * 0.14;
+  MAT.paper.emissiveIntensity = 0.95 * day;
+  andon.userData.lampMat.emissiveIntensity = 1.45 + Math.sin(t * 1.7) * 0.16;
+  shojiGlowL.intensity = 9 * day; shojiGlowR.intensity = 9 * day;
+  andonLight.intensity = 4.5 + Math.sin(t * 1.7) * 0.5;
+  gardenLantern.userData.glow.material.opacity = 0.8 + Math.sin(t * 1.3) * 0.12;
+
+  // (c) Garden and bonsai foliage sway; the hanging scroll breathes on the draught.
+  maple.rotation.z = Math.sin(t * 0.5) * 0.022;
+  maple.rotation.x = Math.cos(t * 0.42) * 0.016;
+  bonsai.userData.canopy.rotation.z = Math.sin(t * 0.62 + 1.1) * 0.02;
+  tokonoma.userData.scroll.rotation.x = Math.sin(t * 0.5) * 0.012;
+  tokonoma.userData.ikebana.rotation.z = Math.sin(t * 0.44 + 0.7) * 0.018;
+
+  // (d) The whisked matcha keeps a slow surface swirl; dust turns in the light.
+  teaSurface.rotation.z = t * 0.35;
+  teaSurface.position.y = 0.1 + Math.sin(t * 1.6) * 0.0015;
+  for (const b of teaTable.userData.bowls) b.position.y = 0.37 + Math.sin(t * 0.8) * 0.0008;
+  driftPoints(dust, t, dt * 0.045, dt * 0.03);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 10. RESIZE --------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sea Kayak on Roof Racks</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b0c0f;}
+  canvas{display:block;}
+  #hint{position:fixed;left:14px;bottom:12px;font:12px/1.4 system-ui,Segoe UI,Arial,sans-serif;
+        color:#8b9099;letter-spacing:.3px;user-select:none;pointer-events:none;}
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit · scroll to zoom · auto-rotating</div>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------- renderer ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias:true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ---------- scene / camera ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0c0f);
+scene.fog = new THREE.FogExp2(0x0b0c0f, 0.018);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth/window.innerHeight, 0.1, 200);
+camera.position.set(5.6, 2.7, 6.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.enablePan = false;
+controls.minDistance = 3.2;
+controls.maxDistance = 18;
+controls.minPolarAngle = 0.15;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, -0.12, 0);
+
+/* ---------- lighting (hemisphere + key/fill/rim) ---------- */
+const hemi = new THREE.HemisphereLight(0x9fb4d8, 0x1a1a20, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.3);
+key.position.set(4.5, 7.5, 3.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+const sc = key.shadow.camera;
+sc.near = 0.5; sc.far = 30; sc.left = -4; sc.right = 4; sc.top = 4; sc.bottom = -4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x86a6ff, 0.55);
+fill.position.set(-6, 3, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbfd4ff, 1.25);
+rim.position.set(-3.5, 4.5, -6);
+scene.add(rim);
+
+/* ---------- ground plane (only receives shadows) ---------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -0.44;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ================================================================
+   PROCEDURAL SEA KAYAK
+   ================================================================ */
+const clamp = (v,a,b)=>Math.max(a,Math.min(b,v));
+
+const L = 5.2;          // overall length (m)
+const Wmax = 0.285;     // max half-beam
+
+// hull shaping functions of length parameter u in [0,1]
+const Wf = u => Wmax * Math.pow(Math.max(0,Math.sin(Math.PI*u)), 0.62);           // half width
+const Df = u => 0.225 * Math.pow(Math.max(0,Math.sin(Math.PI*u)), 0.6);           // hull depth below gunwale
+const Gf = u => 0.02 + 0.06 * (1 - Math.sin(Math.PI*u));                          // sheer / gunwale height
+const Xf = u => (u - 0.5) * L;
+const Hf = u => {                                                                 // deck height above gunwale
+  const base = Math.pow(Math.max(0,Math.sin(Math.PI*u)), 0.5);
+  const bump = Math.exp(-Math.pow((u-0.42)/0.16, 2));                             // foredeck peak
+  return (0.045 + 0.11*bump) * base;
+};
+// deck surface height at world (x,z)
+function deckY(x,z){
+  const u = clamp(x/L + 0.5, 0, 1);
+  const W = Wf(u), H = Hf(u), g = Gf(u);
+  const zr = W > 1e-4 ? clamp(z/W, -1, 1) : 0;
+  return g + H * Math.sqrt(Math.max(0, 1 - zr*zr));
+}
+function deckPt(x, zfrac){
+  const u = clamp(x/L + 0.5, 0, 1);
+  const z = zfrac * Wf(u);
+  return new THREE.Vector3(x, deckY(x, z) + 0.006, z);
+}
+
+// cockpit opening
+const cockX = -0.12, cockA = 0.42, cockCT = 0.72;
+
+const kayak = new THREE.Group();
+
+/* ---- hull mesh (lofted cross-sections, cockpit hole carved out) ---- */
+const NU = 220, NT = 72;
+const positions = [], colors = [], indices = [];
+const deckCol = new THREE.Color(0xE8B23A);
+const hullCol = new THREE.Color(0xA8382C);
+const seamCol = new THREE.Color(0xEDEDE8);
+
+for (let i=0; i<=NU; i++){
+  const u = i/NU;
+  const x = Xf(u), W = Wf(u), H = Hf(u), D = Df(u), g = Gf(u);
+  for (let j=0; j<NT; j++){
+    const t = j/NT * Math.PI*2;
+    const st = Math.sin(t), ct = Math.cos(t);
+    const z = W*ct;
+    const y = g + (st>=0 ? H : D)*st;
+    positions.push(x, y, z);
+    let c = (st>=0) ? deckCol : hullCol;
+    if (Math.abs(st) < 0.10) c = seamCol;           // gunwale rub-strake line
+    colors.push(c.r, c.g, c.b);
+  }
+}
+function inHole(uc, tc){
+  const st = Math.sin(tc);
+  if (st <= 0.12) return false;                     // deck side only
+  const ct = Math.cos(tc);
+  const dx = (Xf(uc) - cockX)/cockA;
+  const dz = ct/cockCT;
+  return dx*dx + dz*dz < 1;
+}
+for (let i=0; i<NU; i++){
+  for (let j=0; j<NT; j++){
+    const jn = (j+1)%NT;
+    const a = i*NT + j, b = i*NT + jn, c = (i+1)*NT + jn, d = (i+1)*NT + j;
+    const uc = (i+0.5)/NU, tc = ((j+0.5)/NT)*Math.PI*2;
+    if (inHole(uc, tc)) continue;
+    indices.push(a,b,d, b,c,d);
+  }
+}
+const hullGeo = new THREE.BufferGeometry();
+hullGeo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+hullGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+hullGeo.setIndex(indices);
+hullGeo.computeVertexNormals();
+
+const hullMat = new THREE.MeshPhysicalMaterial({
+  vertexColors:true, roughness:0.34, metalness:0.0,
+  clearcoat:0.7, clearcoatRoughness:0.25, envMapIntensity:1.0,
+  side:THREE.DoubleSide
+});
+const hull = new THREE.Mesh(hullGeo, hullMat);
+hull.castShadow = true; hull.receiveShadow = true;
+kayak.add(hull);
+
+/* ---- cockpit coaming rim ---- */
+const cockB = cockCT * Wf(0.5 + cockX/L);
+const rimPts = [];
+const Nr = 90;
+for (let k=0; k<Nr; k++){
+  const a = k/Nr * Math.PI*2;
+  const rx = cockX + cockA*1.02*Math.cos(a);
+  const rz = cockB*1.02*Math.sin(a);
+  rimPts.push(new THREE.Vector3(rx, deckY(rx, rz) + 0.006, rz));
+}
+const rimCurve = new THREE.CatmullRomCurve3(rimPts, true);
+const coaming = new THREE.Mesh(
+  new THREE.TubeGeometry(rimCurve, 180, 0.021, 16, true),
+  new THREE.MeshStandardMaterial({ color:0x121316, roughness:0.5, metalness:0.25 })
+);
+coaming.castShadow = true;
+kayak.add(coaming);
+
+/* ---- seat / interior (visible through cockpit) ---- */
+const darkMat = new THREE.MeshStandardMaterial({ color:0x0e0e10, roughness:0.85, metalness:0.05 });
+const seat = new THREE.Mesh(new THREE.SphereGeometry(0.16, 22, 16), darkMat);
+seat.scale.set(1.35, 0.55, 1.05);
+seat.position.set(cockX - 0.06, deckY(cockX, 0) - 0.11, 0);
+kayak.add(seat);
+
+/* ---- rigging helpers ---- */
+const lineMat   = new THREE.MeshStandardMaterial({ color:0xd2d5da, roughness:0.6, metalness:0.05 });
+const bungeeMat = new THREE.MeshStandardMaterial({ color:0x131313, roughness:0.75, metalness:0.05 });
+const fitMat    = new THREE.MeshStandardMaterial({ color:0x1c1d21, roughness:0.5, metalness:0.35 });
+
+function tubeLine(p1, p2, r, mat){
+  const dir = new THREE.Vector3().subVectors(p2, p1);
+  const len = dir.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 8), mat);
+  m.position.copy(p1).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), dir.clone().normalize());
+  m.castShadow = true;
+  return m;
+}
+function fitting(pt){
+  const m = new THREE.Mesh(new THREE.BoxGeometry(0.04, 0.02, 0.055), fitMat);
+  m.position.copy(pt); m.castShadow = true;
+  return m;
+}
+
+// perimeter deck (safety) lines
+[1,-1].forEach(sgn=>{
+  const pts = [];
+  for (let x=-2.2; x<=2.2001; x+=0.15) pts.push(deckPt(x, sgn*0.86));
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const m = new THREE.Mesh(new THREE.TubeGeometry(curve, 140, 0.0085, 8, false), lineMat);
+  m.castShadow = true; kayak.add(m);
+});
+
+// bungee deck rigging (fore & aft), crossing pattern + straps
+const zf = 0.6;
+[[0.55,0.95,1.35,1.75], [-0.78,-1.18,-1.58,-1.98]].forEach(stations=>{
+  for (let n=0; n<stations.length; n++){
+    const xi = stations[n];
+    // strap across at each station
+    kayak.add(tubeLine(deckPt(xi, zf), deckPt(xi, -zf), 0.006, bungeeMat));
+    kayak.add(fitting(deckPt(xi, zf)));
+    kayak.add(fitting(deckPt(xi, -zf)));
+    if (n < stations.length-1){
+      const xj = stations[n+1];
+      kayak.add(tubeLine(deckPt(xi, zf),  deckPt(xj, -zf), 0.006, bungeeMat));
+      kayak.add(tubeLine(deckPt(xi, -zf), deckPt(xj, zf),  0.006, bungeeMat));
+    }
+  }
+});
+
+/* ---- deck hatches (oval covers) ---- */
+const hatchMat = new THREE.MeshStandardMaterial({ color:0x17181b, roughness:0.6, metalness:0.1 });
+function hatch(x){
+  const grp = new THREE.Group();
+  const lid = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.02, 40), hatchMat);
+  lid.scale.set(1.45, 1, 1.0);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.012, 12, 44),
+                 new THREE.MeshStandardMaterial({ color:0x101012, roughness:0.5, metalness:0.3 }));
+  ring.rotation.x = Math.PI/2; ring.scale.set(1.45, 1.0, 1);
+  ring.position.y = 0.006;
+  grp.add(lid, ring);
+  grp.position.set(x, deckY(x, 0) + 0.006, 0);
+  grp.traverse(o=>{ if(o.isMesh) o.castShadow = true; });
+  return grp;
+}
+kayak.add(hatch(1.55));
+kayak.add(hatch(-1.62));
+
+/* ---- end toggles (grab loops at bow & stern) ---- */
+[[2.5], [-2.5]].forEach(([tx])=>{
+  const u = clamp(tx/L + 0.5, 0, 1);
+  const tog = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.011, 10, 22), darkMat);
+  tog.rotation.y = Math.PI/2;
+  tog.position.set(tx + Math.sign(tx)*0.05, Gf(u) + 0.01, 0);
+  tog.castShadow = true;
+  kayak.add(tog);
+});
+
+/* ================================================================
+   ROOF RACK  (two cross bars + two cradle saddles)
+   ================================================================ */
+const rack = new THREE.Group();
+const cradleMat = new THREE.MeshStandardMaterial({ color:0x2a2b30, roughness:0.9, metalness:0.05 });
+const barMat    = new THREE.MeshStandardMaterial({ color:0x141518, roughness:0.4, metalness:0.7 });
+
+function makeCradle(xc, cw){
+  const u = clamp(xc/L + 0.5, 0, 1);
+  const W = Wf(u), D = Df(u), g = Gf(u);
+  const clr = 0.006, wall = 0.05, yBase = -0.37;
+
+  const tLeft  = 2*Math.PI - Math.acos(-0.80);
+  const tRight = 2*Math.PI - Math.acos(0.80);
+  const N = 22, groove = [];
+  for (let k=0; k<N; k++){
+    const t = tLeft + (tRight - tLeft)*(k/(N-1));
+    const z = W*Math.cos(t);
+    const y = g + D*Math.sin(t);
+    const dx = z, dy = y - g;
+    const dl = Math.hypot(dx, dy) || 1;
+    groove.push({ z: z + dx/dl*clr, y: y + dy/dl*clr });
+  }
+  const zL = groove[0].z, yL = groove[0].y;
+  const zR = groove[N-1].z, yR = groove[N-1].y;
+
+  const sh = new THREE.Shape();
+  sh.moveTo(groove[0].z, groove[0].y);
+  for (let k=1; k<N; k++) sh.lineTo(groove[k].z, groove[k].y);
+  sh.lineTo(zR + wall, yR + 0.006);
+  sh.lineTo(zR + wall, yBase);
+  sh.lineTo(zL - wall, yBase);
+  sh.lineTo(zL - wall, yL + 0.006);
+  sh.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(sh, {
+    depth: cw, bevelEnabled:true, bevelThickness:0.008, bevelSize:0.008, bevelSegments:2
+  });
+  geo.rotateY(-Math.PI/2);
+  geo.translate(xc + cw/2, 0, 0);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, cradleMat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+function makeBar(xc){
+  const grp = new THREE.Group();
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.032, 0.032, 1.18, 24), barMat);
+  bar.rotation.x = Math.PI/2;   // axis -> z
+  bar.scale.set(1.5, 1, 1);     // aero (wider along boat)
+  bar.castShadow = true; bar.receiveShadow = true;
+  grp.add(bar);
+  [0.59, -0.59].forEach(z=>{
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(0.033, 16, 12),
+                  new THREE.MeshStandardMaterial({ color:0x0d0e10, roughness:0.5, metalness:0.4 }));
+    cap.scale.set(1.5, 1, 1); cap.position.set(0, 0, z); cap.castShadow = true;
+    grp.add(cap);
+  });
+  grp.position.set(xc, -0.40, 0);
+  return grp;
+}
+
+[0.55, -0.70].forEach(xc=>{
+  rack.add(makeBar(xc));
+  rack.add(makeCradle(xc, 0.14));
+});
+
+/* ---------- assemble ---------- */
+const root = new THREE.Group();
+root.add(kayak);
+root.add(rack);
+scene.add(root);
+
+/* ---------- resize ---------- */
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- render loop ---------- */
+renderer.setAnimationLoop(()=>{
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

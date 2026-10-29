@@ -1,0 +1,600 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Crystal Bishop</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #0b0d10; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(220, 235, 240, 0.42); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none; text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Crystal Bishop &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene / camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c0f);
+scene.fog = new THREE.FogExp2(0x0a0c0f, 0.018);
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(6.2, 5.4, 8.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.65;
+controls.minDistance = 4.5;
+controls.maxDistance = 26;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 3.05, 0);
+
+// ---------------------------------------------------------------------------
+// Studio environment (procedural, rendered to a cube render target)
+//   -> gives the glass something rich to refract & reflect.
+// ---------------------------------------------------------------------------
+function buildEnvironmentScene() {
+  const env = new THREE.Scene();
+  env.background = new THREE.Color(0x0c0f13);
+
+  const softMat = (color, intensity) => new THREE.MeshBasicMaterial({
+    color: new THREE.Color(color).multiplyScalar(intensity),
+    side: THREE.DoubleSide,
+    fog: false
+  });
+
+  // Large gradient dome
+  const domeGeo = new THREE.SphereGeometry(40, 32, 24);
+  const domeColors = [];
+  const domePos = domeGeo.attributes.position;
+  const top = new THREE.Color(0x1b2733);
+  const bottom = new THREE.Color(0x05070a);
+  const horizon = new THREE.Color(0x0e161d);
+  const c = new THREE.Color();
+  for (let i = 0; i < domePos.count; i++) {
+    const y = domePos.getY(i) / 40; // -1..1
+    if (y >= 0) c.copy(horizon).lerp(top, Math.pow(y, 0.7));
+    else c.copy(horizon).lerp(bottom, Math.pow(-y, 0.6));
+    domeColors.push(c.r, c.g, c.b);
+  }
+  domeGeo.setAttribute('color', new THREE.Float32BufferAttribute(domeColors, 3));
+  const dome = new THREE.Mesh(domeGeo, new THREE.MeshBasicMaterial({
+    vertexColors: true, side: THREE.BackSide, fog: false
+  }));
+  env.add(dome);
+
+  // Overhead softbox (the main highlight streak in the glass)
+  const key = new THREE.Mesh(new THREE.PlaneGeometry(26, 12), softMat(0xffffff, 3.4));
+  key.position.set(-3, 18, 4);
+  key.rotation.x = -Math.PI / 2;
+  key.rotation.z = 0.4;
+  env.add(key);
+
+  // Tall side strip lights — read as vertical bright bands through the stem
+  const stripL = new THREE.Mesh(new THREE.PlaneGeometry(4.5, 26), softMat(0xd8f0ff, 2.4));
+  stripL.position.set(-16, 7, -6);
+  stripL.rotation.y = Math.PI * 0.42;
+  env.add(stripL);
+
+  const stripR = new THREE.Mesh(new THREE.PlaneGeometry(3.2, 24), softMat(0xbfe6e0, 1.9));
+  stripR.position.set(15, 6, -8);
+  stripR.rotation.y = -Math.PI * 0.44;
+  env.add(stripR);
+
+  const stripBack = new THREE.Mesh(new THREE.PlaneGeometry(10, 14), softMat(0x7fb6c8, 1.3));
+  stripBack.position.set(2, 8, -18);
+  env.add(stripBack);
+
+  // Warm kicker for color separation in the caustics
+  const warm = new THREE.Mesh(new THREE.PlaneGeometry(6, 9), softMat(0xffd8b0, 1.15));
+  warm.position.set(11, 4.5, 9);
+  warm.rotation.y = -Math.PI * 0.35;
+  env.add(warm);
+
+  // Floor card (bounce)
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(70, 70), softMat(0x151a1f, 1.0));
+  floor.rotation.x = -Math.PI / 2;
+  floor.position.y = -2.2;
+  env.add(floor);
+
+  return env;
+}
+
+const envScene = buildEnvironmentScene();
+const cubeRT = new THREE.WebGLCubeRenderTarget(512, { type: THREE.HalfFloatType });
+const cubeCam = new THREE.CubeCamera(0.1, 100, cubeRT);
+cubeCam.position.set(0, 3.2, 0);
+cubeCam.update(renderer, envScene);
+const envMap = cubeRT.texture;
+scene.environment = envMap;
+
+// ---------------------------------------------------------------------------
+// Lighting
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x9fd4e8, 0x0a0e12, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.9);
+key.position.set(-6.5, 12.5, 6.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 12;
+key.shadow.camera.bottom = -3;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3.5;
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 2.6, 0);
+
+const fill = new THREE.DirectionalLight(0x86c6d8, 0.85);
+fill.position.set(7.5, 4.0, 6.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbff2e6, 1.7);
+rim.position.set(2.0, 5.5, -9.0);
+scene.add(rim);
+
+// Small bright point inside the piece: fakes the concentrated caustic glint
+const coreGlow = new THREE.PointLight(0x9ff0ff, 2.2, 7.5, 2.0);
+coreGlow.position.set(0, 4.6, 0);
+scene.add(coreGlow);
+
+// A tight spot to pinch light through the mitre slot onto the floor
+const slotSpot = new THREE.SpotLight(0xcdfaff, 26, 22, 0.30, 0.65, 1.6);
+slotSpot.position.set(-2.2, 11.5, 3.2);
+slotSpot.target.position.set(0.4, 0, -0.3);
+scene.add(slotSpot);
+scene.add(slotSpot.target);
+
+// ---------------------------------------------------------------------------
+// Ground: shadow-only plane + a faint reflective disc for the piece to sit on
+// ---------------------------------------------------------------------------
+const shadowGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.5 })
+);
+shadowGround.rotation.x = -Math.PI / 2;
+shadowGround.position.y = 0;
+shadowGround.receiveShadow = true;
+scene.add(shadowGround);
+
+// Subtle dark pedestal disc (not shadow-only; grounds the composition)
+const pedestal = new THREE.Mesh(
+  new THREE.CylinderGeometry(4.6, 4.9, 0.16, 96, 1),
+  new THREE.MeshStandardMaterial({
+    color: 0x0d1116,
+    roughness: 0.36,
+    metalness: 0.55,
+    envMap: envMap,
+    envMapIntensity: 0.5
+  })
+);
+pedestal.position.y = -0.085;
+pedestal.receiveShadow = true;
+scene.add(pedestal);
+
+// Caustic pool under the bishop — additive, faded radial falloff via vertex colors
+function makeCausticPool() {
+  const geo = new THREE.CircleGeometry(2.5, 96, 0, Math.PI * 2);
+  const pos = geo.attributes.position;
+  const cols = [];
+  const inner = new THREE.Color(0x63e6ff);
+  const outer = new THREE.Color(0x000000);
+  const tmp = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const r = Math.hypot(pos.getX(i), pos.getY(i)) / 2.5;
+    const a = Math.pow(1.0 - Math.min(r, 1.0), 2.4);
+    tmp.copy(outer).lerp(inner, a);
+    cols.push(tmp.r, tmp.g, tmp.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(cols, 3));
+  const mat = new THREE.MeshBasicMaterial({
+    vertexColors: true,
+    blending: THREE.AdditiveBlending,
+    transparent: true,
+    opacity: 0.5,
+    depthWrite: false,
+    fog: false
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.rotation.x = -Math.PI / 2;
+  m.position.y = 0.012;
+  return m;
+}
+const causticPool = makeCausticPool();
+scene.add(causticPool);
+
+// ---------------------------------------------------------------------------
+// THE BISHOP
+// ---------------------------------------------------------------------------
+const bishop = new THREE.Group();
+scene.add(bishop);
+
+// --- Crystal material -------------------------------------------------------
+const crystal = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.015,
+  transmission: 1.0,
+  thickness: 1.35,
+  ior: 1.62,                          // lead / optical crystal
+  attenuationColor: new THREE.Color(0x9fe8dd), // faint blue-green edge tint
+  attenuationDistance: 2.6,
+  specularIntensity: 1.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.02,
+  envMap: envMap,
+  envMapIntensity: 1.5,
+  transparent: true,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+// Slightly denser variant for the mitre & knop: more visible tint at edges
+const crystalDense = crystal.clone();
+crystalDense.thickness = 2.1;
+crystalDense.attenuationDistance = 1.9;
+crystalDense.envMapIntensity = 1.7;
+
+// Faint inner "core" material — creates the pinched internal caustic look
+const innerCore = new THREE.MeshPhysicalMaterial({
+  color: 0xbdf6ff,
+  roughness: 0.08,
+  metalness: 0.0,
+  transmission: 0.92,
+  thickness: 0.5,
+  ior: 1.9,
+  emissive: 0x0e3a44,
+  emissiveIntensity: 0.55,
+  envMap: envMap,
+  envMapIntensity: 1.2,
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false
+});
+
+// --- Lathe profile helpers --------------------------------------------------
+// Profile is authored as (radius, height) pairs in "cm-like" units,
+// then swept with LatheGeometry. Turned-profile silhouette:
+//   wide disc base -> ogee -> slender collared stem -> collar -> mitre -> finial
+const pts = [];
+const P = (r, y) => pts.push(new THREE.Vector2(Math.max(r, 0.0001), y));
+
+// -- Foot / wide disc base --
+P(0.0001, 0.00);
+P(1.62, 0.00);        // outer rim of base, on the ground
+P(1.70, 0.055);       // bull-nose roll of the rim
+P(1.705, 0.115);
+P(1.66, 0.185);
+P(1.52, 0.255);       // undercut into the base fillet
+P(1.34, 0.315);
+P(1.20, 0.375);
+P(1.12, 0.455);       // top face of the disc plinth
+P(1.10, 0.545);
+P(1.135, 0.625);      // small torus ring above the plinth
+P(1.16, 0.700);
+P(1.13, 0.775);
+P(1.05, 0.845);
+P(0.93, 0.920);       // start of the ogee sweep upward
+P(0.80, 1.010);
+P(0.685, 1.120);
+P(0.585, 1.250);
+P(0.505, 1.400);
+P(0.445, 1.560);
+P(0.402, 1.730);
+P(0.375, 1.905);      // narrowest part of the lower stem
+P(0.362, 2.080);
+P(0.360, 2.230);
+
+// -- Lower collar (astragal ring) --
+P(0.395, 2.300);
+P(0.470, 2.360);
+P(0.505, 2.430);
+P(0.492, 2.505);
+P(0.430, 2.565);
+P(0.372, 2.615);
+
+// -- Slender neck --
+P(0.345, 2.700);
+P(0.330, 2.810);
+P(0.324, 2.925);
+P(0.330, 3.030);
+P(0.350, 3.120);
+
+// -- Upper collar / knop under the mitre --
+P(0.420, 3.185);
+P(0.530, 3.245);
+P(0.610, 3.320);
+P(0.640, 3.405);      // widest point of the knop
+P(0.618, 3.490);
+P(0.552, 3.560);
+P(0.470, 3.612);
+P(0.408, 3.655);
+
+// -- Narrow waist beneath the mitre bell --
+P(0.372, 3.720);
+P(0.368, 3.790);
+
+// -- Mitre: swelling bell then tapering to the slit point --
+P(0.430, 3.870);
+P(0.520, 3.960);
+P(0.600, 4.070);
+P(0.652, 4.190);
+P(0.678, 4.320);
+P(0.686, 4.455);      // fullest belly of the mitre
+P(0.672, 4.600);
+P(0.640, 4.745);
+P(0.592, 4.890);
+P(0.532, 5.030);
+P(0.462, 5.165);
+P(0.388, 5.290);
+P(0.312, 5.400);
+P(0.240, 5.492);
+P(0.176, 5.566);
+P(0.126, 5.625);
+P(0.096, 5.672);      // shoulder into the finial neck
+
+// -- Finial neck (tiny collar) --
+P(0.088, 5.712);
+P(0.104, 5.748);
+P(0.118, 5.786);
+P(0.112, 5.826);
+P(0.092, 5.858);
+P(0.082, 5.892);
+
+// The polished capping sphere is a separate mesh (below); close the lathe
+P(0.086, 5.930);
+P(0.0001, 5.955);
+
+const RADIAL = 256;
+const latheGeo = new THREE.LatheGeometry(pts, RADIAL, 0, Math.PI * 2);
+latheGeo.computeVertexNormals();
+latheGeo.computeBoundingSphere();
+
+const body = new THREE.Mesh(latheGeo, crystal);
+body.castShadow = true;
+body.receiveShadow = true;
+bishop.add(body);
+
+// --- The mitre slot ---------------------------------------------------------
+// A real bishop's mitre carries a diagonal cut. We render it as a thin
+// dark-tinted wedge that reads as a slit notch pinching the light.
+function makeMitreSlot() {
+  const g = new THREE.Group();
+
+  // Slot cavity: a very thin box, slightly wedge-shaped, angled like a
+  // traditional mitre cut. Rendered as dense crystal so light pinches.
+  const slotMat = new THREE.MeshPhysicalMaterial({
+    color: 0xdff8ff,
+    roughness: 0.05,
+    metalness: 0.0,
+    transmission: 0.98,
+    thickness: 0.28,
+    ior: 1.05,                    // near-air pocket => strong refraction contrast
+    attenuationColor: new THREE.Color(0x74d8c8),
+    attenuationDistance: 0.55,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.03,
+    envMap: envMap,
+    envMapIntensity: 1.4,
+    transparent: true,
+    side: THREE.DoubleSide,
+    depthWrite: false
+  });
+
+  // Tapered slit: built from a lathe-free custom shape so it narrows upward
+  const slotShape = new THREE.Shape();
+  slotShape.moveTo(-0.70, -0.62);
+  slotShape.lineTo(0.70, -0.62);
+  slotShape.lineTo(0.30, 0.66);
+  slotShape.lineTo(-0.30, 0.66);
+  slotShape.closePath();
+
+  const slotGeo = new THREE.ExtrudeGeometry(slotShape, {
+    depth: 0.052,
+    bevelEnabled: true,
+    bevelThickness: 0.012,
+    bevelSize: 0.014,
+    bevelSegments: 3,
+    curveSegments: 4
+  });
+  slotGeo.translate(0, 0, -0.026);
+  slotGeo.computeVertexNormals();
+
+  const slot = new THREE.Mesh(slotGeo, slotMat);
+  // Position across the upper mitre, tilted like a bishop's diagonal cut
+  slot.position.set(0, 4.85, 0);
+  slot.rotation.z = -0.38;
+  slot.scale.set(0.98, 1.0, 1.0);
+  g.add(slot);
+
+  // Bright specular sliver hugging the slot: the "pinched light" highlight
+  const sliverMat = new THREE.MeshBasicMaterial({
+    color: 0xd6fbff,
+    transparent: true,
+    opacity: 0.30,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: false
+  });
+  const sliverGeo = new THREE.PlaneGeometry(1.28, 1.16, 1, 1);
+  const sliver = new THREE.Mesh(sliverGeo, sliverMat);
+  sliver.position.set(0, 4.85, 0.0);
+  sliver.rotation.z = -0.38;
+  sliver.scale.set(0.42, 0.96, 1);
+  g.add(sliver);
+
+  return g;
+}
+const mitreSlot = makeMitreSlot();
+bishop.add(mitreSlot);
+
+// --- Polished capping sphere ------------------------------------------------
+const capSphere = new THREE.Mesh(
+  new THREE.SphereGeometry(0.155, 96, 64),
+  crystalDense
+);
+capSphere.position.set(0, 6.055, 0);
+capSphere.castShadow = true;
+capSphere.receiveShadow = true;
+bishop.add(capSphere);
+
+// A crisp, tiny highlight bead inside the cap sphere
+const capCore = new THREE.Mesh(
+  new THREE.SphereGeometry(0.052, 32, 24),
+  new THREE.MeshBasicMaterial({ color: 0xeafeff, transparent: true, opacity: 0.55, fog: false })
+);
+capCore.position.copy(capSphere.position);
+bishop.add(capCore);
+
+// --- Internal caustic core --------------------------------------------------
+// A slender inner lathe (scaled copy of the profile) that catches light and
+// reads as refracted internal structure inside the solid crystal.
+const corePts = pts
+  .filter((p, i) => p.y > 0.35 && p.y < 5.45 && i % 2 === 0)
+  .map(p => new THREE.Vector2(Math.max(p.x * 0.42, 0.012), p.y));
+if (corePts.length > 3) {
+  const coreGeo = new THREE.LatheGeometry(corePts, 96, 0, Math.PI * 2);
+  coreGeo.computeVertexNormals();
+  const coreMesh = new THREE.Mesh(coreGeo, innerCore);
+  coreMesh.renderOrder = -1;
+  bishop.add(coreMesh);
+}
+
+// --- Faceted "cut" band around the base rim --------------------------------
+// Optical crystal bases are usually cut with vertical flutes; a low-segment
+// lathe ring gives that faceted sparkle without any textures.
+function makeFlutedBand() {
+  const bandPts = [
+    new THREE.Vector2(1.575, 0.075),
+    new THREE.Vector2(1.635, 0.135),
+    new THREE.Vector2(1.640, 0.205),
+    new THREE.Vector2(1.585, 0.275),
+    new THREE.Vector2(1.470, 0.340)
+  ];
+  const geo = new THREE.LatheGeometry(bandPts, 36, 0, Math.PI * 2);
+  // Flat-shade for hard facet edges
+  const nonIndexed = geo.toNonIndexed();
+  nonIndexed.computeVertexNormals();
+  geo.dispose();
+  const mat = crystalDense.clone();
+  mat.flatShading = true;
+  mat.roughness = 0.03;
+  mat.thickness = 0.9;
+  mat.attenuationDistance = 1.4;
+  mat.needsUpdate = true;
+  const m = new THREE.Mesh(nonIndexed, mat);
+  m.castShadow = true;
+  return m;
+}
+bishop.add(makeFlutedBand());
+
+// --- Ground contact glow ring ----------------------------------------------
+const contactRing = new THREE.Mesh(
+  new THREE.RingGeometry(1.42, 1.80, 128),
+  new THREE.MeshBasicMaterial({
+    color: 0x7fe9ff,
+    transparent: true,
+    opacity: 0.18,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+    fog: false
+  })
+);
+contactRing.rotation.x = -Math.PI / 2;
+contactRing.position.y = 0.02;
+scene.add(contactRing);
+
+// ---------------------------------------------------------------------------
+// Centering: put the piece's footprint on y=0 and its axis at the origin
+// ---------------------------------------------------------------------------
+bishop.position.set(0, 0, 0);
+const bbox = new THREE.Box3().setFromObject(body);
+controls.target.set(0, (bbox.min.y + bbox.max.y) * 0.5, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+// ---------------------------------------------------------------------------
+// Animation
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // Gently breathe the internal glow so caustics feel alive
+  const pulse = 0.5 + 0.5 * Math.sin(t * 0.7);
+  coreGlow.intensity = 1.7 + pulse * 1.1;
+  innerCore.emissiveIntensity = 0.38 + pulse * 0.30;
+  causticPool.material.opacity = 0.34 + pulse * 0.18;
+  contactRing.material.opacity = 0.12 + pulse * 0.10;
+
+  // Slot sliver should only flare when roughly facing the camera
+  const slotSliver = mitreSlot.children[1];
+  const worldDir = new THREE.Vector3();
+  camera.getWorldDirection(worldDir);
+  const slotNormal = new THREE.Vector3(0, 0, 1).applyQuaternion(bishop.quaternion);
+  const facing = Math.abs(slotNormal.dot(worldDir));
+  slotSliver.material.opacity = 0.10 + 0.30 * Math.pow(facing, 3.0);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>

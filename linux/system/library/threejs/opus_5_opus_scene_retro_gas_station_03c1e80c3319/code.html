@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Desert Retro Gas Station</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a1730}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   DESERT RETRO GAS STATION — a lonely 1960s americana pit stop at sunset.
+   config/palette -> prng+helpers -> canvas textures -> materials ->
+   builders -> assembly -> lighting -> render setup -> animation -> resize
+   ========================================================================== */
+
+/* ---------- 1. CONFIG & PALETTE ------------------------------------------ */
+const CONFIG = {
+  seed: 41966,
+  shadowRes: 2048,
+  fogColor: 0xcf7f52, fogNear: 58, fogFar: 215,
+  sunDir: new THREE.Vector3(0.914, 0.257, 0.314), // low, hard right of camera
+  apron: { w: 46, d: 24, cx: -2, cz: -3 }
+};
+const PAL = {
+  concreteDark: 0x8b8175, asphalt: 0x3c3733, red: 0xbe3a2b, cream: 0xf7f0de,
+  teal: 0x2f9aa2, tealDark: 0x1d666c, chrome: 0xdadfe3, steel: 0x8b9297, ironDark: 0x322f2c,
+  tire: 0x1d1b1a, glassDark: 0x27363f, neon: 0xff8a33, neonPink: 0xff5f7d, bulb: 0xffd9a0,
+  cactus: 0x527f4b, wood: 0x8b6b43, truckBody: 0x5aa8ae, truckDark: 0x3a7a81
+};
+
+/* ---------- 2. SEEDED PRNG & GEOMETRY HELPERS ---------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + rand() * (b - a);
+const deg = d => d * Math.PI / 180;
+
+function mk(geo, mat, x = 0, y = 0, z = 0){
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; return m;
+}
+const box = (w, h, d, mat, x, y, z) => mk(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, seg, mat, x, y, z) => mk(new THREE.CylinderGeometry(rt, rb, h, seg), mat, x, y, z);
+const sph = (r, mat, x, y, z) => mk(new THREE.SphereGeometry(r, 18, 14), mat, x, y, z);
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES -------------------------------- */
+function canvasTex(w, h, draw, rx = 1, ry = 1){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+function speckle(ctx, w, h, n, colors, min, max){
+  for (let i = 0; i < n; i++){
+    ctx.fillStyle = colors[Math.floor(rand() * colors.length)];
+    ctx.globalAlpha = rr(0.06, 0.30);
+    ctx.fillRect(rand() * w, rand() * h, rr(min, max), rr(min, max));
+  }
+  ctx.globalAlpha = 1;
+}
+const TEX = {};
+TEX.sand = canvasTex(512, 512, (c, w, h) => {
+  c.fillStyle = '#c99b63'; c.fillRect(0, 0, w, h);
+  speckle(c, w, h, 5200, ['#dcb47c', '#a87f4d', '#e6c893', '#8f6a42'], 2, 7);
+  c.globalAlpha = 0.5; c.fillStyle = '#8c6a45';
+  for (let i = 0; i < 90; i++){                       // scattered pebbles
+    c.beginPath(); c.ellipse(rand() * w, rand() * h, rr(2, 5), rr(1.5, 4), rand() * 3, 0, 6.283); c.fill();
+  }
+  c.globalAlpha = 1;
+}, 46, 46);
+TEX.concrete = canvasTex(1024, 1024, (c, w, h) => {
+  c.fillStyle = '#ab9f92'; c.fillRect(0, 0, w, h);
+  speckle(c, w, h, 6000, ['#c0b5a6', '#948a7e', '#d2c8b8', '#7d7367'], 2, 9);
+  c.strokeStyle = '#7c7266'; c.lineWidth = 5;         // expansion joints
+  c.strokeRect(2, 2, w - 4, h - 4);
+  c.beginPath(); c.moveTo(w / 2, 0); c.lineTo(w / 2, h); c.moveTo(0, h / 2); c.lineTo(w, h / 2); c.stroke();
+  c.lineWidth = 2.4; c.strokeStyle = '#6d6458';       // meandering cracks
+  for (let k = 0; k < 22; k++){
+    let x = rr(60, w - 60), y = rr(60, h - 60); c.beginPath(); c.moveTo(x, y);
+    for (let s = 0; s < 14; s++){ x += rr(-34, 34); y += rr(-34, 34); c.lineTo(x, y); }
+    c.stroke();
+  }
+  c.globalAlpha = 0.22; c.fillStyle = '#5d534a';      // oil stains
+  for (let k = 0; k < 14; k++){ c.beginPath(); c.ellipse(rand() * w, rand() * h, rr(14, 46), rr(10, 34), rand() * 3, 0, 6.283); c.fill(); }
+  c.globalAlpha = 1;
+}, 4, 3);
+TEX.stucco = canvasTex(256, 256, (c, w, h) => {
+  c.fillStyle = '#f1e6cb'; c.fillRect(0, 0, w, h);
+  speckle(c, w, h, 2600, ['#e2d3ae', '#fdf6e5', '#cdb98e'], 1, 4);
+  c.globalAlpha = 0.14; c.fillStyle = '#b39a6c';      // weather streaks
+  for (let k = 0; k < 40; k++) c.fillRect(rand() * w, 0, rr(1, 3), h);
+  c.globalAlpha = 1;
+}, 4, 2);
+TEX.stripe = canvasTex(256, 64, (c, w, h) => {        // canopy fascia
+  c.fillStyle = '#f7f0de'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#be3a2b';
+  for (let i = 0; i < 4; i++) c.fillRect(i * 64, 0, 32, h);
+  c.fillStyle = '#1d666c'; c.fillRect(0, h - 9, w, 9);
+}, 14, 1);
+TEX.garage = canvasTex(256, 256, (c, w, h) => {       // roll-up garage door
+  c.fillStyle = '#cfd6d2'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 8; i++){
+    c.fillStyle = i % 2 ? '#c2cac6' : '#d8ded9'; c.fillRect(0, i * 32, w, 30);
+    c.fillStyle = '#9aa19d'; c.fillRect(0, i * 32 + 30, w, 2);
+  }
+  c.strokeStyle = '#8e9591'; c.lineWidth = 3; c.strokeRect(6, 6, w - 12, h - 12);
+  c.fillStyle = '#8fb9c4'; c.fillRect(30, 44, 60, 28); c.fillRect(w - 90, 44, 60, 28);
+});
+TEX.window = canvasTex(256, 256, (c, w, h) => {       // office glass + decals
+  const g = c.createLinearGradient(0, 0, w, h);
+  g.addColorStop(0, '#3d5a63'); g.addColorStop(0.45, '#26363f'); g.addColorStop(1, '#8a6a48');
+  c.fillStyle = g; c.fillRect(0, 0, w, h);
+  c.globalAlpha = 0.35; c.fillStyle = '#ffd6a0';      // sunset reflection bands
+  for (let i = 0; i < 5; i++) c.fillRect(0, 40 + i * 42, w, rr(4, 12));
+  c.globalAlpha = 1;
+  c.fillStyle = '#f2e2b8'; c.font = 'bold 34px sans-serif'; c.textAlign = 'center';
+  c.fillText('OPEN', w / 2, 128); c.font = 'bold 20px sans-serif';
+  c.fillText('24 HOURS', w / 2, 156);
+});
+TEX.sign = canvasTex(512, 384, (c, w, h) => {         // rotating pole sign
+  c.fillStyle = '#f7f0de'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#be3a2b'; c.fillRect(0, 0, w, 54); c.fillRect(0, h - 54, w, 54);
+  c.strokeStyle = '#1d666c'; c.lineWidth = 10; c.strokeRect(5, 5, w - 10, h - 10);
+  c.fillStyle = '#2f9aa2'; c.beginPath();             // googie starburst
+  for (let i = 0; i < 16; i++){
+    const a = i * Math.PI / 8, r = i % 2 ? 44 : 104;
+    c.lineTo(w / 2 + Math.cos(a) * r, 190 + Math.sin(a) * r);
+  }
+  c.closePath(); c.fill();
+  c.textAlign = 'center'; c.fillStyle = '#f7f0de';
+  c.font = 'bold 92px sans-serif'; c.fillText('GAS', w / 2, 222);
+  c.font = 'bold 40px sans-serif';
+  c.fillText('SUNSET', w / 2, 42); c.fillText('29 9/10', w / 2, h - 16);
+});
+TEX.vend = canvasTex(256, 512, (c, w, h) => {         // soda machine front
+  c.fillStyle = '#be3a2b'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#f7f0de'; c.fillRect(0, 88, w, 108);
+  c.fillStyle = '#be3a2b'; c.font = 'bold 52px sans-serif'; c.textAlign = 'center';
+  c.fillText('COLA', w / 2, 158);
+  c.fillStyle = '#1d666c'; c.fillRect(20, 214, w - 40, 8);
+  for (let i = 0; i < 4; i++){                        // selection buttons
+    c.fillStyle = ['#f2c14b', '#5aa8ae', '#f7f0de', '#e08c3a'][i];
+    c.fillRect(28 + i * 52, 246, 38, 46);
+  }
+  c.fillStyle = '#2a1a12'; c.fillRect(28, 330, w - 56, 96);  // dispenser slot
+  c.fillStyle = '#f7f0de'; c.font = 'bold 22px sans-serif'; c.fillText('ICE COLD 10c', w / 2, 466);
+});
+TEX.pumpFace = canvasTex(256, 160, (c, w, h) => {     // pump price window
+  c.fillStyle = '#141414'; c.fillRect(0, 0, w, h);
+  c.fillStyle = '#f4e6c0'; c.fillRect(10, 10, w - 20, 62);
+  c.fillStyle = '#1a1a1a'; c.font = 'bold 48px monospace'; c.textAlign = 'center';
+  c.fillText('3 4 9', w / 2, 58);
+  c.fillStyle = '#ff8a33'; c.font = 'bold 24px sans-serif';
+  c.fillText('GALLONS', w / 2, 110); c.fillText('REGULAR', w / 2, 142);
+});
+TEX.rust = canvasTex(256, 256, (c, w, h) => {
+  c.fillStyle = '#8c4c2b'; c.fillRect(0, 0, w, h);
+  speckle(c, w, h, 2800, ['#5e3520', '#b06a3c', '#3d2418', '#c98a4f'], 2, 12);
+  c.fillStyle = '#3a2a1e'; c.globalAlpha = 0.4;
+  for (let i = 0; i < 3; i++) c.fillRect(0, i * 84 + 30, w, 5);
+  c.globalAlpha = 1;
+}, 2, 1);
+TEX.sky = canvasTex(8, 512, (c, w, h) => {
+  const g = c.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0.00, '#1e2550'); g.addColorStop(0.28, '#573a6d'); g.addColorStop(0.43, '#c74f2c');
+  g.addColorStop(0.49, '#ff9436'); g.addColorStop(0.53, '#ffc36b'); g.addColorStop(0.58, '#c07d4c');
+  g.addColorStop(0.74, '#6d472f'); g.addColorStop(1.00, '#472c20');
+  c.fillStyle = g; c.fillRect(0, 0, w, h);
+});
+TEX.glow = canvasTex(128, 128, (c, w, h) => {
+  const g = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,235,200,1)'); g.addColorStop(0.35, 'rgba(255,180,90,0.55)');
+  g.addColorStop(1, 'rgba(255,150,60,0)'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+});
+
+/* ---------- 4. MATERIAL PALETTE ------------------------------------------ */
+const std = (o) => new THREE.MeshStandardMaterial(o);
+const MAT = {
+  sand: std({ map: TEX.sand, color: 0xffffff, roughness: 1.0 }),
+  concrete: std({ map: TEX.concrete, roughness: 0.95 }),
+  concreteEdge: std({ color: PAL.concreteDark, roughness: 0.95 }),
+  asphalt: std({ color: PAL.asphalt, roughness: 0.98 }),
+  stucco: std({ map: TEX.stucco, roughness: 0.9 }),
+  cream: std({ color: PAL.cream, roughness: 0.6 }),
+  red: std({ color: PAL.red, roughness: 0.5 }),
+  teal: std({ color: PAL.teal, roughness: 0.45 }),
+  tealDark: std({ color: PAL.tealDark, roughness: 0.5 }),
+  chrome: std({ color: PAL.chrome, roughness: 0.16, metalness: 0.95 }),
+  steel: std({ color: PAL.steel, roughness: 0.45, metalness: 0.8 }),
+  iron: std({ color: PAL.ironDark, roughness: 0.7, metalness: 0.5 }),
+  rust: std({ map: TEX.rust, roughness: 0.95, metalness: 0.15 }),
+  tire: std({ color: PAL.tire, roughness: 0.95 }),
+  glass: std({ color: PAL.glassDark, roughness: 0.12, metalness: 0.4, transparent: true, opacity: 0.72 }),
+  stripe: std({ map: TEX.stripe, roughness: 0.55 }),
+  garage: std({ map: TEX.garage, roughness: 0.6, metalness: 0.25 }),
+  window: std({ map: TEX.window, emissive: 0xffb066, emissiveIntensity: 0.5, roughness: 0.15, metalness: 0.3 }),
+  sign: std({ map: TEX.sign, roughness: 0.55, emissive: 0xffa050, emissiveIntensity: 0.28, side: THREE.DoubleSide }),
+  vend: std({ map: TEX.vend, roughness: 0.45, emissive: 0xff7a4a, emissiveIntensity: 0.45 }),
+  pumpFace: std({ map: TEX.pumpFace, roughness: 0.3, emissive: 0xffb070, emissiveIntensity: 0.6 }),
+  neon: std({ color: 0x552211, emissive: PAL.neon, emissiveIntensity: 2.4, roughness: 0.4 }),
+  neonPink: std({ color: 0x551122, emissive: PAL.neonPink, emissiveIntensity: 2.2, roughness: 0.4 }),
+  bulb: std({ color: 0x3a3020, emissive: PAL.bulb, emissiveIntensity: 2.0, roughness: 0.4 }),
+  cactus: std({ color: PAL.cactus, roughness: 0.85 }),
+  wood: std({ color: PAL.wood, roughness: 0.95 }),
+  twig: std({ color: 0x8a7043, roughness: 1.0, wireframe: true }),
+  truck: std({ color: PAL.truckBody, roughness: 0.42, metalness: 0.35 }),
+  truckDark: std({ color: PAL.truckDark, roughness: 0.5, metalness: 0.3 }),
+  mesa: std({ color: 0x8f5a3c, roughness: 1.0 })
+};
+
+/* ---------- 5. BUILDERS -------------------------------------------------- */
+// 5a. Desert floor with gentle far dunes plus the poured concrete forecourt.
+function buildGround(){
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(360, 360, 72, 72);
+  const p = geo.attributes.position, ph = [rr(0, 6), rr(0, 6), rr(0, 6), rr(0, 6)];
+  for (let i = 0; i < p.count; i++){
+    const x = p.getX(i), y = p.getY(i);
+    const fall = Math.min(1, Math.max(0, (Math.hypot(x, y) - 34) / 46));
+    const n = 1.5 * Math.sin(x * 0.042 + ph[0]) * Math.cos(y * 0.036 + ph[1])
+            + 0.8 * Math.sin((x + y) * 0.07 + ph[2]) + 0.45 * Math.cos(x * 0.11 - y * 0.09 + ph[3]);
+    p.setZ(i, n * fall * fall);
+  }
+  geo.computeVertexNormals();
+  const floor = mk(geo, MAT.sand, 0, 0, 0);
+  floor.rotation.x = -Math.PI / 2; floor.castShadow = false; g.add(floor);
+  const A = CONFIG.apron;
+  const slab = box(A.w, 0.16, A.d, MAT.concrete, A.cx, 0.08, A.cz); slab.castShadow = false;
+  const rim = box(A.w + 0.5, 0.13, A.d + 0.5, MAT.concreteEdge, A.cx, 0.05, A.cz); rim.castShadow = false;
+  const road = box(150, 0.1, 8.5, MAT.asphalt, 0, 0.06, 19.5); road.castShadow = false;
+  g.add(slab, rim, road);
+  for (let i = -9; i <= 9; i++){                      // dashed centre line
+    const dash = box(3.2, 0.02, 0.34, MAT.cream, i * 8, 0.12, 19.5);
+    dash.castShadow = false; g.add(dash);
+  }
+  return g;
+}
+
+// 5b. Gradient sky dome + a fat sun sitting on the horizon.
+function buildSky(){
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(400, 40, 26),
+    new THREE.MeshBasicMaterial({ map: TEX.sky, side: THREE.BackSide, fog: false, depthWrite: false })));
+  const d = CONFIG.sunDir;
+  for (const [col, sc] of [[0xffb060, 150], [0xfff0c8, 44]]){
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, color: col,
+      blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    s.position.set(d.x * 300, 26, d.z * 300); s.scale.setScalar(sc); g.add(s);
+  }
+  return g;
+}
+
+// 5c. Office block + garage bay: the station's main structure.
+function buildStation(){
+  const g = new THREE.Group();
+  const glass = box(5.4, 2.3, 0.14, MAT.window, 3.4, 2.15, 3.86);
+  const strip = box(6.0, 0.12, 0.12, MAT.neon, 3.4, 4.18, 3.74);   // neon sign underline
+  const boardTxt = new THREE.Mesh(new THREE.PlaneGeometry(5.8, 0.9),
+    std({ map: TEX.sign, roughness: 0.6, emissive: 0xff9a55, emissiveIntensity: 0.35 }));
+  boardTxt.position.set(3.4, 4.85, 3.72);
+  g.add(
+    box(7.4, 4.0, 7.6, MAT.stucco, 3.4, 2.0, 0),                   // office block
+    box(7.8, 4.9, 8.6, MAT.stucco, -3.8, 2.45, -0.5),              // garage bay
+    box(8.0, 0.34, 8.2, MAT.teal, 3.4, 4.14, 0),                   // roof caps
+    box(8.4, 0.34, 9.2, MAT.teal, -3.8, 5.04, -0.5),
+    box(7.5, 0.36, 0.24, MAT.red, 3.4, 3.62, 3.92),                // red trim bands
+    box(7.9, 0.36, 0.24, MAT.red, -3.8, 4.5, 3.92),
+    glass, box(5.9, 0.2, 0.3, MAT.cream, 3.4, 0.95, 3.9),          // window + sill
+    box(1.1, 2.3, 0.16, MAT.teal, 6.5, 1.15, 3.86),                // office door
+    cyl(0.05, 0.05, 0.3, 8, MAT.chrome, 6.02, 1.2, 3.98),
+    box(6.4, 4.0, 0.18, MAT.garage, -3.8, 2.0, 3.88),              // roll-up bay door
+    box(6.9, 0.3, 0.4, MAT.red, -3.8, 4.2, 3.95),
+    box(6.2, 1.15, 0.2, MAT.cream, 3.4, 4.85, 3.6), boardTxt, strip,
+    box(1.5, 1.1, 1.5, MAT.steel, -5.6, 5.75, -1.4),               // roof swamp cooler
+    cyl(0.16, 0.16, 1.0, 10, MAT.steel, -1.6, 5.7, -2.6),
+    cyl(0.22, 0.22, 0.16, 12, MAT.iron, -1.6, 6.22, -2.6)
+  );
+  for (const lx of [-3.8, 3.4, 6.6]){                              // gooseneck lamps
+    const arm = cyl(0.05, 0.05, 0.9, 8, MAT.iron, lx, 4.55, 4.3); arm.rotation.x = deg(70);
+    const b = sph(0.11, MAT.bulb, lx, 4.18, 4.72); b.castShadow = false;
+    g.add(arm, cyl(0.02, 0.34, 0.3, 14, MAT.red, lx, 4.32, 4.72), b);
+  }
+  const ladder = new THREE.Group();
+  for (let i = 0; i < 7; i++) ladder.add(box(0.7, 0.05, 0.05, MAT.steel, 0, i * 0.55, 0));
+  ladder.add(box(0.06, 3.9, 0.06, MAT.steel, -0.33, 1.7, 0), box(0.06, 3.9, 0.06, MAT.steel, 0.33, 1.7, 0));
+  ladder.position.set(-7.9, 0.4, 3.3); ladder.rotation.z = deg(9); g.add(ladder);
+  return { group: g, strip, glass };
+}
+
+// 5d. Winged googie canopy over the pump island.
+function buildCanopy(){
+  const g = new THREE.Group();
+  const W = 13, D = 9.4, H = 5.3;
+  g.add(
+    box(W, 0.5, D, MAT.cream, 0, H, 0),                            // roof slab
+    box(W - 0.3, 0.08, D - 0.3, MAT.cream, 0, H - 0.28, 0),        // lit soffit
+    box(W + 0.2, 0.7, 0.16, MAT.stripe, 0, H - 0.05, D / 2 + 0.05),
+    box(W + 0.2, 0.7, 0.16, MAT.stripe, 0, H - 0.05, -D / 2 - 0.05),
+    box(0.16, 0.7, D, MAT.red, W / 2 + 0.06, H - 0.05, 0),
+    box(0.16, 0.7, D, MAT.red, -W / 2 - 0.06, H - 0.05, 0)
+  );
+  const shape = new THREE.Shape();                    // swept googie wing profile
+  shape.moveTo(0, -0.55); shape.lineTo(3.5, 1.3); shape.lineTo(3.5, 2.0);
+  shape.quadraticCurveTo(1.5, 0.7, 0, 0.55); shape.closePath();
+  const wingGeo = new THREE.ExtrudeGeometry(shape, { depth: D * 0.82, bevelEnabled: false });
+  wingGeo.translate(0, 0, -D * 0.41);
+  for (const s of [1, -1]){
+    const wing = mk(wingGeo, MAT.red, s * (W / 2 - 0.1), H + 0.1, 0); wing.scale.x = s;
+    g.add(wing, box(0.4, 0.55, D * 0.82, MAT.teal, s * (W / 2 + 3.3), H + 1.7, 0));
+  }
+  for (const cx of [-W / 2 + 1.4, W / 2 - 1.4]) for (const cz of [-D / 2 + 1.3, D / 2 - 1.3]){
+    g.add(cyl(0.28, 0.42, H - 0.3, 14, MAT.cream, cx, (H - 0.3) / 2, cz),   // tapered column
+      cyl(0.46, 0.5, 0.7, 14, MAT.red, cx, 0.35, cz), cyl(0.34, 0.34, 0.12, 14, MAT.teal, cx, 1.5, cz));
+  }
+  for (let i = 0; i < 6; i++){                        // recessed underlights
+    const l = mk(new THREE.CircleGeometry(0.34, 16), MAT.bulb, -4.4 + (i % 3) * 4.4, H - 0.34, i < 3 ? -2.2 : 2.2);
+    l.rotation.x = Math.PI / 2; l.castShadow = false; g.add(l);
+  }
+  return g;
+}
+
+// 5e. Rounded 1960s fuel pump with globe, hose and price window.
+function buildPump(flip){
+  const g = new THREE.Group();
+  const body = mk(new THREE.CapsuleGeometry(0.42, 1.15, 6, 20), MAT.cream, 0, 1.35, 0);
+  const skirt = mk(new THREE.CapsuleGeometry(0.43, 0.42, 6, 20), MAT.red, 0, 0.72, 0);
+  body.scale.set(1.35, 1, 0.74); skirt.scale.set(1.35, 1, 0.74);
+  const globe = sph(0.3, MAT.bulb, 0, 2.62, 0);       // illuminated crown globe
+  globe.scale.set(1, 0.85, 0.7); globe.castShadow = false;
+  const ring = mk(new THREE.TorusGeometry(0.3, 0.035, 8, 22), MAT.red, 0, 2.62, 0);
+  ring.rotation.y = Math.PI / 2; ring.scale.set(1, 0.85, 1);
+  g.add(box(1.3, 0.22, 0.9, MAT.iron, 0, 0.11, 0), body, skirt,
+    box(1.2, 0.07, 0.66, MAT.chrome, 0, 1.02, 0), box(1.2, 0.07, 0.66, MAT.chrome, 0, 2.12, 0),
+    box(0.92, 0.52, 0.06, MAT.pumpFace, 0, 1.72, 0.33),          // price windows, both sides
+    box(0.92, 0.52, 0.06, MAT.pumpFace, 0, 1.72, -0.33),
+    box(1.0, 0.62, 0.1, MAT.chrome, 0, 1.72, 0.29),
+    globe, cyl(0.16, 0.2, 0.2, 12, MAT.chrome, 0, 2.32, 0), ring);
+  const s = flip ? -1 : 1;                            // hose loop into its holster
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(s * 0.55, 1.55, 0), new THREE.Vector3(s * 1.05, 1.15, 0.18),
+    new THREE.Vector3(s * 1.02, 0.62, 0.05), new THREE.Vector3(s * 0.72, 0.95, -0.02)
+  ]);
+  const nozzle = box(0.14, 0.32, 0.14, MAT.chrome, s * 0.72, 1.08, -0.02);
+  nozzle.rotation.z = deg(s * 12);
+  g.add(mk(new THREE.TubeGeometry(curve, 28, 0.048, 8), MAT.iron, 0, 0, 0),
+    nozzle, cyl(0.05, 0.05, 0.22, 8, MAT.chrome, s * 0.6, 1.45, 0));
+  return g;
+}
+
+// 5f. Painted concrete pump island with curb and bollards.
+function buildIsland(){
+  const g = new THREE.Group();
+  const top = box(6.5, 0.06, 2.0, MAT.cream, 0, 0.32, 0); top.castShadow = false;
+  g.add(box(6.6, 0.3, 2.1, MAT.concreteEdge, 0, 0.15, 0), top);
+  for (const s of [-1, 1]){
+    const cap = cyl(1.0, 1.0, 0.06, 20, MAT.cream, s * 3.3, 0.32, 0); cap.castShadow = false;
+    g.add(cyl(1.05, 1.05, 0.3, 20, MAT.concreteEdge, s * 3.3, 0.15, 0), cap,
+      cyl(0.13, 0.15, 0.95, 12, MAT.red, s * 4.2, 0.48, 0), sph(0.14, MAT.cream, s * 4.2, 0.96, 0));
+  }
+  return g;
+}
+
+// 5g. Vintage pickup, nose pointing out of the bay.
+function buildPickup(){
+  const g = new THREE.Group();
+  g.add(
+    box(2.0, 0.5, 5.4, MAT.truck, 0, 0.86, 0),                     // body shell
+    box(1.86, 0.55, 1.9, MAT.truck, 0, 1.28, 1.4),                 // hood
+    box(1.72, 0.24, 1.9, MAT.truckDark, 0, 1.58, 1.42),
+    box(1.9, 1.0, 1.55, MAT.truck, 0, 1.6, -0.05),                 // cab
+    box(1.72, 0.62, 0.08, MAT.glass, 0, 1.78, 0.72),               // windshield
+    box(1.94, 0.16, 1.7, MAT.truckDark, 0, 2.14, -0.1),            // roof
+    box(2.0, 0.75, 2.2, MAT.truck, 0, 1.35, -1.85),                // bed sides
+    box(1.72, 0.1, 2.0, MAT.truckDark, 0, 1.2, -1.85),
+    box(2.05, 0.5, 0.14, MAT.truckDark, 0, 1.32, -2.92),           // tailgate
+    box(1.6, 0.42, 0.12, MAT.chrome, 0, 1.16, 2.4),                // grille
+    box(1.9, 0.16, 0.22, MAT.chrome, 0, 0.82, 2.46),               // bumpers
+    box(1.9, 0.16, 0.22, MAT.chrome, 0, 0.82, -3.0),
+    box(0.06, 0.5, 0.06, MAT.chrome, 0.7, 2.0, 1.0),               // wing mirror
+    box(0.05, 0.22, 0.3, MAT.chrome, 0.85, 2.2, 1.0)
+  );
+  for (const s of [-1, 1]){
+    const lens = sph(0.17, MAT.bulb, s * 0.72, 1.42, 2.45); lens.castShadow = false;
+    g.add(box(0.08, 0.55, 1.2, MAT.glass, s * 0.94, 1.78, -0.1),   // door glass
+      box(0.24, 0.1, 2.4, MAT.truckDark, s * 1.0, 0.62, 0.05),     // running board
+      sph(0.23, MAT.chrome, s * 0.72, 1.42, 2.32), lens);          // headlight
+    for (const z of [1.55, -1.5]){
+      const f = mk(new THREE.TorusGeometry(0.62, 0.2, 8, 18, Math.PI), MAT.truckDark, s * 0.98, 0.72, z);
+      const w = cyl(0.6, 0.6, 0.34, 20, MAT.tire, s * 1.02, 0.6, z);
+      const hub = cyl(0.3, 0.3, 0.36, 16, MAT.chrome, s * 1.03, 0.6, z);
+      f.rotation.y = Math.PI / 2; w.rotation.z = Math.PI / 2; hub.rotation.z = Math.PI / 2;
+      g.add(f, w, hub);                                            // fender + wheel + cap
+    }
+  }
+  return g;
+}
+
+// 5h. Leaning stack of worn tires.
+function buildTireStack(n, r){
+  const g = new THREE.Group();
+  for (let i = 0; i < n; i++){
+    const x = rr(-0.06, 0.06), y = 0.26 + i * 0.32, z = rr(-0.06, 0.06);
+    const t = mk(new THREE.TorusGeometry(r, r * 0.42, 10, 22), MAT.tire, x, y, z);
+    t.rotation.x = Math.PI / 2; t.rotation.z = rand() * 6.283;
+    g.add(t, cyl(r * 0.42, r * 0.42, 0.14, 14, MAT.steel, x, y, z));
+  }
+  return g;
+}
+
+// 5i. Humming soda vending machine.
+function buildVending(){
+  const g = new THREE.Group();
+  const front = box(1.1, 1.95, 0.06, MAT.vend, 0, 1.12, 0.4);
+  const glow = box(0.86, 0.34, 0.04, MAT.neonPink, 0, 1.95, 0.44); glow.castShadow = false;
+  const crate = box(0.6, 0.34, 0.42, MAT.wood, 1.0, 0.17, 0.3); crate.rotation.y = deg(14);
+  g.add(box(1.25, 2.15, 0.78, MAT.red, 0, 1.08, 0), front, glow, crate,
+    box(1.3, 0.14, 0.84, MAT.chrome, 0, 2.18, 0), box(1.3, 0.12, 0.84, MAT.iron, 0, 0.06, 0));
+  for (let i = 0; i < 6; i++){                        // crate of empty bottles
+    g.add(cyl(0.05, 0.05, 0.24, 8, MAT.teal, 0.85 + (i % 3) * 0.15, 0.44, 0.22 + Math.floor(i / 3) * 0.16));
+  }
+  return { group: g, glow, front };
+}
+
+// 5j. Tall rotating pole sign with a neon ring.
+function buildPoleSign(){
+  const g = new THREE.Group();
+  const pivot = new THREE.Group(); pivot.position.y = 9.0;
+  const arrowTxt = new THREE.Mesh(new THREE.PlaneGeometry(3.1, 0.7),
+    std({ color: PAL.cream, emissive: PAL.neon, emissiveIntensity: 0.7, roughness: 0.6 }));
+  arrowTxt.position.set(0, 6.6, 0.1);
+  g.add(cyl(1.05, 1.35, 0.5, 16, MAT.concreteEdge, 0, 0.25, 0),
+    cyl(0.24, 0.3, 9.4, 14, MAT.steel, 0, 4.9, 0), pivot,
+    box(3.4, 0.9, 0.16, MAT.teal, 0, 6.6, 0), arrowTxt);
+  for (let i = 0; i < 4; i++){                        // guy struts at the base
+    const a = i * Math.PI / 2 + 0.4;
+    const strut = cyl(0.06, 0.06, 2.2, 8, MAT.steel, Math.cos(a) * 0.65, 1.4, Math.sin(a) * 0.65);
+    strut.rotation.z = Math.cos(a) * 0.5; strut.rotation.x = -Math.sin(a) * 0.5; g.add(strut);
+  }
+  const frame = mk(new THREE.TorusGeometry(2.75, 0.13, 8, 30), MAT.neon, 0, 0, 0);
+  frame.castShadow = false;
+  pivot.add(mk(new THREE.BoxGeometry(4.6, 3.4, 0.22), MAT.sign, 0, 0, 0), frame);
+  for (let i = 0; i < 12; i++){                       // chaser bulbs on the rim
+    const a = i / 12 * 6.283;
+    const b = sph(0.13, MAT.bulb, Math.cos(a) * 2.75, Math.sin(a) * 2.75, 0.16);
+    b.castShadow = false; pivot.add(b);
+  }
+  return { group: g, pivot, frame };
+}
+
+// 5k. Saguaro cactus with elbowed arms.
+function buildCactus(h, arms){
+  const g = new THREE.Group();
+  g.add(cyl(0.34, 0.42, h, 12, MAT.cactus, 0, h / 2, 0), sph(0.34, MAT.cactus, 0, h, 0));
+  for (let i = 0; i < arms; i++){
+    const s = i % 2 ? 1 : -1, ay = h * rr(0.42, 0.62), al = h * rr(0.26, 0.4), az = rr(-0.2, 0.2);
+    const out = cyl(0.2, 0.22, 0.95, 10, MAT.cactus, s * 0.55, ay, az); out.rotation.z = deg(-s * 78);
+    g.add(out, cyl(0.19, 0.21, al, 10, MAT.cactus, s, ay + al / 2, az),
+      sph(0.19, MAT.cactus, s, ay + al, az));
+  }
+  return g;
+}
+
+// 5l. Wire-ball tumbleweed.
+function buildTumbleweed(r){
+  const g = new THREE.Group();
+  const a = mk(new THREE.IcosahedronGeometry(r, 1), MAT.twig, 0, 0, 0); a.castShadow = false; g.add(a);
+  const b = mk(new THREE.IcosahedronGeometry(r * 0.72, 1), MAT.twig, 0, 0, 0);
+  b.rotation.set(0.8, 0.5, 0.3); b.castShadow = false; g.add(b);
+  return g;
+}
+
+// 5m. Small supporting props: barrel, crate stack, trash can, telephone pole, mesa.
+function buildBarrel(){
+  const g = new THREE.Group();
+  g.add(cyl(0.42, 0.42, 1.15, 18, MAT.rust, 0, 0.58, 0), cyl(0.4, 0.4, 0.06, 18, MAT.iron, 0, 1.17, 0));
+  for (const y of [0.32, 0.84]) g.add(cyl(0.45, 0.45, 0.07, 18, MAT.iron, 0, y, 0));
+  return g;
+}
+function buildCrates(){
+  const g = new THREE.Group();
+  let y = 0;
+  for (const [w, h, d] of [[1.0, 0.7, 0.8], [0.8, 0.6, 0.7], [0.9, 0.55, 0.75]]){
+    const c = box(w, h, d, MAT.wood, rr(-0.1, 0.1), y + h / 2, rr(-0.1, 0.1));
+    const band = box(w + 0.02, 0.06, d + 0.02, MAT.iron, c.position.x, y + h / 2, c.position.z);
+    c.rotation.y = rr(-0.3, 0.3); band.rotation.y = c.rotation.y; g.add(c, band); y += h;
+  }
+  return g;
+}
+function buildTrashCan(){
+  const g = new THREE.Group();
+  g.add(cyl(0.36, 0.3, 0.95, 14, MAT.steel, 0, 0.48, 0), cyl(0.39, 0.39, 0.08, 14, MAT.tealDark, 0, 0.98, 0),
+    cyl(0.38, 0.38, 0.06, 14, MAT.iron, 0, 0.2, 0));
+  return g;
+}
+function buildTelephonePole(){
+  const g = new THREE.Group();
+  g.add(cyl(0.18, 0.26, 9.5, 10, MAT.wood, 0, 4.75, 0), box(3.0, 0.18, 0.18, MAT.wood, 0, 8.7, 0),
+    box(2.2, 0.16, 0.16, MAT.wood, 0, 7.9, 0));
+  for (const x of [-1.3, -0.55, 0.55, 1.3]) g.add(cyl(0.07, 0.07, 0.26, 8, MAT.glass, x, 8.92, 0));
+  return g;
+}
+function buildMesa(w, h){
+  const g = new THREE.Group();
+  const m = cyl(w * 0.72, w, h, 8, MAT.mesa, 0, h / 2, 0); m.rotation.y = rand() * 6.283;
+  g.add(m, cyl(w * 0.55, w * 0.74, h * 0.34, 8, MAT.mesa, rr(-w * 0.2, w * 0.2), h * 1.17, rr(-w * 0.2, w * 0.2)));
+  return g;
+}
+
+/* ---------- 6. SCENE ASSEMBLY -------------------------------------------- */
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(CONFIG.fogColor, CONFIG.fogNear, CONFIG.fogFar);
+scene.add(buildSky(), buildGround());
+
+const station = buildStation(); station.group.position.set(-14.5, 0, -7.0);
+const canopy = buildCanopy(); canopy.position.set(9.5, 0, -2.0);
+const island = buildIsland(); island.position.set(9.5, 0, -2.0);
+const vending = buildVending(); vending.group.position.set(-9.2, 0.16, -2.9);
+const poleSign = buildPoleSign(); poleSign.group.position.set(18.0, 0.16, 6.0);
+const truck = buildPickup(); truck.position.set(-18.0, 0, 2.2); truck.rotation.y = deg(17);
+scene.add(station.group, canopy, island, vending.group, poleSign.group, truck);
+
+for (let i = 0; i < 2; i++){
+  const p = buildPump(i === 1);
+  p.position.set(9.5 + (i ? 1.85 : -1.85), 0.35, -2.0); p.rotation.y = deg(i ? -6 : 6);
+  scene.add(p);
+}
+for (const [x, z, n, r] of [[-21.6, 1.4, 5, 0.55], [-20.6, 2.6, 3, 0.5]]){
+  const st = buildTireStack(n, r); st.position.set(x, 0.16, z); scene.add(st);
+}
+const leaner = mk(new THREE.TorusGeometry(0.58, 0.24, 10, 22), MAT.tire, -16.2, 0.72, -2.6);
+leaner.rotation.set(deg(72), 0, deg(12)); scene.add(leaner);
+for (const [x, z] of [[-23.0, -1.5], [-22.2, -0.5]]){
+  const b = buildBarrel(); b.position.set(x, 0.16, z); b.rotation.y = rr(0, 3); scene.add(b);
+}
+const crates = buildCrates(); crates.position.set(-6.4, 0.16, -3.0);
+const can = buildTrashCan(); can.position.set(-5.0, 0.16, -1.0);
+const airPump = new THREE.Group();                     // air & water station
+airPump.add(cyl(0.3, 0.34, 1.4, 12, MAT.teal, 0, 0.7, 0), sph(0.3, MAT.red, 0, 1.45, 0),
+  box(0.5, 0.2, 0.08, MAT.cream, 0, 1.2, 0.3));
+airPump.position.set(16.0, 0.16, -6.0);
+scene.add(crates, can, airPump);
+
+for (const [x, z] of [[-28, -31.5], [0, -30.5], [28, -29.5]]){
+  const p = buildTelephonePole(); p.position.set(x, 0, z); scene.add(p);
+}
+const wireMat = new THREE.LineBasicMaterial({ color: 0x3a2c26 });
+for (let k = 0; k < 3; k++){                           // sagging catenary wires
+  const pts = [];
+  for (let i = 0; i <= 20; i++){
+    const t = i / 20;
+    pts.push(new THREE.Vector3(-28 + t * 56, 8.7 - Math.sin(t * Math.PI) * 0.9 - k * 0.32, -31.5 + t * 2.0));
+  }
+  scene.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), wireMat));
+}
+for (const [x, z] of [[-27, 6], [-24, -18], [-9, -22], [10, -17], [24, -8], [26, 4], [24, -22], [-30, -6], [-26, 16]]){
+  const c = buildCactus(rr(2.6, 4.6), rand() > 0.35 ? 2 : 1);
+  c.position.set(x + rr(-1.5, 1.5), 0, z + rr(-1.5, 1.5));
+  c.rotation.y = rand() * 6.283; scene.add(c);
+}
+for (let i = 0; i < 16; i++){                          // desert scrub bushes
+  const a = rand() * 6.283, d = rr(26, 62);
+  const bush = mk(new THREE.IcosahedronGeometry(rr(0.4, 0.85), 0), MAT.twig, Math.cos(a) * d, 0.25, Math.sin(a) * d);
+  bush.castShadow = false; bush.scale.y = 0.6; scene.add(bush);
+}
+for (let i = 0; i < 6; i++){                           // far mesas on the horizon
+  const a = rr(-1.2, 2.6), d = rr(105, 175), m = buildMesa(rr(9, 20), rr(9, 22));
+  m.position.set(Math.cos(a) * d, -1.5, Math.sin(a) * d); scene.add(m);
+}
+const tumbleweeds = [];
+for (let i = 0; i < 4; i++){
+  const r = rr(0.42, 0.68), tw = buildTumbleweed(r);
+  tw.userData = { r, z: rr(-14, 12), speed: rr(1.5, 2.6), off: rr(0, 60), spin: rr(0.6, 1.4) };
+  scene.add(tw); tumbleweeds.push(tw);
+}
+const dustN = 420, dustPos = new Float32Array(dustN * 3), dustSeed = [];
+for (let i = 0; i < dustN; i++){                       // warm motes in the low sun
+  const a = rand() * 6.283, d = rr(4, 46);
+  dustPos[i * 3] = Math.cos(a) * d; dustPos[i * 3 + 1] = rr(0.4, 9); dustPos[i * 3 + 2] = Math.sin(a) * d;
+  dustSeed.push({ amp: rr(0.2, 0.9), ph: rr(0, 6.283), sp: rr(0.15, 0.5) });
+}
+const dustGeo = new THREE.BufferGeometry(); dustGeo.setAttribute('position', new THREE.BufferAttribute(dustPos, 3));
+scene.add(new THREE.Points(dustGeo, new THREE.PointsMaterial({
+  map: TEX.glow, color: 0xffcf96, size: 0.34, sizeAttenuation: true,
+  transparent: true, opacity: 0.5, depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+})));
+
+/* ---------- 7. LIGHTING RIG ---------------------------------------------- */
+const sun = new THREE.DirectionalLight(0xffb163, 3.5);       // low sunset key
+sun.position.copy(CONFIG.sunDir).multiplyScalar(62);
+sun.castShadow = true;
+sun.shadow.mapSize.set(CONFIG.shadowRes, CONFIG.shadowRes);
+sun.shadow.camera.left = -38; sun.shadow.camera.right = 38;
+sun.shadow.camera.top = 34; sun.shadow.camera.bottom = -30;
+sun.shadow.camera.near = 4; sun.shadow.camera.far = 140;
+sun.shadow.bias = -0.0009; sun.shadow.normalBias = 0.035;
+const fill = new THREE.DirectionalLight(0x6f86c8, 0.7);      // cool sky bounce
+fill.position.set(-40, 26, -22);
+const bounce = new THREE.DirectionalLight(0xffd7a0, 0.35);   // warm ground bounce
+bounce.position.set(6, -14, 24);
+scene.add(sun, sun.target, fill, bounce, new THREE.HemisphereLight(0xffc287, 0xa0703c, 0.55));
+
+const canopyLight = new THREE.PointLight(0xffd6a0, 26, 24, 2.0); canopyLight.position.set(9.5, 4.6, -2.0);
+const signLight = new THREE.PointLight(PAL.neon, 22, 20, 2.0); signLight.position.set(18.0, 9.2, 6.0);
+const vendLight = new THREE.PointLight(0xff8a5a, 7, 9, 2.0); vendLight.position.set(-9.2, 1.6, -2.2);
+const officeLight = new THREE.PointLight(0xffb877, 9, 14, 2.0); officeLight.position.set(-11.1, 3.0, -2.4);
+scene.add(canopyLight, signLight, vendLight, officeLight);
+
+/* ---------- 8. RENDERER, CAMERA & CONTROLS ------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.04;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.5, 900);
+camera.position.set(38, 18, 39);                             // start on the hero front-right
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(1.0, 3.8, -2.0);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.75;
+controls.minDistance = 30; controls.maxDistance = 95;
+controls.minPolarAngle = deg(38); controls.maxPolarAngle = deg(82);
+controls.update();
+
+/* ---------- 9. ANIMATION LOOP -------------------------------------------- */
+const clock = new THREE.Clock();
+const baseVendY = vending.group.position.y;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // (a) the pole sign turns slowly and its neon ring pulses
+  poleSign.pivot.rotation.y = t * 0.34;
+  const ringPulse = 2.0 + 0.7 * Math.sin(t * 1.7) + 0.25 * Math.sin(t * 5.3);
+  poleSign.frame.material.emissiveIntensity = ringPulse;
+  signLight.intensity = 18 + ringPulse * 3.0;
+  // (b) canopy underlights and the wall neon warm up with a lazy flicker
+  const flick = 0.86 + 0.1 * Math.sin(t * 2.2) + 0.06 * Math.sin(t * 9.7 + 1.3);
+  MAT.bulb.emissiveIntensity = 1.7 * flick + 0.4;
+  station.strip.material.emissiveIntensity = 2.2 * flick;
+  canopyLight.intensity = 22 + 6 * flick;
+  station.glass.material.emissiveIntensity = 0.42 + 0.1 * Math.sin(t * 1.1);
+  // (c) tumbleweeds roll across the flats and loop back around
+  for (const tw of tumbleweeds){
+    const u = tw.userData, x = ((t * u.speed + u.off) % 76) - 38;
+    tw.position.set(x, u.r * 0.92 + Math.abs(Math.sin(t * u.speed * 1.6 + u.off)) * 0.16, u.z);
+    tw.rotation.z = -x / u.r * 0.55; tw.rotation.x = t * u.spin * 0.3;
+  }
+  // (d) the soda machine hums: faint shiver plus a breathing glow
+  vending.group.position.y = baseVendY + Math.sin(t * 27.0) * 0.0035;
+  const hum = 0.42 + 0.16 * Math.sin(t * 1.9) + 0.05 * Math.sin(t * 13.0);
+  vending.glow.material.emissiveIntensity = 1.9 + hum;
+  vending.front.material.emissiveIntensity = hum;
+  vendLight.intensity = 6 + hum * 4;
+  // (e) pump price windows glimmer and dust drifts on the evening breeze
+  MAT.pumpFace.emissiveIntensity = 0.5 + 0.12 * Math.sin(t * 1.4);
+  const dp = dustGeo.attributes.position;
+  for (let i = 0; i < dustN; i++){
+    const s = dustSeed[i];
+    dp.setY(i, dustPos[i * 3 + 1] + Math.sin(t * s.sp + s.ph) * s.amp);
+    dp.setX(i, dustPos[i * 3] + Math.cos(t * s.sp * 0.7 + s.ph) * s.amp * 1.4);
+  }
+  dp.needsUpdate = true;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 10. RESIZE --------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

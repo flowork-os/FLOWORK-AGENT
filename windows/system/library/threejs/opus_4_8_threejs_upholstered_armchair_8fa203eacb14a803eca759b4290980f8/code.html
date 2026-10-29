@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Upholstered Armchair — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e9e6e0; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; font: 12px/1.4 system-ui, sans-serif;
+    color: #55524d; letter-spacing: .02em; user-select: none; pointer-events: none;
+  }
+</style>
+
+<!-- three.js + OrbitControls via importmap (jsDelivr CDN, three@0.160.0) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="info">Upholstered armchair — drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+/* ============================================================================
+   RENDERER
+   ========================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ============================================================================
+   SCENE + CAMERA
+   ========================================================================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9e6e0); // neutral studio backdrop
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(1.6, 1.15, 1.9);
+
+/* ============================================================================
+   LIGHTING  (hemisphere fill + directional key + soft fill)
+   ========================================================================== */
+const hemi = new THREE.HemisphereLight(0xffffff, 0xb9b2a6, 0.85);
+hemi.position.set(0, 3, 0);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e6, 2.4);
+key.position.set(2.6, 3.4, 2.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -2;
+key.shadow.camera.right = 2;
+key.shadow.camera.top = 2;
+key.shadow.camera.bottom = -2;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+// Subtle cool fill from the opposite side to open up the shadows.
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.55);
+fill.position.set(-2.8, 1.8, -1.6);
+scene.add(fill);
+
+/* ============================================================================
+   PROCEDURAL TEXTURES (CanvasTexture)
+   ========================================================================== */
+
+// --- Muted woven fabric: base colour with fine speckle + faint weave lines ---
+function makeFabricTexture(baseHex) {
+  const s = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const base = new THREE.Color(baseHex);
+
+  ctx.fillStyle = `rgb(${base.r*255|0},${base.g*255|0},${base.b*255|0})`;
+  ctx.fillRect(0, 0, s, s);
+
+  // Fine random speckle -> the "tooth" of woven upholstery.
+  for (let i = 0; i < 14000; i++) {
+    const x = Math.random() * s, y = Math.random() * s;
+    const d = (Math.random() - 0.5) * 0.28;        // lighten / darken
+    const r = Math.min(255, Math.max(0, (base.r + d) * 255)) | 0;
+    const g = Math.min(255, Math.max(0, (base.g + d) * 255)) | 0;
+    const b = Math.min(255, Math.max(0, (base.b + d) * 255)) | 0;
+    ctx.fillStyle = `rgba(${r},${g},${b},0.5)`;
+    ctx.fillRect(x, y, 1.3, 1.3);
+  }
+  // Faint horizontal + vertical weave threads.
+  ctx.globalAlpha = 0.05;
+  ctx.strokeStyle = '#000';
+  for (let i = 0; i < s; i += 3) {
+    ctx.beginPath(); ctx.moveTo(0, i); ctx.lineTo(s, i); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(i, 0); ctx.lineTo(i, s); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+// --- Dark wood grain for the legs ---
+function makeWoodTexture() {
+  const w = 128, h = 256;
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#3a281b';
+  ctx.fillRect(0, 0, w, h);
+  // Vertical grain streaks.
+  for (let i = 0; i < 60; i++) {
+    const x = Math.random() * w;
+    const shade = 20 + Math.random() * 40;
+    ctx.strokeStyle = `rgba(${shade|0},${(shade*0.7)|0},${(shade*0.5)|0},0.35)`;
+    ctx.lineWidth = 0.5 + Math.random() * 1.5;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    ctx.bezierCurveTo(x + (Math.random()-0.5)*8, h*0.33, x + (Math.random()-0.5)*8, h*0.66, x, h);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* ============================================================================
+   MATERIALS
+   ========================================================================== */
+const FABRIC_COLOR = 0x8f9488;               // muted sage-grey upholstery
+const fabricMap = makeFabricTexture(FABRIC_COLOR);
+fabricMap.repeat.set(3, 3);
+
+const fabricMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  map: fabricMap,
+  bumpMap: fabricMap,
+  bumpScale: 0.006,
+  roughness: 0.92,
+  metalness: 0.0,
+});
+
+// Piping cord: same family, a touch darker so the seam reads as a raised welt.
+const pipingMat = new THREE.MeshStandardMaterial({
+  color: 0x767b70,
+  roughness: 0.85,
+  metalness: 0.0,
+});
+
+const woodMap = makeWoodTexture();
+const woodMat = new THREE.MeshStandardMaterial({
+  color: 0x4a3423,
+  map: woodMap,
+  roughness: 0.45,
+  metalness: 0.05,
+});
+
+/* ============================================================================
+   HELPERS
+   ========================================================================== */
+
+// A rounded, upholstered block (RoundedBox) that casts + receives shadows.
+function cushionBlock(w, h, d, radius, name) {
+  const geo = new RoundedBoxGeometry(w, h, d, 6, radius);
+  const m = new THREE.Mesh(geo, fabricMat);
+  m.name = name;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+// Rounded-rectangle piping loop (a tube) lying in the local XY plane, centred
+// at the origin. Rotate/parent it to place it along any cushion seam.
+function pipingLoop(w, h, corner, tubeR, name) {
+  const hw = w / 2 - corner;
+  const hh = h / 2 - corner;
+  const pts = [];
+  const centers = [[hw, hh], [-hw, hh], [-hw, -hh], [hw, -hh]]; // 4 corner arc centres
+  const per = 10;
+  for (let ci = 0; ci < 4; ci++) {
+    const cx = centers[ci][0], cy = centers[ci][1];
+    const a0 = ci * Math.PI / 2;               // 0, 90, 180, 270 degrees
+    for (let j = 0; j <= per; j++) {
+      const a = a0 + (j / per) * (Math.PI / 2);
+      pts.push(new THREE.Vector3(cx + corner * Math.cos(a), cy + corner * Math.sin(a), 0));
+    }
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, true);
+  const geo = new THREE.TubeGeometry(curve, 160, tubeR, 8, true);
+  const m = new THREE.Mesh(geo, pipingMat);
+  m.name = name;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================================
+   BUILD THE ARMCHAIR
+   ========================================================================== */
+const chair = new THREE.Group();
+chair.name = 'UpholsteredArmchair';
+
+// -- key heights (metres) -----------------------------------------------------
+const LEG_H   = 0.12;   // short dark wood legs
+const BASE_H  = 0.18;   // upholstered seat box / apron
+const BASE_TOP = LEG_H + BASE_H;           // 0.30 -> top of the seat box
+
+// ---- 1. Upholstered seat box (the frame under the cushions) ----------------
+const seatBox = cushionBlock(0.82, BASE_H, 0.84, 0.05, 'seatBox');
+seatBox.position.set(0, LEG_H + BASE_H / 2, -0.02);
+chair.add(seatBox);
+
+// ---- 2. Firm seat cushion + piping seams -----------------------------------
+const seatCushion = new THREE.Group();
+seatCushion.name = 'seatCushion';
+const scMesh = cushionBlock(0.66, 0.15, 0.62, 0.05, 'seatCushionPad');
+seatCushion.add(scMesh);
+// piping around the top seam and the bottom seam of the seat cushion
+const scTop = pipingLoop(0.66, 0.62, 0.05, 0.011, 'seatPipingTop');
+scTop.rotation.x = -Math.PI / 2; scTop.position.y = 0.072;
+const scBot = pipingLoop(0.66, 0.62, 0.05, 0.011, 'seatPipingBottom');
+scBot.rotation.x = -Math.PI / 2; scBot.position.y = -0.072;
+seatCushion.add(scTop, scBot);
+seatCushion.position.set(0, BASE_TOP + 0.075, 0.02);
+chair.add(seatCushion);
+
+// ---- 3. Backrest frame (behind the back cushion) ---------------------------
+const backFrame = cushionBlock(0.80, 0.54, 0.13, 0.05, 'backrestFrame');
+backFrame.position.set(0, BASE_TOP + 0.27, -0.34);
+backFrame.rotation.x = -0.10;               // gentle recline
+chair.add(backFrame);
+
+// ---- 4. Firm back cushion + piping seam ------------------------------------
+const backCushion = new THREE.Group();
+backCushion.name = 'backCushion';
+const bcMesh = cushionBlock(0.62, 0.42, 0.15, 0.05, 'backCushionPad');
+backCushion.add(bcMesh);
+// piping outlining the front face of the back cushion
+const bcPipe = pipingLoop(0.62, 0.42, 0.05, 0.011, 'backPiping');
+bcPipe.position.z = 0.075;
+backCushion.add(bcPipe);
+backCushion.position.set(0, BASE_TOP + 0.24, -0.22);
+backCushion.rotation.x = -0.12;
+chair.add(backCushion);
+
+// ---- 5. Rolled, padded armrests (left + right) -----------------------------
+function buildArm(side) {                    // side = +1 (right) or -1 (left)
+  const arm = new THREE.Group();
+  arm.name = side > 0 ? 'armRight' : 'armLeft';
+  const x = side * 0.355;
+
+  // upholstered arm panel
+  const panel = cushionBlock(0.13, 0.20, 0.68, 0.04, 'armPanel');
+  panel.position.set(x, BASE_TOP + 0.10, -0.02);
+  arm.add(panel);
+
+  // the rolled top — a horizontal cushion cylinder running front-to-back
+  const rollGeo = new THREE.CylinderGeometry(0.078, 0.078, 0.68, 32, 1, false);
+  const roll = new THREE.Mesh(rollGeo, fabricMat);
+  roll.name = 'armRoll';
+  roll.rotation.x = Math.PI / 2;             // lay the cylinder along Z
+  roll.position.set(x, BASE_TOP + 0.205, -0.02);
+  roll.castShadow = true; roll.receiveShadow = true;
+  arm.add(roll);
+
+  // rounded scroll cap at the front of the roll for the "rolled" read
+  const capGeo = new THREE.SphereGeometry(0.078, 24, 16);
+  const cap = new THREE.Mesh(capGeo, fabricMat);
+  cap.name = 'armRollCap';
+  cap.position.set(x, BASE_TOP + 0.205, 0.32);
+  cap.castShadow = true; cap.receiveShadow = true;
+  arm.add(cap);
+
+  // piping ring around the front face of the roll (a decorative welt)
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.078, 0.010, 8, 32), pipingMat);
+  ring.name = 'armPiping';
+  ring.position.set(x, BASE_TOP + 0.205, 0.322);
+  ring.castShadow = true;
+  arm.add(ring);
+
+  return arm;
+}
+chair.add(buildArm(+1), buildArm(-1));
+
+// ---- 6. Short dark wood legs (tapered) -------------------------------------
+const legGeo = new THREE.CylinderGeometry(0.035, 0.022, LEG_H, 20);
+const legPos = [
+  [ 0.34, 0.34], [-0.34, 0.34],   // front
+  [ 0.34, -0.34], [-0.34, -0.34], // back
+];
+legPos.forEach((p, i) => {
+  const leg = new THREE.Mesh(legGeo, woodMat);
+  leg.name = 'leg' + i;
+  leg.position.set(p[0], LEG_H / 2, p[1]);
+  leg.castShadow = true;
+  leg.receiveShadow = true;
+  chair.add(leg);
+});
+
+scene.add(chair);
+
+/* ============================================================================
+   CENTRE THE MODEL (origin in XZ, resting on the ground at y = 0)
+   ========================================================================== */
+const box = new THREE.Box3().setFromObject(chair);
+const center = box.getCenter(new THREE.Vector3());
+const size = box.getSize(new THREE.Vector3());
+chair.position.x -= center.x;
+chair.position.z -= center.z;
+chair.position.y -= box.min.y;               // sit exactly on the ground
+
+/* ============================================================================
+   GROUND / SOFT CONTACT-SHADOW PLANE
+   ========================================================================== */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(6, 64),
+  new THREE.MeshStandardMaterial({ color: 0xd9d5cd, roughness: 1.0, metalness: 0.0 })
+);
+ground.name = 'ground';
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================================
+   AUTO-FRAME CAMERA + ORBIT CONTROLS
+   ========================================================================== */
+const maxDim = Math.max(size.x, size.y, size.z);
+const fitDist = (maxDim / (2 * Math.tan((camera.fov * Math.PI / 180) / 2))) * 1.7;
+const target = new THREE.Vector3(0, size.y * 0.42, 0);
+
+const dir = new THREE.Vector3(1.05, 0.72, 1.15).normalize();
+camera.position.copy(target).addScaledVector(dir, fitDist);
+camera.near = maxDim / 100;
+camera.far = maxDim * 100;
+camera.updateProjectionMatrix();
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.target.copy(target);
+controls.minDistance = maxDim * 0.9;
+controls.maxDistance = maxDim * 4;
+controls.maxPolarAngle = Math.PI * 0.52;     // keep the camera above the floor
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.update();
+
+/* ============================================================================
+   RESIZE + RENDER LOOP
+   ========================================================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

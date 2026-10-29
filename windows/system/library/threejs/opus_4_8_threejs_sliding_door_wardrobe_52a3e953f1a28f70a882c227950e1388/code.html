@@ -1,0 +1,367 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Sliding-Door Wardrobe</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9dce0; }
+  #app { width: 100vw; height: 100vh; display: block; }
+</style>
+
+<!-- three.js + OrbitControls via ES modules (jsDelivr CDN) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ------------------------------------------------------------------ *
+ *  Scene & Camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd9dce0); // neutral studio backdrop
+
+const camera = new THREE.PerspectiveCamera(
+  42, window.innerWidth / window.innerHeight, 0.1, 100
+);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere fill + directional key + soft fill
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8a8577, 0.65);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xfff6e8, 2.4);
+keyLight.position.set(3.2, 5.0, 3.6);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 20;
+keyLight.shadow.camera.left = -3;
+keyLight.shadow.camera.right = 3;
+keyLight.shadow.camera.top = 4;
+keyLight.shadow.camera.bottom = -1;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.radius = 6; // soften shadow edges (PCFSoft)
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xdfe7ff, 0.55);
+fillLight.position.set(-4.0, 2.5, -2.5);
+scene.add(fillLight);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural wood texture (CanvasTexture)
+ * ------------------------------------------------------------------ */
+function makeWoodTexture(baseColor, grainColor) {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = baseColor;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Vertical, gently wavy grain lines
+  for (let i = 0; i < 110; i++) {
+    ctx.strokeStyle = grainColor;
+    ctx.globalAlpha = 0.03 + Math.random() * 0.07;
+    ctx.lineWidth = 1 + Math.random() * 2.2;
+    ctx.beginPath();
+    const x = Math.random() * 512;
+    ctx.moveTo(x, 0);
+    for (let y = 0; y <= 512; y += 14) {
+      ctx.lineTo(x + Math.sin(y * 0.02 + i) * 5, y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+const carcassTex = makeWoodTexture('#efe9df', '#c9bda9'); // warm off-white carcass
+const doorTex    = makeWoodTexture('#c9a781', '#8a6a4a'); // light oak doors
+
+/* ------------------------------------------------------------------ *
+ *  Materials
+ * ------------------------------------------------------------------ */
+const carcassMat = new THREE.MeshStandardMaterial({
+  map: carcassTex, color: 0xffffff, roughness: 0.78, metalness: 0.0
+});
+const interiorMat = new THREE.MeshStandardMaterial({
+  color: 0xe4ddd0, roughness: 0.9, metalness: 0.0
+});
+const doorMat = new THREE.MeshStandardMaterial({
+  map: doorTex, color: 0xffffff, roughness: 0.55, metalness: 0.02
+});
+const trackMat = new THREE.MeshStandardMaterial({
+  color: 0x3a3d42, roughness: 0.45, metalness: 0.85
+});
+const handleMat = new THREE.MeshStandardMaterial({
+  color: 0xcfd2d6, roughness: 0.32, metalness: 1.0
+});
+const rodMat = new THREE.MeshStandardMaterial({
+  color: 0xb9bcc0, roughness: 0.35, metalness: 0.9
+});
+
+/* ------------------------------------------------------------------ *
+ *  Wardrobe dimensions (metres) — practical bedroom proportions
+ * ------------------------------------------------------------------ */
+const W = 1.80;   // width
+const H = 2.20;   // height
+const D = 0.60;   // depth
+const T = 0.03;   // panel / wall thickness
+const PLINTH = 0.06; // toe-kick base height
+
+const bodyBottom = PLINTH;
+const bodyTop = H;
+const bodyH = bodyTop - bodyBottom;
+
+// Convenience box-mesh factory
+function box(w, h, d, mat, name) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.name = name;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Build the wardrobe group
+ * ------------------------------------------------------------------ */
+const wardrobe = new THREE.Group();
+wardrobe.name = 'SlidingDoorWardrobe';
+
+/* --- Cabinet carcass (walls with clean thickness) --- */
+const carcass = new THREE.Group();
+carcass.name = 'Carcass';
+
+// Left & right sides (full body height)
+const leftSide = box(T, bodyH, D, carcassMat, 'LeftSide');
+leftSide.position.set(-W / 2 + T / 2, bodyBottom + bodyH / 2, 0);
+carcass.add(leftSide);
+
+const rightSide = box(T, bodyH, D, carcassMat, 'RightSide');
+rightSide.position.set(W / 2 - T / 2, bodyBottom + bodyH / 2, 0);
+carcass.add(rightSide);
+
+// Top & bottom panels (fit between the sides)
+const topPanel = box(W - 2 * T, T, D, carcassMat, 'TopPanel');
+topPanel.position.set(0, bodyTop - T / 2, 0);
+carcass.add(topPanel);
+
+const bottomPanel = box(W - 2 * T, T, D, carcassMat, 'BottomPanel');
+bottomPanel.position.set(0, bodyBottom + T / 2, 0);
+carcass.add(bottomPanel);
+
+// Back panel (inset)
+const backPanel = box(W - 2 * T, bodyH - 2 * T, T, carcassMat, 'BackPanel');
+backPanel.position.set(0, bodyBottom + bodyH / 2, -D / 2 + T / 2);
+carcass.add(backPanel);
+
+// Recessed toe-kick plinth the cabinet stands on
+const plinth = box(W - 0.03, PLINTH, D - 0.10, carcassMat, 'Plinth');
+plinth.position.set(0, PLINTH / 2, -0.03); // pushed back a touch for toe recess
+carcass.add(plinth);
+
+wardrobe.add(carcass);
+
+/* --- Interior details (shelf, divider, hanging rod) --- */
+const interior = new THREE.Group();
+interior.name = 'Interior';
+
+// Vertical divider splitting the interior
+const divider = box(T, bodyH - 2 * T, D - T, interiorMat, 'Divider');
+divider.position.set(0, bodyBottom + bodyH / 2, -T / 2);
+interior.add(divider);
+
+// A couple of shelves on the right half
+for (let i = 0; i < 2; i++) {
+  const shelf = box(W / 2 - 1.5 * T, T, D - T, interiorMat, 'Shelf_' + i);
+  shelf.position.set(W / 4, bodyBottom + 0.55 + i * 0.55, -T / 2);
+  interior.add(shelf);
+}
+
+// Hanging rod across the left half
+const rod = new THREE.Mesh(
+  new THREE.CylinderGeometry(0.014, 0.014, W / 2 - 2 * T, 20),
+  rodMat
+);
+rod.name = 'HangingRod';
+rod.rotation.z = Math.PI / 2;
+rod.position.set(-W / 4, bodyTop - 0.28, -0.03);
+rod.castShadow = true;
+interior.add(rod);
+
+wardrobe.add(interior);
+
+/* --- Recessed sliding-door tracks (top & bottom) --- */
+const trackDepth = 0.14;   // spans both door planes
+const trackZ = 0.235;      // centred over the two door depths
+const tracks = new THREE.Group();
+tracks.name = 'Tracks';
+
+const topTrack = box(W - 2 * T, 0.05, trackDepth, trackMat, 'TopTrack');
+topTrack.position.set(0, bodyTop - 0.055, trackZ);
+tracks.add(topTrack);
+
+const bottomTrack = box(W - 2 * T, 0.05, trackDepth, trackMat, 'BottomTrack');
+bottomTrack.position.set(0, bodyBottom + 0.03, trackZ);
+tracks.add(bottomTrack);
+
+wardrobe.add(tracks);
+
+/* --- Two overlapping sliding doors, each on its own track plane --- */
+const doorThk = 0.02;
+const doorW = W / 2 + 0.06;                 // wide enough to overlap in the centre
+const doorTopY = bodyTop - 0.09;
+const doorBotY = bodyBottom + 0.06;
+const doorH = doorTopY - doorBotY;
+const doorCenterY = (doorTopY + doorBotY) / 2;
+
+// Builds one door panel with a slim vertical handle, on a given depth plane
+function makeDoor(name, cx, cz, handleX) {
+  const g = new THREE.Group();
+  g.name = name;
+
+  const panel = box(doorW, doorH, doorThk, doorMat, name + '_Panel');
+  panel.position.set(cx, doorCenterY, cz);
+  g.add(panel);
+
+  // Slim vertical handle bar standing off the door face
+  const handleFrontZ = cz + doorThk / 2 + 0.02;
+  const handle = new THREE.Mesh(
+    new THREE.CapsuleGeometry(0.012, 1.35, 8, 16),
+    handleMat
+  );
+  handle.name = name + '_Handle';
+  handle.position.set(handleX, doorCenterY, handleFrontZ);
+  handle.castShadow = true;
+  g.add(handle);
+
+  // Two small mounts connecting the handle to the door
+  for (const oy of [0.68, -0.68]) {
+    const mount = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.01, 0.01, 0.03, 12),
+      handleMat
+    );
+    mount.rotation.x = Math.PI / 2;
+    mount.position.set(handleX, doorCenterY + oy, cz + doorThk / 2 + 0.01);
+    mount.castShadow = true;
+    g.add(mount);
+  }
+
+  return g;
+}
+
+const doors = new THREE.Group();
+doors.name = 'Doors';
+
+// Left door sits on the FRONT plane; right door on the rear plane -> they overlap
+const leftDoorX  = -W / 2 + doorW / 2;   // covers the left half + centre overlap
+const rightDoorX =  W / 2 - doorW / 2;   // covers the right half + centre overlap
+const frontZ = D / 2 - 0.03;             // front door depth
+const rearZ  = D / 2 - 0.07;             // rear door depth
+
+doors.add(makeDoor('LeftDoor',  leftDoorX,  frontZ, -0.10));
+doors.add(makeDoor('RightDoor', rightDoorX, rearZ,   0.10));
+
+wardrobe.add(doors);
+
+scene.add(wardrobe);
+
+/* ------------------------------------------------------------------ *
+ *  Ground / contact-shadow plane
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.MeshStandardMaterial({ color: 0xcfd2d6, roughness: 0.95, metalness: 0.0 })
+);
+ground.name = 'Ground';
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  OrbitControls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 1.5;
+controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI * 0.5; // stay above the floor
+
+/* ------------------------------------------------------------------ *
+ *  Auto-frame camera to the wardrobe's bounding box
+ * ------------------------------------------------------------------ */
+function frameObject(obj) {
+  const box3 = new THREE.Box3().setFromObject(obj);
+  const size = box3.getSize(new THREE.Vector3());
+  const center = box3.getCenter(new THREE.Vector3());
+
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * Math.PI / 180;
+  let dist = maxDim / (2 * Math.tan(fov / 2));
+  dist *= 1.5; // some breathing room
+
+  camera.position.set(center.x + dist * 0.85, center.y + dist * 0.18, center.z + dist);
+  camera.near = dist / 100;
+  camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
+frameObject(wardrobe);
+
+/* ------------------------------------------------------------------ *
+ *  Resize handling
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ------------------------------------------------------------------ *
+ *  Render loop
+ * ------------------------------------------------------------------ */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

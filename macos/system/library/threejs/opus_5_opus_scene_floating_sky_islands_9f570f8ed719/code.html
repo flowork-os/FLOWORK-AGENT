@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Floating Sky Islands</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#bcdff2}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============ 1. CONFIG + PALETTE — every tunable in one place ============ */
+const CFG = {
+  seed: 20240517,
+  camOffset: new THREE.Vector3(33, 20, 36),   // start azimuth points at cottage + windmill
+  target: new THREE.Vector3(0, 0.6, -1.5),
+  autoRotateSpeed: 0.75, fogNear: 58, fogFar: 190,
+};
+const PAL = {
+  sunLight: 0xfff2d6, skyTint: 0xbfe4ff, groundTint: 0x74904f, fog: 0xd6eaf6,
+  grass: 0x86c052, dirt: 0x8a6a48, rock: 0x8d8478, plaster: 0xf3e4c9, tile: 0xc4664a,
+  wood: 0x9a6b40, rope: 0xc0a071, stone: 0xa7a9a3, cloth: 0xf2e6cd, brass: 0xcf9a37,
+  foliage: 0x6fae4d, foliage2: 0x548f3f, water: 0x8ecbf0, windowLit: 0xffce7a,
+  bird: 0x33383f, cloud: 0xffffff,
+};
+
+/* ========= 2. SEEDED PRNG + SMALL HELPERS — no Math.random anywhere ======= */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rr = (a, b) => a + (b - a) * rand();
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+// Gentle rolling profile of an island top — reused by the mesh warp AND prop placement.
+function moundOffset(x, z, s){
+  const rad = Math.sqrt(x * x + z * z);
+  return 0.30 * Math.sin(x * 0.55 + s) * Math.cos(z * 0.5 - s) + 0.16 * Math.sin(rad * 1.4 + s);
+}
+// Per-island silhouette wobble so no island is a perfect circle.
+const rimWarp = (a, s) =>
+  1 + 0.085 * Math.sin(3 * a + s) + 0.055 * Math.sin(5 * a + s * 1.7) + 0.033 * Math.sin(8 * a + s * 2.9);
+// Mesh factory: geometry + material + position, shadow flags on by default.
+function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true){
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = shadow; return m;
+}
+function warpGeometry(geo, fn){
+  const p = geo.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++){ v.fromBufferAttribute(p, i); fn(v); p.setXYZ(i, v.x, v.y, v.z); }
+  p.needsUpdate = true; geo.computeVertexNormals(); return geo;
+}
+
+/* ==================== 3. PROCEDURAL CANVAS TEXTURES ====================== */
+function canvas2d(w, h){ const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')]; }
+function toTexture(c, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+const rgba = (r, g, b, a) => `rgba(${r | 0},${g | 0},${b | 0},${a})`;
+function skyTexture(){                                   // equirect gradient plus a painted cloud band
+  const [c, g] = canvas2d(1024, 512), grd = g.createLinearGradient(0, 0, 0, 512);
+  for (const [s, col] of [[0, '#2c76bd'], [0.3, '#6fb2e4'], [0.58, '#b6dcf2'], [0.76, '#eaf4f8'], [1, '#c9dde6']]) grd.addColorStop(s, col);
+  g.fillStyle = grd; g.fillRect(0, 0, 1024, 512);
+  for (let i = 0; i < 80; i++){
+    const x = rand() * 1024, y = 160 + rand() * 190, r = 26 + rand() * 78;
+    const cg = g.createRadialGradient(x, y, 0, x, y, r);
+    cg.addColorStop(0, 'rgba(255,255,255,0.9)'); cg.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = cg; g.beginPath(); g.ellipse(x, y, r, r * 0.5, 0, 0, 6.283); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function grassTexture(){                                 // clumped green with fine blade strokes
+  const [c, g] = canvas2d(256, 256); g.fillStyle = '#7db94b'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 260; i++){
+    g.fillStyle = rgba(110 + rand() * 50, 165 + rand() * 55, 60 + rand() * 45, 0.45);
+    g.beginPath(); g.ellipse(rand() * 256, rand() * 256, 6 + rand() * 26, 4 + rand() * 14, rand() * 3.1, 0, 6.283); g.fill();
+  }
+  for (let i = 0; i < 900; i++){
+    const x = rand() * 256, y = rand() * 256;
+    g.strokeStyle = rgba(55 + rand() * 45, 105 + rand() * 55, 40 + rand() * 35, 0.5); g.lineWidth = 1;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand() * 2 - 1, y - 2 - rand() * 4); g.stroke();
+  }
+  return toTexture(c, 4, 4);
+}
+function rockTexture(){                                  // mottled stone with vertical fracture lines
+  const [c, g] = canvas2d(256, 256); g.fillStyle = '#8b8073'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 150; i++){
+    g.fillStyle = rgba(105 + rand() * 60, 96 + rand() * 55, 84 + rand() * 50, 0.55);
+    g.beginPath(); g.ellipse(rand() * 256, rand() * 256, 8 + rand() * 30, 14 + rand() * 40, rand() * 3.1, 0, 6.283); g.fill();
+  }
+  for (let i = 0; i < 220; i++){
+    const x = rand() * 256, y = rand() * 256;
+    g.strokeStyle = rgba(60 + rand() * 40, 52 + rand() * 34, 44 + rand() * 30, 0.5); g.lineWidth = 1 + rand() * 2;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + rand() * 14 - 7, y + 20 + rand() * 40); g.stroke();
+  }
+  return toTexture(c, 3, 2);
+}
+function dirtTexture(){                                  // earth band exposed under the turf
+  const [c, g] = canvas2d(256, 256); g.fillStyle = '#8b6a45'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 420; i++){
+    g.fillStyle = rgba(90 + rand() * 70, 65 + rand() * 45, 40 + rand() * 34, 0.6);
+    g.beginPath(); g.ellipse(rand() * 256, rand() * 256, 4 + rand() * 18, 3 + rand() * 9, rand() * 3.1, 0, 6.283); g.fill();
+  }
+  return toTexture(c, 4, 2);
+}
+function woodTexture(){                                  // wavy plank grain
+  const [c, g] = canvas2d(256, 128); g.fillStyle = '#9d6f42'; g.fillRect(0, 0, 256, 128);
+  for (let i = 0; i < 70; i++){
+    const y = rand() * 128;
+    g.strokeStyle = rgba(105 + rand() * 45, 72 + rand() * 34, 40 + rand() * 26, 0.6); g.lineWidth = 1 + rand() * 2.5;
+    g.beginPath(); g.moveTo(0, y);
+    for (let x = 0; x <= 256; x += 32) g.lineTo(x, y + Math.sin(x * 0.05 + i) * 2.4);
+    g.stroke();
+  }
+  return toTexture(c, 2, 1);
+}
+function plasterTexture(){                               // soft stucco speckle
+  const [c, g] = canvas2d(256, 256); g.fillStyle = '#f2e3c8'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 500; i++){
+    g.fillStyle = rgba(215 + rand() * 30, 198 + rand() * 30, 168 + rand() * 30, 0.5);
+    g.beginPath(); g.arc(rand() * 256, rand() * 256, 2 + rand() * 9, 0, 6.283); g.fill();
+  }
+  return toTexture(c, 2, 2);
+}
+function tileTexture(){                                  // curved roof shingles in offset rows
+  const [c, g] = canvas2d(256, 256); g.fillStyle = '#b85c42'; g.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 9; col++){
+    const x = col * 30 + (row % 2 ? 15 : 0), y = row * 32;
+    g.fillStyle = rgba(180 + rand() * 40, 88 + rand() * 30, 64 + rand() * 24, 1);
+    g.beginPath(); g.moveTo(x, y + 30); g.lineTo(x, y + 12);
+    g.quadraticCurveTo(x + 15, y - 8, x + 30, y + 12); g.lineTo(x + 30, y + 30); g.closePath(); g.fill();
+    g.strokeStyle = 'rgba(90,40,30,0.45)'; g.lineWidth = 1.5; g.stroke();
+  }
+  return toTexture(c, 3, 2);
+}
+function waterTexture(){                                 // vertical falling streaks, scrolled in the loop
+  const [c, g] = canvas2d(128, 256); g.fillStyle = '#a7dcf7'; g.fillRect(0, 0, 128, 256);
+  for (let i = 0; i < 90; i++){
+    g.fillStyle = `rgba(255,255,255,${0.25 + rand() * 0.6})`;
+    g.fillRect(rand() * 128, rand() * 256 - 60, 2 + rand() * 9, 60 + rand() * 190);
+  }
+  for (let i = 0; i < 40; i++){
+    g.fillStyle = `rgba(150,205,235,${0.2 + rand() * 0.35})`;
+    g.fillRect(rand() * 128, rand() * 256, 1 + rand() * 4, 40 + rand() * 120);
+  }
+  return toTexture(c, 1, 2);
+}
+function stripeTexture(){                                // airship envelope panels
+  const [c, g] = canvas2d(256, 64); g.fillStyle = '#f0e3c8'; g.fillRect(0, 0, 256, 64);
+  for (let i = 0; i < 8; i++){ g.fillStyle = i % 2 ? '#c9634e' : '#e8d3ae'; g.fillRect(i * 32, 0, 16, 64); }
+  g.fillStyle = 'rgba(120,80,55,0.35)'; g.fillRect(0, 30, 256, 4);
+  return toTexture(c, 2, 1);
+}
+function softDotTexture(){                               // mist / smoke sprite
+  const [c, g] = canvas2d(64, 64), cg = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  cg.addColorStop(0, 'rgba(255,255,255,0.95)'); cg.addColorStop(0.5, 'rgba(255,255,255,0.35)');
+  cg.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = cg; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+const TEX = {
+  sky: skyTexture(), grass: grassTexture(), rock: rockTexture(), dirt: dirtTexture(),
+  wood: woodTexture(), plaster: plasterTexture(), tile: tileTexture(),
+  water: waterTexture(), stripe: stripeTexture(), dot: softDotTexture(),
+};
+
+/* ============================= 4. MATERIALS ============================== */
+const std = o => new THREE.MeshStandardMaterial(o);
+const MAT = {
+  grass: std({ map: TEX.grass, color: PAL.grass, roughness: 0.95 }),
+  dirt: std({ map: TEX.dirt, color: PAL.dirt, roughness: 1 }),
+  rock: std({ map: TEX.rock, color: PAL.rock, roughness: 0.95 }),
+  rockLit: std({ map: TEX.rock, color: 0xb0a596, roughness: 0.9 }),
+  plaster: std({ map: TEX.plaster, color: PAL.plaster, roughness: 0.9 }),
+  tile: std({ map: TEX.tile, color: PAL.tile, roughness: 0.85 }),
+  wood: std({ map: TEX.wood, color: PAL.wood, roughness: 0.85 }),
+  beam: std({ color: 0x6f4a2c, roughness: 0.9 }), rope: std({ color: PAL.rope, roughness: 1 }),
+  stone: std({ color: PAL.stone, roughness: 0.9 }),
+  cloth: std({ color: PAL.cloth, roughness: 0.95, side: THREE.DoubleSide }),
+  brass: std({ color: PAL.brass, roughness: 0.35, metalness: 0.75 }),
+  leaf: std({ color: PAL.foliage, roughness: 1, flatShading: true }),
+  leaf2: std({ color: PAL.foliage2, roughness: 1, flatShading: true }),
+  lit: std({ color: 0xffe6b4, emissive: PAL.windowLit, emissiveIntensity: 1.5, roughness: 0.6 }),
+  bird: std({ color: PAL.bird, roughness: 0.9 }),
+  cloud: std({ color: PAL.cloud, roughness: 1, emissive: 0x9dc4dd, emissiveIntensity: 0.16 }),
+  water: std({ map: TEX.water, color: PAL.water, roughness: 0.25, transparent: true,
+    opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }),
+  mist: std({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0.45, depthWrite: false }),
+  envelope: std({ map: TEX.stripe, roughness: 0.6 }),
+};
+
+/* =============== 5. BUILDERS — each returns a THREE.Group ================ */
+// A grassy chunk of earth: rolling turf cap, dirt band, craggy rock keel and hanging spurs.
+function buildIsland(R, TH, D, s){
+  const grp = new THREE.Group();
+  const capGeo = new THREE.CylinderGeometry(R, R * 0.98, TH, 44, 4, false);
+  warpGeometry(capGeo, v => {
+    const a = Math.atan2(v.z, v.x), rad = Math.sqrt(v.x * v.x + v.z * v.z);
+    if (rad > 1e-4){ const k = rimWarp(a, s); v.x *= k; v.z *= k; }
+    if (v.y > TH * 0.49) v.y += moundOffset(v.x, v.z, s);
+  });
+  grp.add(mesh(capGeo, [MAT.dirt, MAT.grass, MAT.rock]));
+  const keelGeo = new THREE.ConeGeometry(R * 1.02, D, 44, 7, false);
+  keelGeo.rotateX(Math.PI); keelGeo.translate(0, -TH * 0.5 + 0.12 - D * 0.5, 0);
+  warpGeometry(keelGeo, v => {
+    const a = Math.atan2(v.z, v.x), rad = Math.sqrt(v.x * v.x + v.z * v.z);
+    if (rad > 1e-4){
+      const k = rimWarp(a, s) * (1 + 0.11 * Math.sin(v.y * 1.4 + s * 2) * Math.sin(a * 4 + s));
+      v.x *= k; v.z *= k;
+    }
+    v.y += 0.17 * Math.sin(a * 5 + s * 1.3);
+  });
+  grp.add(mesh(keelGeo, MAT.rock));
+  for (let i = 0; i < 5; i++){                             // stalactite-like rock spurs
+    const a = rr(0, 6.283), rad = R * rr(0.28, 0.72);
+    const spur = mesh(new THREE.ConeGeometry(rr(0.25, 0.6), rr(0.9, 2.4), 6), MAT.rock,
+                      Math.cos(a) * rad, -TH * 0.5 - D * rr(0.18, 0.6), Math.sin(a) * rad);
+    spur.rotation.set(rr(-0.3, 0.3), rr(0, 3), Math.PI + rr(-0.3, 0.3));
+    grp.add(spur);
+  }
+  return grp;
+}
+// Storybook cottage: plaster walls, timber frame, tiled gable roof, lit windows, smoking chimney.
+function buildCottage(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.BoxGeometry(3.5, 0.34, 3.1), MAT.stone, 0, 0.17));
+  grp.add(mesh(new THREE.BoxGeometry(3.2, 2.3, 2.8), MAT.plaster, 0, 1.5));
+  const shape = new THREE.Shape();
+  shape.moveTo(-1.4, 0); shape.lineTo(1.4, 0); shape.lineTo(0, 0.95); shape.closePath();
+  const gableGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.14, bevelEnabled: false });
+  for (const sx of [1.53, -1.67]){
+    const gable = mesh(gableGeo, MAT.plaster, sx, 2.65, 0);
+    gable.rotation.y = Math.PI / 2; grp.add(gable);
+  }
+  for (const sz of [1, -1]){                               // two pitched roof slabs meeting at the ridge
+    const slab = mesh(new THREE.BoxGeometry(3.9, 0.2, 2.05), MAT.tile, 0, 3.07, 0.78 * sz);
+    slab.rotation.x = 0.596 * sz; grp.add(slab);
+  }
+  const ridge = mesh(new THREE.CylinderGeometry(0.13, 0.13, 3.95, 8), MAT.tile, 0, 3.63, 0);
+  ridge.rotation.z = Math.PI / 2; grp.add(ridge);
+  for (const [x, y, z, w, h] of [[0, 0.2, 1.41, 3.2, 0.14], [0, 2.55, 1.41, 3.2, 0.14],
+                                 [-1.55, 1.5, 1.41, 0.14, 2.3], [1.55, 1.5, 1.41, 0.14, 2.3]])
+    grp.add(mesh(new THREE.BoxGeometry(w, h, 0.1), MAT.beam, x, y, z, false));
+  grp.add(mesh(new THREE.BoxGeometry(0.8, 1.5, 0.12), MAT.wood, 0.6, 1.09, 1.43));
+  grp.add(mesh(new THREE.SphereGeometry(0.06, 8, 6), MAT.brass, 0.9, 1.05, 1.52, false));
+  for (const [x, z, ry] of [[-0.85, 1.44, 0], [1.62, 0.6, Math.PI / 2], [1.62, -0.7, Math.PI / 2]]){
+    const win = mesh(new THREE.BoxGeometry(0.72, 0.72, 0.1), MAT.lit, x, 1.72, z, false);
+    const frame = mesh(new THREE.BoxGeometry(0.86, 0.86, 0.06), MAT.beam, x * 1.02, 1.72, z * 1.02, false);
+    win.rotation.y = frame.rotation.y = ry; grp.add(win); grp.add(frame);
+  }
+  grp.add(mesh(new THREE.BoxGeometry(0.5, 1.7, 0.5), MAT.stone, -1.05, 3.3, 0.55));
+  grp.add(mesh(new THREE.BoxGeometry(0.68, 0.14, 0.68), MAT.stone, -1.05, 4.2, 0.55));
+  const smoke = new THREE.Group();
+  for (let i = 0; i < 7; i++){
+    const puff = mesh(new THREE.SphereGeometry(0.22, 8, 6), MAT.mist.clone(), -1.05, 4.35 + i * 0.55, 0.55, false);
+    puff.userData.phase = i / 7; smoke.add(puff);
+  }
+  grp.add(smoke); grp.userData.smoke = smoke;
+  return grp;
+}
+// Stone windmill whose four sailed arms turn in the loop.
+function buildWindmill(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.72, 1.15, 4.4, 14), MAT.stone, 0, 2.2));
+  grp.add(mesh(new THREE.CylinderGeometry(0.98, 1.0, 0.18, 14), MAT.beam, 0, 1.15, 0, false));
+  grp.add(mesh(new THREE.ConeGeometry(1.05, 1.25, 14), MAT.tile, 0, 5.0));
+  grp.add(mesh(new THREE.BoxGeometry(0.55, 1.1, 0.1), MAT.wood, 0, 0.55, 1.03, false));
+  grp.add(mesh(new THREE.BoxGeometry(0.3, 0.34, 0.1), MAT.lit, 0, 2.9, 0.8, false));
+  const hub = mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.5, 10), MAT.beam, 0, 4.35, 0.95, false);
+  hub.rotation.x = Math.PI / 2; grp.add(hub);
+  const wheel = new THREE.Group(); wheel.position.set(0, 4.35, 1.15);
+  for (let i = 0; i < 4; i++){
+    const arm = new THREE.Group(); arm.rotation.z = i * Math.PI / 2;
+    arm.add(mesh(new THREE.BoxGeometry(0.13, 2.9, 0.1), MAT.beam, 0, 1.45));
+    arm.add(mesh(new THREE.PlaneGeometry(0.62, 2.2), MAT.cloth, 0.4, 1.5, 0.03));
+    for (let k = 0; k < 3; k++)
+      arm.add(mesh(new THREE.BoxGeometry(0.66, 0.05, 0.05), MAT.beam, 0.4, 0.7 + k * 0.8, -0.02, false));
+    wheel.add(arm);
+  }
+  grp.add(wheel); grp.userData.wheel = wheel;
+  return grp;
+}
+// A tapering ribbon of falling water plus the mist bloom where it disperses.
+function buildWaterfall(width, height, s){
+  const grp = new THREE.Group(), geo = new THREE.PlaneGeometry(width, height, 6, 16);
+  warpGeometry(geo, v => {
+    const t = 0.5 - v.y / height;                          // 0 at the lip, 1 at the tail
+    v.x *= 1 - 0.30 * t;
+    v.z += Math.sin(t * 3.1) * 0.55 + Math.sin(v.x * 1.2 + s) * 0.14;
+  });
+  geo.translate(0, -height * 0.5, 0);
+  grp.add(mesh(geo, MAT.water, 0, 0, 0, false));
+  grp.add(mesh(new THREE.CylinderGeometry(width * 0.5, width * 0.45, 0.3, 12), MAT.water, 0, -0.05, 0, false));
+  const mist = new THREE.Group();
+  for (let i = 0; i < 9; i++){
+    const puff = mesh(new THREE.SphereGeometry(rr(1.0, 2.1), 9, 7), MAT.mist,
+                      rr(-1.9, 1.9), -height + rr(-1.2, 1.4), rr(-0.8, 2.0), false);
+    puff.scale.y = 0.55; puff.userData.phase = rand() * 6.28; mist.add(puff);
+  }
+  grp.add(mist); grp.userData.mist = mist;
+  return grp;
+}
+// Plank-and-rope suspension bridge slung between two island rims.
+function buildRopeBridge(a, b, sag){
+  const grp = new THREE.Group(), N = 15, pts = [];
+  for (let i = 0; i <= N; i++){
+    const t = i / N, p = new THREE.Vector3().lerpVectors(a, b, t);
+    p.y -= Math.sin(Math.PI * t) * sag; pts.push(p);
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const dir = new THREE.Vector3().subVectors(b, a); dir.y = 0; dir.normalize();
+  const side = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(0.46);
+  for (const sgn of [1, -1]){
+    const deck = pts.map(p => p.clone().addScaledVector(side, sgn));
+    grp.add(mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(deck), 30, 0.038, 5, false), MAT.rope));
+    const rail = deck.map((p, i) => p.clone().setY(p.y + 0.78 - Math.sin(Math.PI * (i / N)) * 0.16));
+    grp.add(mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(rail), 30, 0.032, 5, false), MAT.rope, 0, 0, 0, false));
+    for (let i = 2; i < N - 1; i += 3)
+      grp.add(mesh(new THREE.CylinderGeometry(0.026, 0.026, 0.8, 5), MAT.rope,
+                   deck[i].x, deck[i].y + 0.4, deck[i].z, false));
+  }
+  const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(1.0, 0.08, 0.34), MAT.wood, N);
+  planks.castShadow = planks.receiveShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), one = new THREE.Vector3(1, 1, 1);
+  const up = new THREE.Vector3(0, 1, 0), xA = new THREE.Vector3(), yA = new THREE.Vector3();
+  for (let i = 0; i < N; i++){
+    const t = (i + 0.5) / N, p = curve.getPoint(t), zA = curve.getTangent(t).normalize();
+    xA.crossVectors(up, zA); if (xA.lengthSq() < 1e-6) xA.set(1, 0, 0); xA.normalize();
+    yA.crossVectors(zA, xA).normalize();
+    q.setFromRotationMatrix(new THREE.Matrix4().makeBasis(xA, yA, zA));
+    m.compose(p, q, one); planks.setMatrixAt(i, m);
+  }
+  grp.add(planks);
+  return grp;
+}
+// Small moored airship: striped envelope, wooden gondola, tail fins and a spinning propeller.
+function buildAirship(){
+  const grp = new THREE.Group();
+  const envelope = mesh(new THREE.SphereGeometry(1, 24, 16), MAT.envelope);
+  envelope.scale.set(2.7, 1.12, 1.12); grp.add(envelope);
+  const nose = mesh(new THREE.ConeGeometry(0.5, 1.0, 14), MAT.brass, 2.9, 0, 0);
+  nose.rotation.z = -Math.PI / 2; grp.add(nose);
+  for (let i = 0; i < 3; i++){
+    const fin = mesh(new THREE.BoxGeometry(0.9, 0.9, 0.07), MAT.cloth, -2.35, 0, 0);
+    fin.rotation.x = i * 2.094; fin.translateY(0.85); grp.add(fin);
+  }
+  const band = mesh(new THREE.TorusGeometry(1.17, 0.05, 6, 20), MAT.beam, 0, 0, 0, false);
+  band.rotation.y = Math.PI / 2; grp.add(band);
+  grp.add(mesh(new THREE.BoxGeometry(2.0, 0.62, 0.8), MAT.wood, 0, -1.55, 0));
+  const hull = mesh(new THREE.CylinderGeometry(0.4, 0.28, 1.9, 10), MAT.wood, 0, -1.95, 0);
+  hull.rotation.z = Math.PI / 2; grp.add(hull);
+  for (const x of [-0.55, 0.55]) grp.add(mesh(new THREE.CircleGeometry(0.16, 10), MAT.lit, x, -1.55, 0.41, false));
+  for (const [x, z] of [[-0.8, 0.35], [0.8, 0.35], [-0.8, -0.35], [0.8, -0.35]]){
+    const line = mesh(new THREE.CylinderGeometry(0.025, 0.025, 1.1, 5), MAT.rope, x, -0.78, z, false);
+    line.rotation.z = -x * 0.09; grp.add(line);
+  }
+  const prop = new THREE.Group(); prop.position.set(-2.95, -0.05, 0);
+  const propHub = mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.3, 8), MAT.brass, 0, 0, 0, false);
+  propHub.rotation.z = Math.PI / 2; prop.add(propHub);
+  for (let i = 0; i < 3; i++){
+    const blade = mesh(new THREE.BoxGeometry(0.06, 1.15, 0.2), MAT.beam, -0.12, 0, 0, false);
+    blade.rotation.x = i * 2.094; blade.translateY(0.58); prop.add(blade);
+  }
+  grp.add(prop); grp.userData.prop = prop;
+  return grp;
+}
+// Ghibli-round tree: tapered trunk plus overlapping low-poly canopy blobs.
+function buildTree(scale){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.13 * scale, 0.26 * scale, 1.5 * scale, 7), MAT.beam, 0, 0.75 * scale));
+  for (let i = 0, n = ri(3, 4); i < n; i++){
+    const leaf = mesh(new THREE.IcosahedronGeometry(rr(0.62, 1.0) * scale, 1), i % 2 ? MAT.leaf : MAT.leaf2,
+                      rr(-0.45, 0.45) * scale, (1.5 + rr(0.1, 0.8)) * scale, rr(-0.45, 0.45) * scale);
+    leaf.scale.y = rr(0.78, 1.0); grp.add(leaf);
+  }
+  return grp;
+}
+// Puffy cumulus made of overlapping spheres; drifts and casts a soft moving shadow.
+function buildCloud(scale){
+  const grp = new THREE.Group();
+  for (let i = 0, n = ri(5, 6); i < n; i++){
+    const puff = mesh(new THREE.SphereGeometry(rr(1.1, 2.1) * scale, 12, 9), MAT.cloud,
+                      rr(-2.6, 2.6) * scale, rr(-0.35, 0.5) * scale, rr(-1.5, 1.5) * scale);
+    puff.scale.y = rr(0.6, 0.82); grp.add(puff);
+  }
+  return grp;
+}
+// A gliding bird with flapping wings, used for the flock circling under the islands.
+function buildBird(){
+  const grp = new THREE.Group(), wings = [];
+  const body = mesh(new THREE.ConeGeometry(0.13, 0.8, 6), MAT.bird, 0, 0, 0, false);
+  body.rotation.z = -Math.PI / 2; grp.add(body);
+  const tail = mesh(new THREE.ConeGeometry(0.1, 0.35, 4), MAT.bird, -0.5, 0, 0, false);
+  tail.rotation.z = Math.PI / 2; grp.add(tail);
+  for (const sgn of [1, -1]){
+    const geo = new THREE.BoxGeometry(0.3, 0.04, 1.0); geo.translate(0, 0, sgn * 0.5);
+    const wing = mesh(geo, MAT.bird, 0, 0, 0, false);
+    grp.add(wing); wings.push({ wing, sgn });
+  }
+  grp.userData.wings = wings;
+  return grp;
+}
+// Braced mooring post the airship is tied to, with a coil of spare rope.
+function buildMooringPost(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.16, 0.22, 2.2, 9), MAT.wood, 0, 1.1));
+  grp.add(mesh(new THREE.SphereGeometry(0.25, 10, 8), MAT.beam, 0, 2.25));
+  for (const a of [0.6, 2.7, 4.6]){
+    const brace = mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.5, 5), MAT.beam,
+                       Math.cos(a) * 0.45, 0.6, Math.sin(a) * 0.45);
+    brace.rotation.set(Math.sin(a) * 0.5, 0, -Math.cos(a) * 0.5); grp.add(brace);
+  }
+  const coil = mesh(new THREE.TorusGeometry(0.3, 0.07, 6, 14), MAT.rope, 0.55, 0.06, 0.35);
+  coil.rotation.x = Math.PI / 2; grp.add(coil);
+  return grp;
+}
+// Lantern on a pole — the scene's warm accent light, flickering in the loop.
+function buildLantern(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.1, 2.4, 7), MAT.beam, 0, 1.2));
+  grp.add(mesh(new THREE.BoxGeometry(0.6, 0.07, 0.07), MAT.beam, 0.28, 2.35, 0, false));
+  grp.add(mesh(new THREE.CylinderGeometry(0.2, 0.24, 0.42, 6), MAT.brass, 0.52, 2.05, 0, false));
+  grp.add(mesh(new THREE.SphereGeometry(0.15, 10, 8), MAT.lit, 0.52, 2.05, 0, false));
+  grp.add(mesh(new THREE.ConeGeometry(0.3, 0.22, 6), MAT.brass, 0.52, 2.36, 0, false));
+  const glow = new THREE.PointLight(0xffbc63, 12, 9, 2);
+  glow.position.set(0.52, 2.05, 0); grp.add(glow); grp.userData.glow = glow;
+  return grp;
+}
+
+/* =================== 6. RENDERER / SCENE / CAMERA ======================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.02;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.background = TEX.sky;
+scene.fog = new THREE.Fog(PAL.fog, CFG.fogNear, CFG.fogFar);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromEquirectangular(TEX.sky).texture;
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.5, 600);
+camera.position.copy(CFG.target).add(CFG.camOffset);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(CFG.target);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = CFG.autoRotateSpeed;
+controls.minDistance = 30; controls.maxDistance = 95;
+controls.minPolarAngle = 0.45; controls.maxPolarAngle = 1.38;
+controls.update();
+
+/* ======================= 7. ASSEMBLY / LAYOUT =========================== */
+const world = new THREE.Group(); scene.add(world);
+const ISLE = [
+  { p: new THREE.Vector3(0, 0, 0),          R: 7.0, TH: 1.5, D: 8.2, s: 1.7 },
+  { p: new THREE.Vector3(-14.5, -2.4, 6.0), R: 4.2, TH: 1.2, D: 5.8, s: 3.4 },
+  { p: new THREE.Vector3(13.0, 1.8, -5.0),  R: 4.0, TH: 1.1, D: 5.4, s: 5.1 },
+  { p: new THREE.Vector3(-6.0, 5.6, -14.5), R: 3.0, TH: 0.9, D: 4.0, s: 2.2 },
+  { p: new THREE.Vector3(8.5, -2.4, 10.5),  R: 2.8, TH: 0.9, D: 3.8, s: 4.6 },
+];
+for (const isle of ISLE){
+  const g = buildIsland(isle.R, isle.TH, isle.D, isle.s);
+  g.position.copy(isle.p); world.add(g); isle.group = g;
+  // world-space height of the grass surface at a local (x,z)
+  isle.topY = (x, z) => isle.p.y + isle.TH * 0.5 + moundOffset(x, z, isle.s);
+  isle.place = (obj, x, z) => { obj.position.set(isle.p.x + x, isle.topY(x, z) - 0.05, isle.p.z + z); world.add(obj); };
+}
+const [A, B, C, D, E] = ISLE;
+const cottage = buildCottage(); cottage.rotation.y = 0.62; A.place(cottage, -1.2, 1.9);
+const windmill = buildWindmill(); windmill.rotation.y = 0.72; A.place(windmill, 3.4, -1.9);
+const lantern = buildLantern(); lantern.rotation.y = -0.9; A.place(lantern, -4.4, -1.1);
+const post = buildMooringPost(); C.place(post, 0.4, 1.2);
+// Trees, bushes and scattered stones across the cluster.
+for (const [isle, x, z, sc] of [[A, -4.9, 3.4, 1.0], [A, 1.4, 4.6, 0.85], [A, 5.2, 2.2, 0.7], [A, -3.0, -3.8, 0.95],
+                                [A, 0.4, -4.9, 0.8], [B, -1.6, 1.4, 0.9], [B, 1.5, -1.2, 0.75],
+                                [D, 0.2, 0.3, 1.05], [E, -0.7, 0.6, 0.8], [C, -1.9, -1.6, 0.7]]){
+  const tree = buildTree(sc); tree.rotation.y = rr(0, 6.28); isle.place(tree, x, z);
+}
+for (let i = 0; i < 38; i++){
+  const isle = ISLE[ri(0, 4)], a = rr(0, 6.28), rad = isle.R * rr(0.2, 0.84), leafy = i % 2 === 0;
+  const prop = mesh(leafy ? new THREE.IcosahedronGeometry(rr(0.26, 0.55), 0)
+                          : new THREE.DodecahedronGeometry(rr(0.16, 0.42), 0),
+                    leafy ? (rand() > 0.5 ? MAT.leaf : MAT.leaf2) : MAT.rock);
+  if (leafy) prop.scale.y = 0.75; else prop.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3));
+  isle.place(prop, Math.cos(a) * rad, Math.sin(a) * rad);
+}
+// Wildflower patch and a worn stone path — one instanced draw call each.
+const fm = new THREE.Matrix4(), fq = new THREE.Quaternion(), fs = new THREE.Vector3(1, 1, 1);
+const fcol = new THREE.Color(), tints = [0xfff4d0, 0xffe066, 0xff9ec4, 0xd9a2ff, 0xffb347];
+const flowers = new THREE.InstancedMesh(new THREE.ConeGeometry(0.07, 0.2, 5), std({ roughness: 0.9 }), 170);
+for (let i = 0; i < 170; i++){
+  const a = rr(0, 6.28), rad = A.R * Math.sqrt(rand()) * 0.9;
+  const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+  fm.compose(new THREE.Vector3(x, A.topY(x, z) + 0.1, z), fq, fs); flowers.setMatrixAt(i, fm);
+  fcol.setHex(tints[ri(0, 4)]); flowers.setColorAt(i, fcol);
+}
+flowers.castShadow = true; A.group.add(flowers);
+const pathStones = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.34, 0.34, 0.09, 7), MAT.stone, 16);
+for (let i = 0; i < 16; i++){
+  const t = i / 15, x = 0.6 - t * 4.6, z = 1.9 + t + Math.sin(t * 3) * 0.5;
+  fm.compose(new THREE.Vector3(x, A.topY(x, z) + 0.03, z), fq, new THREE.Vector3(rr(0.8, 1.2), 1, rr(0.8, 1.2)));
+  pathStones.setMatrixAt(i, fm);
+}
+pathStones.receiveShadow = true; A.group.add(pathStones);
+// Hay bales and supply crates in the windmill yard.
+for (let i = 0; i < 3; i++){
+  const bale = mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.8, 10), MAT.cloth);
+  bale.rotation.set(0, rr(-0.4, 0.4), Math.PI / 2);
+  A.place(bale, 4.4 + i * 0.35, 0.5 + i * 0.9);
+  const crate = mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), MAT.wood);
+  crate.rotation.y = rr(0, 1.5);
+  A.place(crate, 1.9 + i * 0.2, -3.6 + i * 0.68);
+}
+// Rope bridges linking the hero island to its neighbours.
+function rimPoint(isle, target, inset){
+  const dx = target.p.x - isle.p.x, dz = target.p.z - isle.p.z, len = Math.hypot(dx, dz);
+  const ux = dx / len, uz = dz / len, rad = isle.R * rimWarp(Math.atan2(uz, ux), isle.s) * inset;
+  const x = ux * rad, z = uz * rad;
+  return new THREE.Vector3(isle.p.x + x, isle.topY(x, z) + 0.15, isle.p.z + z);
+}
+for (const [from, to, sag] of [[A, B, 1.4], [A, C, 1.0], [A, E, 0.9]])
+  world.add(buildRopeBridge(rimPoint(from, to, 0.94), rimPoint(to, from, 0.92), sag));
+// Waterfalls pouring off three rims into drifting mist.
+const falls = [];
+for (const [isle, ang, w, h] of [[A, 1.85, 3.6, 12.0], [B, 1.05, 2.6, 9.0], [C, 0.15, 2.0, 7.5]]){
+  const rad = isle.R * rimWarp(ang, isle.s) * 0.95;
+  const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+  const wf = buildWaterfall(w, h, isle.s);
+  wf.position.set(isle.p.x + x, isle.topY(x, z) - 0.1, isle.p.z + z);
+  wf.rotation.y = Math.PI / 2 - ang;
+  world.add(wf); falls.push(wf);
+}
+// Free-floating boulders, some carrying a grass cap of their own.
+const boulders = [];
+for (let i = 0; i < 8; i++){
+  const grp = new THREE.Group(), r = rr(0.7, 1.8);
+  const rockGeo = new THREE.IcosahedronGeometry(r, 1);
+  warpGeometry(rockGeo, v => v.multiplyScalar(1 + 0.22 * Math.sin(v.x * 2.2 + i) * Math.cos(v.z * 1.9 - i)));
+  grp.add(mesh(rockGeo, MAT.rockLit));
+  if (i % 2 === 0){
+    const cap = mesh(new THREE.SphereGeometry(r * 0.95, 12, 7, 0, 6.283, 0, 0.8), MAT.grass, 0, r * 0.3, 0);
+    cap.scale.y = 0.5; grp.add(cap);
+  }
+  const a = rr(0, 6.28), rad = rr(11, 22);
+  grp.position.set(Math.cos(a) * rad, rr(-6, 8), Math.sin(a) * rad - 2);
+  grp.userData = { baseY: grp.position.y, phase: rand() * 6.28, spin: rr(0.05, 0.16) };
+  world.add(grp); boulders.push(grp);
+}
+// Airship moored to the post on the eastern island by a slack rope.
+const airship = buildAirship();
+airship.position.set(C.p.x + 2.6, C.p.y + 8.4, C.p.z + 3.4);
+airship.rotation.y = 0.72; world.add(airship);
+const postTop = new THREE.Vector3(C.p.x + 0.4, C.topY(0.4, 1.2) + 2.1, C.p.z + 1.2);
+const shipAnchor = new THREE.Vector3(1.0, -1.55, 0)
+  .applyAxisAngle(new THREE.Vector3(0, 1, 0), airship.rotation.y).add(airship.position);
+world.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(
+  [postTop, postTop.clone().lerp(shipAnchor, 0.5).add(new THREE.Vector3(0, -0.6, 0)), shipAnchor]),
+  24, 0.05, 5, false), MAT.rope));
+// Drifting clouds, kept high enough never to sit between the camera and the cluster.
+const clouds = [];
+for (let i = 0; i < 8; i++){
+  const cloud = buildCloud(rr(0.75, 1.25));
+  const a = (i / 8) * Math.PI * 2 + 0.35, rad = rr(17, 29);
+  cloud.position.set(Math.cos(a) * rad, 14.5 + rad * 0.2 + rr(0, 1.8), Math.sin(a) * rad);
+  cloud.userData.speed = rr(0.25, 0.5);
+  world.add(cloud); clouds.push(cloud);
+}
+// Flock of birds circling in the open air below the islands.
+const birds = [];
+for (let i = 0; i < 9; i++){
+  const bird = buildBird();
+  Object.assign(bird.userData, { r: rr(12, 23), y: rr(-13, -5), a: rr(0, 6.28), spd: rr(0.13, 0.24), flap: rr(4.5, 7.5) });
+  world.add(bird); birds.push(bird);
+}
+// Mist motes hanging in the void under the cluster.
+const moteCount = 260, motePos = new Float32Array(moteCount * 3), moteSeed = [];
+for (let i = 0; i < moteCount; i++){
+  const a = rr(0, 6.28), rad = rr(3, 26);
+  motePos[i * 3] = Math.cos(a) * rad; motePos[i * 3 + 1] = rr(-16, 2); motePos[i * 3 + 2] = Math.sin(a) * rad;
+  moteSeed.push(rr(0.25, 0.9));
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ map: TEX.dot, size: 1.5, transparent: true,
+  opacity: 0.5, depthWrite: false, sizeAttenuation: true, color: 0xffffff }));
+world.add(motes);
+
+/* ===== 8. LIGHTING RIG — sun on the camera side, sky fill, warm bounce ==== */
+const sun = new THREE.DirectionalLight(PAL.sunLight, 2.6);
+sun.position.set(34, 42, 28); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 10; sun.shadow.camera.far = 130;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -36;
+sun.shadow.camera.right = sun.shadow.camera.top = 36;
+sun.shadow.bias = -0.0007; sun.shadow.normalBias = 0.035;
+const rim = new THREE.DirectionalLight(0xbfe0ff, 0.5); rim.position.set(-28, 12, -24);
+const bounce = new THREE.DirectionalLight(0xffd9a8, 0.28); bounce.position.set(-6, -22, 10);
+scene.add(sun, rim, bounce, new THREE.HemisphereLight(PAL.skyTint, PAL.groundTint, 0.55));
+
+/* ========================= 9. ANIMATION LOOP ============================ */
+const clock = new THREE.Clock();
+const smokePuffs = cottage.userData.smoke.children;
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.getElapsedTime();
+  windmill.userData.wheel.rotation.z = t * 0.55;                       // sails turn
+  TEX.water.offset.y -= dt * 0.55;                                     // water sheets fall
+  for (const wf of falls) for (const puff of wf.userData.mist.children){  // mist bloom breathes
+    const k = 1 + Math.sin(t * 0.8 + puff.userData.phase) * 0.12;
+    puff.scale.set(k, 0.55 * k, k);
+    puff.position.y += Math.sin(t * 0.5 + puff.userData.phase) * 0.004;
+  }
+  for (let i = 0; i < smokePuffs.length; i++){                          // chimney smoke rises and fades
+    const p = smokePuffs[i], k = (t * 0.16 + p.userData.phase) % 1;
+    p.position.set(-1.05 + Math.sin(k * 5 + i) * 0.5 + k * 0.7, 4.35 + k * 4.4, 0.55);
+    p.scale.setScalar(0.5 + k * 2.1); p.material.opacity = 0.4 * (1 - k);
+  }
+  for (const cloud of clouds){                                          // clouds drift and wrap around
+    cloud.position.x += cloud.userData.speed * dt;
+    if (cloud.position.x > 34) cloud.position.x = -34;
+  }
+  for (const b of boulders){                                            // boulders bob and turn
+    b.position.y = b.userData.baseY + Math.sin(t * 0.5 + b.userData.phase) * 0.42;
+    b.rotation.y += b.userData.spin * dt;
+    b.rotation.z = Math.sin(t * 0.3 + b.userData.phase) * 0.06;
+  }
+  for (const bird of birds){                                            // flock circles below the islands
+    const u = bird.userData; u.a += u.spd * dt;
+    bird.position.set(Math.cos(u.a) * u.r, u.y + Math.sin(t * 0.6 + u.a) * 0.9, Math.sin(u.a) * u.r - 2);
+    bird.rotation.set(0, -(u.a + Math.PI / 2), 0.16);
+    const flap = Math.sin(t * u.flap + u.a) * 0.55;
+    for (const w of u.wings) w.wing.rotation.x = -w.sgn * flap;
+  }
+  airship.position.y = C.p.y + 8.4 + Math.sin(t * 0.45) * 0.28;         // moored ship sways, prop idles
+  airship.rotation.z = Math.sin(t * 0.32) * 0.035;
+  airship.userData.prop.rotation.x = t * 3.2;
+  lantern.userData.glow.intensity = 11 + Math.sin(t * 5.3) * 1.4 + Math.sin(t * 11.7) * 0.7;
+  const mp = motes.geometry.attributes.position;                        // motes drift upward and recycle
+  for (let i = 0; i < moteCount; i++){
+    const y = mp.getY(i) + moteSeed[i] * dt * 0.5;
+    mp.setY(i, y > 3 ? -16 : y);
+    mp.setX(i, mp.getX(i) + Math.sin(t * 0.3 + i) * 0.002);
+  }
+  mp.needsUpdate = true;
+  motes.material.opacity = 0.42 + Math.sin(t * 0.4) * 0.07;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================== 10. RESIZE ============================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

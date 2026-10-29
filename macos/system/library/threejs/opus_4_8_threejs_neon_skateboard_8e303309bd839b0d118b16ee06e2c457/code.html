@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Neon Skateboard — Wireframe Hologram</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #06070c; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #6ff0ff; letter-spacing: .06em; opacity: .55;
+    text-shadow: 0 0 8px rgba(24,224,255,.6); pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">NEON DECK // drag to orbit · auto-rotating</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---------------------------------------------------------------------------
+// Palette & proportions
+// ---------------------------------------------------------------------------
+const NEON_MAGENTA = 0xff2bd6;
+const NEON_CYAN    = 0x18e0ff;
+
+const DECK_LEN   = 8.0;      // nose-to-tail length
+const HALF_LEN   = DECK_LEN * 0.5;
+const HALF_WIDTH = 1.05;     // half of deck width
+const THICK      = 0.14;     // deck thickness
+const CONCAVE    = 0.16;     // rail-to-rail concave depth
+const KICK_H     = 0.55;     // kicktail rise at nose/tail
+
+const AXLE_X   = 1.95;       // truck axle offset from center (wheelbase = 3.9)
+const AXLE_Y   = -0.62;      // axle height relative to deck-top plane
+const WHEEL_R  = 0.28;
+const WHEEL_W  = 0.36;
+const WHEEL_Z  = 0.98;       // wheel offset from centerline
+const GROUND_Y = AXLE_Y - WHEEL_R - 0.03;
+
+// collect every neon line material so we can pulse them together
+const neonMats = [];
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+const clamp = (x, a, b) => Math.max(a, Math.min(b, x));
+function smoothstep(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function neonLine(color, baseOpacity = 0.92) {
+  const m = new THREE.LineBasicMaterial({
+    color: color,
+    transparent: true,
+    opacity: baseOpacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    toneMapped: false
+  });
+  m.userData.base = baseOpacity;
+  m.userData.phase = neonMats.length * 0.6;
+  neonMats.push(m);
+  return m;
+}
+
+function darkMat() {
+  return new THREE.MeshStandardMaterial({
+    color: 0x0a0d16,
+    emissive: 0x03040c,
+    metalness: 0.55,
+    roughness: 0.42,
+    polygonOffset: true,
+    polygonOffsetFactor: 1,
+    polygonOffsetUnits: 1,
+    side: THREE.DoubleSide
+  });
+}
+
+// build a solid dark part + glowing neon edge overlay, returned as a Group
+function part(geo, color, threshold = 20) {
+  const g = new THREE.Group();
+  const mesh = new THREE.Mesh(geo, darkMat());
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  g.add(mesh);
+  const edges = new THREE.EdgesGeometry(geo, threshold);
+  g.add(new THREE.LineSegments(edges, neonLine(color)));
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Deck surface — concave across width, kicktails along length
+// ---------------------------------------------------------------------------
+function deckPoint(u, v, yLift = 0) {
+  const x = (u - 0.5) * DECK_LEN;
+  const cross = 2 * (v - 0.5);                 // -1 .. 1 across width
+  const t = Math.abs((u - 0.5) * 2);           // 0 center .. 1 tips
+
+  // subtle width taper toward the rounded nose/tail
+  const taper = 1 - 0.18 * smoothstep(0.74, 0.99, t);
+  const z = cross * HALF_WIDTH * taper;
+
+  const concaveY = CONCAVE * cross * cross;     // rails ride higher than center
+  const kp = clamp((t - 0.58) / 0.42, 0, 1);
+  const kickY = KICK_H * kp * kp;               // upward kick at both ends
+
+  return { x: x, y: concaveY + kickY + yLift, z: z };
+}
+
+function buildDeckSolid(nx, nz) {
+  const cols = nx + 1, rows = nz + 1;
+  const verts = [];
+  for (let i = 0; i < cols; i++)
+    for (let j = 0; j < rows; j++) {
+      const p = deckPoint(i / nx, j / nz);
+      verts.push(p.x, p.y, p.z);
+    }
+  for (let i = 0; i < cols; i++)
+    for (let j = 0; j < rows; j++) {
+      const p = deckPoint(i / nx, j / nz);
+      verts.push(p.x, p.y - THICK, p.z);
+    }
+
+  const top = (i, j) => i * rows + j;
+  const bot = (i, j) => cols * rows + i * rows + j;
+  const idx = [];
+  for (let i = 0; i < nx; i++)
+    for (let j = 0; j < nz; j++) {
+      const a = top(i, j), b = top(i + 1, j), c = top(i + 1, j + 1), d = top(i, j + 1);
+      idx.push(a, b, c, a, c, d);
+      const e = bot(i, j), f = bot(i + 1, j), g = bot(i + 1, j + 1), h = bot(i, j + 1);
+      idx.push(e, g, f, e, h, g);
+    }
+  const quad = (t1, t2, b1, b2) => idx.push(t1, b1, b2, t1, b2, t2);
+  for (let i = 0; i < nx; i++) {
+    quad(top(i, 0), top(i + 1, 0), bot(i, 0), bot(i + 1, 0));
+    quad(top(i + 1, nz), top(i, nz), bot(i + 1, nz), bot(i, nz));
+  }
+  for (let j = 0; j < nz; j++) {
+    quad(top(0, j + 1), top(0, j), bot(0, j + 1), bot(0, j));
+    quad(top(nx, j), top(nx, j + 1), bot(nx, j), bot(nx, j + 1));
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function buildDeckGrid(nx, nz) {
+  const pos = [];
+  const lift = 0.012;
+  for (let j = 0; j <= nz; j++)
+    for (let i = 0; i < nx; i++) {
+      const a = deckPoint(i / nx, j / nz, lift);
+      const b = deckPoint((i + 1) / nx, j / nz, lift);
+      pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+  for (let i = 0; i <= nx; i++)
+    for (let j = 0; j < nz; j++) {
+      const a = deckPoint(i / nx, j / nz, lift);
+      const b = deckPoint(i / nx, (j + 1) / nz, lift);
+      pos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+    }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  return g;
+}
+
+function buildDeckOutline(nx, nz) {
+  const pts = [];
+  const push = (u, v) => { const p = deckPoint(u, v, 0.02); pts.push(new THREE.Vector3(p.x, p.y, p.z)); };
+  for (let i = 0; i <= nx; i++) push(i / nx, 0);
+  for (let j = 0; j <= nz; j++) push(1, j / nz);
+  for (let i = nx; i >= 0; i--) push(i / nx, 1);
+  for (let j = nz; j >= 0; j--) push(0, j / nz);
+  return new THREE.BufferGeometry().setFromPoints(pts);
+}
+
+// ---------------------------------------------------------------------------
+// Trucks
+// ---------------------------------------------------------------------------
+function buildTruck() {
+  const t = new THREE.Group();
+
+  const baseplate = part(new THREE.BoxGeometry(0.9, 0.14, 1.15), NEON_CYAN);
+  baseplate.position.set(0, 0.42, 0);
+  t.add(baseplate);
+
+  const pivot = part(new THREE.BoxGeometry(0.42, 0.5, 0.42), NEON_CYAN);
+  pivot.position.set(0.0, 0.18, 0);
+  t.add(pivot);
+
+  const hanger = part(new THREE.CylinderGeometry(0.17, 0.17, 1.35, 8), NEON_CYAN, 25);
+  hanger.rotation.x = Math.PI / 2;
+  t.add(hanger);
+
+  const axle = part(new THREE.CylinderGeometry(0.05, 0.05, 2.12, 10), NEON_CYAN, 25);
+  axle.rotation.x = Math.PI / 2;
+  t.add(axle);
+
+  return t;
+}
+
+// ---------------------------------------------------------------------------
+// Wheels (axis along Z)
+// ---------------------------------------------------------------------------
+function buildWheel() {
+  const g = new THREE.Group();
+
+  const solid = new THREE.Mesh(new THREE.CylinderGeometry(WHEEL_R, WHEEL_R, WHEEL_W, 30), darkMat());
+  solid.rotation.x = Math.PI / 2;
+  solid.castShadow = true;
+  solid.receiveShadow = true;
+  g.add(solid);
+
+  const seg = 40;
+  const R = WHEEL_R, W = WHEEL_W, hub = 0.09;
+  const pos = [];
+  for (const zoff of [-W / 2, W / 2]) {
+    for (let i = 0; i < seg; i++) {
+      const a1 = (i / seg) * Math.PI * 2, a2 = ((i + 1) / seg) * Math.PI * 2;
+      pos.push(Math.cos(a1) * R, Math.sin(a1) * R, zoff, Math.cos(a2) * R, Math.sin(a2) * R, zoff);
+      pos.push(Math.cos(a1) * hub, Math.sin(a1) * hub, zoff, Math.cos(a2) * hub, Math.sin(a2) * hub, zoff);
+    }
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      pos.push(Math.cos(a) * hub, Math.sin(a) * hub, zoff, Math.cos(a) * R, Math.sin(a) * R, zoff);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.add(new THREE.LineSegments(geo, neonLine(NEON_MAGENTA)));
+
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Assemble the single centered object
+// ---------------------------------------------------------------------------
+const board = new THREE.Group();
+
+const deckSolid = new THREE.Mesh(buildDeckSolid(24, 8), darkMat());
+deckSolid.castShadow = true;
+deckSolid.receiveShadow = true;
+board.add(deckSolid);
+
+board.add(new THREE.LineSegments(buildDeckGrid(26, 8), neonLine(NEON_MAGENTA, 0.85)));
+board.add(new THREE.LineLoop(buildDeckOutline(26, 8), neonLine(NEON_CYAN, 1.0)));
+
+for (const dir of [-1, 1]) {
+  const truck = buildTruck();
+  truck.position.set(dir * AXLE_X, AXLE_Y, 0);
+  board.add(truck);
+  for (const zs of [-1, 1]) {
+    const w = buildWheel();
+    w.position.set(dir * AXLE_X, AXLE_Y, zs * WHEEL_Z);
+    board.add(w);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Scene / renderer / camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06070c);
+scene.fog = new THREE.FogExp2(0x06070c, 0.018);
+scene.add(board);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5.6, 2.9, 6.3);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + key/fill/rim, soft shadows
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x2a3f66, 0x1a0a2a, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 1.15);
+key.position.set(6, 10, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 5;
+key.shadow.bias = -0.0004;
+const sc = key.shadow.camera;
+sc.left = -8; sc.right = 8; sc.top = 8; sc.bottom = -8; sc.near = 0.5; sc.far = 40;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x2266ff, 0.45);
+fill.position.set(-6, 4, -3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xff2bd6, 0.6);
+rim.position.set(-4, 3, -8);
+scene.add(rim);
+
+// ground plane — receives shadows only
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = GROUND_Y;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+controls.enablePan = false;
+controls.minDistance = 4;
+controls.maxDistance = 22;
+controls.maxPolarAngle = Math.PI * 0.9;
+controls.target.set(0, -0.15, 0);
+
+// ---------------------------------------------------------------------------
+// Post-processing — bloom for the neon glow
+// ---------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.85, 0.6, 0.12
+);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+});
+
+// ---------------------------------------------------------------------------
+// Animate — pulsing neon
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  for (const m of neonMats) {
+    const p = 0.66 + 0.34 * Math.sin(t * 2.0 + m.userData.phase);
+    m.opacity = m.userData.base * p;
+  }
+  bloom.strength = 0.78 + 0.22 * Math.sin(t * 1.4);
+
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

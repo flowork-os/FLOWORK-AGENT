@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Corner Storefront — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #b9bec6; opacity: .55;
+    letter-spacing: .3px; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Corner storefront · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene / camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+
+const camera = new THREE.PerspectiveCamera(44, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(-14, 9.5, 16);
+
+// Environment map (procedural room) for realistic glass/metal reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + directional key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcd2e8, 0x2a2722, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.7);
+key.position.set(-16, 22, 14);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 5;
+key.shadow.bias = -0.0002;
+const sc = key.shadow.camera;
+sc.near = 0.5; sc.far = 70; sc.left = -16; sc.right = 16; sc.top = 20; sc.bottom = -3;
+scene.add(key);
+const keyTarget = new THREE.Object3D();
+keyTarget.position.set(0, 4.2, 0);
+scene.add(keyTarget);
+key.target = keyTarget;
+
+const fill = new THREE.DirectionalLight(0x9fb6d6, 0.55);
+fill.position.set(18, 10, 10);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd8b0, 1.15);
+rim.position.set(10, 12, -18);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Shadow-catching ground
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(300, 300),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.001;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Procedural stripe texture for the fabric awnings
+// ---------------------------------------------------------------------------
+function stripeTexture(colA, colB, n) {
+  const c = document.createElement('canvas');
+  c.width = 720; c.height = 120;
+  const g = c.getContext('2d');
+  const sw = c.width / n;
+  for (let i = 0; i < n; i++) {
+    g.fillStyle = (i % 2 === 0) ? colA : colB;
+    g.fillRect(Math.floor(i * sw), 0, Math.ceil(sw) + 1, c.height);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = 4;
+  return t;
+}
+const stripeTex = stripeTexture('#efe3c8', '#7d2b2f', 18);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const M = {
+  masonry:  new THREE.MeshStandardMaterial({ color: 0x9d5f4a, roughness: 0.9,  metalness: 0.0 }),
+  stone:    new THREE.MeshStandardMaterial({ color: 0xcabfa9, roughness: 0.72, metalness: 0.02 }),
+  plinth:   new THREE.MeshStandardMaterial({ color: 0x3a3a40, roughness: 0.82, metalness: 0.05 }),
+  frame:    new THREE.MeshStandardMaterial({ color: 0x322c26, roughness: 0.42, metalness: 0.75 }),
+  bulk:     new THREE.MeshStandardMaterial({ color: 0x1f4438, roughness: 0.5,  metalness: 0.25 }),
+  sign:     new THREE.MeshStandardMaterial({ color: 0x143230, roughness: 0.55, metalness: 0.2 }),
+  signface: new THREE.MeshStandardMaterial({ color: 0xe9dcc2, roughness: 0.7,  metalness: 0.05 }),
+  metal:    new THREE.MeshStandardMaterial({ color: 0x8f8f95, roughness: 0.33, metalness: 0.95 }),
+  interior: new THREE.MeshStandardMaterial({ color: 0x2b2622, roughness: 0.95 }),
+  glass:    new THREE.MeshPhysicalMaterial({
+              color: 0x0c1417, roughness: 0.05, metalness: 0.0,
+              transparent: true, opacity: 0.34, envMapIntensity: 1.5, clearcoat: 0.35, clearcoatRoughness: 0.1
+            }),
+  uglass:   new THREE.MeshStandardMaterial({ color: 0x12191d, roughness: 0.08, metalness: 0.25, envMapIntensity: 1.3 }),
+  awning:   new THREE.MeshStandardMaterial({ map: stripeTex, roughness: 0.78, metalness: 0.0, side: THREE.DoubleSide })
+};
+
+// ---------------------------------------------------------------------------
+// Dimensions (metres)
+// ---------------------------------------------------------------------------
+const Pw = 0.5;            // pier width
+const H_BULK = 0.6;        // bulkhead / kickplate height
+const H_TRANSOM = 2.5;     // transom divider height
+const H_HEAD = 3.1;        // top of ground-floor glass
+const H_SIGN_TOP = 4.0;    // top of sign band
+const H_TOP = 9.8;         // parapet top
+const Lx = 8.4, Lz = 8.4;  // facade lengths
+const CH = 2.8;            // chamfer size at the corner
+const hc = CH / Math.SQRT2;// half chamfer length
+const f1 = 5.6, f2 = 8.0;  // upper-floor window centre heights
+
+// ---------------------------------------------------------------------------
+// Object graph
+// ---------------------------------------------------------------------------
+const S = new THREE.Group();
+
+// Entry sub-group placed at the chamfered corner.
+// Local frame: +X runs along the chamfer, +Z points outward, +Y up.
+const E = new THREE.Group();
+E.rotation.y = -Math.PI / 4;
+E.position.set(CH / 2, 0, -CH / 2);
+S.add(E);
+
+// Helper: axis-aware facade box.  axis 'A' = wall at z=0 facing +Z,
+// axis 'B' = wall at x=0 facing -X.  `off` is centre offset from the facade
+// plane (positive = outward), `al` runs along the facade, `dp` is depth.
+function fbox(axis, a, y, off, al, h, dp, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(al, h, dp), mat);
+  if (axis === 'A') { m.position.set(a, y, off); }
+  else { m.position.set(-off, y, a); m.rotation.y = -Math.PI / 2; }
+  S.add(m);
+  return m;
+}
+// Helper: box in the entry local frame.
+function ebox(x, y, z, w, h, d, mat) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  E.add(m);
+  return m;
+}
+// Helper: cylinder between two points.
+function cylBetween(p1, p2, r, mat) {
+  const dir = new THREE.Vector3().subVectors(p2, p1);
+  const len = dir.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, 10), mat);
+  m.position.copy(p1).add(p2).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  S.add(m);
+  return m;
+}
+
+// --- a single storefront window bay (glass, mullions, transom, frame) ------
+function addWindow(axis, c, w) {
+  fbox(axis, c, H_BULK, 0.10, w + 0.12, 0.12, 0.34, M.frame);                                  // sill
+  fbox(axis, c, (H_BULK + H_TRANSOM) / 2, -0.02, w - 0.02, H_TRANSOM - H_BULK, 0.06, M.glass);  // main pane
+  fbox(axis, c, (H_TRANSOM + H_HEAD) / 2, -0.02, w - 0.02, H_HEAD - H_TRANSOM, 0.06, M.glass);  // transom light
+  fbox(axis, c, H_TRANSOM, 0.03, w + 0.06, 0.09, 0.12, M.frame);                                // transom bar
+  fbox(axis, c, (H_BULK + H_TRANSOM) / 2, 0.02, 0.06, H_TRANSOM - H_BULK, 0.12, M.frame);       // centre mullion
+  fbox(axis, c - w / 2, (H_BULK + H_HEAD) / 2, 0.03, 0.06, H_HEAD - H_BULK, 0.12, M.frame);     // jamb L
+  fbox(axis, c + w / 2, (H_BULK + H_HEAD) / 2, 0.03, 0.06, H_HEAD - H_BULK, 0.12, M.frame);     // jamb R
+  fbox(axis, c, H_HEAD, 0.03, w + 0.12, 0.10, 0.12, M.frame);                                   // head bar
+}
+
+// --- an upper-floor window (masonry, trim, pane) ---------------------------
+function addUpper(axis, a, y) {
+  fbox(axis, a, y, 0.03, 1.28, 1.85, 0.05, M.stone);        // trim
+  fbox(axis, a, y, 0.065, 0.96, 1.5, 0.05, M.uglass);       // pane
+  fbox(axis, a, y - 1.0, 0.10, 1.4, 0.14, 0.16, M.stone);   // sill
+  fbox(axis, a, y + 1.0, 0.10, 1.4, 0.16, 0.16, M.stone);   // lintel
+}
+
+// --- a full storefront facade (piers, bulkhead, sign band, windows) --------
+function buildFace(axis, lo, hi) {
+  const len = hi - lo, cen = (lo + hi) / 2;
+  fbox(axis, cen, 0.09, 0.10, len, 0.18, 0.42, M.plinth);                                       // plinth
+  fbox(axis, cen, (0.18 + H_BULK) / 2, 0.07, len, H_BULK - 0.18, 0.32, M.bulk);                 // bulkhead
+  fbox(axis, cen, (H_HEAD + H_SIGN_TOP) / 2, 0.14, len, H_SIGN_TOP - H_HEAD, 0.42, M.sign);     // sign band
+  fbox(axis, cen, (H_HEAD + H_SIGN_TOP) / 2, 0.37, len * 0.94, 0.55, 0.05, M.signface);         // sign face
+  fbox(axis, cen, H_SIGN_TOP + 0.02, 0.20, len + 0.1, 0.14, 0.52, M.stone);                     // cornice
+  fbox(axis, cen, H_TOP - 0.08, 0.22, len + 0.2, 0.18, 0.55, M.stone);                          // parapet cornice
+
+  const pcs = [lo + Pw / 2, (lo + hi) / 2, hi - Pw / 2];
+  for (const pc of pcs) fbox(axis, pc, H_SIGN_TOP / 2, 0.12, Pw, H_SIGN_TOP, 0.42, M.stone);    // piers
+
+  for (let i = 0; i < pcs.length - 1; i++) {
+    const l = pcs[i] + Pw / 2, r = pcs[i + 1] - Pw / 2;
+    addWindow(axis, (l + r) / 2, r - l);
+  }
+
+  // upper-floor windows
+  const uxs = [lo + len * 0.22, cen, hi - len * 0.22];
+  for (const ux of uxs) { addUpper(axis, ux, f1); addUpper(axis, ux, f2); }
+}
+
+// --- projecting fabric awning built in facade-A local frame ----------------
+function localAwning(len) {
+  const g = new THREE.Group();
+  const P = 1.3, yb = 3.0, yf = 2.62, z0 = 0.30;
+  const slope = Math.sqrt(P * P + (yb - yf) * (yb - yf));
+  const ang = Math.atan2(yb - yf, P);
+
+  const top = new THREE.Mesh(new THREE.BoxGeometry(len, 0.04, slope), M.awning);
+  top.position.set(0, (yb + yf) / 2, z0 + P / 2);
+  top.rotation.x = ang;
+  g.add(top);
+
+  const val = new THREE.Mesh(new THREE.BoxGeometry(len, 0.34, 0.045), M.awning);
+  val.position.set(0, yf - 0.15, z0 + P);
+  g.add(val);
+
+  const rodMat = M.metal;
+  for (const sx of [-len / 2 + 0.15, len / 2 - 0.15]) {
+    const a = new THREE.Vector3(sx, yb, z0);
+    const b = new THREE.Vector3(sx, yf + 0.05, z0 + P);
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, dir.length(), 8), rodMat);
+    rod.position.copy(a).add(b).multiplyScalar(0.5);
+    rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    g.add(rod);
+  }
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Build the two storefront facades + awnings
+// ---------------------------------------------------------------------------
+buildFace('A', CH, Lx);   // facade A: wall at z=0
+buildFace('B', -Lz, -CH); // facade B: wall at x=0
+
+const awnA = localAwning((Lx - CH) - 0.6);
+awnA.position.set((CH + Lx) / 2, 0, 0);
+S.add(awnA);
+
+const awnB = localAwning((Lz - CH) - 0.6);
+awnB.rotation.y = -Math.PI / 2;
+awnB.position.set(0, 0, (-CH - Lz) / 2);
+S.add(awnB);
+
+// ---------------------------------------------------------------------------
+// Recessed corner entry (in local frame E)
+// ---------------------------------------------------------------------------
+const recess = 1.05;
+const inner = hc - Pw;          // inner face of corner piers / reveal line
+
+// corner piers flanking the entry
+ebox( (hc - Pw / 2), H_SIGN_TOP / 2, 0.10, Pw, H_SIGN_TOP, 0.5, M.stone);
+ebox(-(hc - Pw / 2), H_SIGN_TOP / 2, 0.10, Pw, H_SIGN_TOP, 0.5, M.stone);
+
+// chamfer plinth, sign band, cornices
+ebox(0, 0.09, 0.08, 2 * hc, 0.18, 0.4, M.plinth);
+ebox(0, (H_HEAD + H_SIGN_TOP) / 2, 0.12, 2 * hc, H_SIGN_TOP - H_HEAD, 0.42, M.sign);
+ebox(0, (H_HEAD + H_SIGN_TOP) / 2, 0.34, 2 * hc * 0.82, 0.55, 0.05, M.signface);
+ebox(0, H_SIGN_TOP + 0.02, 0.18, 2 * hc + 0.1, 0.14, 0.52, M.stone);
+ebox(0, H_TOP - 0.08, 0.20, 2 * hc + 0.2, 0.18, 0.55, M.stone);
+
+// vestibule reveals, ceiling, floor + threshold
+ebox( inner, H_HEAD / 2, -recess / 2, 0.12, H_HEAD, recess, M.stone);
+ebox(-inner, H_HEAD / 2, -recess / 2, 0.12, H_HEAD, recess, M.stone);
+ebox(0, H_HEAD, -recess / 2, 2 * inner, 0.12, recess, M.frame);
+ebox(0, 0.07, -recess / 2, 2 * inner, 0.14, recess + 0.2, M.stone);
+ebox(0, 0.04, 0.14, 2 * inner + 0.2, 0.08, 0.5, M.stone);
+ebox(0, H_HEAD - 0.05, 0.06, 2 * inner + 0.2, 0.14, 0.16, M.frame); // door head beam
+
+// door + sidelights + transom (back plane of the recess)
+const zd = -recess + 0.03;
+ebox(0, (2.3 + H_HEAD - 0.1) / 2, zd - 0.01, 2 * inner - 0.1, H_HEAD - 2.4, 0.05, M.glass); // transom glass
+ebox(0, 2.28, zd + 0.03, 2 * inner, 0.08, 0.14, M.frame);                                   // transom bar
+ebox( 0.4, 1.15, zd, 0.72, 2.1, 0.05, M.glass);   // door leaf R
+ebox(-0.4, 1.15, zd, 0.72, 2.1, 0.05, M.glass);   // door leaf L
+ebox(0,    1.15, zd + 0.03, 0.08, 2.16, 0.12, M.frame);   // centre stile
+ebox( 0.78, 1.15, zd + 0.03, 0.08, 2.16, 0.12, M.frame);  // stile R
+ebox(-0.78, 1.15, zd + 0.03, 0.08, 2.16, 0.12, M.frame);  // stile L
+ebox(0, 0.18, zd + 0.03, 1.62, 0.34, 0.12, M.frame);      // bottom rail
+ebox(0, 2.18, zd + 0.03, 1.62, 0.12, 0.12, M.frame);      // top rail
+ebox( 1.07, 1.2, zd, 0.5, 2.05, 0.05, M.glass);   // sidelight R
+ebox(-1.07, 1.2, zd, 0.5, 2.05, 0.05, M.glass);   // sidelight L
+ebox( 1.34, 1.2, zd + 0.03, 0.07, 2.1, 0.12, M.frame);
+ebox(-1.34, 1.2, zd + 0.03, 0.07, 2.1, 0.12, M.frame);
+ebox( 0.15, 1.05, zd + 0.09, 0.04, 0.55, 0.04, M.metal);  // handle R
+ebox(-0.15, 1.05, zd + 0.09, 0.04, 0.55, 0.04, M.metal);  // handle L
+
+// chamfer upper-floor windows
+for (const y of [f1, f2]) {
+  ebox(0, y, 0.03, 1.28, 1.85, 0.05, M.stone);
+  ebox(0, y, 0.065, 0.96, 1.5, 0.05, M.uglass);
+  ebox(0, y - 1.0, 0.10, 1.4, 0.14, 0.16, M.stone);
+  ebox(0, y + 1.0, 0.10, 1.4, 0.16, 0.16, M.stone);
+}
+
+// ---------------------------------------------------------------------------
+// A small projecting blade sign near the corner (facade A)
+// ---------------------------------------------------------------------------
+{
+  const g = new THREE.Group();
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.72, 0.95), M.signface);
+  panel.position.set(0, 0, 0.72);
+  g.add(panel);
+  const logo = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.3, 0.3), M.sign);
+  logo.position.set(0, 0.02, 0.72);
+  g.add(logo);
+  for (const sy of [0.28, -0.28]) {
+    const a = new THREE.Vector3(0, sy, 0.06), b = new THREE.Vector3(0, sy, 0.6);
+    const dir = new THREE.Vector3().subVectors(b, a);
+    const rod = new THREE.Mesh(new THREE.CylinderGeometry(0.015, 0.015, dir.length(), 8), M.metal);
+    rod.position.copy(a).add(b).multiplyScalar(0.5);
+    rod.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+    g.add(rod);
+  }
+  g.position.set(2.75, 2.4, 0);
+  S.add(g);
+}
+
+// ---------------------------------------------------------------------------
+// Upper masonry mass (extruded chamfered footprint) + roof cap
+// ---------------------------------------------------------------------------
+const shape = new THREE.Shape();
+shape.moveTo(CH, 0);
+shape.lineTo(Lx, 0);
+shape.lineTo(Lx, Lz);
+shape.lineTo(0, Lz);
+shape.lineTo(0, CH);
+shape.closePath();
+
+const massGeo = new THREE.ExtrudeGeometry(shape, { depth: H_TOP - H_SIGN_TOP, bevelEnabled: false });
+massGeo.rotateX(-Math.PI / 2);
+const mass = new THREE.Mesh(massGeo, M.masonry);
+mass.position.y = H_SIGN_TOP;
+S.add(mass);
+
+const capGeo = new THREE.ExtrudeGeometry(shape, { depth: 0.22, bevelEnabled: false });
+capGeo.rotateX(-Math.PI / 2);
+const cap = new THREE.Mesh(capGeo, M.stone);
+cap.position.y = H_TOP;
+S.add(cap);
+
+// ground-floor party (end) walls closing the shell sides
+{
+  const w1 = new THREE.Mesh(new THREE.BoxGeometry(0.3, H_SIGN_TOP, Lz), M.masonry);
+  w1.position.set(Lx, H_SIGN_TOP / 2, -Lz / 2); S.add(w1);
+  const w2 = new THREE.Mesh(new THREE.BoxGeometry(Lx, H_SIGN_TOP, 0.3), M.masonry);
+  w2.position.set(Lx / 2, H_SIGN_TOP / 2, -Lz); S.add(w2);
+}
+
+// ---------------------------------------------------------------------------
+// Simple interior (floor, ceiling, back walls) visible through the glass
+// ---------------------------------------------------------------------------
+{
+  const Din = 5.0;
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(Lx, 0.1, Lz), M.interior);
+  floor.position.set(Lx / 2, 0.05, -Lz / 2); S.add(floor);
+  const ceil = new THREE.Mesh(new THREE.BoxGeometry(Lx, 0.1, Lz), M.interior);
+  ceil.position.set(Lx / 2, H_HEAD - 0.05, -Lz / 2); S.add(ceil);
+  const back1 = new THREE.Mesh(new THREE.BoxGeometry(Lx, H_HEAD, 0.2), M.interior);
+  back1.position.set(Lx / 2, H_HEAD / 2, -Din); S.add(back1);
+  const back2 = new THREE.Mesh(new THREE.BoxGeometry(0.2, H_HEAD, Lz), M.interior);
+  back2.position.set(Din, H_HEAD / 2, -Lz / 2); S.add(back2);
+
+  // warm interior glow so the windows read as a lit shop
+  const l1 = new THREE.PointLight(0xffcb86, 22, 16, 2); l1.position.set(2.4, 2.6, -2.4); S.add(l1);
+  const l2 = new THREE.PointLight(0xffcb86, 18, 16, 2); l2.position.set(4.2, 2.6, -4.2); S.add(l2);
+}
+
+// ---------------------------------------------------------------------------
+// Shadows + centring
+// ---------------------------------------------------------------------------
+S.traverse((o) => {
+  if (o.isMesh) {
+    const isGlass = (o.material === M.glass);
+    o.castShadow = !isGlass;
+    o.receiveShadow = true;
+  }
+});
+
+const bbox = new THREE.Box3().setFromObject(S);
+const ctr = bbox.getCenter(new THREE.Vector3());
+S.position.x = -ctr.x;
+S.position.z = -ctr.z;
+scene.add(S);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, 4.1, 0);
+controls.minDistance = 10;
+controls.maxDistance = 44;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

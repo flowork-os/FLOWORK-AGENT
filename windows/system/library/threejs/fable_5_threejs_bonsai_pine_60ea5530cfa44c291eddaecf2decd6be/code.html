@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bonsai Pine — procedural three.js</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #141518; }
+  canvas { display: block; }
+  #caption {
+    position: fixed; left: 16px; bottom: 14px;
+    font: 12px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: #6f7278; letter-spacing: .04em; pointer-events: none; user-select: none;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="caption">procedural bonsai pine &nbsp;·&nbsp; drag to orbit · scroll to zoom</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------- renderer */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16171a);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 50);
+camera.position.set(0.85, 0.52, 1.02);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.30, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 0.45;
+controls.maxDistance = 3.2;
+controls.maxPolarAngle = 1.52;
+
+/* ---------------------------------------------------------------- lighting */
+const hemi = new THREE.HemisphereLight(0x8fa3b8, 0x2e2822, 0.6);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffe9cf, 2.8);
+key.position.set(1.7, 2.6, 1.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -0.9; key.shadow.camera.right = 0.9;
+key.shadow.camera.top = 0.9;   key.shadow.camera.bottom = -0.9;
+key.shadow.camera.near = 0.5;  key.shadow.camera.far = 8;
+key.shadow.bias = -0.0003;
+key.shadow.normalBias = 0.02;
+key.target.position.set(0, 0.25, 0);
+scene.add(key, key.target);
+
+const fill = new THREE.DirectionalLight(0x8fa6c9, 0.65);
+fill.position.set(-1.9, 0.9, 0.7);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xc4d8ec, 1.2);
+rim.position.set(-0.8, 1.9, -2.0);
+scene.add(rim);
+
+/* shadow-catcher ground */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(3, 48).rotateX(-Math.PI / 2),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------- helpers */
+let seed = 20260707;
+function rand() { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; }
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+
+function vnoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const sm = t => t * t * (3 - 2 * t);
+  const u = sm(xf), v = sm(yf), w = sm(zf);
+  const h = (i, j, k) => { const n = Math.sin(i * 127.1 + j * 311.7 + k * 74.7) * 43758.5453; return n - Math.floor(n); };
+  return lerp(
+    lerp(lerp(h(xi, yi, zi), h(xi + 1, yi, zi), u), lerp(h(xi, yi + 1, zi), h(xi + 1, yi + 1, zi), u), v),
+    lerp(lerp(h(xi, yi, zi + 1), h(xi + 1, yi, zi + 1), u), lerp(h(xi, yi + 1, zi + 1), h(xi + 1, yi + 1, zi + 1), u), v),
+    w);
+}
+function fbm(x, y, z) {
+  return vnoise(x, y, z) * 0.55 +
+         vnoise(x * 2.3 + 7.3, y * 2.3 + 3.1, z * 2.3 + 1.7) * 0.30 +
+         vnoise(x * 5.1 + 13.7, y * 5.1 + 5.9, z * 5.1 + 9.4) * 0.15;
+}
+
+/* Sweep a gnarled, bark-ridged limb along a curve, with vertex-color crevices. */
+function makeLimb(points, r0, r1, opt = {}) {
+  const segs = opt.segs ?? 26, radial = opt.radial ?? 9;
+  const taper = opt.taper ?? 1.3, ridges = opt.ridges ?? 6;
+  const ridgeAmp = opt.ridgeAmp ?? 0.09, twist = opt.twist ?? 2.0;
+  const nAmp = opt.noiseAmp ?? 0.12, nScale = opt.noiseScale ?? 16;
+  const bright = opt.bright ?? 1.0, off = opt.seed ?? 0;
+
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
+  const frames = curve.computeFrenetFrames(segs, false);
+  const pos = [], col = [], idx = [];
+  const P = new THREE.Vector3(), D = new THREE.Vector3();
+
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    curve.getPointAt(t, P);
+    const N = frames.normals[i], B = frames.binormals[i];
+    const rBase = r1 + (r0 - r1) * Math.pow(1 - t, taper);
+    for (let j = 0; j < radial; j++) {
+      const th = j / radial * Math.PI * 2;
+      D.copy(N).multiplyScalar(Math.cos(th)).addScaledVector(B, Math.sin(th));
+      const ridge = 0.5 + 0.5 * Math.sin(th * ridges + t * twist * Math.PI * 2);
+      const n = fbm((P.x + D.x * rBase + off) * nScale, (P.y + D.y * rBase) * nScale, (P.z + D.z * rBase + off * 0.6) * nScale);
+      const r = Math.max(rBase * 0.25, rBase * (1 + ridgeAmp * (ridge * 2 - 1) + nAmp * (n * 2 - 1)));
+      pos.push(P.x + D.x * r, P.y + D.y * r, P.z + D.z * r);
+      let shade = 0.35 + 0.75 * (0.55 * ridge + 0.45 * n);
+      shade *= 0.78 + 0.22 * Math.min(1, t * 2.5);
+      shade = clamp(shade * bright, 0.22, 1);
+      col.push(shade, shade * 0.95, shade * 0.87);
+    }
+  }
+  for (let i = 0; i < segs; i++) {
+    for (let j = 0; j < radial; j++) {
+      const a = i * radial + j, b = i * radial + (j + 1) % radial;
+      idx.push(a, b, b + radial, a, b + radial, a + radial);
+    }
+  }
+  const tipP = curve.getPointAt(1), tI = pos.length / 3;
+  pos.push(tipP.x, tipP.y, tipP.z); col.push(0.6, 0.57, 0.52);
+  const last = segs * radial;
+  for (let j = 0; j < radial; j++) idx.push(last + j, last + (j + 1) % radial, tI);
+  const bP = curve.getPointAt(0), bI = tI + 1;
+  pos.push(bP.x, bP.y, bP.z); col.push(0.45, 0.43, 0.40);
+  for (let j = 0; j < radial; j++) idx.push((j + 1) % radial, j, bI);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+function roundedRect(w, d, r) {
+  const s = new THREE.Shape(); const hw = w / 2, hd = d / 2;
+  s.moveTo(-hw + r, -hd);
+  s.lineTo(hw - r, -hd); s.absarc(hw - r, -hd + r, r, -Math.PI / 2, 0, false);
+  s.lineTo(hw, hd - r);  s.absarc(hw - r, hd - r, r, 0, Math.PI / 2, false);
+  s.lineTo(-hw + r, hd); s.absarc(-hw + r, hd - r, r, Math.PI / 2, Math.PI, false);
+  s.lineTo(-hw, -hd + r); s.absarc(-hw + r, -hd + r, r, Math.PI, Math.PI * 1.5, false);
+  return s;
+}
+
+/* ---------------------------------------------------------------- materials */
+const barkMat = new THREE.MeshStandardMaterial({ color: 0x93806b, vertexColors: true, roughness: 0.94, metalness: 0.0 });
+const jinMat  = new THREE.MeshStandardMaterial({ color: 0xd8d1c1, vertexColors: true, roughness: 0.7,  metalness: 0.0 });
+const potMat  = new THREE.MeshStandardMaterial({ color: 0x5e463b, roughness: 0.88, metalness: 0.02 });
+const soilMat = new THREE.MeshStandardMaterial({ color: 0x372a1e, roughness: 1.0 });
+const blobMat = new THREE.MeshStandardMaterial({ color: 0x283b20, roughness: 0.96 });
+const needleMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.85 });
+const mossMat = () => new THREE.MeshStandardMaterial({
+  color: new THREE.Color().setHSL(0.24 + rand() * 0.05, 0.45, 0.22 + rand() * 0.08), roughness: 1.0
+});
+const stoneMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9 });
+
+/* ================================================================ THE OBJECT
+   One centered bonsai: shallow pot + soil + gnarled pine, ~73 cm tall.     */
+const bonsai = new THREE.Group();
+scene.add(bonsai);
+
+/* --------- shallow rectangular pot (52 x 36 x ~11 cm, unglazed clay) ---- */
+{
+  const body = new THREE.ExtrudeGeometry(roundedRect(0.52, 0.36, 0.03), { depth: 0.075, bevelEnabled: false });
+  body.rotateX(-Math.PI / 2);
+  const bp = body.attributes.position;
+  for (let i = 0; i < bp.count; i++) {          // taper: narrower at the base
+    const t = clamp(bp.getY(i) / 0.075, 0, 1), s = 0.90 + 0.10 * t;
+    bp.setX(i, bp.getX(i) * s); bp.setZ(i, bp.getZ(i) * s);
+  }
+  body.computeVertexNormals();
+  const bodyMesh = new THREE.Mesh(body, potMat);
+  bodyMesh.position.y = 0.014;
+  bodyMesh.castShadow = bodyMesh.receiveShadow = true;
+  bonsai.add(bodyMesh);
+
+  const rimShape = roundedRect(0.545, 0.385, 0.034);
+  rimShape.holes.push(roundedRect(0.46, 0.30, 0.02));
+  const rimGeo = new THREE.ExtrudeGeometry(rimShape, { depth: 0.021, bevelEnabled: false });
+  rimGeo.rotateX(-Math.PI / 2);
+  const rimMesh = new THREE.Mesh(rimGeo, potMat);
+  rimMesh.position.y = 0.0885;
+  rimMesh.castShadow = rimMesh.receiveShadow = true;
+  bonsai.add(rimMesh);
+
+  const footGeo = new THREE.BoxGeometry(0.055, 0.016, 0.032);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    const f = new THREE.Mesh(footGeo, potMat);
+    f.position.set(sx * 0.185, 0.008, sz * 0.125);
+    f.castShadow = f.receiveShadow = true;
+    bonsai.add(f);
+  }
+}
+
+/* --------- soil mound ---------------------------------------------------- */
+function soilH(x, z) {
+  const d = Math.min(1, Math.max(Math.abs(x) / 0.23, Math.abs(z) / 0.15));
+  return 0.0905 + (1 - d * d) * 0.024 + (vnoise(x * 42 + 3, 0, z * 42 + 9) - 0.5) * 0.005;
+}
+{
+  const g = new THREE.PlaneGeometry(0.46, 0.30, 30, 22);
+  g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, soilH(p.getX(i), p.getZ(i)));
+  g.computeVertexNormals();
+  const soil = new THREE.Mesh(g, soilMat);
+  soil.receiveShadow = true;
+  bonsai.add(soil);
+
+  /* moss patches */
+  for (let i = 0; i < 6; i++) {
+    const a = rand() * Math.PI * 2, rad = 0.075 + rand() * 0.105;
+    const x = clamp(Math.cos(a) * rad * 1.35, -0.19, 0.19), z = clamp(Math.sin(a) * rad, -0.115, 0.115);
+    const s = 0.018 + rand() * 0.024;
+    const m = new THREE.Mesh(new THREE.SphereGeometry(1, 9, 6), mossMat());
+    m.scale.set(s * (1 + rand() * 0.6), s * 0.28, s);
+    m.position.set(x, soilH(x, z), z);
+    m.castShadow = m.receiveShadow = true;
+    bonsai.add(m);
+  }
+  /* scattered pebbles */
+  const peb = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), stoneMat, 26);
+  const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), E = new THREE.Euler(), C = new THREE.Color();
+  for (let i = 0; i < 26; i++) {
+    const x = (rand() - 0.5) * 0.40, z = (rand() - 0.5) * 0.25, s = 0.0035 + rand() * 0.005;
+    Q.setFromEuler(E.set(rand() * 3, rand() * 3, rand() * 3));
+    M.compose(new THREE.Vector3(x, soilH(x, z) + s * 0.25, z), Q, new THREE.Vector3(s, s * 0.7, s));
+    peb.setMatrixAt(i, M);
+    peb.setColorAt(i, C.setHSL(0.08, 0.05 + rand() * 0.08, 0.3 + rand() * 0.25));
+  }
+  peb.castShadow = peb.receiveShadow = true;
+  bonsai.add(peb);
+}
+
+/* --------- the tree ------------------------------------------------------ */
+const tree = new THREE.Group();
+tree.position.y = 0.104;             // on top of the soil mound
+bonsai.add(tree);
+
+const trunkPts = [
+  new THREE.Vector3( 0.000, -0.020,  0.000),
+  new THREE.Vector3( 0.020,  0.070,  0.010),
+  new THREE.Vector3( 0.065,  0.160, -0.015),
+  new THREE.Vector3( 0.040,  0.260, -0.040),
+  new THREE.Vector3(-0.010,  0.330, -0.010),
+  new THREE.Vector3(-0.045,  0.410,  0.020),
+  new THREE.Vector3(-0.020,  0.480,  0.010),
+  new THREE.Vector3( 0.010,  0.520,  0.000)
+];
+const trunkCurve = new THREE.CatmullRomCurve3(trunkPts, false, 'centripetal');
+const TR0 = 0.050, TR1 = 0.007;
+const trunkR = t => TR1 + (TR0 - TR1) * Math.pow(1 - t, 1.6);
+
+const trunk = new THREE.Mesh(
+  makeLimb(trunkPts, TR0, TR1, { segs: 60, radial: 16, taper: 1.6, ridges: 9, ridgeAmp: 0.09, twist: 2.2, noiseAmp: 0.14, noiseScale: 16, seed: 2.7 }),
+  barkMat
+);
+trunk.castShadow = trunk.receiveShadow = true;
+tree.add(trunk);
+
+/* exposed surface roots (nebari), radiating and diving under the soil */
+for (let i = 0; i < 8; i++) {
+  const a = (i / 8) * Math.PI * 2 + (rand() - 0.5) * 0.5;
+  const d = new THREE.Vector3(Math.cos(a), 0, Math.sin(a));
+  const pp = new THREE.Vector3(-d.z, 0, d.x);
+  const reach = 0.10 + rand() * 0.06;
+  const pts = [
+    d.clone().multiplyScalar(0.012).setY(0.040),
+    d.clone().multiplyScalar(0.050).addScaledVector(pp, (rand() - 0.5) * 0.02).setY(0.018),
+    d.clone().multiplyScalar(reach * 0.75).addScaledVector(pp, (rand() - 0.5) * 0.04).setY(0.006),
+    d.clone().multiplyScalar(reach).addScaledVector(pp, (rand() - 0.5) * 0.03).setY(-0.018)
+  ];
+  const root = new THREE.Mesh(
+    makeLimb(pts, 0.020 + rand() * 0.008, 0.003, { segs: 18, radial: 8, taper: 1.1, ridges: 5, ridgeAmp: 0.13, twist: 3, noiseAmp: 0.2, noiseScale: 24, seed: i * 1.31 }),
+    barkMat
+  );
+  root.castShadow = root.receiveShadow = true;
+  tree.add(root);
+}
+
+/* wire-trained branches in alternating tiers + foliage pad bookkeeping */
+const needleData = [];
+const UPV = new THREE.Vector3(0, 1, 0);
+
+function makeBlobGeo(r, hgt, off) {
+  const g = new THREE.SphereGeometry(r, 12, 9);
+  const p = g.attributes.position, v = new THREE.Vector3();
+  const squash = clamp(hgt / (r * 2) * 1.15, 0.3, 0.75);
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const n = fbm((v.x + off) * 26, v.y * 26, (v.z + off * 0.7) * 26);
+    v.multiplyScalar(1 + (n - 0.5) * 0.55);
+    v.y *= squash;
+    const floor = -hgt * 0.28;
+    if (v.y < floor) v.y = floor + (v.y - floor) * 0.3;   // flattish pad underside
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+
+function addPad(center, dirv, len, wid, hgt) {
+  const nB = Math.max(2, Math.round(len / (wid * 0.55)));
+  const perp = new THREE.Vector3(-dirv.z, 0, dirv.x).normalize();
+  for (let k = 0; k < nB; k++) {
+    const u = nB === 1 ? 0 : k / (nB - 1) - 0.5;
+    const c = center.clone().addScaledVector(dirv, u * len * 0.72)
+      .addScaledVector(perp, (rand() - 0.5) * wid * 0.35);
+    c.y += (rand() - 0.5) * hgt * 0.25 - Math.abs(u) * hgt * 0.15;
+    const br = wid * (0.42 + rand() * 0.16) * (1 - Math.abs(u) * 0.3);
+    const blob = new THREE.Mesh(makeBlobGeo(br, hgt * (0.85 + rand() * 0.3), rand() * 10), blobMat);
+    blob.position.copy(c);
+    blob.rotation.y = rand() * Math.PI * 2;
+    blob.castShadow = blob.receiveShadow = true;
+    tree.add(blob);
+
+    const cnt = Math.round(br * br * 52000);
+    for (let q = 0; q < cnt; q++) {
+      const a = rand() * Math.PI * 2;
+      const sy = Math.pow(rand(), 0.45) * 1.1 - 0.15;    // upward-biased shell
+      const rxz = Math.sqrt(Math.max(0, 1 - sy * sy));
+      const d = new THREE.Vector3(Math.cos(a) * rxz, sy, Math.sin(a) * rxz);
+      const rr = br * (0.8 + rand() * 0.35);
+      const np = c.clone().add(new THREE.Vector3(d.x * rr, d.y * rr * 0.55, d.z * rr));
+      const nd = d.clone().add(new THREE.Vector3((rand() - 0.5) * 0.8, rand() * 0.5, (rand() - 0.5) * 0.8)).normalize();
+      np.addScaledVector(nd, -0.012);                    // sink base into the pad
+      needleData.push({ p: np, d: nd, s: 0.75 + rand() * 0.55, h: rand() });
+    }
+  }
+}
+
+const branchSpecs = [
+  { t: 0.30, ang: 15,  len: 0.30, drop: 0.100 },
+  { t: 0.41, ang: 200, len: 0.26, drop: 0.085 },
+  { t: 0.52, ang: 100, len: 0.21, drop: 0.065 },
+  { t: 0.62, ang: 305, len: 0.18, drop: 0.055 },
+  { t: 0.72, ang: 55,  len: 0.15, drop: 0.042 },
+  { t: 0.81, ang: 235, len: 0.12, drop: 0.032 },
+  { t: 0.89, ang: 150, len: 0.10, drop: 0.024 }
+];
+
+for (const b of branchSpecs) {
+  const ang = b.ang * Math.PI / 180;
+  const dir = new THREE.Vector3(Math.cos(ang), 0, Math.sin(ang));
+  const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+  const root = trunkCurve.getPointAt(b.t);
+  const jig = (rand() - 0.5) * b.len * 0.3;
+
+  const p0 = root.clone().addScaledVector(dir, trunkR(b.t) * 0.2);
+  const p1 = root.clone().addScaledVector(dir, b.len * 0.30).addScaledVector(perp, jig * 0.4); p1.y -= b.drop * 0.45;
+  const p2 = root.clone().addScaledVector(dir, b.len * 0.68).addScaledVector(perp, jig);       p2.y -= b.drop;
+  const p3 = root.clone().addScaledVector(dir, b.len).addScaledVector(perp, jig * 0.6);        p3.y -= b.drop * 0.8 - Math.min(0.03, b.len * 0.12);
+
+  const branch = new THREE.Mesh(
+    makeLimb([p0, p1, p2, p3], Math.min(0.017, trunkR(b.t) * 0.55), 0.0035,
+      { segs: 22, radial: 9, taper: 1.2, ridges: 5, ridgeAmp: 0.07, twist: 3, noiseAmp: 0.10, noiseScale: 20, seed: b.t * 9.7 }),
+    barkMat
+  );
+  branch.castShadow = branch.receiveShadow = true;
+  tree.add(branch);
+
+  /* small ascending twigs feeding the pad */
+  if (b.len > 0.14) {
+    const bc = new THREE.CatmullRomCurve3([p0, p1, p2, p3], false, 'centripetal');
+    for (const u of [0.55, 0.78]) {
+      const s = bc.getPointAt(u);
+      const e = s.clone().addScaledVector(dir, 0.03 + rand() * 0.02); e.y += 0.05 + rand() * 0.03;
+      const mid = s.clone().lerp(e, 0.5).addScaledVector(perp, (rand() - 0.5) * 0.03);
+      const twig = new THREE.Mesh(
+        makeLimb([s, mid, e], 0.005, 0.0018, { segs: 10, radial: 6, taper: 1, ridges: 4, ridgeAmp: 0.05, noiseAmp: 0.08, noiseScale: 30, seed: u * 17 }),
+        barkMat
+      );
+      twig.castShadow = true;
+      tree.add(twig);
+    }
+  }
+
+  const hgt = 0.04 + b.len * 0.13;
+  const padC = root.clone().addScaledVector(dir, b.len * 0.72).addScaledVector(perp, jig * 0.7);
+  padC.y += hgt * 0.35 - b.drop * 0.85;
+  addPad(padC, dir, b.len * 0.8 + 0.05, b.len * 0.45 + 0.055, hgt);
+}
+
+/* apex crown */
+{
+  const top = trunkCurve.getPointAt(1).clone(); top.y += 0.035;
+  addPad(top, new THREE.Vector3(Math.cos(0.35), 0, Math.sin(0.35)), 0.17, 0.13, 0.075);
+}
+
+/* weathered deadwood stub (jin) */
+{
+  const jp = trunkCurve.getPointAt(0.46);
+  const jd = new THREE.Vector3(Math.cos(4.45), 0, Math.sin(4.45));
+  const j1 = jp.clone().addScaledVector(jd, 0.045); j1.y += 0.012;
+  const j2 = jp.clone().addScaledVector(jd, 0.078); j2.y += 0.030;
+  const jin = new THREE.Mesh(
+    makeLimb([jp, j1, j2], 0.011, 0.0012, { segs: 12, radial: 7, taper: 1, ridges: 6, ridgeAmp: 0.2, twist: 8, noiseAmp: 0.1, noiseScale: 40, bright: 1.6, seed: 5.5 }),
+    jinMat
+  );
+  jin.castShadow = true;
+  tree.add(jin);
+}
+
+/* dense needle tufts — one instanced mesh for the whole canopy */
+{
+  const needleGeo = new THREE.ConeGeometry(0.003, 0.042, 5);
+  needleGeo.translate(0, 0.021, 0);
+  const inst = new THREE.InstancedMesh(needleGeo, needleMat, needleData.length);
+  const M = new THREE.Matrix4(), Q = new THREE.Quaternion(), S = new THREE.Vector3(), C = new THREE.Color();
+  for (let i = 0; i < needleData.length; i++) {
+    const n = needleData[i];
+    Q.setFromUnitVectors(UPV, n.d);
+    M.compose(n.p, Q, S.set(0.8 + n.h * 0.4, n.s, 0.8 + n.h * 0.4));
+    inst.setMatrixAt(i, M);
+    inst.setColorAt(i, C.setHSL(0.29 + n.h * 0.05, 0.38 + n.h * 0.2, 0.20 + n.h * 0.16));
+  }
+  inst.castShadow = true;
+  tree.add(inst);
+}
+
+/* ---------------------------------------------------------------- resize + loop */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

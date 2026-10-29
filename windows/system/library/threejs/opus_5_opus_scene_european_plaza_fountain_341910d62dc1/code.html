@@ -1,0 +1,703 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>European Plaza Fountain</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#f0dfbe}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+// ============================================================================
+//  EUROPEAN PLAZA FOUNTAIN — a sunlit Mediterranean square: tiered fountain,
+//  arcaded facades with shutters and balconies, cafe terraces under striped
+//  umbrellas, a clock tower, a flower cart, orange trees, patterned cobbles.
+//  All procedural: geometry plus canvas textures, no external assets.
+// ============================================================================
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// --------------------------------------------------------- config / palette
+const CFG = {
+  seed: 71263,
+  fogNear: 46, fogFar: 220,
+  camPos: new THREE.Vector3(27.6, 32.4, 40.2),
+  camTarget: new THREE.Vector3(0, 7, -4),
+};
+
+const PAL = {
+  horizon: 0xf6e7c6, fog: 0xefdcb6, sun: 0xfff1d4,
+  stone: 0xe0d3b6, stoneCool: 0xcbbc9c, marble: 0xece3cd,
+  stucco: [0xf3e0b4, 0xecba80, 0xdc8f63, 0xf2e6ce, 0xdfae78, 0xc97f62],
+  iron: 0x2f2c28, brass: 0xc9a04c, wood: 0x8b5a30, woodDark: 0x5d3c22,
+  shutter: [0x3d6c56, 0x35607d, 0x8b4432],
+  water: 0x69c2cc, glass: 0x2b3a44,
+  leaf: 0x406d37, leafHi: 0x5f8f40, fruit: 0xf28c1c,
+  petal: [0xe04a6d, 0xf2a13d, 0xe8d24c, 0xb55a90, 0xf07d9c, 0xf3efe2],
+  stripeA: 0xc9463a, stripeB: 0x2f6e8f, stripeC: 0xe0a02e,
+};
+
+// ------------------------------------------------------- prng + tiny helpers
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(CFG.seed);
+const rr = (a, b) => a + (b - a) * rnd();
+const DUMMY = new THREE.Object3D();
+
+// Terse geometry constructors keep the builder bodies readable.
+const BOX = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const CYL = (rt, rb, h, s = 12) => new THREE.CylinderGeometry(rt, rb, h, s);
+const TUBE = (rt, rb, h, s) => new THREE.CylinderGeometry(rt, rb, h, s, 1, true);
+const SPH = (r, w = 12, h = 9) => new THREE.SphereGeometry(r, w, h);
+const CONE = (r, h, s = 10) => new THREE.ConeGeometry(r, h, s);
+
+/** Mesh factory: sets shadow flags, position and optional parent in one call. */
+function mk(geo, mat, x = 0, y = 0, z = 0, parent = null) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = true; m.receiveShadow = true;
+  if (parent) parent.add(m);
+  return m;
+}
+
+/** Writes one InstancedMesh transform through the shared dummy object. */
+function inst(im, i, x, y, z, s = 1, rx = 0, ry = 0, rz = 0) {
+  DUMMY.position.set(x, y, z); DUMMY.rotation.set(rx, ry, rz);
+  if (Array.isArray(s)) DUMMY.scale.set(s[0], s[1], s[2]); else DUMMY.scale.setScalar(s);
+  DUMMY.updateMatrix(); im.setMatrixAt(i, DUMMY.matrix);
+}
+
+/** Draws into an offscreen canvas and returns a repeating CanvasTexture. */
+function canvasTex(size, draw, repX = 1, repY = 1) {
+  const c = document.createElement('canvas');
+  c.width = size; c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX, repY); t.anisotropy = 4;
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/** Flat panel with a round-headed arch cut through it (arcades, belfries). */
+function archPanelGeo(bayW, bayH, openW, thick) {
+  const s = new THREE.Shape();
+  s.moveTo(-bayW / 2, 0); s.lineTo(bayW / 2, 0);
+  s.lineTo(bayW / 2, bayH); s.lineTo(-bayW / 2, bayH); s.closePath();
+  const r = openW / 2, spring = bayH - r - 0.45;
+  const hole = new THREE.Path();
+  hole.moveTo(-r, 0); hole.lineTo(-r, spring);
+  hole.absarc(0, spring, r, Math.PI, 0, true);
+  hole.lineTo(r, 0); hole.closePath();
+  s.holes.push(hole);
+  return new THREE.ExtrudeGeometry(s, { depth: thick, bevelEnabled: false });
+}
+
+// ------------------------------------------------------------------ textures
+// Irregular set stones for the streets that surround the square.
+const texCobble = canvasTex(512, (x, S) => {
+  x.fillStyle = '#5f584c'; x.fillRect(0, 0, S, S);
+  const n = 14, s = S / n;
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const cx = i * s + (j % 2) * s * 0.5 + s * 0.5, cy = j * s + s * 0.5, g = rr(0.66, 1);
+    x.fillStyle = `rgb(${(172 * g) | 0},${(160 * g) | 0},${(140 * g) | 0})`;
+    x.beginPath();
+    for (let k = 0; k < 7; k++) {
+      const a = (k / 7) * Math.PI * 2, r = s * rr(0.34, 0.47);
+      x.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    x.closePath(); x.fill();
+  }
+}, 30, 30);
+
+// The patterned paving: fans of setts radiating out from the fountain.
+const texRosette = canvasTex(1024, (x, S) => {
+  const c = S / 2;
+  x.fillStyle = '#a89b83'; x.fillRect(0, 0, S, S);
+  for (let ring = 13; ring >= 1; ring--) {
+    const r = (ring / 13) * c * 0.98, seg = 8 + ring * 6, band = ring % 4 === 0;
+    for (let i = 0; i < seg; i++) {
+      const a0 = (i / seg) * Math.PI * 2 + ring * 0.14, a1 = a0 + Math.PI * 2 / seg - 0.02, g = rr(0.72, 1);
+      x.fillStyle = band ? `rgb(${(150 * g) | 0},${(88 * g) | 0},${(62 * g) | 0})`
+        : `rgb(${(184 * g) | 0},${(172 * g) | 0},${(150 * g) | 0})`;
+      x.beginPath(); x.arc(c, c, r, a0, a1); x.arc(c, c, r * 0.9, a1, a0, true);
+      x.closePath(); x.fill();
+    }
+  }
+  x.fillStyle = '#8f6a4a'; x.beginPath(); x.arc(c, c, c * 0.08, 0, Math.PI * 2); x.fill();
+});
+
+// Near-white lime plaster mottle, tinted per building by the material colour.
+const texPlaster = canvasTex(256, (x, S) => {
+  x.fillStyle = '#ffffff'; x.fillRect(0, 0, S, S);
+  for (let i = 0; i < 900; i++) {
+    const g = rr(0.82, 1);
+    x.fillStyle = `rgba(${(230 * g) | 0},${(222 * g) | 0},${(206 * g) | 0},0.5)`;
+    x.beginPath(); x.arc(rr(0, S), rr(0, S), rr(2, 13), 0, Math.PI * 2); x.fill();
+  }
+}, 3, 3);
+
+const texRoof = canvasTex(256, (x, S) => {
+  x.fillStyle = '#a44f31'; x.fillRect(0, 0, S, S);
+  const rows = 10, h = S / rows, w = S / 12;
+  for (let j = 0; j < rows; j++) for (let i = 0; i < 12; i++) {
+    const cx = i * w + (j % 2) * w * 0.5;
+    x.fillStyle = `rgb(${(206 * rr(0.78, 1)) | 0},${(104 * rr(0.8, 1.05)) | 0},${(66 * rr(0.8, 1.1)) | 0})`;
+    x.beginPath(); x.arc(cx + w * 0.5, j * h + h * 0.35, w * 0.5, 0, Math.PI); x.fill();
+    x.fillRect(cx, j * h, w * 0.98, h * 0.34);
+  }
+}, 6, 3);
+
+const texWater = canvasTex(256, (x, S) => {
+  x.fillStyle = '#4aa9bb'; x.fillRect(0, 0, S, S);
+  for (let i = 0; i < 240; i++) {
+    const r = rr(6, 34), gx = rr(0, S), gy = rr(0, S);
+    const g = x.createRadialGradient(gx, gy, 0, gx, gy, r);
+    g.addColorStop(0, 'rgba(226,250,255,0.55)'); g.addColorStop(1, 'rgba(226,250,255,0)');
+    x.fillStyle = g; x.fillRect(gx - r, gy - r, r * 2, r * 2);
+  }
+}, 3, 3);
+
+// Vertical streaks, scrolled downward to read as falling water.
+const texFoam = canvasTex(128, (x, S) => {
+  x.fillStyle = '#8fd8e6'; x.fillRect(0, 0, S, S);
+  for (let i = 0; i < 90; i++) {
+    x.fillStyle = `rgba(255,255,255,${rr(0.25, 0.8).toFixed(2)})`;
+    x.fillRect(rr(0, S), rr(0, S), rr(1, 4), rr(10, 46));
+  }
+}, 8, 1);
+
+const texStripe = canvasTex(128, (x, S) => {
+  x.fillStyle = '#f7f2e4'; x.fillRect(0, 0, S, S);
+  x.fillStyle = '#c9463a'; x.fillRect(0, 0, S / 2, S);
+}, 9, 1);
+
+const texClock = canvasTex(256, (x, S) => {
+  const c = S / 2;
+  x.fillStyle = '#f4ecd8'; x.beginPath(); x.arc(c, c, c * 0.96, 0, Math.PI * 2); x.fill();
+  x.strokeStyle = '#2f2c28'; x.lineWidth = 7;
+  x.beginPath(); x.arc(c, c, c * 0.9, 0, Math.PI * 2); x.stroke();
+  for (let i = 0; i < 12; i++) {
+    const a = (i / 12) * Math.PI * 2;
+    x.lineWidth = i % 3 === 0 ? 9 : 4; x.beginPath();
+    x.moveTo(c + Math.cos(a) * c * 0.78, c + Math.sin(a) * c * 0.78);
+    x.lineTo(c + Math.cos(a) * c * 0.66, c + Math.sin(a) * c * 0.66); x.stroke();
+  }
+});
+
+const texSpark = canvasTex(64, (x, S) => {
+  const g = x.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  g.addColorStop(0, 'rgba(255,255,255,1)'); g.addColorStop(0.35, 'rgba(215,245,255,0.65)');
+  g.addColorStop(1, 'rgba(215,245,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, S, S);
+});
+
+const texSky = canvasTex(128, (x, S) => {
+  const g = x.createLinearGradient(0, 0, 0, S);
+  g.addColorStop(0.0, '#3f8fd2'); g.addColorStop(0.42, '#8fc4ea');
+  g.addColorStop(0.72, '#e6dcc2'); g.addColorStop(1.0, '#f6e7c6');
+  x.fillStyle = g; x.fillRect(0, 0, S, S);
+});
+texSky.wrapS = texSky.wrapT = THREE.ClampToEdgeWrapping;
+
+// ----------------------------------------------------------------- materials
+const std = (o) => new THREE.MeshStandardMaterial(o);
+const M = {
+  cobble: std({ map: texCobble, roughness: 0.95 }),
+  rosette: std({ map: texRosette, roughness: 0.9 }),
+  stone: std({ color: PAL.stone, map: texPlaster, roughness: 0.85 }),
+  marble: std({ color: PAL.marble, map: texPlaster, roughness: 0.55 }),
+  stoneCool: std({ color: PAL.stoneCool, roughness: 0.9 }),
+  roof: std({ map: texRoof, roughness: 0.8 }),
+  iron: std({ color: PAL.iron, roughness: 0.55, metalness: 0.5 }),
+  brass: std({ color: PAL.brass, roughness: 0.35, metalness: 0.85 }),
+  wood: std({ color: PAL.wood, roughness: 0.8 }),
+  woodDark: std({ color: PAL.woodDark, roughness: 0.85 }),
+  glass: std({ color: PAL.glass, roughness: 0.15, metalness: 0.4 }),
+  cloth: std({ map: texStripe, roughness: 0.85, side: THREE.DoubleSide }),
+  clock: std({ map: texClock, roughness: 0.7 }),
+  leaf: std({ color: PAL.leaf, roughness: 0.9, flatShading: true }),
+  leafHi: std({ color: PAL.leafHi, roughness: 0.9, flatShading: true }),
+  fruit: std({ color: PAL.fruit, roughness: 0.6 }),
+  terracotta: std({ color: 0xc4653e, roughness: 0.85 }),
+  hill: std({ color: 0x9aa079, roughness: 1 }),
+  bulb: std({ color: 0xffe9b0, emissive: 0xffca5e, emissiveIntensity: 1.2 }),
+  water: std({
+    color: PAL.water, map: texWater, roughness: 0.08, metalness: 0.35,
+    transparent: true, opacity: 0.86, emissive: 0x0d3742, emissiveIntensity: 0.4 }),
+  fall: std({
+    color: 0xdff4fa, map: texFoam, roughness: 0.1, transparent: true,
+    opacity: 0.55, side: THREE.DoubleSide, depthWrite: false }),
+  ripple: new THREE.MeshBasicMaterial({ color: 0xdff6ff, transparent: true, opacity: 0.4 }),
+};
+const stuccoMats = PAL.stucco.map((c) => std({ color: c, map: texPlaster, roughness: 0.92 }));
+const shutterMats = PAL.shutter.map((c) => std({ color: c, roughness: 0.7 }));
+const petalMats = PAL.petal.map((c) => std({ color: c, roughness: 0.75 }));
+const GEO = { box: BOX(1, 1, 1), ball: SPH(1) };
+
+// ============================================================================
+//  BUILDERS
+// ============================================================================
+const animWater = { falls: [], ripples: [], jet: null, spray: null, drops: [] };
+const swayables = [];
+const clockHands = [];
+
+/** Own material + own foam texture so each cascade scrolls at its own rate. */
+function fallMat(repeat, speed) {
+  const map = texFoam.clone();
+  map.needsUpdate = true; map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.repeat.set(repeat, 1);
+  const m = M.fall.clone();
+  m.map = map; m.userData = { speed };
+  return m;
+}
+
+/** Three-tier stone fountain with spill curtains, a jet and sparkling spray. */
+function buildFountain() {
+  const g = new THREE.Group();
+  const lathe = (pts) => new THREE.LatheGeometry(pts.map((p) => new THREE.Vector2(p[0], p[1])), 40);
+  mk(CYL(7.4, 7.8, 0.3, 40), M.stoneCool, 0, 0.15, 0, g); mk(CYL(6.9, 7.2, 0.32, 40), M.stone, 0, 0.45, 0, g);
+  // Each basin is one lathed shell: inner floor, wall, rim and outer skirt.
+  mk(lathe([[0, 0.6], [5.7, 0.6], [5.7, 2], [6.25, 2.25], [6.25, 0.65], [5.6, 0.6]]), M.marble, 0, 0, 0, g);
+  mk(CYL(1.5, 2.1, 1.9, 16), M.stone, 0, 2.5, 0, g);
+  mk(lathe([[0, 3.4], [3.5, 3.4], [3.5, 4.25], [3.9, 4.45], [3.9, 3.5], [2.6, 3.15]]), M.marble, 0, 0, 0, g);
+  mk(CYL(0.85, 1.2, 1.7, 14), M.stone, 0, 5.3, 0, g);
+  mk(lathe([[0, 6.1], [1.9, 6.1], [1.9, 6.8], [2.2, 6.95], [2.2, 6.2], [1.3, 5.9]]), M.marble, 0, 0, 0, g);
+  mk(SPH(0.5, 14, 10), M.marble, 0, 7.4, 0, g); mk(CONE(0.26, 0.7), M.brass, 0, 8, 0, g);
+  // Still pools inside each basin (their caustic map drifts in the loop).
+  [[5.55, 1.72], [3.4, 4.02], [1.82, 6.62]].forEach(([r, y]) => {
+    const d = mk(new THREE.CircleGeometry(r, 44), M.water, 0, y, 0, g);
+    d.rotation.x = -Math.PI / 2; d.castShadow = false;
+  });
+  // Water curtains spilling from one tier to the next.
+  [[2.15, 2, 6.62, 4.1], [3.85, 3.65, 4.02, 1.78]].forEach(([rT, rB, yT, yB], i) => {
+    const h = yT - yB;
+    const c = mk(TUBE(rT, rB, h, 32), fallMat(10 + i * 6, 1.05 + i * 0.3), 0, yB + h / 2, 0, g);
+    c.castShadow = false; c.receiveShadow = false; animWater.falls.push(c);
+  });
+  const jet = mk(TUBE(0.1, 0.34, 2.4, 12), fallMat(6, -1.6), 0, 9.2, 0, g);
+  jet.castShadow = false; animWater.falls.push(jet); animWater.jet = jet;
+  // Ripple rings expanding across the lower pool.
+  for (let i = 0; i < 3; i++) {
+    const ring = mk(new THREE.TorusGeometry(1, 0.055, 6, 40), M.ripple.clone(), 0, 1.75, 0, g);
+    ring.rotation.x = -Math.PI / 2; ring.castShadow = false;
+    ring.userData.phase = i / 3; animWater.ripples.push(ring);
+  }
+  // Sparkling spray arcing off the two upper rims.
+  const N = 190;
+  for (let i = 0; i < N; i++) {
+    const up = i % 2 === 0;
+    animWater.drops.push({ a: rr(0, Math.PI * 2), r0: up ? 2.2 : 3.9, dr: rr(0.5, 1.5),
+      y0: up ? 6.9 : 4.4, drop: up ? 2.9 : 2.8, t: rnd(), sp: rr(0.42, 0.72) });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(N * 3), 3));
+  animWater.spray = new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 0.16, map: texSpark, transparent: true, depthWrite: false,
+    blending: THREE.AdditiveBlending, opacity: 0.9 }));
+  g.add(animWater.spray);
+  return g;
+}
+
+/** Arcaded townhouse: open ground-floor arcade, shuttered windows, balconies. */
+function buildFacade(w, floors, tintIdx, shutterIdx) {
+  const g = new THREE.Group();
+  const D = 7, HA = 4.5, HF = 3.15, upH = floors * HF + 0.35, h = HA + upH;
+  mk(BOX(w, upH, D), stuccoMats[tintIdx], 0, HA + upH / 2, -D / 2, g);
+  mk(BOX(w - 0.4, HA, D - 1.7), stuccoMats[(tintIdx + 3) % 6], 0, HA / 2, -1.7 - (D - 1.7) / 2, g);
+  // Arcade piers and round arches along the front.
+  const bays = Math.max(2, Math.round(w / 3.9)), bw = w / bays;
+  const arch = archPanelGeo(bw, HA, bw * 0.6, 0.8);
+  for (let i = 0; i < bays; i++) mk(arch, M.stone, -w / 2 + bw * (i + 0.5), 0, -0.8, g);
+  // Cornice plus a hipped tile roof built from a four-sided cone.
+  mk(BOX(w + 1, 0.5, D + 1), M.stone, 0, h + 0.25, -D / 2, g);
+  const roof = mk(CYL(0.02, 1, 1, 4), M.roof, 0, h + 0.5, -D / 2, g);
+  roof.scale.set((w + 1.6) / Math.SQRT2, 1.7, (D + 1.6) / Math.SQRT2);
+  roof.rotation.y = Math.PI / 4;
+
+  // Windows batched into instanced meshes: reveal, lintel, two hinged shutters.
+  const cols = Math.max(2, Math.round(w / 4.6)), wW = 1.25, wH = 2.1, n = cols * floors;
+  const shGeo = BOX(wW * 0.62, wH * 1.06, 0.09).translate(wW * 0.31, 0, 0);
+  const reveal = new THREE.InstancedMesh(GEO.box, M.glass, n);
+  const lintel = new THREE.InstancedMesh(GEO.box, M.stone, n);
+  const shL = new THREE.InstancedMesh(shGeo, shutterMats[shutterIdx], n);
+  const shR = new THREE.InstancedMesh(shGeo, shutterMats[shutterIdx], n);
+  let k = 0;
+  for (let f = 0; f < floors; f++) for (let c = 0; c < cols; c++) {
+    const x = -w / 2 + (c + 0.5) * (w / cols), y = HA + f * HF + HF * 0.52;
+    inst(reveal, k, x, y, -0.18, [wW, wH, 0.3]);
+    inst(lintel, k, x, y + wH * 0.62, 0.06, [wW + 0.75, 0.22, 0.42]);
+    inst(shL, k, x - wW * 0.5, y, 0.09, 1, 0, Math.PI + 0.32, 0);
+    inst(shR, k, x + wW * 0.5, y, 0.09, 1, 0, -0.32, 0);
+    k++;
+  }
+  [reveal, lintel, shL, shR].forEach((im) => { im.castShadow = im.receiveShadow = true; g.add(im); });
+
+  // Wrought-iron balconies with geranium boxes on the first upper floor.
+  for (let c = 0; c < cols; c++) {
+    if (cols > 2 && c === 1) continue;
+    const b = new THREE.Group();
+    b.position.set(-w / 2 + (c + 0.5) * (w / cols), HA + 0.35, 0.05); g.add(b);
+    mk(BOX(wW + 1.5, 0.16, 1.15), M.stone, 0, 0, 0.5, b);
+    mk(BOX(wW + 1.5, 0.07, 0.07), M.iron, 0, 1, 1.03, b);
+    const bal = new THREE.InstancedMesh(CYL(0.035, 0.035, 1, 5), M.iron, 9);
+    for (let i = 0; i < 9; i++) inst(bal, i, -(wW + 1.4) / 2 + (i / 8) * (wW + 1.4), 0.5, 1.03);
+    bal.castShadow = true; b.add(bal);
+    mk(BOX(wW + 0.9, 0.34, 0.36), M.woodDark, 0, 0.25, 1.05, b);
+    const blooms = new THREE.InstancedMesh(GEO.ball, petalMats[Math.floor(rr(0, 6))], 14);
+    for (let i = 0; i < 14; i++) {
+      inst(blooms, i, -(wW + 0.7) / 2 + rr(0, wW + 0.7), 0.45 + rr(0, 0.16),
+        1.05 + rr(-0.12, 0.12), rr(0.07, 0.13));
+    }
+    blooms.castShadow = true; b.add(blooms);
+  }
+  return g;
+}
+
+/** Bell tower: shaft, twin clock dials with live hands, arcaded belfry, spire. */
+function buildClockTower() {
+  const g = new THREE.Group();
+  mk(BOX(6.6, 0.7, 6.6), M.stoneCool, 0, 0.35, 0, g); mk(BOX(5.4, 13.4, 5.4), M.stone, 0, 7.4, 0, g);
+  mk(BOX(5.9, 0.35, 5.9), M.stoneCool, 0, 5, 0, g); mk(BOX(5.9, 0.4, 5.9), M.stoneCool, 0, 14.2, 0, g);
+  for (const s of [1, -1]) mk(BOX(0.9, 2.2, 0.3), M.glass, 0, 9.4, s * 2.7, g);
+  // Clock stage carrying dials that face +Z and +X.
+  mk(BOX(6, 4, 6), stuccoMats[3], 0, 16.4, 0, g);
+  for (const [side, rot] of [[0, 0], [1, Math.PI / 2]]) {
+    const d = new THREE.Group();
+    d.position.set(side ? 3.05 : 0, 16.4, side ? 0 : 3.05);
+    d.rotation.y = rot; g.add(d);
+    mk(CYL(1.5, 1.5, 0.16, 28), M.clock, 0, 0, -0.02, d).rotation.x = Math.PI / 2;
+    mk(new THREE.CircleGeometry(1.42, 30), M.clock, 0, 0, 0.06, d).castShadow = false;
+    clockHands.push(mk(BOX(0.12, 0.85, 0.05).translate(0, 0.38, 0), M.iron, 0, 0, 0.11, d));
+    clockHands.push(mk(BOX(0.09, 1.2, 0.05).translate(0, 0.55, 0), M.iron, 0, 0, 0.13, d));
+    mk(SPH(0.11, 10, 8), M.brass, 0, 0, 0.15, d);
+  }
+  // Open belfry with an arch on each of the four faces.
+  const belfry = archPanelGeo(5.4, 3.6, 2.5, 0.5);
+  for (let i = 0; i < 4; i++) {
+    const p = mk(belfry, M.stone, 0, 18.6, 0, g);
+    p.rotation.y = (i * Math.PI) / 2;
+    p.position.set(Math.sin(p.rotation.y) * 2.45, 18.6, Math.cos(p.rotation.y) * 2.45);
+  }
+  mk(SPH(0.7), M.brass, 0, 19.6, 0, g); mk(BOX(6.2, 0.4, 6.2), M.stoneCool, 0, 22.4, 0, g);
+  const spire = mk(CYL(0.02, 1, 1, 4), M.roof, 0, 22.6, 0, g);
+  spire.scale.set(6.6 / Math.SQRT2, 2.6, 6.6 / Math.SQRT2); spire.rotation.y = Math.PI / 4;
+  mk(SPH(0.26, 10, 8), M.brass, 0, 25.4, 0, g); mk(CONE(0.16, 0.9, 8), M.iron, 0, 26, 0, g);
+  return g;
+}
+
+/** Cafe terrace set: bistro table, two chairs, striped umbrella, cups. */
+function buildCafeSet(stripe) {
+  const g = new THREE.Group();
+  mk(CYL(0.55, 0.55, 0.07, 14), M.iron, 0, 0.04, 0, g); mk(CYL(0.09, 0.09, 0.78, 10), M.iron, 0, 0.4, 0, g);
+  mk(CYL(0.82, 0.82, 0.09, 22), M.marble, 0, 0.83, 0, g);
+  for (let i = 0; i < 2; i++) {
+    const c = new THREE.Group(), a = i * Math.PI + 0.6;
+    c.position.set(Math.cos(a) * 1.5, 0, Math.sin(a) * 1.5);
+    c.rotation.y = -a + Math.PI / 2; g.add(c);
+    mk(BOX(0.62, 0.07, 0.6), M.iron, 0, 0.5, 0, c); mk(BOX(0.62, 0.72, 0.07), M.iron, 0, 0.86, -0.28, c);
+    const legs = new THREE.InstancedMesh(CYL(0.035, 0.035, 0.5, 6), M.iron, 4);
+    for (let l = 0; l < 4; l++) inst(legs, l, (l % 2 ? 1 : -1) * 0.25, 0.25, (l < 2 ? 1 : -1) * 0.24);
+    legs.castShadow = true; c.add(legs);
+  }
+  mk(CYL(0.55, 0.55, 0.11, 12), M.marble, -0.28, 0.93, 0.2, g); mk(CYL(0.16, 0.13, 0.2, 10), M.marble, 0.3, 0.98, -0.1, g);
+  const um = new THREE.Group(); g.add(um);
+  mk(CYL(0.06, 0.06, 3.4, 8), M.wood, 0, 1.7, 0, um);
+  mk(new THREE.ConeGeometry(2.5, 0.85, 9, 1, true),
+    std({ color: stripe, map: texStripe, roughness: 0.85, side: THREE.DoubleSide }), 0, 3.25, 0, um);
+  mk(SPH(0.13, 10, 8), M.wood, 0, 3.75, 0, um);
+  swayables.push({ obj: um, amp: 0.022, phase: rr(0, 6.28), sp: rr(0.5, 0.8) });
+  return g;
+}
+
+/** Wooden flower cart heaped with blossoms under a small striped canopy. */
+function buildFlowerCart() {
+  const g = new THREE.Group();
+  mk(BOX(3.4, 0.7, 1.7), M.wood, 0, 1.1, 0, g); mk(BOX(3.5, 0.12, 1.8), M.woodDark, 0, 1.48, 0, g);
+  for (const s of [-1, 1]) {
+    const wheel = mk(new THREE.TorusGeometry(0.72, 0.11, 7, 18), M.woodDark, s * 1.05, 0.72, 0.55, g);
+    wheel.rotation.y = Math.PI / 2;
+    mk(CYL(0.09, 0.09, 0.3, 8), M.wood, s * 1.05, 0.72, 0.55, g).rotation.z = Math.PI / 2;
+    const spokes = new THREE.InstancedMesh(BOX(0.06, 1.36, 0.06), M.wood, 4);
+    for (let i = 0; i < 4; i++) inst(spokes, i, 0, 0, 0, 1, 0, 0, (i / 4) * Math.PI);
+    spokes.castShadow = true; wheel.add(spokes);
+  }
+  mk(CYL(0.07, 0.07, 1.6, 8), M.wood, 0, 0.55, -1.4, g).rotation.x = 0.5;
+  // Four crates, each with its own instanced cloud of blossoms.
+  for (let c = 0; c < 4; c++) {
+    const crate = mk(BOX(0.78, 0.42, 0.7), M.woodDark, -1.25 + c * 0.83, 1.68, rr(-0.2, 0.2), g);
+    const blooms = new THREE.InstancedMesh(GEO.ball, petalMats[c + (c > 1 ? 1 : 0)], 22);
+    for (let i = 0; i < 22; i++) {
+      inst(blooms, i, rr(-0.34, 0.34), rr(0.2, 0.42), rr(-0.28, 0.28), rr(0.09, 0.16));
+    }
+    blooms.castShadow = true; crate.add(blooms);
+  }
+  const awn = mk(BOX(3.7, 0.09, 1.9), M.cloth, 0, 3, 0, g);
+  awn.rotation.x = 0.06;
+  for (const s of [-1, 1]) mk(CYL(0.05, 0.05, 1.5, 6), M.wood, s * 1.6, 2.28, -0.7, g);
+  swayables.push({ obj: awn, amp: 0.03, phase: rr(0, 6.28), sp: 0.6 });
+  return g;
+}
+
+/** Potted orange tree: terracotta pot, short trunk, leaf clumps and fruit. */
+function buildOrangeTree(scale) {
+  const g = new THREE.Group();
+  mk(CYL(0.62, 0.44, 0.95, 14), M.terracotta, 0, 0.47, 0, g); mk(CYL(0.68, 0.68, 0.16, 14), M.terracotta, 0, 0.95, 0, g);
+  mk(CYL(0.55, 0.55, 0.1, 12), M.woodDark, 0, 0.98, 0, g); mk(CYL(0.13, 0.19, 1.5, 8), M.wood, 0, 1.7, 0, g);
+  const crown = new THREE.Group(); crown.position.y = 2.4; g.add(crown);
+  [[0, 0.55, 0, 0.95], [-0.55, 0.15, 0.25, 0.72], [0.5, 0.2, -0.3, 0.7], [0.1, 0.05, 0.55, 0.6]]
+    .forEach(([x, y, z, r], i) => {
+      mk(new THREE.IcosahedronGeometry(r, 1), i % 2 ? M.leafHi : M.leaf, x, y, z, crown)
+        .rotation.set(rr(0, 3), rr(0, 3), rr(0, 3));
+    });
+  const fruit = new THREE.InstancedMesh(SPH(0.13, 8, 6), M.fruit, 11);
+  for (let i = 0; i < 11; i++) {
+    const a = rr(0, 6.28), d = rr(0.5, 1);
+    inst(fruit, i, Math.cos(a) * d, rr(-0.2, 0.7), Math.sin(a) * d);
+  }
+  fruit.castShadow = true; crown.add(fruit);
+  g.scale.setScalar(scale);
+  swayables.push({ obj: crown, amp: 0.035, phase: rr(0, 6.28), sp: rr(0.4, 0.7) });
+  return g;
+}
+
+/** Wrought-iron plaza lamp with a warm glowing lantern. */
+function buildStreetLamp() {
+  const g = new THREE.Group();
+  mk(CYL(0.3, 0.38, 0.5, 10), M.stoneCool, 0, 0.25, 0, g); mk(CYL(0.09, 0.14, 4.2, 10), M.iron, 0, 2.4, 0, g);
+  mk(SPH(0.17, 10, 8), M.iron, 0, 4.5, 0, g);
+  const lantern = mk(CYL(0.34, 0.24, 0.72, 6), M.bulb.clone(), 0, 4.95, 0, g);
+  lantern.castShadow = false;
+  mk(CONE(0.42, 0.36, 6), M.iron, 0, 5.45, 0, g);
+  g.userData.lantern = lantern;
+  return g;
+}
+
+/** Plaza bench: slatted seat and back on cast-iron ends. */
+function buildBench() {
+  const g = new THREE.Group();
+  const slats = new THREE.InstancedMesh(BOX(2.4, 0.09, 0.22), M.wood, 7);
+  for (let i = 0; i < 4; i++) inst(slats, i, 0, 0.62, -0.36 + i * 0.24);
+  for (let i = 0; i < 3; i++) inst(slats, i + 4, 0, 0.86 + i * 0.26, -0.5, 1, -0.25);
+  slats.castShadow = slats.receiveShadow = true; g.add(slats);
+  for (const s of [-1, 1]) mk(BOX(0.12, 0.62, 0.9), M.iron, s * 1.05, 0.31, -0.06, g);
+  return g;
+}
+
+/** Low stone balustrade closing the open side of the square. */
+function buildBalustrade(len) {
+  const g = new THREE.Group();
+  mk(BOX(len, 0.35, 0.9), M.stoneCool, 0, 0.18, 0, g); mk(BOX(len, 0.22, 0.8), M.stone, 0, 1.42, 0, g);
+  const n = Math.floor(len / 0.7);
+  const posts = new THREE.InstancedMesh(CYL(0.13, 0.19, 1.05, 8), M.stone, n);
+  for (let i = 0; i < n; i++) inst(posts, i, -len / 2 + (i + 0.5) * (len / n), 0.83, 0);
+  posts.castShadow = posts.receiveShadow = true; g.add(posts);
+  for (const s of [-1, 1]) mk(BOX(0.7, 1.8, 1), M.stone, s * (len / 2 + 0.2), 0.9, 0, g);
+  return g;
+}
+
+/** Festoon of string lights hung in a catenary between two anchor points. */
+function buildBunting(a, b, sag) {
+  const g = new THREE.Group();
+  const mid = new THREE.Vector3((a.x + b.x) / 2, (a.y + b.y) / 2 - sag, (a.z + b.z) / 2);
+  const curve = new THREE.CatmullRomCurve3([a, mid, b]);
+  g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 24, 0.025, 5, false), M.iron));
+  const n = 15, bulbs = new THREE.InstancedMesh(SPH(0.11, 8, 6), M.bulb.clone(), n);
+  for (let i = 0; i < n; i++) {
+    const p = curve.getPoint((i + 0.5) / n);
+    inst(bulbs, i, p.x, p.y - 0.16, p.z);
+  }
+  g.add(bulbs); g.userData.bulbs = bulbs;
+  return g;
+}
+
+// ============================================================================
+//  RENDERER / SCENE / CAMERA
+// ============================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.02;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.horizon);
+scene.fog = new THREE.Fog(PAL.fog, CFG.fogNear, CFG.fogFar);
+
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 700);
+camera.position.copy(CFG.camPos);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(CFG.camTarget);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.85;
+controls.minDistance = 26; controls.maxDistance = 96;
+controls.maxPolarAngle = 1.36;
+controls.update();
+
+// ============================================================================
+//  ASSEMBLY / LAYOUT
+// ============================================================================
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(300, 32, 20),
+  new THREE.MeshBasicMaterial({ map: texSky, side: THREE.BackSide, fog: false })));
+
+const ground = mk(new THREE.PlaneGeometry(420, 420), M.cobble, 0, 0, 0, scene);
+ground.rotation.x = -Math.PI / 2; ground.castShadow = false;
+const rosette = mk(new THREE.CircleGeometry(16.5, 64), M.rosette, 0, 0.02, 0, scene);
+rosette.rotation.x = -Math.PI / 2; rosette.castShadow = false;
+
+// Hazy hills far beyond the rooftops give the square atmospheric depth.
+for (let i = 0; i < 9; i++) {
+  const a = rr(0, Math.PI * 2), d = rr(140, 190);
+  const hm = mk(CONE(rr(24, 48), rr(14, 32), 7), M.hill, Math.cos(a) * d, 0, Math.sin(a) * d, scene);
+  hm.castShadow = hm.receiveShadow = false;
+}
+
+scene.add(buildFountain());
+
+// Facades ring three sides; the +Z side stays open toward the camera.
+const HALF = Math.PI / 2;
+[[-3, -18, 0, 17, 3, 0, 0], [14, -18, 0, 15, 2, 2, 1],
+[-18, -6, HALF, 16, 2, 1, 0], [-18, 12, HALF, 14, 2, 4, 2],
+[18, -4, -HALF, 16, 2, 3, 1], [18, 13, -HALF, 12, 2, 5, 0]].forEach(([x, z, ry, w, f, t, s]) => {
+  const b = buildFacade(w, f, t, s);
+  b.position.set(x, 0, z); b.rotation.y = ry; scene.add(b);
+});
+
+const tower = buildClockTower();
+tower.position.set(-15.5, 0, -20.5); scene.add(tower);
+
+[[-6, 12.5, 0.4, PAL.stripeA], [2.5, 14, -0.8, PAL.stripeB],
+[9.5, 8, 1.2, PAL.stripeC], [14, -5, 2.2, PAL.stripeA]].forEach(([x, z, r, stripe]) => {
+  const c = buildCafeSet(stripe);
+  c.position.set(x, 0, z); c.rotation.y = r; scene.add(c);
+});
+
+const cart = buildFlowerCart();
+cart.position.set(11.5, 0, 3.5); cart.rotation.y = -1.15; scene.add(cart);
+
+[[-15.5, 2.5, 1], [-14, 15.5, 0.88], [-2, -14, 0.95], [8, -13, 1.05],
+[16, -1, 0.9], [6.5, 16.5, 1], [-8.5, -12, 0.85]].forEach(([x, z, s]) => {
+  const t = buildOrangeTree(s);
+  t.position.set(x, 0, z); t.rotation.y = rr(0, 6.28); scene.add(t);
+});
+
+const lamps = [[-11.5, 7.5], [11, -10.5], [-12, -9], [12.5, 11]].map(([x, z]) => {
+  const l = buildStreetLamp();
+  l.position.set(x, 0, z); scene.add(l);
+  return l;
+});
+
+[[-1, 11, 0.1], [15.5, 3, -1.5], [-13.5, -3, 1.5]].forEach(([x, z, r]) => {
+  const b = buildBench();
+  b.position.set(x, 0, z); b.rotation.y = r; scene.add(b);
+});
+
+[[-11.5, 18.5], [11.5, 18.5]].forEach(([x, z]) => {
+  const bal = buildBalustrade(11);
+  bal.position.set(x, 0, z); scene.add(bal);
+});
+
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const buntings = [
+  buildBunting(V(-11.5, 5.3, 7.5), V(12.5, 5.3, 11), 2),
+  buildBunting(V(-12, 5.3, -9), V(11, 5.3, -10.5), 1.9),
+  buildBunting(V(-13.5, 12, -17.6), V(8, 9, -17.8), 2.2),
+];
+buntings.forEach((b) => scene.add(b));
+
+// ============================================================================
+//  LIGHTING RIG
+// ============================================================================
+const sun = new THREE.DirectionalLight(PAL.sun, 2.5);
+sun.position.set(38, 52, 40); sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -42;
+sun.shadow.camera.right = sun.shadow.camera.top = 42;
+sun.shadow.camera.near = 12; sun.shadow.camera.far = 170;
+sun.shadow.bias = -0.0006; sun.shadow.normalBias = 0.035;
+scene.add(sun);
+
+const bounce = new THREE.DirectionalLight(0xffd9a6, 0.55);
+bounce.position.set(-34, 16, -26); scene.add(bounce);
+scene.add(new THREE.HemisphereLight(0xa9d4f2, 0xc9a273, 0.85));
+scene.add(new THREE.AmbientLight(0xfff0d8, 0.28));
+
+// Warm pools of light deep inside two of the arcades.
+const arcadeGlow = new THREE.PointLight(0xffbb66, 26, 24, 2);
+arcadeGlow.position.set(-18.7, 2.6, 2); scene.add(arcadeGlow);
+const arcadeGlow2 = new THREE.PointLight(0xffc27a, 22, 22, 2);
+arcadeGlow2.position.set(1, 2.6, -18.7); scene.add(arcadeGlow2);
+
+// ============================================================================
+//  ANIMATION LOOP
+// ============================================================================
+const clock = new THREE.Clock();
+const sprayPos = animWater.spray.geometry.attributes.position;
+
+function updateWater(t, dt) {
+  animWater.falls.forEach((f) => { f.material.map.offset.y = (-t * f.material.userData.speed) % 1; });
+  animWater.jet.scale.y = 1 + Math.sin(t * 2.4) * 0.06;
+  M.water.map.offset.set(Math.sin(t * 0.14) * 0.05, t * 0.035);
+  animWater.ripples.forEach((r) => {
+    const p = (t * 0.28 + r.userData.phase) % 1;
+    r.scale.setScalar(0.5 + p * 5);
+    r.material.opacity = 0.42 * (1 - p);
+  });
+  const arr = sprayPos.array;
+  animWater.drops.forEach((s, i) => {
+    s.t = (s.t + dt * s.sp) % 1;
+    const p = s.t, r = s.r0 + s.dr * p;
+    arr[i * 3] = Math.cos(s.a) * r;
+    arr[i * 3 + 1] = s.y0 + 0.35 * p - s.drop * p * p;
+    arr[i * 3 + 2] = Math.sin(s.a) * r;
+  });
+  sprayPos.needsUpdate = true;
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  updateWater(t, dt);
+  // Clock hands: index 0/2 are hour hands, 1/3 the faster minute hands.
+  clockHands.forEach((h, i) => { h.rotation.z = -t * (i % 2 ? 0.16 : 0.0133); });
+  swayables.forEach((s) => {
+    s.obj.rotation.z = Math.sin(t * s.sp + s.phase) * s.amp;
+    s.obj.rotation.x = Math.cos(t * s.sp * 0.83 + s.phase) * s.amp * 0.6;
+  });
+  const flicker = 1.05 + Math.sin(t * 2.1) * 0.12 + Math.sin(t * 5.3) * 0.05;
+  lamps.forEach((l, i) => { l.userData.lantern.material.emissiveIntensity = flicker + i * 0.06; });
+  buntings.forEach((b, i) => {
+    b.userData.bulbs.material.emissiveIntensity = 1 + Math.sin(t * 1.4 + i * 2) * 0.35;
+    b.rotation.z = Math.sin(t * 0.45 + i) * 0.006;
+  });
+  arcadeGlow.intensity = 26 + Math.sin(t * 1.7) * 2.5;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ------------------------------------------------------------------- resize
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

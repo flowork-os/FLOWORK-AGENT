@@ -1,0 +1,273 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Voxel Hand Saw</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #17181c; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  .tag {
+    position: fixed; left: 14px; bottom: 12px;
+    font-family: ui-monospace, "Courier New", monospace;
+    font-size: 12px; letter-spacing: 1px; color: #8b909a;
+    text-transform: uppercase; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="tag">Hand Saw · voxel build</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+/* ---------------------------------------------------------------------------
+   Scene & Camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17181c);
+scene.fog = new THREE.Fog(0x17181c, 16, 46);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5.4, 3.4, 8.2);
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key / fill / rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0x9fb4d0, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.5);
+key.position.set(6, 10, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 42;
+const d = 7.5;
+key.shadow.camera.left = -d;
+key.shadow.camera.right = d;
+key.shadow.camera.top = d;
+key.shadow.camera.bottom = -d;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8aa2c6, 0.55);
+fill.position.set(-6, 4, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd7a0, 1.15);
+rim.position.set(-4.5, 3.2, -8);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Voxel builder
+--------------------------------------------------------------------------- */
+const VOX = 0.2;                 // world size of one voxel
+const CUBE = VOX * 0.97;         // slight gap -> crisp pixel-grid look
+
+const metalList = [];            // {x,y,z,color}
+const woodList  = [];
+const occ = new Set();           // blade occupancy at z=0 (grid keys)
+
+// palette
+const C = {
+  steel:      new THREE.Color(0x9aa1aa),
+  steelSpine: new THREE.Color(0x6d7480),
+  steelTooth: new THREE.Color(0xc2c8d0),
+  wood:       new THREE.Color(0xc79457),
+  woodMid:    new THREE.Color(0xb37f45),
+  woodEdge:   new THREE.Color(0x8f6132),
+  brass:      new THREE.Color(0xcaa24a)
+};
+
+function pushMetal(x, y, z, color) { metalList.push({ x, y, z, color }); }
+function pushWood(x, y, z, color)  { woodList.push({ x, y, z, color }); }
+
+/* ---- Blade: stepped taper from heel (thick) to toe (thin) ---------------- */
+const bladeStartX = -3;          // heel embeds into the handle
+const L = 34;                    // toothline length (voxels)
+const Hheel = 11, Htoe = 3;
+
+for (let x = bladeStartX; x <= L; x++) {
+  const t = (x - bladeStartX) / (L - bladeStartX);
+  const h = Math.round(Hheel + (Htoe - Hheel) * t);
+  for (let y = 0; y < h; y++) {
+    const color = (y === h - 1) ? C.steelSpine : C.steel;
+    pushMetal(x, y, 0, color);
+    occ.add(x + '_' + y + '_0');
+  }
+}
+
+/* ---- Teeth: blocky triangular sawtooth along the bottom edge ------------- */
+const teethStart = 4;
+const teethPattern = [1, 2, 3];  // ascending ramp + vertical back edge
+for (let x = teethStart; x <= L; x++) {
+  const depth = teethPattern[(x - teethStart) % teethPattern.length];
+  for (let dth = 1; dth <= depth; dth++) {
+    pushMetal(x, -dth, 0, C.steelTooth);
+    occ.add(x + '_' + (-dth) + '_0');
+  }
+}
+
+/* ---- Handle: closed D-grip wooden handle -------------------------------- */
+const cx = -7, cy = 5;           // handle centre
+const ihx = -7, ihy = 5;         // finger-hole centre
+
+function inRoundedRect(x, y) {
+  const HW = 6, HH = 8, R = 3;
+  const ex = Math.max(Math.abs(x - cx) - (HW - R), 0);
+  const ey = Math.max(Math.abs(y - cy) - (HH - R), 0);
+  return ex * ex + ey * ey <= R * R;
+}
+function inHole(x, y) {
+  const a = 3.3, b = 4.3;
+  const nx = (x - ihx) / a, ny = (y - ihy) / b;
+  return nx * nx + ny * ny <= 1.0;
+}
+
+const mask = new Set();
+const cells = [];
+for (let x = -13; x <= -1; x++) {
+  for (let y = -3; y <= 13; y++) {
+    if (inRoundedRect(x, y) && !inHole(x, y)) {
+      mask.add(x + '_' + y);
+      cells.push([x, y]);
+    }
+  }
+}
+
+function isEdge(x, y) {
+  return !mask.has((x + 1) + '_' + y) || !mask.has((x - 1) + '_' + y) ||
+         !mask.has(x + '_' + (y + 1)) || !mask.has(x + '_' + (y - 1));
+}
+
+for (const [x, y] of cells) {
+  const edge = isEdge(x, y);
+  const speckle = ((x * 7 + y * 13) % 5 === 0);
+  const baseColor = edge ? C.woodEdge : (speckle ? C.woodMid : C.wood);
+  for (const z of [-1, 0, 1]) {
+    if (z === 0 && occ.has(x + '_' + y + '_0')) continue; // don't overlap blade
+    pushWood(x, y, z, baseColor);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Instanced mesh assembly (with per-instance colour jitter)
+--------------------------------------------------------------------------- */
+const saw = new THREE.Group();
+
+function buildInstanced(list, material) {
+  const geo = new THREE.BoxGeometry(CUBE, CUBE, CUBE);
+  const mesh = new THREE.InstancedMesh(geo, material, list.length);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  const m = new THREE.Matrix4();
+  const col = new THREE.Color();
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i];
+    m.makeTranslation(v.x * VOX, v.y * VOX, v.z * VOX);
+    mesh.setMatrixAt(i, m);
+    col.copy(v.color);
+    const j = 0.93 + Math.random() * 0.14;      // subtle retro shading
+    col.multiplyScalar(j);
+    mesh.setColorAt(i, col);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
+  return mesh;
+}
+
+const metalMat = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.85, roughness: 0.42 });
+const woodMat  = new THREE.MeshStandardMaterial({ color: 0xffffff, metalness: 0.0,  roughness: 0.82 });
+
+saw.add(buildInstanced(metalList, metalMat));
+saw.add(buildInstanced(woodList, woodMat));
+
+/* ---- Brass saw nuts (through-bolts on the grip) -------------------------- */
+const brassMat = new THREE.MeshStandardMaterial({ color: C.brass, metalness: 0.9, roughness: 0.34 });
+const nutGeo = new THREE.BoxGeometry(0.17, 0.17, 0.72);
+for (const [nx, ny] of [[-2.5, 2], [-2.5, 5], [-2.5, 8]]) {
+  const nut = new THREE.Mesh(nutGeo, brassMat);
+  nut.position.set(nx * VOX, ny * VOX, 0);
+  nut.castShadow = true;
+  nut.receiveShadow = true;
+  saw.add(nut);
+}
+
+scene.add(saw);
+
+/* ---- Centre the object at the origin ------------------------------------ */
+const bbox = new THREE.Box3().setFromObject(saw);
+const center = bbox.getCenter(new THREE.Vector3());
+saw.position.set(-center.x, -center.y, -center.z);
+const bottomY = bbox.min.y - center.y;
+
+/* ---------------------------------------------------------------------------
+   Ground plane (subtle, receives shadow)
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0x101216, roughness: 1.0, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = bottomY - 0.02;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 4;
+controls.maxDistance = 20;
+controls.maxPolarAngle = Math.PI * 0.9;
+controls.target.set(0, 0.1, 0);
+
+/* ---------------------------------------------------------------------------
+   Resize & render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

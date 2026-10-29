@@ -1,0 +1,599 @@
+# [FL_INDEX: keywords="blender_factory, procedural_3d, FruitStrawberryFactory, infinigen, generator" | COT="Procedural 3D Blender asset generator from 3DCodeverse"]
+# Asset: FruitStrawberryFactory | Category: factories_tex
+# Prompt: A strawberry rendered as a textured 3D model. The fruit has a classic conical-rounded shape, wider at the top and tapering toward the bottom. The smooth, glossy surface is soft peachy-pink to salmon-red with subtle brown-orange mottled patches near the stem. Numerous small raised white-cream seed achenes are evenly distributed across the entire surface in slight dimples. A calyx of bright green, star-shaped sepals spreads outward at the top, each sepal being broad, flat, and slightly crinkled, with a short green stem projecting upward from the center.
+
+import os
+import math
+import random
+
+import bmesh
+import bpy
+import mathutils
+import numpy as np
+
+SEED = 0
+random.seed(SEED)
+SEED = int(os.environ.get("SEED", 0))
+np.random.seed(SEED)
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Fruit material — translated from fruit surface shaders (raw bpy)
+# ═══════════════════════════════════════════════════════════════════════════
+import os as _os, random as _random, colorsys as _colorsys
+
+
+def _hsv2rgba(h, s, v):
+    r, g, b = _colorsys.hsv_to_rgb(float(h) % 1.0, max(0, min(1, float(s))), max(0, min(1, float(v))))
+    return (r, g, b, 1.0)
+
+def _new_mat(name):
+    mat = bpy.data.materials.new(name)
+    mat.use_nodes = True; mat.node_tree.nodes.clear()
+    return mat
+
+def _fac(n):
+    return n.outputs.get("Fac") or n.outputs.get("Factor") or n.outputs[0]
+
+def make_fruit_material(seed, name="StrawberryMaterial"):
+    """Strawberry: bright red with translucency, green top."""
+
+    main_c = _hsv2rgba(float(np.random.normal(0.0, 0.02)),
+                       0.995 + float(np.random.normal(0.0, 0.05)),
+                       0.85 + float(np.random.normal(0.0, 0.05)))
+    top_c = _hsv2rgba(0.15 + float(np.random.normal(0.0, 0.02)),
+                      0.75 + float(np.random.normal(0.0, 0.05)),
+                      0.75 + float(np.random.normal(0.0, 0.05)))
+    mat = _new_mat(name); nt = mat.node_tree; ln = nt.links.new
+    tc = nt.nodes.new("ShaderNodeTexCoord")
+    sep = nt.nodes.new("ShaderNodeSeparateXYZ"); ln(tc.outputs["Generated"], sep.inputs["Vector"])
+    cr = nt.nodes.new("ShaderNodeValToRGB"); ln(sep.outputs["Z"], cr.inputs["Fac"])
+    cr.color_ramp.elements[0].position = 0.6; cr.color_ramp.elements[0].color = main_c
+    cr.color_ramp.elements[1].position = 0.85; cr.color_ramp.elements[1].color = top_c
+    # Translucent + Principled mix
+    trans = nt.nodes.new("ShaderNodeBsdfTranslucent"); ln(cr.outputs["Color"], trans.inputs["Color"])
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    ln(cr.outputs["Color"], bsdf.inputs["Base Color"])
+    bsdf.inputs["Roughness"].default_value = 0.15
+    sk = "Specular IOR Level" if "Specular IOR Level" in bsdf.inputs else "Specular"
+    bsdf.inputs[sk].default_value = 1.0
+    mix = nt.nodes.new("ShaderNodeMixShader"); mix.inputs["Fac"].default_value = 0.8
+    ln(trans.outputs["BSDF"], mix.inputs[1]); ln(bsdf.outputs["BSDF"], mix.inputs[2])
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    ln(mix.outputs["Shader"], out.inputs["Surface"])
+    return mat
+
+def make_color_material(name, color, roughness=0.7):
+    mat = _new_mat(name)
+    nt = mat.node_tree
+    bsdf = nt.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.inputs["Base Color"].default_value = color
+    bsdf.inputs["Roughness"].default_value = roughness
+    out = nt.nodes.new("ShaderNodeOutputMaterial")
+    nt.links.new(bsdf.outputs["BSDF"], out.inputs["Surface"])
+    return mat
+
+def sanitize_material_slots(obj, replacement_mat):
+    if obj is None or not hasattr(obj.data, "materials"):
+        return obj
+    if len(obj.data.materials) == 0:
+        obj.data.materials.append(replacement_mat)
+    for i in range(len(obj.data.materials)):
+        if obj.data.materials[i] is None:
+            obj.data.materials[i] = replacement_mat
+    first_valid = next((i for i, mat in enumerate(obj.data.materials) if mat is not None), 0)
+    for poly in obj.data.polygons:
+        if poly.material_index >= len(obj.data.materials) or obj.data.materials[poly.material_index] is None:
+            poly.material_index = first_valid
+    obj.data.update()
+    return obj
+
+FRUIT_MAT = make_fruit_material(SEED, "FruitFactoryStrawberry_Material")
+STEM_MAT = make_color_material("FruitFactoryStrawberry_StemMaterial", _hsv2rgba(0.28, 0.91, 0.45))
+np.random.seed(SEED)
+
+# ── scene helpers ─────────────────────────────────────────────────────────────
+
+def clear_scene():
+    bpy.ops.object.select_all(action="SELECT")
+    bpy.ops.object.delete()
+    for m in list(bpy.data.meshes):
+        bpy.data.meshes.remove(m)
+    for c in list(bpy.data.curves):
+        bpy.data.curves.remove(c)
+    for ng in list(bpy.data.node_groups):
+        bpy.data.node_groups.remove(ng)
+    bpy.context.scene.cursor.location = (0, 0, 0)
+
+def apply_tf(obj):
+    bpy.ops.object.select_all(action="DESELECT")
+    obj.select_set(True)
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+def join_objs(objs):
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    bpy.ops.object.join()
+    return bpy.context.active_object
+
+# ── GeoNodes helpers ─────────────────────────────────────────────────────────
+
+def assign_float_curve(curve_mapping, control_points):
+    """Assign control points to a FloatCurve CurveMapping."""
+
+    curve = curve_mapping.curves[0]
+    curve.points[0].location = (control_points[0][0], control_points[0][1])
+    curve.points[0].handle_type = 'AUTO'
+    curve.points[-1].location = (control_points[-1][0], control_points[-1][1])
+    curve.points[-1].handle_type = 'AUTO'
+    for x, y in control_points[1:-1]:
+        p = curve.points.new(x, y)
+        p.handle_type = 'AUTO'
+    curve_mapping.update()
+
+def build_strawberry_body(radius_cp, cs_radius, start, middle, end, resolution=256):
+    """Build strawberry body mesh only (no seeds) using GeoNodes CurveToMesh."""
+
+    bpy.ops.mesh.primitive_plane_add(size=1, location=(0, 0, 0))
+    obj = bpy.context.active_object
+
+    ng = bpy.data.node_groups.new("StrawberryBody", 'GeometryNodeTree')
+    ng.interface.new_socket('Geometry', in_out='INPUT',
+                            socket_type='NodeSocketGeometry')
+    ng.interface.new_socket('Geometry', in_out='OUTPUT',
+                            socket_type='NodeSocketGeometry')
+    nodes, links = ng.nodes, ng.links
+    group_in = nodes.new('NodeGroupInput')
+    group_out = nodes.new('NodeGroupOutput')
+
+    circle = nodes.new('GeometryNodeCurvePrimitiveCircle')
+    circle.inputs['Resolution'].default_value = resolution
+    xform = nodes.new('GeometryNodeTransform')
+    xform.inputs['Scale'].default_value = (cs_radius, cs_radius, cs_radius)
+    links.new(circle.outputs['Curve'], xform.inputs['Geometry'])
+
+    bezier = nodes.new('GeometryNodeCurveQuadraticBezier')
+    bezier.inputs['Resolution'].default_value = resolution
+    bezier.inputs['Start'].default_value = start
+    bezier.inputs['Middle'].default_value = middle
+    bezier.inputs['End'].default_value = end
+
+    sparam = nodes.new('GeometryNodeSplineParameter')
+    fcurve = nodes.new('ShaderNodeFloatCurve')
+    assign_float_curve(fcurve.mapping, radius_cp)
+    links.new(sparam.outputs['Factor'], fcurve.inputs['Value'])
+
+    set_rad = nodes.new('GeometryNodeSetCurveRadius')
+    links.new(bezier.outputs['Curve'], set_rad.inputs['Curve'])
+    links.new(fcurve.outputs['Value'], set_rad.inputs['Radius'])
+
+    c2m = nodes.new('GeometryNodeCurveToMesh')
+    links.new(set_rad.outputs['Curve'], c2m.inputs['Curve'])
+    links.new(xform.outputs['Geometry'], c2m.inputs['Profile Curve'])
+    c2m.inputs['Fill Caps'].default_value = True
+    for inp in c2m.inputs:
+        if inp.name == 'Scale':
+            links.new(fcurve.outputs['Value'], inp)
+            break
+
+    links.new(c2m.outputs['Mesh'], group_out.inputs['Geometry'])
+
+    mod = obj.modifiers.new("Body", 'NODES')
+    mod.node_group = ng
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    # [auto-append] ensure material bound
+    if obj is not None:
+        if len(obj.data.materials) == 0:
+            obj.data.materials.append(FRUIT_MAT)
+        elif obj.data.materials[0] is None:
+            obj.data.materials[0] = FRUIT_MAT
+    return obj
+
+def add_seeds_to_body(obj, seed_dist_min=0.15, seed_scale=0.08, seed_z_max=0.75):
+    """Add seeds to an existing body mesh via GeoNodes (Poisson + CurveToMesh grain)."""
+
+    ng = bpy.data.node_groups.new("StrawberrySeeds", 'GeometryNodeTree')
+    ng.interface.new_socket('Geometry', in_out='INPUT',
+                            socket_type='NodeSocketGeometry')
+    ng.interface.new_socket('Geometry', in_out='OUTPUT',
+                            socket_type='NodeSocketGeometry')
+    nodes, links = ng.nodes, ng.links
+    group_in = nodes.new('NodeGroupInput')
+    group_out = nodes.new('NodeGroupOutput')
+
+    # ── Selection mask: seeds only on lower body (Z < seed_z_max) ──
+    pos_node = nodes.new('GeometryNodeInputPosition')
+    sep_xyz = nodes.new('ShaderNodeSeparateXYZ')
+    links.new(pos_node.outputs['Position'], sep_xyz.inputs['Vector'])
+    compare = nodes.new('FunctionNodeCompare')
+    compare.data_type = 'FLOAT'
+    compare.operation = 'LESS_THAN'
+    links.new(sep_xyz.outputs['Z'], compare.inputs[0])
+    compare.inputs[1].default_value = seed_z_max
+
+    # ── Distribute on body surface ──
+    dist_pts = nodes.new('GeometryNodeDistributePointsOnFaces')
+    dist_pts.distribute_method = 'POISSON'
+    dist_pts.inputs['Distance Min'].default_value = seed_dist_min
+    dist_pts.inputs['Density Max'].default_value = 10000.0
+    links.new(group_in.outputs['Geometry'], dist_pts.inputs['Mesh'])
+    links.new(compare.outputs['Result'], dist_pts.inputs['Selection'])
+
+    # ── Seed template: plump teardrop CurveToMesh grain ──
+    # Shorter axis (±0.3) with wider bell radius for plump teardrop shape
+    seed_bez = nodes.new('GeometryNodeCurveQuadraticBezier')
+    seed_bez.inputs['Resolution'].default_value = 8
+    seed_bez.inputs['Start'].default_value = (0, 0, -0.3)
+    seed_bez.inputs['Middle'].default_value = (0, 0, 0)
+    seed_bez.inputs['End'].default_value = (0, 0, 0.3)
+
+    seed_sp = nodes.new('GeometryNodeSplineParameter')
+    seed_fc = nodes.new('ShaderNodeFloatCurve')
+    # Wider bell: peak radius 0.35 at 55%, creating 0.6:0.35 ≈ 1.7:1 aspect
+    assign_float_curve(seed_fc.mapping,
+                       [(0.0, 0.04), (0.55, 0.35), (1.0, 0.02)])
+    links.new(seed_sp.outputs['Factor'], seed_fc.inputs['Value'])
+
+    seed_setrad = nodes.new('GeometryNodeSetCurveRadius')
+    links.new(seed_bez.outputs['Curve'], seed_setrad.inputs['Curve'])
+    links.new(seed_fc.outputs['Value'], seed_setrad.inputs['Radius'])
+
+    seed_circle = nodes.new('GeometryNodeCurvePrimitiveCircle')
+    seed_circle.inputs['Resolution'].default_value = 8
+
+    seed_c2m = nodes.new('GeometryNodeCurveToMesh')
+    links.new(seed_setrad.outputs['Curve'], seed_c2m.inputs['Curve'])
+    links.new(seed_circle.outputs['Curve'], seed_c2m.inputs['Profile Curve'])
+    seed_c2m.inputs['Fill Caps'].default_value = True
+    for inp in seed_c2m.inputs:
+        if inp.name == 'Scale':
+            links.new(seed_fc.outputs['Value'], inp)
+            break
+
+    # Transform: rotation to lie on surface + slight outward offset + scale
+    seed_xf = nodes.new('GeometryNodeTransform')
+    seed_xf.inputs['Translation'].default_value = (0, 0.1, 0)
+    seed_xf.inputs['Rotation'].default_value = (-math.pi, 0, 0)
+    seed_xf.inputs['Scale'].default_value = (seed_scale, seed_scale, seed_scale)
+    links.new(seed_c2m.outputs['Mesh'], seed_xf.inputs['Geometry'])
+
+    # ── InstanceOnPoints ──
+    inst = nodes.new('GeometryNodeInstanceOnPoints')
+    links.new(dist_pts.outputs['Points'], inst.inputs['Points'])
+    links.new(seed_xf.outputs['Geometry'], inst.inputs['Instance'])
+    links.new(dist_pts.outputs['Rotation'], inst.inputs['Rotation'])
+
+    rand_scale = nodes.new('FunctionNodeRandomValue')
+    rand_scale.data_type = 'FLOAT'
+    rand_scale.inputs[2].default_value = 0.8
+    rand_scale.inputs[3].default_value = 1.1
+    links.new(rand_scale.outputs[1], inst.inputs['Scale'])
+
+    realize = nodes.new('GeometryNodeRealizeInstances')
+    links.new(inst.outputs['Instances'], realize.inputs['Geometry'])
+
+    # Join body + seeds
+    join = nodes.new('GeometryNodeJoinGeometry')
+    links.new(group_in.outputs['Geometry'], join.inputs['Geometry'])
+    links.new(realize.outputs['Geometry'], join.inputs['Geometry'])
+    links.new(join.outputs['Geometry'], group_out.inputs['Geometry'])
+
+    mod = obj.modifiers.new("Seeds", 'NODES')
+    mod.node_group = ng
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    return obj
+
+# ── surface bump (matches nodegroup_surface_bump) ────────────────────────────
+
+def apply_surface_bump(obj, displacement=0.03, scale=10.0):
+    """GeoNodes: NoiseTexture → (Fac-0.5) × displacement × Normal → SetPosition."""
+
+    ng = bpy.data.node_groups.new("SurfaceBump", 'GeometryNodeTree')
+    ng.interface.new_socket('Geometry', in_out='INPUT',
+                            socket_type='NodeSocketGeometry')
+    ng.interface.new_socket('Geometry', in_out='OUTPUT',
+                            socket_type='NodeSocketGeometry')
+    N, L = ng.nodes, ng.links
+    gin = N.new('NodeGroupInput')
+    gout = N.new('NodeGroupOutput')
+
+    normal = N.new('GeometryNodeInputNormal')
+    noise = N.new('ShaderNodeTexNoise')
+    noise.inputs['Scale'].default_value = scale
+
+    sub = N.new('ShaderNodeMath')
+    sub.operation = 'SUBTRACT'
+    L.new(noise.outputs[0], sub.inputs[0])
+    sub.inputs[1].default_value = 0.5
+
+    mul = N.new('ShaderNodeMath')
+    mul.operation = 'MULTIPLY'
+    L.new(sub.outputs['Value'], mul.inputs[0])
+    mul.inputs[1].default_value = displacement
+
+    vec_mul = N.new('ShaderNodeVectorMath')
+    vec_mul.operation = 'SCALE'
+    L.new(normal.outputs['Normal'], vec_mul.inputs[0])
+    L.new(mul.outputs['Value'], vec_mul.inputs['Scale'])
+
+    sp = N.new('GeometryNodeSetPosition')
+    L.new(gin.outputs['Geometry'], sp.inputs['Geometry'])
+    L.new(vec_mul.outputs['Vector'], sp.inputs['Offset'])
+    L.new(sp.outputs['Geometry'], gout.inputs['Geometry'])
+
+    mod = obj.modifiers.new("Bump", 'NODES')
+    mod.node_group = ng
+    bpy.context.view_layer.objects.active = obj
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+# ── calyx stem (matches stem_lib.nodegroup_calyx_stem) ────────────────────────
+
+def build_calyx_stem(body_obj, body_top_z, fork_number=10,
+                     outer_radius=0.8, inner_radius=0.2,
+                     noise_amount=0.4, z_noise_amount=1.0,
+                     noise_seed=42.0, cross_radius=0.04,
+                     mid_offset=(0.05, 0.0, 0.12),
+                     end_offset=(0.1, 0.0, 0.3)):
+    """
+
+    Bmesh calyx matching the original nodegroup_calyx_stem pipeline:
+    Concentric-ring disk with N-fold fork symmetry → Z-displacement (drooping)
+    → attach_to_nearest body. Plus thin Bezier stem tube.
+    """
+
+    from mathutils.bvhtree import BVHTree
+    from mathutils import noise as mn
+
+    parts = []
+
+    # ── Helpers ──
+    def _smoothstep(t):
+        """Hermite smoothstep: smooth transition 0→1."""
+
+        t = max(0.0, min(1.0, t))
+        return t * t * (3 - 2 * t)
+
+    def _fork_curve(t):
+        """Approximate FloatCurve [(0,0), (0.65,0.8125), (1,1)] with smooth interp."""
+
+        t = max(0.0, min(1.0, t))
+        if t <= 0.65:
+            return 0.8125 * _smoothstep(t / 0.65)
+        else:
+            return 0.8125 + 0.1875 * _smoothstep((t - 0.65) / 0.35)
+
+    # ── Part A: Calyx disk with concentric ring topology ─────────────────────
+    n_radial = 128   # segments around circle
+    n_rings = 20     # concentric rings from center to edge
+
+    bm = bmesh.new()
+    center_v = bm.verts.new((0, 0, 0))
+    seed_vec = mathutils.Vector((noise_seed, noise_seed, noise_seed))
+
+    all_rings = []
+    for ring_i in range(1, n_rings + 1):
+        t_ring = ring_i / n_rings
+        ring = []
+        for j in range(n_radial):
+            angle = 2 * math.pi * j / n_radial
+            param = j / n_radial  # 0→1 around circle
+
+            # Rotational symmetry: PINGPONG(param, 1/N) → MapRange → fork_curve
+            period = 1.0 / fork_number
+            pp = period - abs(param % (2 * period) - period)
+            sym = pp / period  # [0, 1]
+            fc_val = _fork_curve(sym)
+            radial_scale = inner_radius + fc_val * (1.0 - inner_radius)
+
+            # Base XY position
+            r = t_ring * outer_radius * radial_scale
+            x = r * math.cos(angle)
+            y = r * math.sin(angle)
+
+            # Cross-section noise (XY only, Scale=2.4)
+            npos = mathutils.Vector((x, y, 0)) * 2.4 + seed_vec
+            nv = mn.noise_vector(npos)  # [-1, 1] per component
+            x += nv.x * 0.5 * noise_amount * t_ring
+            y += nv.y * 0.5 * noise_amount * t_ring
+
+            # Z-displacement: (noise - 0.5) × z_noise_amount × |pos|
+            r_actual = math.sqrt(x * x + y * y)
+            zpos = mathutils.Vector((x, y, 0)) + seed_vec
+            z_noise = (mn.noise(zpos) + 1.0) * 0.5  # remap [-1,1] → [0,1]
+            z = (z_noise - 0.5) * z_noise_amount * r_actual
+
+            ring.append(bm.verts.new((x, y, z)))
+        all_rings.append(ring)
+
+    # Faces: center fan (small triangles)
+    for j in range(n_radial):
+        j2 = (j + 1) % n_radial
+        bm.faces.new([center_v, all_rings[0][j], all_rings[0][j2]])
+
+    # Faces: concentric quads
+    for i in range(len(all_rings) - 1):
+        for j in range(n_radial):
+            j2 = (j + 1) % n_radial
+            bm.faces.new([all_rings[i][j], all_rings[i][j2],
+                          all_rings[i + 1][j2], all_rings[i + 1][j]])
+
+    # One level of subdivision for extra smoothness
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=1,
+                               use_grid_fill=True)
+
+    calyx_mesh = bpy.data.meshes.new("calyx")
+    bm.to_mesh(calyx_mesh)
+    bm.free()
+
+    calyx_obj = bpy.data.objects.new("calyx", calyx_mesh)
+    bpy.context.collection.objects.link(calyx_obj)
+    calyx_obj.data.materials.append(STEM_MAT)
+    bpy.context.view_layer.objects.active = calyx_obj
+    calyx_obj.select_set(True)
+
+    # Translate calyx to body top
+    calyx_obj.location.z = body_top_z
+    apply_tf(calyx_obj)
+
+    # Shade smooth
+    for poly in calyx_obj.data.polygons:
+        poly.use_smooth = True
+
+    # ── Attach to nearest body surface ──────────────────────────────────────
+    depsgraph = bpy.context.evaluated_depsgraph_get()
+    body_bvh = BVHTree.FromObject(body_obj, depsgraph)
+
+    bm = bmesh.new()
+    bm.from_mesh(calyx_obj.data)
+    att_threshold = 0.1
+    att_multiplier = 10.0
+    att_offset = mathutils.Vector((0, 0, 0.05))
+
+    min_attach_r = inner_radius * outer_radius * 0.5
+    for v in bm.verts:
+        r_xy = math.sqrt(v.co.x**2 + v.co.y**2)
+        if r_xy < min_attach_r:
+            v.co = v.co + att_offset
+            continue
+        loc, normal, idx, dist = body_bvh.find_nearest(v.co)
+        if loc is not None:
+            blend = min(max(math.exp((att_threshold - dist) * att_multiplier),
+                            0.0), 1.0)
+            v.co = v.co.lerp(loc, blend) + att_offset
+
+    bm.to_mesh(calyx_obj.data)
+    bm.free()
+    calyx_obj.data.update()
+    parts.append(calyx_obj)
+
+    # ── Part B: Thin stem tube (bmesh Bezier tube) ──────────────────────────
+    n_segs, n_ring = 16, 8
+    bm = bmesh.new()
+    p0 = np.array([0.0, 0.0, body_top_z])
+    p1 = p0 + np.array(mid_offset)
+    p2 = p0 + np.array(end_offset)
+
+    rings = []
+    for i in range(n_segs + 1):
+        t = i / n_segs
+        pos = (1 - t)**2 * p0 + 2 * (1 - t) * t * p1 + t**2 * p2
+        r = cross_radius * (1 - t * 0.7)
+        ring = []
+        for j in range(n_ring):
+            theta = 2 * math.pi * j / n_ring
+            ring.append(bm.verts.new((pos[0] + r * math.cos(theta),
+                                       pos[1] + r * math.sin(theta),
+                                       pos[2])))
+        rings.append(ring)
+
+    for i in range(n_segs):
+        for j in range(n_ring):
+            j2 = (j + 1) % n_ring
+            bm.faces.new([rings[i][j], rings[i][j2],
+                          rings[i + 1][j2], rings[i + 1][j]])
+
+    tp = p2
+    tip = bm.verts.new((float(tp[0]), float(tp[1]), float(tp[2])))
+    for j in range(n_ring):
+        j2 = (j + 1) % n_ring
+        bm.faces.new([tip, rings[-1][j], rings[-1][j2]])
+
+    smesh = bpy.data.meshes.new("stem")
+    bm.to_mesh(smesh)
+    bm.free()
+
+    stem_obj = bpy.data.objects.new("stem", smesh)
+    bpy.context.collection.objects.link(stem_obj)
+    stem_obj.data.materials.append(STEM_MAT)
+    parts.append(stem_obj)
+
+    return join_objs(parts)
+
+# ── main ──────────────────────────────────────────────────────────────────────
+
+def build_strawberry():
+    np.random.seed(SEED)
+    clear_scene()
+
+    # From strawberry.py sample_cross_section_params
+    _ = np.random.uniform(-100, 100)  # random seed (discarded)
+    cs_radius = float(np.random.normal(1.0, 0.02))
+
+    # From strawberry.py sample_shape_params
+    radius_cp = [
+        (0.0, 0.0),
+        (0.0227, 0.1313),
+        (0.2227, 0.4406),
+        (float(np.random.uniform(0.55, 0.7)),
+         float(np.random.uniform(0.7, 0.78))),
+        (0.925, 0.4719),
+        (1.0, 0.0),
+    ]
+    start = (float(np.random.uniform(-0.2, 0.2)),
+             float(np.random.uniform(-0.2, 0.2)),
+             float(np.random.uniform(-0.5, -1.0)))
+    middle = (0.0, 0.0, 0.0)
+    end = (0.0, 0.0, 1.0)
+
+    # From strawberry_surface: seed parameters
+    seed_dist_min = 0.10  # Distance Min for seed spacing (tighter packing)
+    seed_scale = 0.04     # seed size (small plump grains matching reference)
+    # top_pos: 0.85-0.95 of parameter → approx Z < 0.75
+    top_pos = float(np.random.uniform(0.85, 0.95))
+    # Convert parameter to approximate Z: z = start_z + top_pos * (end_z - start_z)
+    seed_z_max = start[2] + top_pos * (end[2] - start[2])
+
+    body = build_strawberry_body(
+        radius_cp, cs_radius, start, middle, end, resolution=256
+    )
+
+    # (matches strawberry_surface.py order: bump → crater → seeds)
+    apply_surface_bump(body, displacement=0.15, scale=0.5)  # coarse lumpy
+    apply_surface_bump(body, displacement=0.03, scale=20.0)  # fine detail
+
+    add_seeds_to_body(body, seed_dist_min=seed_dist_min,
+                      seed_scale=seed_scale, seed_z_max=seed_z_max)
+
+    # Calyx stem — placed near body top, attach_to_nearest handles conforming
+    top_z = max(v.co.z for v in body.data.vertices)
+    top_z = top_z - 0.03  # slight embed like original Translation=(0,0,0.97)
+
+    fork_n = int(np.random.randint(8, 13))
+    outer_r = float(np.random.uniform(0.7, 0.9))
+    noise_seed = float(np.random.uniform(-100, 100))
+    stem_r = float(np.random.uniform(0.035, 0.045))
+    mid = (float(np.random.uniform(-0.1, 0.1)),
+           float(np.random.uniform(-0.1, 0.1)),
+           float(np.random.uniform(0.15, 0.2)))
+    end_s = (float(np.random.uniform(-0.2, 0.2)),
+             float(np.random.uniform(-0.2, 0.2)),
+             float(np.random.uniform(0.3, 0.4)))
+
+    calyx = build_calyx_stem(
+        body_obj=body, body_top_z=top_z,
+        fork_number=fork_n, outer_radius=outer_r,
+        noise_seed=noise_seed, cross_radius=stem_r,
+        mid_offset=mid, end_offset=end_s
+    )
+
+    result = join_objs([body, calyx])
+
+    # scale_multiplier = 0.5
+    s = float(np.random.normal(1, 0.1)) * 0.5
+    result.scale = (s, s, s)
+    apply_tf(result)
+
+    # Align top to Z=0 (hanging convention)
+    max_z = max(v.co.z for v in result.data.vertices)
+    result.location.z = -max_z
+    apply_tf(result)
+
+    return sanitize_material_slots(result, STEM_MAT)
+
+strawberry = build_strawberry()
+strawberry.name = "FruitFactoryStrawberry"
+

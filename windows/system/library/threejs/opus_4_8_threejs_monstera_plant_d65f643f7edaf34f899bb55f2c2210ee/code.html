@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Monstera deliciosa</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171a; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, system-ui, Segoe UI, Roboto, sans-serif;
+    color: rgba(230,235,240,0.55); user-select: none; pointer-events: none;
+    letter-spacing: 0.02em;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Monstera deliciosa &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { TessellateModifier } from 'three/addons/modifiers/TessellateModifier.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const container = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.98;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x15171a);
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 16, 42);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(7.0, 4.6, 8.2);
+
+// Neutral studio image-based lighting (reflections only; background stays dark)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere fill + directional key + fill + rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x93b4cf, 0x2a2016, 0.28);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.3);
+key.position.set(6.5, 10.5, 5.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -8;
+key.shadow.camera.right = 8;
+key.shadow.camera.top = 9;
+key.shadow.camera.bottom = -3;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 6;
+const keyTarget = new THREE.Object3D();
+keyTarget.position.set(0, 2.0, 0);
+scene.add(keyTarget);
+key.target = keyTarget;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.55);
+fill.position.set(-7.5, 4.0, 4.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xfff0e6, 1.5);
+rim.position.set(-3.5, 5.5, -8.0);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane — receives shadows only
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.36 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ================================================================== *
+ *  THE PLANT  (single centered object)
+ * ================================================================== */
+const plant = new THREE.Group();
+scene.add(plant);
+
+/* ---------- small math helpers ---------- */
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+/* ---------- tapered tube builder (for stems / veins) ---------- */
+function taperedTube(curve, r0, r1, tubular, radial) {
+  const frames = curve.computeFrenetFrames(tubular, false);
+  const positions = [], normals = [], indices = [];
+  for (let i = 0; i <= tubular; i++) {
+    const u = i / tubular;
+    const p = curve.getPointAt(u);
+    const r = r0 + (r1 - r0) * u;
+    const N = frames.normals[i], B = frames.binormals[i];
+    for (let j = 0; j <= radial; j++) {
+      const v = (j / radial) * Math.PI * 2;
+      const cx = Math.cos(v), sy = Math.sin(v);
+      const nx = cx * N.x + sy * B.x;
+      const ny = cx * N.y + sy * B.y;
+      const nz = cx * N.z + sy * B.z;
+      positions.push(p.x + r * nx, p.y + r * ny, p.z + r * nz);
+      normals.push(nx, ny, nz);
+    }
+  }
+  for (let i = 0; i < tubular; i++) {
+    for (let j = 0; j < radial; j++) {
+      const a = i * (radial + 1) + j;
+      const b = a + (radial + 1);
+      indices.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  g.setIndex(indices);
+  return g;
+}
+
+/* ================================================================== *
+ *  Monstera leaf — heart shape, deep marginal splits, fenestrations
+ * ================================================================== */
+const LEN = 3.2;      // blade length (tip Y)
+const HW = 1.5;       // half-width scale
+const N_LOBES = 5;    // lobe count per side
+const SINUS = 0.40;   // base margin oscillation floor
+
+function envelope(t) {
+  return HW * Math.sin(Math.PI * Math.pow(Math.max(t, 1e-4), 0.72));
+}
+function marginMod(t) {
+  const g = 0.5 + 0.5 * Math.cos(2 * Math.PI * N_LOBES * t);
+  let m = SINUS + (1 - SINUS) * Math.pow(g, 0.5);
+  // characteristic deep, narrow splits reaching toward the midrib
+  const splits = [0.30, 0.52, 0.72];
+  for (const s of splits) m -= 0.34 * Math.exp(-Math.pow((t - s) / 0.018, 2));
+  return Math.max(m, 0.07);
+}
+function leafWidth(t) {
+  let w = envelope(t) * marginMod(t);
+  w += 0.5 * Math.exp(-Math.pow((t - 0.05) / 0.05, 2)); // cordate basal lobes
+  w *= 0.5 + 0.5 * smoothstep(0.0, 0.05, t);            // pinch to a basal notch
+  return w;
+}
+// gentle out-of-plane sculpting shared by blade, midrib and veins
+function bladeZ(x, y) {
+  const droopEdge = -0.14 * Math.abs(x);
+  const taco = -0.055 * x * x;
+  const ripple = 0.022 * Math.sin(x * 3.6);
+  const ty = Math.max(y, 0) / LEN;
+  const curl = -0.12 * Math.pow(ty, 1.6);
+  return droopEdge + taco + ripple + curl;
+}
+
+function ellipsePath(cx, cy, a, b, theta, seg) {
+  const path = new THREE.Path();
+  const ct = Math.cos(theta), st = Math.sin(theta);
+  for (let i = 0; i <= seg; i++) {
+    const t = (i / seg) * Math.PI * 2;
+    const ex = a * Math.cos(t), ey = b * Math.sin(t);
+    const rx = cx + ex * ct - ey * st;
+    const ry = cy + ex * st + ey * ct;
+    if (i === 0) path.moveTo(rx, ry); else path.lineTo(rx, ry);
+  }
+  return path;
+}
+
+function buildLeafBladeGeometry() {
+  const M = 96;
+  const contour = [];
+  for (let i = 0; i <= M; i++) {            // right margin, base -> tip
+    const t = i / M;
+    const y = -0.32 + (LEN + 0.32) * t;
+    contour.push([leafWidth(t), y]);
+  }
+  for (let i = M; i >= 0; i--) {            // left margin, tip -> base
+    const t = i / M;
+    const y = -0.32 + (LEN + 0.32) * t;
+    contour.push([-leafWidth(t), y]);
+  }
+
+  const shape = new THREE.Shape();
+  shape.moveTo(contour[0][0], contour[0][1]);
+  for (let i = 1; i < contour.length; i++) shape.lineTo(contour[i][0], contour[i][1]);
+  shape.closePath();
+
+  // interior oval fenestrations, aligned to lateral veins, mirrored per side
+  for (const tt of [0.40, 0.60, 0.80]) {
+    const e = envelope(tt);
+    const cy = -0.32 + (LEN + 0.32) * tt;
+    const a = e * 0.26, b = 0.06;
+    for (const s of [1, -1]) {
+      const cx = s * e * 0.32;
+      const th = s > 0 ? 0.55 : Math.PI - 0.55;
+      shape.holes.push(ellipsePath(cx, cy, a, b, th, 26));
+    }
+  }
+
+  let geo = new THREE.ShapeGeometry(shape).toNonIndexed();
+  geo = new TessellateModifier(0.24, 6).modify(geo);  // add interior vertices
+
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setZ(i, bladeZ(pos.getX(i), pos.getY(i)));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+const veinMat = new THREE.MeshStandardMaterial({
+  color: 0x2b5a28, roughness: 0.55, metalness: 0.0, envMapIntensity: 0.5
+});
+
+function buildLeaf(scale) {
+  const group = new THREE.Group();
+
+  // blade — glossy, slightly varied green
+  const col = new THREE.Color().setHSL(0.275 + rand(-0.02, 0.03), 0.55, 0.24 + rand(0, 0.07));
+  const bladeMat = new THREE.MeshPhysicalMaterial({
+    color: col, roughness: 0.42, metalness: 0.0,
+    clearcoat: 0.7, clearcoatRoughness: 0.35,
+    sheen: 0.35, sheenColor: new THREE.Color(0x244b1f),
+    side: THREE.DoubleSide, envMapIntensity: 0.65
+  });
+  const blade = new THREE.Mesh(buildLeafBladeGeometry(), bladeMat);
+  blade.castShadow = true;
+  blade.receiveShadow = true;
+  group.add(blade);
+
+  // midrib
+  const midPts = [];
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const y = -0.30 + (LEN * 0.99 + 0.30) * t;
+    midPts.push(new THREE.Vector3(0, y, bladeZ(0, y) + 0.016));
+  }
+  const midMesh = new THREE.Mesh(
+    taperedTube(new THREE.CatmullRomCurve3(midPts), 0.05, 0.012, 40, 8),
+    veinMat
+  );
+  midMesh.castShadow = true;
+  group.add(midMesh);
+
+  // lateral veins toward each lobe
+  for (const tt of [0.20, 0.40, 0.60, 0.80]) {
+    for (const s of [1, -1]) {
+      const y0 = -0.32 + (LEN + 0.32) * (tt - 0.05);
+      const y1 = -0.32 + (LEN + 0.32) * (tt + 0.02);
+      const xe = s * envelope(tt);
+      const p0 = new THREE.Vector3(0, y0, bladeZ(0, y0) + 0.013);
+      const pm = new THREE.Vector3(xe * 0.45, (y0 + y1) / 2, bladeZ(xe * 0.45, (y0 + y1) / 2) + 0.013);
+      const p1 = new THREE.Vector3(xe * 0.82, y1, bladeZ(xe * 0.82, y1) + 0.013);
+      const vm = new THREE.Mesh(
+        taperedTube(new THREE.CatmullRomCurve3([p0, pm, p1]), 0.02, 0.006, 18, 6),
+        veinMat
+      );
+      group.add(vm);
+    }
+  }
+
+  group.scale.setScalar(scale);
+  return group;
+}
+
+/* ---------- orient a leaf so its midrib continues the stem tangent ---------- */
+const _up = new THREE.Vector3(0, 1, 0);
+const _altUp = new THREE.Vector3(1, 0, 0);
+function orientLeaf(group, position, tangent) {
+  const y = tangent.clone().normalize();
+  const ref = Math.abs(y.dot(_up)) > 0.95 ? _altUp : _up;
+  const x = new THREE.Vector3().crossVectors(ref, y).normalize();
+  const z = new THREE.Vector3().crossVectors(x, y).normalize();
+  group.quaternion.setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, z));
+  group.position.copy(position);
+}
+
+/* ================================================================== *
+ *  Stems (petioles) + leaves rising from the pot
+ * ================================================================== */
+const stemMat = new THREE.MeshStandardMaterial({
+  color: 0x4c7d40, roughness: 0.5, metalness: 0.0, envMapIntensity: 0.55
+});
+
+const leafConfigs = [
+  { az: 0.40, reach: 2.45, apex: 3.45, end: 3.55, scale: 1.06, roll: 0.10 },
+  { az: 1.15, reach: 2.95, apex: 2.95, end: 2.55, scale: 1.18, roll: -0.22 }, // drooping
+  { az: 1.98, reach: 2.20, apex: 3.75, end: 3.95, scale: 0.94, roll: 0.16 },
+  { az: 2.78, reach: 3.05, apex: 2.75, end: 2.30, scale: 1.12, roll: 0.26 },  // drooping
+  { az: 3.62, reach: 2.55, apex: 3.35, end: 3.45, scale: 1.02, roll: -0.14 },
+  { az: 4.50, reach: 2.75, apex: 3.05, end: 2.70, scale: 1.08, roll: 0.20 },  // slight droop
+  { az: 5.48, reach: 2.30, apex: 3.65, end: 3.85, scale: 0.90, roll: -0.10 }
+];
+
+for (let i = 0; i < leafConfigs.length; i++) {
+  const c = leafConfigs[i];
+  const outDir = new THREE.Vector3(Math.cos(c.az), 0, Math.sin(c.az));
+  const perp = new THREE.Vector3(-Math.sin(c.az), 0, Math.cos(c.az));
+  const j1 = Math.sin(i * 1.7) * 0.35;
+  const j2 = Math.sin(i * 2.3 + 1.0) * 0.55;
+
+  const p0 = outDir.clone().multiplyScalar(0.14).setY(1.12);
+  const p1 = p0.clone().add(new THREE.Vector3(0, 0.85, 0))
+    .add(outDir.clone().multiplyScalar(0.18)).add(perp.clone().multiplyScalar(j1 * 0.4));
+  const p2 = outDir.clone().multiplyScalar(c.reach * 0.5).setY(c.apex)
+    .add(perp.clone().multiplyScalar(j1));
+  const p3 = outDir.clone().multiplyScalar(c.reach).setY(c.end)
+    .add(perp.clone().multiplyScalar(j2));
+
+  const curve = new THREE.CatmullRomCurve3([p0, p1, p2, p3], false, 'catmullrom', 0.5);
+  const stem = new THREE.Mesh(taperedTube(curve, 0.10, 0.052, 90, 12), stemMat);
+  stem.castShadow = true;
+  stem.receiveShadow = true;
+  plant.add(stem);
+
+  const leaf = buildLeaf(c.scale);
+  orientLeaf(leaf, p3, curve.getTangentAt(1));
+  leaf.rotateY(c.roll);                 // spin about own midrib for facing variety
+  leaf.rotateX(rand(-0.08, 0.08));      // subtle pitch
+  plant.add(leaf);
+}
+
+/* ---------- crown clump hides where petioles emerge ---------- */
+const crown = new THREE.Mesh(
+  new THREE.IcosahedronGeometry(0.42, 2).scale(1, 0.55, 1),
+  new THREE.MeshStandardMaterial({ color: 0x2f5a2a, roughness: 0.7 })
+);
+crown.position.set(0, 1.2, 0);
+crown.castShadow = true;
+plant.add(crown);
+
+/* ================================================================== *
+ *  Ceramic pot (LatheGeometry) + soil
+ * ================================================================== */
+const potProfile = [
+  [0.00, 0.00], [0.52, 0.00], [0.58, 0.04], [0.72, 0.16], [1.00, 0.55],
+  [1.17, 1.02], [1.24, 1.26], [1.30, 1.34], [1.27, 1.42], [1.15, 1.37],
+  [1.10, 1.24], [1.03, 1.16], [0.90, 1.10], [0.25, 1.03], [0.00, 1.03]
+].map(p => new THREE.Vector2(p[0], p[1]));
+
+const potGeo = new THREE.LatheGeometry(potProfile, 72);
+potGeo.computeVertexNormals();
+const potMat = new THREE.MeshPhysicalMaterial({
+  color: 0xe9dfd0, roughness: 0.32, metalness: 0.0,
+  clearcoat: 1.0, clearcoatRoughness: 0.22, side: THREE.DoubleSide,
+  envMapIntensity: 1.0
+});
+const pot = new THREE.Mesh(potGeo, potMat);
+pot.castShadow = true;
+pot.receiveShadow = true;
+plant.add(pot);
+
+// soil — a low, slightly bumpy dome recessed inside the rim
+const soilGeo = new THREE.CircleGeometry(1.06, 56);
+soilGeo.rotateX(-Math.PI / 2);
+const sp = soilGeo.attributes.position;
+for (let i = 0; i < sp.count; i++) {
+  const x = sp.getX(i), z = sp.getZ(i);
+  const r = Math.min(Math.hypot(x, z) / 1.06, 1);
+  const bump = i === 0 ? 0 : Math.random() * 0.018;
+  sp.setY(i, 1.135 + 0.05 * (1 - r) + bump);
+}
+soilGeo.computeVertexNormals();
+const soil = new THREE.Mesh(
+  soilGeo,
+  new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 0.96, metalness: 0.0 })
+);
+soil.receiveShadow = true;
+plant.add(soil);
+
+// a few small pebbles on the soil
+const pebbleMat = new THREE.MeshStandardMaterial({ color: 0x3a3128, roughness: 0.85 });
+for (let i = 0; i < 7; i++) {
+  const a = (i / 7) * Math.PI * 2 + rand(-0.3, 0.3);
+  const rr = rand(0.35, 0.9);
+  const peb = new THREE.Mesh(new THREE.DodecahedronGeometry(rand(0.04, 0.075), 0), pebbleMat);
+  peb.position.set(Math.cos(a) * rr, 1.17, Math.sin(a) * rr);
+  peb.rotation.set(rand(0, 3), rand(0, 3), rand(0, 3));
+  peb.castShadow = true;
+  peb.receiveShadow = true;
+  plant.add(peb);
+}
+
+/* ================================================================== *
+ *  Controls
+ * ================================================================== */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.65;
+controls.target.set(0, 1.95, 0);
+controls.minDistance = 5;
+controls.maxDistance = 20;
+controls.minPolarAngle = 0.18;
+controls.maxPolarAngle = 1.52;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

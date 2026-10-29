@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Starship Bridge</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#04060c}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================= CONFIG / PALETTE ================= */
+const CFG = {
+  seed: 47210,
+  roomRadius: 13, wallTop: 8.3,
+  gapHalf: 1.1,              // half-angle of the panoramic viewscreen opening (front = -Z)
+  autoRotateSpeed: 1.0
+};
+const PAL = {
+  hullDark: 0x232a36, hullMid: 0x39434f, hullLight: 0x59636f,
+  trim: 0x8f9aa8, charcoal: 0x181c22, seat: 0x2a3038,
+  cyan: 0x3fd9ff, holo: 0x59e8ff, orange: 0xff9a3c, green: 0x51ff9e,
+  floorTint: 0x99a4b4, warp: 0x9fd7ff,
+  fogColor: 0x05070e
+};
+
+/* ================= PRNG / HELPERS ================= */
+function mulberry32(a){return function(){a|=0;a=a+0x6D2B79F5|0;let t=Math.imul(a^a>>>15,1|a);
+  t=t+Math.imul(t^t>>>7,61|t)^t;return((t^t>>>14)>>>0)/4294967296;};}
+const rng = mulberry32(CFG.seed);
+const rr  = (a,b)=>a+rng()*(b-a);
+const pick= arr=>arr[Math.floor(rng()*arr.length)];
+const TAU = Math.PI*2;
+function shadowify(grp){grp.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});}
+
+/* ================= PROCEDURAL CANVAS TEXTURES ================= */
+function canvas2d(w,h){const c=document.createElement('canvas');c.width=w;c.height=h;return[c,c.getContext('2d')];}
+function makeFloorTexture(){
+  const [c,g]=canvas2d(1024,1024);
+  g.fillStyle='#12161e';g.fillRect(0,0,1024,1024);
+  for(let i=0;i<2400;i++){const v=18+Math.floor(rng()*22);
+    g.fillStyle=`rgba(${v},${v+4},${v+10},0.5)`;g.fillRect(rr(0,1024),rr(0,1024),rr(1,3),rr(1,3));}
+  g.strokeStyle='rgba(70,80,96,0.8)';g.lineWidth=3;
+  for(const r of[120,240,360,470])
+    {g.beginPath();g.arc(512,512,r,0,TAU);g.stroke();}
+  for(let i=0;i<12;i++){const a=i/12*TAU;                 // radial deck seams
+    g.beginPath();g.moveTo(512+Math.cos(a)*90,512+Math.sin(a)*90);
+    g.lineTo(512+Math.cos(a)*505,512+Math.sin(a)*505);g.stroke();}
+  g.strokeStyle='rgba(63,217,255,0.5)';g.lineWidth=5;      // faint inlay ring
+  g.beginPath();g.arc(512,512,300,0,TAU);g.stroke();
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;return t;
+}
+function makeWallTexture(){
+  const [c,g]=canvas2d(1024,512);
+  g.fillStyle='#2b3340';g.fillRect(0,0,1024,512);
+  for(let x=0;x<1024;x+=128)for(let y=0;y<512;y+=110){    // staggered panel plates
+    const v=38+Math.floor(rng()*16);
+    g.fillStyle=`rgb(${v},${v+7},${v+16})`;
+    g.fillRect(x+4+(y/110%2)*32,y+6,118,100);
+  }
+  g.strokeStyle='rgba(18,22,30,0.9)';g.lineWidth=4;
+  for(let x=0;x<=1024;x+=128){g.beginPath();g.moveTo(x,0);g.lineTo(x,512);g.stroke();}
+  for(let y=0;y<=512;y+=110){g.beginPath();g.moveTo(0,y);g.lineTo(1024,y);g.stroke();}
+  for(let i=0;i<26;i++){                                   // scattered indicator dots
+    g.fillStyle=pick(['#3fd9ff','#ff9a3c','#51ff9e']);
+    g.globalAlpha=rr(0.5,1);g.fillRect(rr(20,1000),rr(20,490),6,6);g.globalAlpha=1;
+  }
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=THREE.RepeatWrapping;t.repeat.set(3,1);return t;
+}
+function makeReadoutTexture(variant){
+  const [c,g]=canvas2d(512,256);
+  g.fillStyle='#061019';g.fillRect(0,0,512,256);
+  g.strokeStyle='rgba(63,217,255,0.16)';g.lineWidth=1;
+  for(let x=0;x<=512;x+=32){g.beginPath();g.moveTo(x,0);g.lineTo(x,256);g.stroke();}
+  for(let y=0;y<=256;y+=32){g.beginPath();g.moveTo(0,y);g.lineTo(512,y);g.stroke();}
+  for(let x=8;x<512;x+=20){                                // bar-graph row
+    const h=rr(10,64);
+    g.fillStyle=rng()<0.82?'rgba(63,217,255,0.9)':'rgba(255,154,60,0.95)';
+    g.fillRect(x,250-h,12,h);
+  }
+  g.strokeStyle=variant?'#51ff9e':'#3fd9ff';g.lineWidth=3;  // waveform trace
+  g.beginPath();
+  for(let x=0;x<=512;x+=8){
+    const y=70+Math.sin(x*0.05+variant*2)*22+rr(-7,7);
+    x===0?g.moveTo(x,y):g.lineTo(x,y);
+  }
+  g.stroke();
+  for(let row=0;row<4;row++)for(let i=0;i<14;i++){          // status glyph blocks
+    g.fillStyle=`rgba(159,215,255,${rr(0.25,0.85).toFixed(2)})`;
+    g.fillRect(12+i*26+rr(0,6),110+row*16,rr(8,18),7);
+  }
+  g.fillStyle=variant?'rgba(255,154,60,0.9)':'rgba(63,217,255,0.9)';
+  g.beginPath();g.arc(452,60,34,0,TAU*rr(0.55,0.9));g.lineWidth=8;
+  g.strokeStyle=g.fillStyle;g.stroke();                     // orbital gauge arc
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=THREE.RepeatWrapping;return t;
+}
+function makeStreakTexture(){
+  const [c,g]=canvas2d(1024,1024);
+  g.fillStyle='#000000';g.fillRect(0,0,1024,1024);
+  for(let i=0;i<230;i++){                                   // warp starlines (drawn along v)
+    const x=rr(0,1024),y=rr(0,1024),len=rr(90,380),w=rr(1.5,4);
+    const grd=g.createLinearGradient(0,y,0,y+len);
+    const col=rng()<0.75?'159,215,255':'255,255,255';
+    grd.addColorStop(0,`rgba(${col},0)`);grd.addColorStop(0.5,`rgba(${col},${rr(0.35,0.95).toFixed(2)})`);
+    grd.addColorStop(1,`rgba(${col},0)`);
+    g.fillStyle=grd;g.fillRect(x,y,w,len);
+    if(y+len>1024)g.fillRect(x,y-1024,w,len);               // wrap seamlessly
+  }
+  const t=new THREE.CanvasTexture(c);t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;return t;
+}
+function makeGlowTexture(){
+  const [c,g]=canvas2d(256,256);
+  const grd=g.createRadialGradient(128,128,6,128,128,128);
+  grd.addColorStop(0,'rgba(159,225,255,0.9)');grd.addColorStop(0.4,'rgba(80,170,255,0.28)');
+  grd.addColorStop(1,'rgba(40,110,255,0)');
+  g.fillStyle=grd;g.fillRect(0,0,256,256);
+  return new THREE.CanvasTexture(c);
+}
+const glowTex=makeGlowTexture();
+
+/* ================= MATERIALS ================= */
+const MAT = {
+  floor:new THREE.MeshStandardMaterial({map:makeFloorTexture(),color:PAL.floorTint,
+    roughness:0.16,metalness:0.82,envMapIntensity:1.25}),      // polished deck
+  hull:new THREE.MeshStandardMaterial({map:makeWallTexture(),color:0xb9c2cc,
+    roughness:0.6,metalness:0.35,side:THREE.BackSide}),
+  hullPlain:new THREE.MeshStandardMaterial({color:PAL.hullDark,roughness:0.55,metalness:0.4,side:THREE.BackSide}),
+  panel:new THREE.MeshStandardMaterial({color:PAL.hullMid,roughness:0.4,metalness:0.6}),
+  trim:new THREE.MeshStandardMaterial({color:PAL.trim,roughness:0.25,metalness:0.9}),
+  charcoal:new THREE.MeshStandardMaterial({color:PAL.charcoal,roughness:0.5,metalness:0.35}),
+  seat:new THREE.MeshStandardMaterial({color:PAL.seat,roughness:0.75,metalness:0.05}),
+  cyanStrip:new THREE.MeshStandardMaterial({color:0x03090c,emissive:PAL.cyan,emissiveIntensity:2.4}),
+  orangeStrip:new THREE.MeshStandardMaterial({color:0x090400,emissive:PAL.orange,emissiveIntensity:2.2}),
+  holoAdd:new THREE.MeshBasicMaterial({color:PAL.holo,transparent:true,opacity:0.5,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}),
+  glass:new THREE.MeshBasicMaterial({color:0x63c8ff,transparent:true,opacity:0.06,
+    blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide,fog:false})
+};
+
+/* ================= RENDERER / SCENE / CAMERA ================= */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;renderer.toneMappingExposure=1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x04060c);
+scene.fog=new THREE.FogExp2(PAL.fogColor,0.011);
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(renderer),0.04).texture;
+
+const camera=new THREE.PerspectiveCamera(52,innerWidth/innerHeight,0.1,500);
+camera.position.set(7.6,6.1,8.6);
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,2.4,-0.6);
+controls.enableDamping=true;controls.dampingFactor=0.07;
+controls.autoRotate=true;controls.autoRotateSpeed=CFG.autoRotateSpeed;
+controls.minDistance=6.5;controls.maxDistance=11.8;
+controls.maxPolarAngle=1.32;controls.minPolarAngle=0.55;
+
+/* ================= BUILDERS ================= */
+/* --- deck: polished floor, inlay light rings, glow pools --- */
+function buildDeck(){
+  const grp=new THREE.Group();
+  const R=CFG.roomRadius;
+  const floor=new THREE.Mesh(new THREE.CircleGeometry(R+0.4,64),MAT.floor);
+  floor.rotation.x=-Math.PI/2;floor.receiveShadow=true;grp.add(floor);
+  const ring1=new THREE.Mesh(new THREE.TorusGeometry(3.35,0.045,6,64),MAT.orangeStrip);
+  ring1.rotation.x=Math.PI/2;ring1.position.set(0,0.02,3.8);grp.add(ring1);   // dais halo
+  const ring2=new THREE.Mesh(new THREE.TorusGeometry(2.05,0.045,6,64),MAT.cyanStrip);
+  ring2.rotation.x=Math.PI/2;ring2.position.set(0,0.02,-1.2);grp.add(ring2);  // holo halo
+  for(const sx of[-1.25,1.25]){                             // aisle guide strips
+    const strip=new THREE.Mesh(new THREE.BoxGeometry(0.08,0.02,8.6),MAT.cyanStrip);
+    strip.position.set(sx,0.02,-1.6);grp.add(strip);
+  }
+  const pool=(x,z,s,tint)=>{                                // additive glow pools
+    const p=new THREE.Mesh(new THREE.PlaneGeometry(s,s),
+      new THREE.MeshBasicMaterial({map:glowTex,color:tint,transparent:true,
+        blending:THREE.AdditiveBlending,depthWrite:false}));
+    p.rotation.x=-Math.PI/2;p.position.set(x,0.03,z);grp.add(p);return p;
+  };
+  pool(0,-1.2,6.2,0x2c7ea0);                                // under the holo table
+  pool(0,3.8,5.4,0x8a5a20);                                 // captain dais warmth
+  grp.userData.screenPool=pool(0,-9.6,15,0x2b5f96);         // viewscreen spill
+  return grp;
+}
+
+/* --- hull shell: wall bands, ceiling dome, light cove --- */
+function buildHull(){
+  const grp=new THREE.Group();
+  const R=CFG.roomRadius,g2=CFG.gapHalf*2;
+  const lower=new THREE.Mesh(new THREE.CylinderGeometry(R,R+0.25,1.9,64,1,true),MAT.hullPlain);
+  lower.position.y=0.95;grp.add(lower);
+  const main=new THREE.Mesh(
+    new THREE.CylinderGeometry(R,R,5.2,64,1,true,Math.PI+CFG.gapHalf,TAU-g2),MAT.hull);
+  main.position.y=4.5;grp.add(main);
+  const upper=new THREE.Mesh(new THREE.CylinderGeometry(R-0.15,R,1.2,64,1,true),MAT.hullPlain);
+  upper.position.y=7.7;grp.add(upper);
+  const dome=new THREE.Mesh(new THREE.SphereGeometry(R,48,14,0,TAU,0,Math.PI/2),MAT.hullPlain);
+  dome.scale.set(1,0.24,1);dome.position.y=CFG.wallTop;grp.add(dome);
+  const cove=new THREE.Mesh(new THREE.TorusGeometry(3.1,0.16,10,48),MAT.cyanStrip);
+  cove.rotation.x=Math.PI/2;cove.position.y=10.15;grp.add(cove);              // ceiling halo
+  const hub=new THREE.Mesh(new THREE.CylinderGeometry(1.15,1.5,0.5,24),MAT.panel);
+  hub.position.y=10.4;grp.add(hub);
+  lower.receiveShadow=main.receiveShadow=true;
+  return grp;
+}
+
+/* --- panoramic viewscreen frame + faint energy glass --- */
+function buildViewscreen(){
+  const grp=new THREE.Group();
+  const R=CFG.roomRadius,th0=Math.PI-CFG.gapHalf,thL=CFG.gapHalf*2;
+  const sillTop=new THREE.Mesh(new THREE.CylinderGeometry(R+0.05,R-0.35,0.7,48,1,true,th0,thL),MAT.panel);
+  sillTop.position.y=6.85;grp.add(sillTop);
+  const sillBot=new THREE.Mesh(new THREE.CylinderGeometry(R-0.35,R+0.05,0.8,48,1,true,th0,thL),MAT.panel);
+  sillBot.position.y=2.3;grp.add(sillBot);
+  const glowTop=new THREE.Mesh(new THREE.CylinderGeometry(R-0.36,R-0.36,0.08,48,1,true,th0,thL),MAT.cyanStrip);
+  glowTop.position.y=6.54;grp.add(glowTop);
+  const glowBot=new THREE.Mesh(new THREE.CylinderGeometry(R-0.36,R-0.36,0.08,48,1,true,th0,thL),MAT.cyanStrip);
+  glowBot.position.y=2.66;grp.add(glowBot);
+  for(const sgn of[-1,1]){                                  // edge mullions
+    const a=Math.PI+sgn*CFG.gapHalf;
+    const post=new THREE.Mesh(new THREE.BoxGeometry(0.45,4.6,0.6),MAT.trim);
+    post.position.set(Math.sin(a)*(R-0.1),4.55,Math.cos(a)*(R-0.1));
+    post.rotation.y=a;grp.add(post);
+  }
+  const glass=new THREE.Mesh(
+    new THREE.CylinderGeometry(R-0.3,R-0.3,3.8,48,1,true,th0,thL),MAT.glass);
+  glass.position.y=4.55;grp.add(glass);
+  shadowify(grp);
+  return grp;
+}
+
+/* --- warp field outside the hull: tunnel sleeve, streak swarm, bow glow --- */
+function buildWarpField(){
+  const grp=new THREE.Group();
+  const tunnelMat=new THREE.MeshBasicMaterial({map:makeStreakTexture(),color:PAL.warp,
+    transparent:true,blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.BackSide,fog:false});
+  tunnelMat.map.repeat.set(3,2);
+  const tunnel=new THREE.Mesh(new THREE.CylinderGeometry(27,27,150,40,1,true),tunnelMat);
+  tunnel.rotation.x=Math.PI/2;tunnel.position.set(0,4.5,-55);grp.add(tunnel);
+  const streakGeo=new THREE.BoxGeometry(0.07,0.07,9);
+  const streakMat=new THREE.MeshBasicMaterial({color:0xd7ecff,transparent:true,opacity:0.75,
+    blending:THREE.AdditiveBlending,depthWrite:false,fog:false});
+  const streaks=new THREE.InstancedMesh(streakGeo,streakMat,140);
+  const data=[];
+  const m=new THREE.Matrix4();
+  for(let i=0;i<140;i++){
+    const a=rr(0,TAU),rad=rr(15,25);
+    data.push({a,rad,z:rr(-130,6),spd:rr(26,46),len:rr(0.6,1.6)});
+    m.makeScale(1,1,data[i].len);
+    m.setPosition(Math.cos(a)*rad,4.5+Math.sin(a)*rad,data[i].z);
+    streaks.setMatrixAt(i,m);
+  }
+  grp.add(streaks);
+  const bow=new THREE.Sprite(new THREE.SpriteMaterial({map:glowTex,color:0xbfe4ff,
+    blending:THREE.AdditiveBlending,depthWrite:false,transparent:true,fog:false}));
+  bow.position.set(0,4.5,-128);bow.scale.set(95,95,1);grp.add(bow);
+  grp.userData={tunnelMat,streaks,data,bow};
+  return grp;
+}
+
+/* --- structural ribs sweeping overhead, each with a light strip --- */
+function buildRibs(){
+  const grp=new THREE.Group();
+  const strips=[];
+  for(const z of[-7.5,-3.75,0,3.75,7.5]){
+    const span=Math.sqrt(13.9*13.9-z*z);
+    const rib=new THREE.Mesh(new THREE.TorusGeometry(span,0.24,8,40,Math.PI),MAT.panel);
+    rib.position.z=z;rib.scale.y=9.4/span;grp.add(rib);
+    const strip=new THREE.Mesh(new THREE.TorusGeometry(span-0.28,0.06,6,40,Math.PI),MAT.cyanStrip.clone());
+    strip.position.z=z;strip.scale.y=9.12/(span-0.28);grp.add(strip);
+    strips.push(strip);
+  }
+  const spine=new THREE.Mesh(new THREE.BoxGeometry(0.5,0.28,15.6),MAT.trim);
+  spine.position.y=9.32;grp.add(spine);                     // keel beam joining the ribs
+  grp.userData.strips=strips;
+  shadowify(grp);
+  return grp;
+}
+
+/* --- raised captain's chair on its dais --- */
+function buildCaptainsChair(){
+  const grp=new THREE.Group();
+  const dais=new THREE.Mesh(new THREE.CylinderGeometry(2.6,2.8,0.55,32),MAT.panel);
+  dais.position.y=0.28;grp.add(dais);
+  const step=new THREE.Mesh(new THREE.CylinderGeometry(3.15,3.3,0.24,32),MAT.charcoal);
+  step.position.y=0.12;grp.add(step);
+  const daisTrim=new THREE.Mesh(new THREE.TorusGeometry(2.62,0.05,6,48),MAT.orangeStrip);
+  daisTrim.rotation.x=Math.PI/2;daisTrim.position.y=0.56;grp.add(daisTrim);
+  const chair=new THREE.Group();chair.position.y=0.55;grp.add(chair);
+  const column=new THREE.Mesh(new THREE.CylinderGeometry(0.34,0.5,0.5,16),MAT.trim);
+  column.position.y=0.25;chair.add(column);
+  const seat=new THREE.Mesh(new THREE.BoxGeometry(1.25,0.26,1.15),MAT.seat);
+  seat.position.y=0.62;chair.add(seat);
+  const back=new THREE.Mesh(new THREE.BoxGeometry(1.15,1.65,0.26),MAT.seat);
+  back.position.set(0,1.45,0.62);back.rotation.x=0.16;chair.add(back);
+  const head=new THREE.Mesh(new THREE.BoxGeometry(0.66,0.4,0.2),MAT.charcoal);
+  head.position.set(0,2.38,0.74);head.rotation.x=0.16;chair.add(head);
+  for(const sx of[-1,1]){                                   // armrests with keypads
+    const arm=new THREE.Mesh(new THREE.BoxGeometry(0.24,0.5,0.95),MAT.charcoal);
+    arm.position.set(sx*0.76,0.75,0.18);chair.add(arm);
+    const pad=new THREE.Mesh(new THREE.PlaneGeometry(0.2,0.5),
+      sx>0?MAT.orangeStrip:MAT.cyanStrip);
+    pad.rotation.x=-Math.PI/2;pad.position.set(sx*0.76,1.005,0.12);chair.add(pad);
+    const backGlow=new THREE.Mesh(new THREE.BoxGeometry(0.05,1.5,0.05),MAT.cyanStrip);
+    backGlow.position.set(sx*0.61,1.45,0.72);backGlow.rotation.x=0.16;chair.add(backGlow);
+  }
+  const rail=new THREE.Mesh(new THREE.TorusGeometry(3.0,0.06,8,40,Math.PI*0.9),MAT.trim);
+  rail.rotation.x=Math.PI/2;rail.rotation.z=Math.PI*0.05;
+  rail.position.y=1.15;grp.add(rail);                       // aft guard railing
+  for(let i=0;i<6;i++){
+    const a=Math.PI*0.05+i*(Math.PI*0.9/5);
+    const post=new THREE.Mesh(new THREE.CylinderGeometry(0.05,0.05,1.15,8),MAT.trim);
+    post.position.set(Math.cos(a)*3.0,0.58,Math.sin(a)*3.0);grp.add(post);
+  }
+  shadowify(grp);
+  return grp;
+}
+
+/* --- holographic star-map table --- */
+function buildHoloTable(){
+  const grp=new THREE.Group();
+  const base=new THREE.Mesh(new THREE.CylinderGeometry(1.5,1.75,0.92,24),MAT.charcoal);
+  base.position.y=0.46;grp.add(base);
+  const rim=new THREE.Mesh(new THREE.TorusGeometry(1.52,0.07,8,48),MAT.cyanStrip);
+  rim.rotation.x=Math.PI/2;rim.position.y=0.94;grp.add(rim);
+  const top=new THREE.Mesh(new THREE.CylinderGeometry(1.42,1.42,0.06,24),
+    new THREE.MeshStandardMaterial({color:0x0a1016,roughness:0.1,metalness:0.9}));
+  top.position.y=0.95;grp.add(top);
+  const holo=new THREE.Group();holo.position.y=2.1;grp.add(holo);
+  const pts=[];const cols=[];const col=new THREE.Color();
+  for(let i=0;i<260;i++){                                   // seeded galaxy points
+    const arm=Math.floor(rng()*3),aBase=arm*(TAU/3)+rr(-0.3,0.3);
+    const d=rr(0.1,1.25),a=aBase+d*2.6;
+    pts.push(Math.cos(a)*d,rr(-0.42,0.42)*(1.15-d*0.6),Math.sin(a)*d);
+    col.setHSL(rr(0.48,0.58),0.9,rr(0.55,0.85));cols.push(col.r,col.g,col.b);
+  }
+  const pgeo=new THREE.BufferGeometry();
+  pgeo.setAttribute('position',new THREE.Float32BufferAttribute(pts,3));
+  pgeo.setAttribute('color',new THREE.Float32BufferAttribute(cols,3));
+  const stars=new THREE.Points(pgeo,new THREE.PointsMaterial({size:0.075,map:glowTex,
+    vertexColors:true,transparent:true,blending:THREE.AdditiveBlending,depthWrite:false}));
+  holo.add(stars);
+  const core=new THREE.Mesh(new THREE.SphereGeometry(0.11,12,10),
+    new THREE.MeshBasicMaterial({color:0xd9f4ff}));
+  holo.add(core);grp.userData.core=core;
+  const ringA=new THREE.Mesh(new THREE.TorusGeometry(0.95,0.012,6,48),MAT.holoAdd);
+  ringA.rotation.x=Math.PI/2;holo.add(ringA);
+  const ringB=new THREE.Mesh(new THREE.TorusGeometry(1.22,0.012,6,48),MAT.holoAdd);
+  ringB.rotation.x=Math.PI/2;ringB.rotation.y=0.3;holo.add(ringB);
+  grp.userData={holo,ringB,core};
+  const beam=new THREE.Mesh(new THREE.CylinderGeometry(0.35,1.3,1.15,24,1,true),
+    new THREE.MeshBasicMaterial({color:PAL.holo,transparent:true,opacity:0.10,
+      blending:THREE.AdditiveBlending,depthWrite:false,side:THREE.DoubleSide}));
+  beam.position.y=1.55;grp.add(beam);
+  base.castShadow=base.receiveShadow=true;
+  return grp;
+}
+
+/* --- curved crew console with animated readout screens + stool --- */
+function buildCrewConsole(readoutTex){
+  const grp=new THREE.Group();
+  const deskTop=new THREE.Mesh(new THREE.RingGeometry(1.1,1.95,12,1,Math.PI/2-0.62,1.24),MAT.panel);
+  deskTop.rotation.x=-Math.PI/2;deskTop.position.y=0.94;grp.add(deskTop);
+  const skirt=new THREE.Mesh(
+    new THREE.CylinderGeometry(1.95,2.1,0.94,14,1,true,Math.PI-0.66,1.32),MAT.charcoal);
+  skirt.position.y=0.47;grp.add(skirt);
+  const kick=new THREE.Mesh(
+    new THREE.CylinderGeometry(1.12,1.12,0.86,12,1,true,Math.PI-0.6,1.2),MAT.panel);
+  kick.position.y=0.43;grp.add(kick);
+  const edge=new THREE.Mesh(new THREE.TorusGeometry(1.97,0.035,6,20,1.24),MAT.cyanStrip);
+  edge.rotation.x=-Math.PI/2;edge.rotation.z=Math.PI/2-0.62;
+  edge.position.y=0.96;grp.add(edge);
+  const screenMat=new THREE.MeshBasicMaterial({map:readoutTex,fog:false});
+  for(const [dx,ry] of[[-0.52,0.24],[0.52,-0.24]]){         // twin tilted readouts
+    const scr=new THREE.Mesh(new THREE.PlaneGeometry(0.92,0.55),screenMat);
+    scr.position.set(dx,1.3,-1.42);scr.rotation.set(-0.42,ry,0,'YXZ');
+    grp.add(scr);
+    const bezel=new THREE.Mesh(new THREE.PlaneGeometry(1.0,0.63),MAT.charcoal);
+    bezel.position.set(dx,1.295,-1.445);bezel.rotation.copy(scr.rotation);grp.add(bezel);
+  }
+  const stool=new THREE.Mesh(new THREE.CylinderGeometry(0.16,0.3,0.55,12),MAT.trim);
+  stool.position.set(0,0.28,0.55);grp.add(stool);
+  const cushion=new THREE.Mesh(new THREE.CylinderGeometry(0.4,0.4,0.16,16),MAT.seat);
+  cushion.position.set(0,0.62,0.55);grp.add(cushion);
+  const backrest=new THREE.Mesh(new THREE.BoxGeometry(0.72,0.5,0.1),MAT.seat);
+  backrest.position.set(0,1.05,0.92);backrest.rotation.x=0.18;grp.add(backrest);
+  shadowify(grp);
+  return grp;
+}
+
+/* --- standing wall station --- */
+function buildSideStation(readoutTex){
+  const grp=new THREE.Group();
+  const pedestal=new THREE.Mesh(new THREE.BoxGeometry(1.5,1.0,0.55),MAT.charcoal);
+  pedestal.position.set(0,0.5,-0.1);grp.add(pedestal);
+  const slab=new THREE.Mesh(new THREE.BoxGeometry(1.6,0.9,0.12),MAT.panel);
+  slab.position.set(0,1.35,0.02);slab.rotation.x=-0.55;grp.add(slab);
+  const scr=new THREE.Mesh(new THREE.PlaneGeometry(1.42,0.7),
+    new THREE.MeshBasicMaterial({map:readoutTex,fog:false}));
+  scr.position.set(0,1.39,0.095);scr.rotation.x=-0.55;grp.add(scr);
+  const lip=new THREE.Mesh(new THREE.BoxGeometry(1.6,0.05,0.05),MAT.orangeStrip);
+  lip.position.set(0,0.99,0.24);lip.rotation.x=-0.55;grp.add(lip);
+  shadowify(grp);
+  return grp;
+}
+
+/* --- aft doorway with split doors and lintel light --- */
+function buildAftDoor(){
+  const grp=new THREE.Group();
+  for(const sx of[-1.62,1.62]){                             // portal jambs + header
+    const jamb=new THREE.Mesh(new THREE.BoxGeometry(0.55,4.6,0.55),MAT.panel);
+    jamb.position.set(sx,2.3,0);grp.add(jamb);
+  }
+  const header=new THREE.Mesh(new THREE.BoxGeometry(3.8,0.7,0.55),MAT.panel);
+  header.position.y=4.25;grp.add(header);
+  for(const sx of[-0.71,0.71]){
+    const leaf=new THREE.Mesh(new THREE.BoxGeometry(1.34,3.9,0.18),MAT.charcoal);
+    leaf.position.set(sx,1.95,-0.12);grp.add(leaf);
+  }
+  const seam=new THREE.Mesh(new THREE.BoxGeometry(0.06,3.9,0.2),MAT.cyanStrip);
+  seam.position.set(0,2.05,-0.23);grp.add(seam);
+  const lintel=new THREE.Mesh(new THREE.BoxGeometry(2.8,0.12,0.14),MAT.orangeStrip);
+  lintel.position.set(0,4.15,-0.3);grp.add(lintel);
+  shadowify(grp);
+  return grp;
+}
+
+/* --- small service droid --- */
+function buildDroid(){
+  const grp=new THREE.Group();
+  const skirtD=new THREE.Mesh(new THREE.ConeGeometry(0.4,0.35,16,1,true),MAT.charcoal);
+  skirtD.position.y=0.2;grp.add(skirtD);
+  const body=new THREE.Mesh(new THREE.CylinderGeometry(0.32,0.38,0.55,16),MAT.trim);
+  body.position.y=0.62;grp.add(body);
+  const band=new THREE.Mesh(new THREE.CylinderGeometry(0.325,0.325,0.07,16),MAT.cyanStrip);
+  band.position.y=0.68;grp.add(band);
+  const headGrp=new THREE.Group();headGrp.position.y=0.94;grp.add(headGrp);
+  const head=new THREE.Mesh(new THREE.SphereGeometry(0.3,20,12,0,TAU,0,Math.PI/2),MAT.panel);
+  headGrp.add(head);
+  const eye=new THREE.Mesh(new THREE.SphereGeometry(0.06,10,8),
+    new THREE.MeshBasicMaterial({color:0xff9a3c}));
+  eye.position.set(0,0.13,-0.27);headGrp.add(eye);
+  const antenna=new THREE.Mesh(new THREE.CylinderGeometry(0.012,0.012,0.4,6),MAT.trim);
+  antenna.position.set(0.12,0.42,0.05);headGrp.add(antenna);
+  const tip=new THREE.Mesh(new THREE.SphereGeometry(0.035,8,6),MAT.orangeStrip);
+  tip.position.set(0.12,0.63,0.05);headGrp.add(tip);
+  for(const sx of[-1,1]){
+    const tool=new THREE.Mesh(new THREE.BoxGeometry(0.1,0.26,0.14),MAT.charcoal);
+    tool.position.set(sx*0.4,0.6,0);grp.add(tool);
+  }
+  grp.userData.headGrp=headGrp;
+  shadowify(grp);
+  return grp;
+}
+
+/* ================= ASSEMBLY / LAYOUT ================= */
+const deck=buildDeck();scene.add(deck);
+scene.add(buildHull());
+scene.add(buildViewscreen());
+const warp=buildWarpField();scene.add(warp);
+const ribs=buildRibs();scene.add(ribs);
+
+const chairStation=buildCaptainsChair();
+chairStation.position.set(0,0,3.8);scene.add(chairStation);
+
+const holoTable=buildHoloTable();
+holoTable.position.set(0,0,-1.2);scene.add(holoTable);
+
+const readouts=[makeReadoutTexture(0),makeReadoutTexture(1),makeReadoutTexture(0)];
+const consoleAngles=[Math.PI-0.52,Math.PI,Math.PI+0.52];
+for(let i=0;i<3;i++){
+  const th=consoleAngles[i];
+  const con=buildCrewConsole(readouts[i]);
+  con.position.set(Math.sin(th)*7.6,0,Math.cos(th)*7.6);
+  con.rotation.y=th+Math.PI;scene.add(con);
+}
+for(const th of[Math.PI/2,-Math.PI/2]){
+  const st=buildSideStation(readouts[1]);
+  st.position.set(Math.sin(th)*11.7,0,Math.cos(th)*11.7);
+  st.rotation.y=th+Math.PI;scene.add(st);
+}
+const door=buildAftDoor();
+door.position.set(0,0,12.7);door.rotation.y=Math.PI;scene.add(door);
+
+const droid=buildDroid();scene.add(droid);
+
+const statusLights=[];                                      // cycling wall status lights
+for(let i=0;i<13;i++){
+  const th=Math.PI+CFG.gapHalf+0.3+i*((TAU-CFG.gapHalf*2-0.6)/12);
+  const lampMat=new THREE.MeshBasicMaterial({color:0x3fd9ff});
+  const lamp=new THREE.Mesh(new THREE.SphereGeometry(0.09,10,8),lampMat);
+  lamp.position.set(Math.sin(th)*12.72,7.62,Math.cos(th)*12.72);
+  scene.add(lamp);statusLights.push(lampMat);
+}
+
+/* ================= LIGHTING RIG ================= */
+const keySpot=new THREE.SpotLight(0xcfe2ff,320,0,1.05,0.55,1.6);   // ceiling key
+keySpot.position.set(0,10.2,0);keySpot.target.position.set(0,0,0.5);
+keySpot.castShadow=true;keySpot.shadow.mapSize.set(1024,1024);
+keySpot.shadow.bias=-0.0005;
+scene.add(keySpot,keySpot.target);
+const screenWash=new THREE.PointLight(0x5f9fdc,150,42,2);          // viewscreen light wash
+screenWash.position.set(0,5,-10.6);scene.add(screenWash);
+const holoLight=new THREE.PointLight(PAL.holo,26,9,2);             // star-map glow
+holoLight.position.set(0,2.6,-1.2);scene.add(holoLight);
+const chairLight=new THREE.PointLight(PAL.orange,30,11,2);         // warm command accent
+chairLight.position.set(0,3.4,4.4);scene.add(chairLight);
+const hemi=new THREE.HemisphereLight(0x33415a,0x0a0c11,0.5);
+scene.add(hemi);
+
+/* ================= ANIMATION LOOP ================= */
+const clock=new THREE.Clock();
+const mtx=new THREE.Matrix4();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt=Math.min(clock.getDelta(),0.05),t=clock.elapsedTime;
+
+  const wd=warp.userData;                                   // starlines racing past
+  wd.tunnelMat.map.offset.y-=dt*0.55;
+  for(let i=0;i<wd.data.length;i++){
+    const s=wd.data[i];
+    s.z+=s.spd*dt;
+    if(s.z>8)s.z-=138;
+    mtx.makeScale(1,1,s.len);
+    mtx.setPosition(Math.cos(s.a)*s.rad,4.5+Math.sin(s.a)*s.rad,s.z);
+    wd.streaks.setMatrixAt(i,mtx);
+  }
+  wd.streaks.instanceMatrix.needsUpdate=true;
+  wd.bow.material.opacity=0.8+Math.sin(t*1.7)*0.15;
+
+  for(let i=0;i<readouts.length;i++)readouts[i].offset.x=(t*(0.05+i*0.035))%1;
+
+  const hu=holoTable.userData;                              // star map slowly turning
+  hu.holo.rotation.y=t*0.28;
+  hu.ringB.rotation.z=-t*0.5;
+  hu.core.scale.setScalar(1+Math.sin(t*2.4)*0.18);
+
+  for(let i=0;i<statusLights.length;i++){                   // cycling status colors
+    const ph=t*1.4-i*0.48,pulse=0.35+Math.max(0,Math.sin(ph))**3*0.65;
+    statusLights[i].color.setHSL(0.52-(i%3)*0.2,0.95,0.22+pulse*0.42);
+  }
+  const strips=ribs.userData.strips;                        // rib coves breathing
+  for(let i=0;i<strips.length;i++)
+    strips[i].material.emissiveIntensity=1.7+Math.sin(t*0.9+i*1.3)*0.7;
+
+  const da=t*0.32;                                          // droid patrol ellipse
+  droid.position.set(Math.sin(da)*5.2,0,-2.2+Math.cos(da)*2.4);
+  droid.rotation.y=Math.atan2(-5.2*Math.cos(da),2.4*Math.sin(da));
+  droid.position.y=Math.abs(Math.sin(t*3.1))*0.03;
+  droid.userData.headGrp.rotation.y=Math.sin(t*0.7)*0.5;
+
+  deck.userData.screenPool.material.opacity=0.75+Math.sin(t*1.1)*0.2;
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+/* ================= RESIZE ================= */
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+</script>
+</body>
+</html>

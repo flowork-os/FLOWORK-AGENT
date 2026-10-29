@@ -1,0 +1,750 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Neon Wireframe Piano</title>
+<style>
+  html, body {
+    margin: 0;
+    padding: 0;
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: #08070d;
+  }
+  canvas { display: block; }
+  #hint {
+    position: fixed;
+    left: 50%;
+    bottom: 18px;
+    transform: translateX(-50%);
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 11px;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    color: rgba(255, 120, 220, 0.55);
+    pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x08070d);
+scene.fog = new THREE.FogExp2(0x08070d, 0.018);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(2.9, 1.85, 3.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 2.0;
+controls.maxDistance = 12.0;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 0.72, 0);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + key (shadow casting) + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xff56d8, 0x120a1e, 0.45);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffc8f2, 1.25);
+key.position.set(4.5, 6.5, 4.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 24;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0012;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x40e9ff, 0.4);
+fill.position.set(-5.0, 2.4, 3.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xa060ff, 0.55);
+rim.position.set(-2.5, 3.0, -5.5);
+scene.add(rim);
+
+const magentaGlow = new THREE.PointLight(0xff2fb0, 2.2, 9, 2);
+magentaGlow.position.set(0, 0.95, 0);
+scene.add(magentaGlow);
+
+const cyanGlow = new THREE.PointLight(0x25f2ff, 1.4, 6, 2);
+cyanGlow.position.set(0, 0.78, 0.95);
+scene.add(cyanGlow);
+
+// ---------------------------------------------------------------------------
+// Shadow-only ground plane
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint neon floor grid for depth (pure lines, no solid surface)
+const grid = new THREE.GridHelper(40, 40, 0x4a1450, 0x260a34);
+grid.material.transparent = true;
+grid.material.opacity = 0.28;
+grid.material.depthWrite = false;
+grid.position.y = 0.001;
+scene.add(grid);
+
+// ---------------------------------------------------------------------------
+// Neon materials
+// ---------------------------------------------------------------------------
+const COL_MAGENTA = 0xff2ec4;
+const COL_CYAN     = 0x2ff5ff;
+const COL_VIOLET   = 0x9b5cff;
+
+function neonMat(hex, intensity) {
+  const m = new THREE.MeshStandardMaterial({
+    color: new THREE.Color(hex),
+    emissive: new THREE.Color(hex),
+    emissiveIntensity: intensity,
+    roughness: 0.35,
+    metalness: 0.0
+  });
+  return m;
+}
+
+const matMagenta = neonMat(COL_MAGENTA, 2.6);
+const matMagentaDim = neonMat(COL_MAGENTA, 1.7);
+const matCyan = neonMat(COL_CYAN, 2.4);
+const matViolet = neonMat(COL_VIOLET, 1.9);
+
+// Additive halo material factory (soft bloom-ish sleeve around tubes)
+function haloMat(hex, opacity) {
+  return new THREE.MeshBasicMaterial({
+    color: new THREE.Color(hex),
+    transparent: true,
+    opacity: opacity,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false,
+    side: THREE.BackSide
+  });
+}
+
+const haloMagenta = haloMat(COL_MAGENTA, 0.16);
+const haloCyan = haloMat(COL_CYAN, 0.14);
+const haloViolet = haloMat(COL_VIOLET, 0.10);
+
+// Thin line materials (for filaments / threads)
+const lineCyan = new THREE.LineBasicMaterial({
+  color: new THREE.Color(COL_CYAN),
+  transparent: true,
+  opacity: 0.9,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+const lineViolet = new THREE.LineBasicMaterial({
+  color: new THREE.Color(COL_VIOLET),
+  transparent: true,
+  opacity: 0.75,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+// ---------------------------------------------------------------------------
+// Root object — ONE centered piano
+// ---------------------------------------------------------------------------
+const piano = new THREE.Group();
+scene.add(piano);
+
+const tubeGroup = new THREE.Group();     // magenta case tubes
+const haloGroup = new THREE.Group();     // additive halo sleeves
+const filamentGroup = new THREE.Group(); // cyan keyboard filaments
+const stringGroup = new THREE.Group();   // violet string-plate threads
+piano.add(tubeGroup, haloGroup, filamentGroup, stringGroup);
+
+// -- Tube helpers -----------------------------------------------------------
+const TUBE_R = 0.016;
+const HALO_SCALE = 2.6;
+
+function addTube(points, radius, closed, mat, halo, radialSeg, tubularSeg) {
+  const pts = points.map(p => (p.isVector3 ? p.clone() : new THREE.Vector3(p[0], p[1], p[2])));
+  if (pts.length < 2) return null;
+  const curve = new THREE.CatmullRomCurve3(pts, !!closed, 'catmullrom', 0.5);
+  const segs = tubularSeg || Math.max(24, Math.min(400, Math.round(curve.getLength() * 46)));
+  const geo = new THREE.TubeGeometry(curve, segs, radius, radialSeg || 8, !!closed);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  tubeGroup.add(mesh);
+  if (halo) {
+    const hgeo = new THREE.TubeGeometry(curve, Math.max(16, Math.floor(segs / 2)), radius * HALO_SCALE, 6, !!closed);
+    const hmesh = new THREE.Mesh(hgeo, halo);
+    haloGroup.add(hmesh);
+  }
+  return mesh;
+}
+
+function addStraightTube(a, b, radius, mat, halo) {
+  const va = new THREE.Vector3(a[0], a[1], a[2]);
+  const vb = new THREE.Vector3(b[0], b[1], b[2]);
+  const dir = new THREE.Vector3().subVectors(vb, va);
+  const len = dir.length();
+  if (len < 1e-6) return null;
+  const geo = new THREE.CylinderGeometry(radius, radius, len, 8, 1, true);
+  geo.translate(0, len / 2, 0);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.copy(va);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  mesh.castShadow = true;
+  tubeGroup.add(mesh);
+  if (halo) {
+    const hgeo = new THREE.CylinderGeometry(radius * HALO_SCALE, radius * HALO_SCALE, len, 6, 1, true);
+    hgeo.translate(0, len / 2, 0);
+    const hmesh = new THREE.Mesh(hgeo, halo);
+    hmesh.position.copy(va);
+    hmesh.quaternion.copy(mesh.quaternion);
+    haloGroup.add(hmesh);
+  }
+  return mesh;
+}
+
+function addNode(pos, radius, mat) {
+  const m = new THREE.Mesh(new THREE.SphereGeometry(radius, 12, 10), mat);
+  m.position.set(pos[0], pos[1], pos[2]);
+  tubeGroup.add(m);
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Baby grand case outline (plan view, XZ) — realistic-ish proportions.
+// Width (X) ~1.48 m, length (Z) ~1.72 m. Keyboard at +Z (front).
+// ---------------------------------------------------------------------------
+const HALF_W = 0.74;          // half width at keyboard end
+const FRONT_Z = 0.86;         // front (keyboard) edge
+const TAIL_Z = -0.86;         // tail
+const CASE_Y = 0.66;          // top of case (rim height)
+const BOTTOM_Y = 0.50;        // underside of case
+
+// Build the classic grand-piano plan outline as a closed loop.
+// Left side (bass, -X) is a long straight spine; right side (treble, +X)
+// bows out into the big curve, tapering into the rounded tail.
+function casePlanPoints() {
+  const p = [];
+  // Front edge: from left-front corner to right-front corner (keyboard side)
+  p.push(new THREE.Vector2(-HALF_W, FRONT_Z));
+  p.push(new THREE.Vector2(-0.30, FRONT_Z));
+  p.push(new THREE.Vector2(0.30, FRONT_Z));
+  p.push(new THREE.Vector2(HALF_W, FRONT_Z));
+  // Treble side curving out then sweeping back to the tail (the "bent side")
+  p.push(new THREE.Vector2(0.775, 0.66));
+  p.push(new THREE.Vector2(0.80, 0.40));
+  p.push(new THREE.Vector2(0.775, 0.10));
+  p.push(new THREE.Vector2(0.70, -0.20));
+  p.push(new THREE.Vector2(0.575, -0.46));
+  p.push(new THREE.Vector2(0.415, -0.66));
+  p.push(new THREE.Vector2(0.225, -0.795));
+  p.push(new THREE.Vector2(0.03, -0.855));
+  // Rounded tail
+  p.push(new THREE.Vector2(-0.20, -0.865));
+  p.push(new THREE.Vector2(-0.42, -0.845));
+  p.push(new THREE.Vector2(-0.60, -0.83));
+  // Bass side straight spine back to the front
+  p.push(new THREE.Vector2(-HALF_W, -0.80));
+  p.push(new THREE.Vector2(-HALF_W, -0.35));
+  p.push(new THREE.Vector2(-HALF_W, 0.20));
+  return p;
+}
+
+const planPts = casePlanPoints();
+
+// Smooth, densely-resampled plan curve (used for rim tubes + lid + plate).
+const planCurve2D = new THREE.CatmullRomCurve3(
+  planPts.map(v => new THREE.Vector3(v.x, 0, v.y)),
+  true,
+  'catmullrom',
+  0.5
+);
+const PLAN_SAMPLES = 220;
+const planSampled = planCurve2D.getSpacedPoints(PLAN_SAMPLES); // closed loop samples
+
+function planAtY(y, inset) {
+  const out = [];
+  for (let i = 0; i < PLAN_SAMPLES; i++) {
+    const s = planSampled[i];
+    let x = s.x;
+    let z = s.z;
+    if (inset && inset !== 0) {
+      // Inset toward the centroid-ish axis for inner rim lines.
+      const cx = 0.0;
+      const cz = -0.05;
+      const dx = x - cx;
+      const dz = z - cz;
+      const d = Math.hypot(dx, dz) || 1;
+      x -= (dx / d) * inset;
+      z -= (dz / d) * inset;
+    }
+    out.push(new THREE.Vector3(x, y, z));
+  }
+  return out;
+}
+
+// Top rim (bright) and bottom rim of the case — closed loops
+addTube(planAtY(CASE_Y, 0), TUBE_R, true, matMagenta, haloMagenta, 8, 320);
+addTube(planAtY(BOTTOM_Y, 0), TUBE_R * 0.85, true, matMagentaDim, haloMagenta, 8, 320);
+
+// Vertical rim posts connecting top and bottom rims (the case "wall" as wires)
+const topLoop = planAtY(CASE_Y, 0);
+const botLoop = planAtY(BOTTOM_Y, 0);
+const POST_COUNT = 34;
+for (let i = 0; i < POST_COUNT; i++) {
+  const idx = Math.round((i / POST_COUNT) * PLAN_SAMPLES) % PLAN_SAMPLES;
+  const t = topLoop[idx];
+  const b = botLoop[idx];
+  addStraightTube([t.x, t.y, t.z], [b.x, b.y, b.z], TUBE_R * 0.45, matMagentaDim, null);
+}
+
+// ---------------------------------------------------------------------------
+// Keyboard cheek-block / key bed frame (front box, protrudes forward at +Z)
+// ---------------------------------------------------------------------------
+const KB_FRONT_Z = 1.075;   // front edge of the key slip
+const KB_Y_TOP = CASE_Y;
+const KB_Y_BOT = 0.545;
+const KB_HALF_W = 0.70;
+
+const kbFrame = [
+  [[-KB_HALF_W, KB_Y_TOP, FRONT_Z], [-KB_HALF_W, KB_Y_TOP, KB_FRONT_Z]],
+  [[KB_HALF_W, KB_Y_TOP, FRONT_Z], [KB_HALF_W, KB_Y_TOP, KB_FRONT_Z]],
+  [[-KB_HALF_W, KB_Y_TOP, KB_FRONT_Z], [KB_HALF_W, KB_Y_TOP, KB_FRONT_Z]],
+  [[-KB_HALF_W, KB_Y_BOT, KB_FRONT_Z], [KB_HALF_W, KB_Y_BOT, KB_FRONT_Z]],
+  [[-KB_HALF_W, KB_Y_TOP, KB_FRONT_Z], [-KB_HALF_W, KB_Y_BOT, KB_FRONT_Z]],
+  [[KB_HALF_W, KB_Y_TOP, KB_FRONT_Z], [KB_HALF_W, KB_Y_BOT, KB_FRONT_Z]],
+  [[-KB_HALF_W, KB_Y_BOT, KB_FRONT_Z], [-KB_HALF_W, KB_Y_BOT, FRONT_Z]],
+  [[KB_HALF_W, KB_Y_BOT, KB_FRONT_Z], [KB_HALF_W, KB_Y_BOT, FRONT_Z]]
+];
+kbFrame.forEach(seg => addStraightTube(seg[0], seg[1], TUBE_R * 0.8, matMagenta, haloMagenta));
+
+// Fallboard / music desk hint: two magenta rails just behind the keys
+addStraightTube([-KB_HALF_W, CASE_Y + 0.10, FRONT_Z - 0.02], [KB_HALF_W, CASE_Y + 0.10, FRONT_Z - 0.02], TUBE_R * 0.7, matMagenta, haloMagenta);
+addStraightTube([-KB_HALF_W, CASE_Y, FRONT_Z - 0.02], [-KB_HALF_W, CASE_Y + 0.10, FRONT_Z - 0.02], TUBE_R * 0.5, matMagentaDim, null);
+addStraightTube([KB_HALF_W, CASE_Y, FRONT_Z - 0.02], [KB_HALF_W, CASE_Y + 0.10, FRONT_Z - 0.02], TUBE_R * 0.5, matMagentaDim, null);
+// Music desk uprights + top edge
+addStraightTube([-0.34, CASE_Y + 0.10, FRONT_Z - 0.06], [-0.30, CASE_Y + 0.34, FRONT_Z - 0.16], TUBE_R * 0.5, matMagentaDim, null);
+addStraightTube([0.34, CASE_Y + 0.10, FRONT_Z - 0.06], [0.30, CASE_Y + 0.34, FRONT_Z - 0.16], TUBE_R * 0.5, matMagentaDim, null);
+addStraightTube([-0.30, CASE_Y + 0.34, FRONT_Z - 0.16], [0.30, CASE_Y + 0.34, FRONT_Z - 0.16], TUBE_R * 0.55, matMagenta, haloMagenta);
+
+// ---------------------------------------------------------------------------
+// Keyboard: ladder of cyan filament lines
+// ---------------------------------------------------------------------------
+const KEY_Z_BACK = FRONT_Z - 0.02;
+const KEY_Z_FRONT = KB_FRONT_Z - 0.025;
+const KEY_Y = CASE_Y + 0.004;
+const KEY_SPAN = KB_HALF_W - 0.035;  // half-span of playable keys
+const WHITE_KEYS = 52;               // 52 white keys on an 88-key piano
+
+// Cyan side rails of the ladder
+function addFilamentLine(a, b, mat) {
+  const g = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(a[0], a[1], a[2]),
+    new THREE.Vector3(b[0], b[1], b[2])
+  ]);
+  const l = new THREE.Line(g, mat);
+  filamentGroup.add(l);
+  return l;
+}
+
+// Ladder rungs = the white-key separation filaments
+const whiteStep = (KEY_SPAN * 2) / WHITE_KEYS;
+for (let i = 0; i <= WHITE_KEYS; i++) {
+  const x = -KEY_SPAN + i * whiteStep;
+  addFilamentLine([x, KEY_Y, KEY_Z_BACK], [x, KEY_Y, KEY_Z_FRONT], lineCyan);
+}
+// Ladder rails (front, back, mid) as slim cyan tubes for solidity
+function addCyanRail(a, b, r) {
+  const va = new THREE.Vector3(a[0], a[1], a[2]);
+  const vb = new THREE.Vector3(b[0], b[1], b[2]);
+  const dir = new THREE.Vector3().subVectors(vb, va);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(r, r, len, 6, 1, true);
+  geo.translate(0, len / 2, 0);
+  const mesh = new THREE.Mesh(geo, matCyan);
+  mesh.position.copy(va);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  mesh.castShadow = true;
+  filamentGroup.add(mesh);
+  const hgeo = new THREE.CylinderGeometry(r * 3.0, r * 3.0, len, 6, 1, true);
+  hgeo.translate(0, len / 2, 0);
+  const hmesh = new THREE.Mesh(hgeo, haloCyan);
+  hmesh.position.copy(va);
+  hmesh.quaternion.copy(mesh.quaternion);
+  haloGroup.add(hmesh);
+  return mesh;
+}
+
+addCyanRail([-KEY_SPAN, KEY_Y, KEY_Z_BACK], [KEY_SPAN, KEY_Y, KEY_Z_BACK], 0.0075);
+addCyanRail([-KEY_SPAN, KEY_Y, KEY_Z_FRONT], [KEY_SPAN, KEY_Y, KEY_Z_FRONT], 0.0075);
+addCyanRail([-KEY_SPAN, KEY_Y, KEY_Z_BACK], [-KEY_SPAN, KEY_Y, KEY_Z_FRONT], 0.0055);
+addCyanRail([KEY_SPAN, KEY_Y, KEY_Z_BACK], [KEY_SPAN, KEY_Y, KEY_Z_FRONT], 0.0055);
+
+// Black keys: short raised cyan bars in the standard 2-3 pattern.
+const BLACK_PATTERN = [true, true, false, true, true, true, false]; // gaps after E and B
+const BLACK_Y = KEY_Y + 0.028;
+const BLACK_Z_BACK = KEY_Z_BACK + 0.006;
+const BLACK_Z_FRONT = KEY_Z_BACK + (KEY_Z_FRONT - KEY_Z_BACK) * 0.60;
+// White key index 0 corresponds to A0; pattern offset so it lines up musically.
+for (let i = 0; i < WHITE_KEYS - 1; i++) {
+  const patIdx = (i + 5) % 7; // A B | C D E F G  -> sharps after A, C, D, F, G
+  if (!BLACK_PATTERN[patIdx]) continue;
+  const x = -KEY_SPAN + (i + 1) * whiteStep;
+  const bar = new THREE.Mesh(
+    new THREE.BoxGeometry(whiteStep * 0.52, 0.006, BLACK_Z_FRONT - BLACK_Z_BACK),
+    matCyan
+  );
+  bar.position.set(x, BLACK_Y, (BLACK_Z_BACK + BLACK_Z_FRONT) / 2);
+  bar.castShadow = true;
+  filamentGroup.add(bar);
+  // vertical filaments tying the black key up from the key bed
+  addFilamentLine([x, KEY_Y, BLACK_Z_BACK], [x, BLACK_Y, BLACK_Z_BACK], lineCyan);
+  addFilamentLine([x, KEY_Y, BLACK_Z_FRONT], [x, BLACK_Y, BLACK_Z_FRONT], lineCyan);
+}
+
+// ---------------------------------------------------------------------------
+// Internal string plate: grid of thin violet threads inside the empty body
+// ---------------------------------------------------------------------------
+const PLATE_Y = 0.60;
+
+// Bounds of the interior region behind the keyboard.
+function insideCase(x, z) {
+  // Point-in-polygon against the sampled plan loop (slightly inset).
+  let inside = false;
+  const n = PLAN_SAMPLES;
+  for (let i = 0, j = n - 1; i < n; j = i++) {
+    const xi = planSampled[i].x, zi = planSampled[i].z;
+    const xj = planSampled[j].x, zj = planSampled[j].z;
+    const intersect = ((zi > z) !== (zj > z)) &&
+      (x < ((xj - xi) * (z - zi)) / ((zj - zi) || 1e-9) + xi);
+    if (intersect) inside = !inside;
+  }
+  return inside;
+}
+
+const PLATE_Z_FRONT = FRONT_Z - 0.075;   // just behind the keys
+const PLATE_MARGIN = 0.055;
+
+// Longitudinal strings: fan from the tuning-pin block (front) to the tail.
+const STRING_COUNT = 78;
+for (let i = 0; i < STRING_COUNT; i++) {
+  const t = (i + 0.5) / STRING_COUNT;         // 0 = bass (-X) .. 1 = treble (+X)
+  const xFront = -0.665 + t * 1.33;
+  // Rear anchor: bass strings run long to the tail, treble strings stop short.
+  const zRearBase = -0.80 + Math.pow(t, 1.35) * 1.32;
+  let xRear = xFront * (0.30 + 0.55 * t);
+  let zRear = zRearBase;
+
+  // Clamp the rear anchor to stay inside the case outline.
+  let guard = 0;
+  while (!insideCase(xRear, zRear) && guard < 24) {
+    xRear *= 0.9;
+    zRear += 0.02;
+    guard++;
+  }
+  if (!insideCase(xRear, zRear)) { xRear = 0; zRear = -0.4; }
+
+  const yFront = PLATE_Y;
+  const yRear = PLATE_Y - 0.012;
+
+  const g = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(xFront, yFront, PLATE_Z_FRONT),
+    new THREE.Vector3(xRear, yRear, zRear)
+  ]);
+  const l = new THREE.Line(g, lineViolet);
+  stringGroup.add(l);
+}
+
+// Transverse plate ribs — thin violet threads crossing the strings.
+const RIB_COUNT = 11;
+for (let r = 0; r < RIB_COUNT; r++) {
+  const tz = r / (RIB_COUNT - 1);
+  const z = PLATE_Z_FRONT - tz * (PLATE_Z_FRONT - (-0.80));
+  const pts = [];
+  const STEPS = 64;
+  for (let s = 0; s <= STEPS; s++) {
+    const x = -0.80 + (s / STEPS) * 1.60;
+    if (insideCase(x, z)) {
+      pts.push(new THREE.Vector3(x, PLATE_Y - 0.006 - tz * 0.006, z));
+    } else if (pts.length > 1) {
+      const g = new THREE.BufferGeometry().setFromPoints(pts.slice());
+      stringGroup.add(new THREE.Line(g, lineViolet));
+      pts.length = 0;
+    } else {
+      pts.length = 0;
+    }
+  }
+  if (pts.length > 1) {
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    stringGroup.add(new THREE.Line(g, lineViolet));
+  }
+}
+
+// Harp frame: a violet tube tracing the plate perimeter, inset from the rim.
+const plateRim = [];
+for (let i = 0; i < PLAN_SAMPLES; i += 2) {
+  const s = planSampled[i];
+  const dx = s.x - 0.0;
+  const dz = s.z - (-0.05);
+  const d = Math.hypot(dx, dz) || 1;
+  const inset = PLATE_MARGIN;
+  const x = s.x - (dx / d) * inset;
+  const z = s.z - (dz / d) * inset;
+  if (z < PLATE_Z_FRONT) {
+    plateRim.push(new THREE.Vector3(x, PLATE_Y + 0.004, z));
+  }
+}
+if (plateRim.length > 3) {
+  const rimCurve = new THREE.CatmullRomCurve3(plateRim, false, 'catmullrom', 0.5);
+  const rimGeo = new THREE.TubeGeometry(rimCurve, 220, 0.006, 6, false);
+  const rimMesh = new THREE.Mesh(rimGeo, matViolet);
+  rimMesh.castShadow = true;
+  stringGroup.add(rimMesh);
+  const rimHalo = new THREE.Mesh(
+    new THREE.TubeGeometry(rimCurve, 110, 0.018, 6, false),
+    haloViolet
+  );
+  haloGroup.add(rimHalo);
+}
+// Pin-block bar across the front of the plate
+addStraightTube([-0.685, PLATE_Y + 0.006, PLATE_Z_FRONT], [0.685, PLATE_Y + 0.006, PLATE_Z_FRONT], 0.008, matViolet, haloViolet);
+
+// ---------------------------------------------------------------------------
+// Raised lid (top) traced in magenta, hinged along the bass side, propped open
+// ---------------------------------------------------------------------------
+const LID_HINGE_X = -HALF_W;
+const LID_ANGLE = THREE.MathUtils.degToRad(38);
+
+const lid = new THREE.Group();
+lid.position.set(LID_HINGE_X, CASE_Y + 0.035, 0);
+piano.add(lid);
+
+// Lid outline = the case plan outline, shifted into hinge-local space.
+// Only the portion of the loop is used; we rebuild it as a closed loop in
+// local coords where +X runs away from the hinge.
+const lidLoop = [];
+for (let i = 0; i < PLAN_SAMPLES; i += 2) {
+  const s = planSampled[i];
+  lidLoop.push(new THREE.Vector3(s.x - LID_HINGE_X, 0, s.z));
+}
+const lidCurve = new THREE.CatmullRomCurve3(lidLoop, true, 'catmullrom', 0.5);
+const lidTube = new THREE.Mesh(
+  new THREE.TubeGeometry(lidCurve, 340, TUBE_R * 0.95, 8, true),
+  matMagenta
+);
+lidTube.castShadow = true;
+lid.add(lidTube);
+const lidHalo = new THREE.Mesh(
+  new THREE.TubeGeometry(lidCurve, 170, TUBE_R * 0.95 * HALO_SCALE, 6, true),
+  haloMagenta
+);
+lid.add(lidHalo);
+
+// Lid ribs: a few spanning wires so the open lid reads as a plane of wire.
+const LID_RIB_COUNT = 7;
+for (let i = 1; i < LID_RIB_COUNT; i++) {
+  const z = -0.82 + (i / LID_RIB_COUNT) * 1.68;
+  // Find the loop's x-extent at this z (in lid-local coords)
+  let minX = Infinity, maxX = -Infinity;
+  for (let s = 0; s <= 200; s++) {
+    const x = s / 200 * 1.60 - 0.80;
+    if (insideCase(x, z)) {
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+    }
+  }
+  if (!isFinite(minX) || !isFinite(maxX) || maxX - minX < 0.05) continue;
+  const g = new THREE.BufferGeometry().setFromPoints([
+    new THREE.Vector3(minX - LID_HINGE_X, 0, z),
+    new THREE.Vector3(maxX - LID_HINGE_X, 0, z)
+  ]);
+  const l = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: new THREE.Color(COL_MAGENTA),
+    transparent: true,
+    opacity: 0.55,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  }));
+  lid.add(l);
+}
+// Lid spine along the hinge
+const lidSpine = new THREE.Mesh(
+  new THREE.CylinderGeometry(TUBE_R * 0.6, TUBE_R * 0.6, 1.70, 8, 1, true),
+  matMagentaDim
+);
+lidSpine.rotation.x = Math.PI / 2;
+lidSpine.position.set(0.004, 0, 0.0);
+lid.add(lidSpine);
+
+lid.rotation.z = LID_ANGLE;
+
+// ---------------------------------------------------------------------------
+// Lid prop stick (magenta tube from the case rim up to the underside of lid)
+// ---------------------------------------------------------------------------
+const PROP_BASE = new THREE.Vector3(0.60, CASE_Y + 0.01, 0.16);
+// Point on the lid (local) that the prop meets, converted to world/piano space.
+const propLidLocal = new THREE.Vector3(1.14, 0, 0.16);
+const propLidWorld = propLidLocal.clone();
+propLidWorld.applyAxisAngle(new THREE.Vector3(0, 0, 1), LID_ANGLE);
+propLidWorld.add(new THREE.Vector3(LID_HINGE_X, CASE_Y + 0.035, 0));
+
+addStraightTube(
+  [PROP_BASE.x, PROP_BASE.y, PROP_BASE.z],
+  [propLidWorld.x, propLidWorld.y, propLidWorld.z],
+  TUBE_R * 0.62,
+  matMagenta,
+  haloMagenta
+);
+addNode([PROP_BASE.x, PROP_BASE.y, PROP_BASE.z], TUBE_R * 1.05, matMagenta);
+addNode([propLidWorld.x, propLidWorld.y, propLidWorld.z], TUBE_R * 1.05, matMagenta);
+
+// ---------------------------------------------------------------------------
+// Three tapered legs (two front, one at the tail) + pedal lyre
+// ---------------------------------------------------------------------------
+function addTaperedLeg(x, z, topY, bottomY, topR, botR) {
+  const h = topY - bottomY;
+  const geo = new THREE.CylinderGeometry(topR, botR, h, 12, 1, true);
+  const mesh = new THREE.Mesh(geo, matMagenta);
+  mesh.position.set(x, bottomY + h / 2, z);
+  mesh.castShadow = true;
+  tubeGroup.add(mesh);
+
+  const halo = new THREE.Mesh(
+    new THREE.CylinderGeometry(topR * 1.9, botR * 2.6, h, 8, 1, true),
+    haloMagenta
+  );
+  halo.position.copy(mesh.position);
+  haloGroup.add(halo);
+
+  // Wireframe rings + vertical filaments so the leg reads as a wire cage
+  const RINGS = 5;
+  for (let i = 0; i <= RINGS; i++) {
+    const t = i / RINGS;
+    const y = bottomY + t * h;
+    const r = botR + (topR - botR) * t;
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(r + 0.004, 0.0035, 6, 24),
+      matMagentaDim
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.set(x, y, z);
+    ring.castShadow = true;
+    tubeGroup.add(ring);
+  }
+  // Foot / caster
+  const foot = new THREE.Mesh(
+    new THREE.TorusGeometry(botR + 0.018, 0.006, 8, 28),
+    matMagenta
+  );
+  foot.rotation.x = Math.PI / 2;
+  foot.position.set(x, bottomY + 0.016, z);
+  foot.castShadow = true;
+  tubeGroup.add(foot);
+}
+
+const LEG_TOP = BOTTOM_Y;
+const LEG_BOT = 0.012;
+addTaperedLeg(-0.60, 0.68, LEG_TOP, LEG_BOT, 0.055, 0.028);
+addTaperedLeg(0.60, 0.68, LEG_TOP, LEG_BOT, 0.055, 0.028);
+addTaperedLeg(-0.52, -0.66, LEG_TOP, LEG_BOT, 0.055, 0.028);
+
+// Pedal lyre: two magenta struts down to a pedal bar with three cyan pedals.
+const LYRE_TOP_Y = BOTTOM_Y - 0.005;
+const LYRE_BOT_Y = 0.13;
+const LYRE_Z = 0.60;
+addStraightTube([-0.075, LYRE_TOP_Y, LYRE_Z], [-0.055, LYRE_BOT_Y, LYRE_Z + 0.055], TUBE_R * 0.55, matMagenta, haloMagenta);
+addStraightTube([0.075, LYRE_TOP_Y, LYRE_Z], [0.055, LYRE_BOT_Y, LYRE_Z + 0.055], TUBE_R * 0.55, matMagenta, haloMagenta);
+addStraightTube([-0.055, LYRE_BOT_Y, LYRE_Z + 0.055], [0.055, LYRE_BOT_Y, LYRE_Z + 0.055], TUBE_R * 0.5, matMagenta, haloMagenta);
+for (let i = -1; i <= 1; i++) {
+  const px = i * 0.042;
+  addCyanRail([px, LYRE_BOT_Y, LYRE_Z + 0.055], [px, LYRE_BOT_Y - 0.012, LYRE_Z + 0.155], 0.005);
+}
+
+// ---------------------------------------------------------------------------
+// Center the whole piano on the origin (X/Z) — single centered object.
+// ---------------------------------------------------------------------------
+const bbox = new THREE.Box3().setFromObject(piano);
+const center = new THREE.Vector3();
+bbox.getCenter(center);
+piano.position.x -= center.x;
+piano.position.z -= center.z;
+
+// ---------------------------------------------------------------------------
+// Animation: gentle neon "hum" — subtle emissive flicker
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  const hum = 1.0 + 0.055 * Math.sin(t * 7.3) + 0.03 * Math.sin(t * 17.1 + 1.3);
+  matMagenta.emissiveIntensity = 2.6 * hum;
+  matMagentaDim.emissiveIntensity = 1.7 * hum;
+  matCyan.emissiveIntensity = 2.4 * (1.0 + 0.05 * Math.sin(t * 5.1 + 2.0));
+  matViolet.emissiveIntensity = 1.9 * (1.0 + 0.06 * Math.sin(t * 3.7 + 0.6));
+
+  haloMagenta.opacity = 0.16 * hum;
+  haloCyan.opacity = 0.14 * (1.0 + 0.08 * Math.sin(t * 5.1 + 2.0));
+  lineViolet.opacity = 0.70 + 0.10 * Math.sin(t * 2.3);
+
+  magentaGlow.intensity = 2.2 * hum;
+  cyanGlow.intensity = 1.4 * (1.0 + 0.08 * Math.sin(t * 4.2));
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

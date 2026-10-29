@@ -1,0 +1,443 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Miniature Japanese Garden</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #15171a; overflow: hidden; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 0.98;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ *  Scene & camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171a);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(36, 27, 42);
+
+// Subtle image-based lighting for realistic material reflections (no assets).
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere + key / fill / rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xbfd4e6, 0x2b241b, 0.35);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.1);
+key.position.set(28, 40, 22);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 140;
+key.shadow.camera.left = -34;
+key.shadow.camera.right = 34;
+key.shadow.camera.top = 34;
+key.shadow.camera.bottom = -34;
+key.shadow.bias = -0.0005;
+key.shadow.normalBias = 0.02;
+key.target.position.set(0, 2, 0);
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x9fb6d0, 0.45);
+fill.position.set(-30, 16, 12);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 0.95);
+rim.position.set(-14, 14, -32);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-catching studio floor (receive only)
+ * ------------------------------------------------------------------ */
+const shadowFloor = new THREE.Mesh(
+  new THREE.PlaneGeometry(600, 600),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+shadowFloor.rotation.x = -Math.PI / 2;
+shadowFloor.position.y = -2.02;
+shadowFloor.receiveShadow = true;
+scene.add(shadowFloor);
+
+/* ------------------------------------------------------------------ *
+ *  Helpers
+ * ------------------------------------------------------------------ */
+// deterministic PRNG
+function makeRng(seed) {
+  return function () {
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = makeRng(20260706);
+
+// irregular, flattened stone
+function makeStoneGeo(r, flatten, rnd) {
+  const geo = new THREE.IcosahedronGeometry(r, 2);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  const s1 = rnd() * 10, s2 = rnd() * 10, s3 = rnd() * 10;
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const nx = v.x / r, ny = v.y / r, nz = v.z / r;
+    const n = 0.12 * (Math.sin(nx * 3.0 + s1) + Math.cos(ny * 4.0 + s2) + Math.sin(nz * 3.5 + s3)) / 1.6;
+    v.multiplyScalar(1 + n);
+    v.y *= flatten;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+function stoneMesh(r, flatten, baseHex, lightJitter) {
+  const geo = makeStoneGeo(r, flatten, rand);
+  const col = new THREE.Color(baseHex).offsetHSL(0, (rand() - 0.5) * 0.03, (rand() - 0.5) * (lightJitter || 0.08));
+  const mat = new THREE.MeshStandardMaterial({ color: col, roughness: 0.84, metalness: 0.02 });
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+// clipped rounded earth/moss mound (vertex-coloured dome)
+function makeMound(r, h, baseHex, topHex, rnd) {
+  const geo = new THREE.SphereGeometry(r, 30, 20, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  geo.scale(1, h / r, 1);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  const s1 = rnd() * 10, s2 = rnd() * 10, s3 = rnd() * 10;
+  const cB = new THREE.Color(baseHex), cT = new THREE.Color(topHex), c = new THREE.Color();
+  const colors = [];
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const n = 0.05 * (Math.sin(v.x * 1.1 + s1) + Math.cos(v.z * 1.2 + s2) + Math.sin(v.y * 1.6 + s3));
+    v.multiplyScalar(1 + n);
+    pos.setXYZ(i, v.x, v.y, v.z);
+    const yN = Math.min(1, Math.max(0, v.y / h));
+    c.copy(cB).lerp(cT, yN * 0.88 + 0.12 * rnd());
+    colors.push(c.r, c.g, c.b);
+  }
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+  const mat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.92, metalness: 0.0 });
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+
+/* ------------------------------------------------------------------ *
+ *  THE OBJECT — one centered group
+ * ------------------------------------------------------------------ */
+const garden = new THREE.Group();
+scene.add(garden);
+
+// --- Tray dimensions (centimetre scale) ---
+const trayW = 46, trayD = 32, wallT = 1.6;
+const ix = trayW / 2 - wallT;   // interior half-x = 21.4
+const iz = trayD / 2 - wallT;   // interior half-z = 14.4
+
+const wallMat = new THREE.MeshStandardMaterial({ color: 0x4a453e, roughness: 0.88, metalness: 0.03 });
+const capMat  = new THREE.MeshStandardMaterial({ color: 0x5a544b, roughness: 0.82, metalness: 0.03 });
+const slabMat = new THREE.MeshStandardMaterial({ color: 0x2c2823, roughness: 0.95, metalness: 0.0 });
+
+// base slab (bottom of tray)
+const slab = new THREE.Mesh(new THREE.BoxGeometry(trayW, 1.0, trayD), slabMat);
+slab.position.y = -1.5;
+slab.receiveShadow = true; slab.castShadow = true;
+garden.add(slab);
+
+// walls (top at y = 1.0)
+function addWall(w, d, x, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, 3.0, d), wallMat);
+  m.position.set(x, -0.5, z);
+  m.castShadow = true; m.receiveShadow = true;
+  garden.add(m);
+}
+addWall(trayW, wallT, 0,  trayD / 2 - wallT / 2);
+addWall(trayW, wallT, 0, -(trayD / 2 - wallT / 2));
+addWall(wallT, trayD - 2 * wallT,  trayW / 2 - wallT / 2, 0);
+addWall(wallT, trayD - 2 * wallT, -(trayW / 2 - wallT / 2), 0);
+
+// coping cap along the tray rim
+function addCap(w, d, x, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, 0.35, d), capMat);
+  m.position.set(x, 1.12, z);
+  m.castShadow = true; m.receiveShadow = true;
+  garden.add(m);
+}
+addCap(trayW + 0.8, wallT + 0.8, 0,  trayD / 2 - wallT / 2);
+addCap(trayW + 0.8, wallT + 0.8, 0, -(trayD / 2 - wallT / 2));
+addCap(wallT + 0.8, trayD + 0.8,  trayW / 2 - wallT / 2, 0);
+addCap(wallT + 0.8, trayD + 0.8, -(trayW / 2 - wallT / 2), 0);
+
+/* --- Pond --------------------------------------------------------- */
+const pondCenter = { x: 9, z: -1 };
+function pondPoint(t) {
+  const r = 7.4 * (1 + 0.10 * Math.sin(3 * t + 0.6) + 0.06 * Math.cos(2 * t - 0.3));
+  return {
+    x: pondCenter.x + Math.cos(t) * r * 1.15,
+    z: pondCenter.z + Math.sin(t) * r * 0.86
+  };
+}
+const N = 84;
+const outline = [];
+for (let i = 0; i < N; i++) {
+  outline.push(pondPoint(i / N * Math.PI * 2));
+}
+function insetOutline(f) {
+  return outline.map(p => ({
+    x: pondCenter.x + (p.x - pondCenter.x) * f,
+    z: pondCenter.z + (p.z - pondCenter.z) * f
+  }));
+}
+
+// build a flat filled polygon (in XZ) from world points
+function flatPolygon(pts, y, mat) {
+  const s = new THREE.Shape();
+  pts.forEach((p, i) => { i === 0 ? s.moveTo(p.x, -p.z) : s.lineTo(p.x, -p.z); });
+  const g = new THREE.ShapeGeometry(s);
+  g.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(g, mat);
+  m.position.y = y;
+  m.receiveShadow = true;
+  return m;
+}
+
+// sand sheet with pond-shaped hole
+const sandShape = new THREE.Shape();
+sandShape.moveTo(-ix,  iz);
+sandShape.lineTo( ix,  iz);
+sandShape.lineTo( ix, -iz);
+sandShape.lineTo(-ix, -iz);
+sandShape.lineTo(-ix,  iz);
+const hole = new THREE.Path();
+for (let i = outline.length - 1; i >= 0; i--) {
+  const p = outline[i];
+  (i === outline.length - 1) ? hole.moveTo(p.x, -p.z) : hole.lineTo(p.x, -p.z);
+}
+sandShape.holes.push(hole);
+const sandGeo = new THREE.ShapeGeometry(sandShape);
+sandGeo.rotateX(-Math.PI / 2);
+const sandMat = new THREE.MeshStandardMaterial({ color: 0xcfc3a4, roughness: 0.97, metalness: 0.0 });
+const sand = new THREE.Mesh(sandGeo, sandMat);
+sand.position.y = 0.0;
+sand.receiveShadow = true; sand.castShadow = false;
+garden.add(sand);
+
+// pond basin wall
+function pondWall(pts, topY, botY, mat) {
+  const n = pts.length, positions = [], idx = [];
+  for (let i = 0; i < n; i++) {
+    const p = pts[i];
+    positions.push(p.x, topY, p.z, p.x, botY, p.z);
+  }
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const a = 2 * i, b = 2 * i + 1, c = 2 * j, d = 2 * j + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, mat);
+  m.receiveShadow = true; m.castShadow = false;
+  return m;
+}
+const basinMat = new THREE.MeshStandardMaterial({ color: 0x1f262a, roughness: 0.9, metalness: 0.0, side: THREE.DoubleSide });
+garden.add(pondWall(outline, 0.03, -0.9, basinMat));
+garden.add(flatPolygon(insetOutline(0.99), -0.9, basinMat));
+
+// water surface
+const waterMat = new THREE.MeshStandardMaterial({
+  color: 0x1d3f49, roughness: 0.07, metalness: 0.0,
+  transparent: true, opacity: 0.82
+});
+waterMat.envMapIntensity = 1.5;
+const water = flatPolygon(insetOutline(0.9), -0.32, waterMat);
+water.castShadow = false;
+garden.add(water);
+
+// coping stones ringing the pond edge
+for (let i = 0; i < outline.length; i += 3) {
+  const p = outline[i];
+  const dx = p.x - pondCenter.x, dz = p.z - pondCenter.z;
+  const L = Math.hypot(dx, dz) || 1;
+  const r = 0.95 + rand() * 0.5;
+  const m = stoneMesh(r, 0.55, 0x928d85, 0.09);
+  m.position.set(p.x + dx / L * 0.5, 0.26, p.z + dz / L * 0.5);
+  m.rotation.y = rand() * Math.PI * 2;
+  m.rotation.x = (rand() - 0.5) * 0.22;
+  m.rotation.z = (rand() - 0.5) * 0.22;
+  garden.add(m);
+}
+
+/* --- Stepping-stone path ------------------------------------------ */
+const path = [
+  [-2, 12.5], [-4.5, 9], [-7, 5.5], [-9.5, 2], [-12, -2], [-13.5, -6]
+];
+for (const [x, z] of path) {
+  const m = stoneMesh(2.2 + rand() * 0.4, 0.30, 0x8b8781, 0.07);
+  m.position.set(x, 0.17, z);
+  m.rotation.y = rand() * Math.PI * 2;
+  m.rotation.x = (rand() - 0.5) * 0.1;
+  m.rotation.z = (rand() - 0.5) * 0.1;
+  m.scale.set(1.0 + rand() * 0.25, 1, 0.85 + rand() * 0.25);
+  garden.add(m);
+}
+
+/* --- Clipped rounded earth mounds --------------------------------- */
+const mounds = [
+  [5, 10, 4.5, 3.4], [-4, -10, 4.0, 3.0], [-18, 3, 3.6, 2.7],
+  [16, 8, 4.0, 3.0], [17, -9, 3.0, 2.3]
+];
+for (const [x, z, r, h] of mounds) {
+  const m = makeMound(r, h, 0x3c4d22, 0x74893c, rand);
+  m.position.set(x, -0.05, z);
+  m.rotation.y = rand() * Math.PI * 2;
+  garden.add(m);
+}
+
+/* --- Accent rock grouping + gravel pebbles ------------------------ */
+const rocks = [[-18, -5, 2.2, 0.8], [-16.2, -4, 1.5, 0.9], [-19.2, -6.4, 1.0, 0.9]];
+for (const [x, z, r, f] of rocks) {
+  const m = stoneMesh(r, f, 0x6e6a63, 0.06);
+  m.position.set(x, r * f * 0.55, z);
+  m.rotation.y = rand() * Math.PI * 2;
+  m.rotation.x = (rand() - 0.5) * 0.15;
+  garden.add(m);
+}
+for (let i = 0; i < 14; i++) {
+  const a = rand() * Math.PI * 2, d = rand() * 3.2;
+  const m = stoneMesh(0.32 + rand() * 0.28, 0.6, 0x807b73, 0.1);
+  m.position.set(-18 + Math.cos(a) * d, 0.1, -5.2 + Math.sin(a) * d * 0.8);
+  m.rotation.y = rand() * Math.PI * 2;
+  garden.add(m);
+}
+
+/* --- Stone lantern (Kasuga style) --------------------------------- */
+function makeLantern() {
+  const g = new THREE.Group();
+  const stone = () => new THREE.MeshStandardMaterial({ color: 0x9a948a, roughness: 0.86, metalness: 0.02 });
+  function hex(rT, rB, h, y) {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(rT, rB, h, 6), stone());
+    m.position.y = y; g.add(m); return m;
+  }
+  hex(2.2, 2.5, 1.0, 0.5);            // plinth (kiso)
+  hex(1.7, 2.05, 0.5, 1.25);          // second tier
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.72, 4.6, 20), stone());
+  post.position.y = 3.8; g.add(post); // pillar (sao)
+  for (const ry of [2.4, 5.2]) {
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.12, 10, 22), stone());
+    ring.rotation.x = Math.PI / 2; ring.position.y = ry; g.add(ring);
+  }
+  hex(2.0, 1.35, 0.8, 6.2);           // platform (chudai)
+  hex(1.75, 2.0, 0.35, 6.75);         // lip
+  hex(1.7, 1.7, 0.35, 7.1);           // firebox floor
+  hex(1.85, 1.7, 0.35, 9.2);          // firebox top plate
+  for (let i = 0; i < 6; i++) {       // firebox corner posts (open windows)
+    const a = i / 6 * Math.PI * 2 + Math.PI / 6;
+    const pil = new THREE.Mesh(new THREE.BoxGeometry(0.34, 1.9, 0.34), stone());
+    pil.position.set(Math.cos(a) * 1.5, 8.15, Math.sin(a) * 1.5);
+    pil.rotation.y = -a; g.add(pil);
+  }
+  // warm glow inside firebox
+  const glow = new THREE.Mesh(
+    new THREE.SphereGeometry(0.85, 16, 16),
+    new THREE.MeshStandardMaterial({ color: 0x1a0e00, emissive: 0xffab52, emissiveIntensity: 1.9 })
+  );
+  glow.position.y = 8.2; g.add(glow);
+  const glowLight = new THREE.PointLight(0xffb066, 11, 26, 2);
+  glowLight.position.y = 8.25; g.add(glowLight);
+  // roof (kasa) + finial
+  hex(3.15, 2.4, 0.4, 9.6);           // eave
+  const roof = new THREE.Mesh(new THREE.CylinderGeometry(0.45, 3.05, 2.1, 6), stone());
+  roof.position.y = 10.85; g.add(roof);
+  const uke = new THREE.Mesh(new THREE.TorusGeometry(0.5, 0.16, 10, 20), stone());
+  uke.rotation.x = Math.PI / 2; uke.position.y = 11.95; g.add(uke);
+  const hoju = new THREE.Mesh(new THREE.SphereGeometry(0.55, 18, 16), stone());
+  hoju.position.y = 12.45; g.add(hoju);
+
+  g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  glow.castShadow = false;
+  return g;
+}
+const lantern = makeLantern();
+lantern.position.set(-15, 0, -9.5);
+lantern.rotation.y = 0.5;
+garden.add(lantern);
+
+// gentle global reflection tuning
+garden.traverse(o => {
+  if (o.isMesh && o.material && o.material !== waterMat && 'envMapIntensity' in o.material) {
+    o.material.envMapIntensity = 0.55;
+  }
+});
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, 3.2, 0);
+controls.minDistance = 24;
+controls.maxDistance = 90;
+controls.minPolarAngle = 0.2;
+controls.maxPolarAngle = 1.45;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

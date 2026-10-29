@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Weathered Red Barn</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #14161a; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: rgba(226,220,208,0.55);
+    letter-spacing: 0.02em; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Weathered red barn — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer / Scene / Camera
+--------------------------------------------------------------------------- */
+const container = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(18, 9, 20);
+
+// Procedural studio environment for realistic PBR reflections (no external assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 9;
+controls.maxDistance = 70;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 4.2, 0);
+
+/* ---------------------------------------------------------------------------
+   Dimensions (metres)
+--------------------------------------------------------------------------- */
+const HALF_W = 5.0;   // width 10 m  (X, gable end faces Z)
+const HALF_L = 8.0;   // length 16 m (Z)
+const WALL_H = 5.0;   // eave height
+const KNEE_X = 3.4;   // gambrel knee
+const KNEE_Y = 7.4;
+const RIDGE_Y = 8.9;  // roof peak
+const FLOOR_Y = 0.35; // top of concrete foundation
+const ROOF_OZ = 0.6;  // roof overhang past gables
+const SPAN_Z = 2 * HALF_L + 2 * ROOF_OZ;
+
+const V2 = THREE.Vector2;
+const V3 = THREE.Vector3;
+const rnd = (a, b) => a + Math.random() * (b - a);
+
+/* ---------------------------------------------------------------------------
+   Procedural canvas textures
+--------------------------------------------------------------------------- */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+
+function plankColorCanvas() {
+  const c = makeCanvas(512, 512);
+  const x = c.getContext('2d');
+  const planks = 8, pw = c.width / planks;
+  for (let i = 0; i < planks; i++) {
+    const r = rnd(120, 158), g = rnd(46, 66), b = rnd(38, 54);
+    x.fillStyle = `rgb(${r|0},${g|0},${b|0})`;
+    x.fillRect(i * pw, 0, pw + 1, c.height);
+    // wood grain streaks
+    for (let s = 0; s < 12; s++) {
+      const gx = i * pw + rnd(2, pw - 2);
+      x.strokeStyle = `rgba(${(r*rnd(0.55,0.95))|0},${(g*0.7)|0},${(b*0.7)|0},${rnd(0.05,0.14)})`;
+      x.lineWidth = rnd(0.5, 2);
+      x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx + rnd(-5, 5), c.height); x.stroke();
+    }
+  }
+  // dark gaps at each plank left edge (horizontally seamless)
+  for (let i = 0; i < planks; i++) {
+    x.fillStyle = 'rgba(18,9,7,0.85)';
+    x.fillRect(i * pw - 1, 0, 2.5, c.height);
+  }
+  // weathering blotches (faded + darkened)
+  for (let k = 0; k < 46; k++) {
+    const px = rnd(0, c.width), py = rnd(0, c.height), r = rnd(12, 66);
+    const g = x.createRadialGradient(px, py, 0, px, py, r);
+    if (Math.random() < 0.55) g.addColorStop(0, 'rgba(188,158,142,0.11)');
+    else g.addColorStop(0, 'rgba(30,13,10,0.15)');
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+  }
+  // dirt/rain streaks toward the base
+  for (let s = 0; s < 70; s++) {
+    const sx = rnd(0, c.width);
+    const g = x.createLinearGradient(0, c.height * 0.35, 0, c.height);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    g.addColorStop(1, `rgba(22,13,9,${rnd(0.03,0.11)})`);
+    x.fillStyle = g; x.fillRect(sx, c.height * 0.35, rnd(1, 4), c.height * 0.65);
+  }
+  // fine speckle noise
+  for (let n = 0; n < 2600; n++) {
+    const v = Math.random() < 0.5 ? 255 : 0;
+    x.fillStyle = `rgba(${v},${v},${v},${rnd(0.01,0.03)})`;
+    x.fillRect(rnd(0, c.width), rnd(0, c.height), 1, 1);
+  }
+  return c;
+}
+
+function plankBumpCanvas() {
+  const c = makeCanvas(512, 512);
+  const x = c.getContext('2d');
+  x.fillStyle = '#808080'; x.fillRect(0, 0, c.width, c.height);
+  const planks = 8, pw = c.width / planks;
+  for (let i = 0; i < planks; i++) {
+    // subtle rounded relief per plank
+    const g = x.createLinearGradient(i * pw, 0, i * pw + pw, 0);
+    g.addColorStop(0, 'rgba(70,70,70,0.9)');
+    g.addColorStop(0.5, 'rgba(150,150,150,0.9)');
+    g.addColorStop(1, 'rgba(70,70,70,0.9)');
+    x.fillStyle = g; x.fillRect(i * pw, 0, pw, c.height);
+    for (let s = 0; s < 8; s++) {
+      const gx = i * pw + rnd(2, pw - 2);
+      x.strokeStyle = `rgba(${rnd(60,180)|0},${rnd(60,180)|0},${rnd(60,180)|0},0.12)`;
+      x.lineWidth = rnd(0.5, 1.5);
+      x.beginPath(); x.moveTo(gx, 0); x.lineTo(gx + rnd(-4, 4), c.height); x.stroke();
+    }
+  }
+  for (let i = 0; i < planks; i++) {
+    x.fillStyle = '#161616';
+    x.fillRect(i * pw - 1, 0, 2.5, c.height);
+  }
+  return c;
+}
+
+function metalCanvas() {
+  const c = makeCanvas(256, 512);
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgb(150,155,158)'; x.fillRect(0, 0, c.width, c.height);
+  // horizontal galvanised streaks
+  for (let n = 0; n < 200; n++) {
+    const y = rnd(0, c.height);
+    x.fillStyle = `rgba(${rnd(90,210)|0},${rnd(95,210)|0},${rnd(100,210)|0},${rnd(0.02,0.08)})`;
+    x.fillRect(0, y, c.width, rnd(0.5, 2));
+  }
+  // rust streaks running down-slope
+  for (let s = 0; s < 26; s++) {
+    const sx = rnd(0, c.width);
+    const top = rnd(0, c.height * 0.5);
+    const g = x.createLinearGradient(0, top, 0, c.height);
+    g.addColorStop(0, 'rgba(0,0,0,0)');
+    const rust = `${rnd(95,150)|0},${rnd(55,85)|0},${rnd(30,50)|0}`;
+    g.addColorStop(rnd(0.3, 0.7), `rgba(${rust},${rnd(0.05,0.16)})`);
+    g.addColorStop(1, `rgba(${rust},${rnd(0.10,0.26)})`);
+    x.fillStyle = g; x.fillRect(sx, top, rnd(1, 6), c.height - top);
+  }
+  // grime blotches
+  for (let k = 0; k < 30; k++) {
+    const px = rnd(0, c.width), py = rnd(0, c.height), r = rnd(8, 40);
+    const g = x.createRadialGradient(px, py, 0, px, py, r);
+    g.addColorStop(0, `rgba(40,40,42,${rnd(0.04,0.12)})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+  }
+  return c;
+}
+
+function concreteCanvas() {
+  const c = makeCanvas(256, 256);
+  const x = c.getContext('2d');
+  x.fillStyle = 'rgb(150,148,143)'; x.fillRect(0, 0, c.width, c.height);
+  for (let n = 0; n < 9000; n++) {
+    const v = rnd(-26, 26);
+    x.fillStyle = `rgba(${(150+v)|0},${(148+v)|0},${(143+v)|0},0.5)`;
+    x.fillRect(rnd(0, c.width), rnd(0, c.height), rnd(1, 2), rnd(1, 2));
+  }
+  // stains
+  for (let k = 0; k < 22; k++) {
+    const px = rnd(0, c.width), py = rnd(0, c.height), r = rnd(10, 45);
+    const g = x.createRadialGradient(px, py, 0, px, py, r);
+    g.addColorStop(0, `rgba(90,86,80,${rnd(0.05,0.14)})`);
+    g.addColorStop(1, 'rgba(0,0,0,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(px, py, r, 0, 7); x.fill();
+  }
+  // cracks
+  x.strokeStyle = 'rgba(70,66,60,0.5)';
+  for (let k = 0; k < 6; k++) {
+    x.lineWidth = rnd(0.5, 1.5);
+    let px = rnd(0, c.width), py = rnd(0, c.height);
+    x.beginPath(); x.moveTo(px, py);
+    for (let seg = 0; seg < 6; seg++) { px += rnd(-30, 30); py += rnd(-30, 30); x.lineTo(px, py); }
+    x.stroke();
+  }
+  return c;
+}
+
+const CANVAS_PLANK = plankColorCanvas();
+const CANVAS_PLANK_BUMP = plankBumpCanvas();
+const CANVAS_METAL = metalCanvas();
+const CANVAS_CONCRETE = concreteCanvas();
+
+function tex(canvas, rx, ry, srgb, clampT) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = clampT ? THREE.ClampToEdgeWrapping : THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.anisotropy = MAX_ANISO;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+/* ---------------------------------------------------------------------------
+   Materials
+--------------------------------------------------------------------------- */
+function sidingMaterial(rx, ry, tint) {
+  return new THREE.MeshStandardMaterial({
+    map: tex(CANVAS_PLANK, rx, ry, true, true),
+    bumpMap: tex(CANVAS_PLANK_BUMP, rx, ry, false, true),
+    bumpScale: 0.02,
+    roughness: 0.92,
+    metalness: 0.0,
+    color: tint || 0xffffff
+  });
+}
+function metalMaterial(rx, ry, tint) {
+  return new THREE.MeshStandardMaterial({
+    map: tex(CANVAS_METAL, rx, ry, true, false),
+    metalness: 0.55,
+    roughness: 0.52,
+    color: tint || 0x9aa0a3
+  });
+}
+const trimMat = new THREE.MeshStandardMaterial({ color: 0xc7bca6, roughness: 0.85, metalness: 0.0 });
+const battenMat = new THREE.MeshStandardMaterial({ color: 0x7a3128, roughness: 0.9, metalness: 0.0 });
+const darkMetalMat = new THREE.MeshStandardMaterial({ color: 0x26282b, roughness: 0.4, metalness: 0.85 });
+const glassMat = new THREE.MeshStandardMaterial({ color: 0x1d2a2d, roughness: 0.12, metalness: 0.35 });
+const concreteMat = new THREE.MeshStandardMaterial({
+  map: tex(CANVAS_CONCRETE, 4, 4, true, false), roughness: 0.96, metalness: 0.0, color: 0xbcb7ad
+});
+const cupolaBodyMat = new THREE.MeshStandardMaterial({ color: 0x8a352c, roughness: 0.85, metalness: 0.0 });
+
+/* ---------------------------------------------------------------------------
+   Helpers
+--------------------------------------------------------------------------- */
+function shadowed(mesh) { mesh.castShadow = true; mesh.receiveShadow = true; return mesh; }
+function box(w, h, d, mat) { return shadowed(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)); }
+
+const barn = new THREE.Group();       // whole object, centred at origin
+const building = new THREE.Group();   // walls/roof/etc, floor at local y = 0
+building.position.y = FLOOR_Y;
+barn.add(building);
+scene.add(barn);
+
+/* ---------------------------------------------------------------------------
+   Foundation + raised concrete threshold
+--------------------------------------------------------------------------- */
+const foundation = box(2 * HALF_W + 0.5, FLOOR_Y, 2 * HALF_L + 0.5, concreteMat);
+foundation.position.set(0, -FLOOR_Y / 2, 0);
+building.add(foundation);
+
+const threshold = box(4.2, FLOOR_Y + 0.12, 1.4, concreteMat);
+threshold.position.set(0, (-FLOOR_Y + 0.12) / 2, HALF_L + 0.35);
+building.add(threshold);
+
+/* ---------------------------------------------------------------------------
+   Side walls (planked)
+--------------------------------------------------------------------------- */
+const sideRepX = (2 * HALF_L) / 2.4;
+function sideWall(sign) {
+  const geo = new THREE.PlaneGeometry(2 * HALF_L, WALL_H);
+  const m = shadowed(new THREE.Mesh(geo, sidingMaterial(sideRepX, 1)));
+  m.position.set(sign * HALF_W, WALL_H / 2, 0);
+  m.rotation.y = sign * Math.PI / 2;
+  building.add(m);
+}
+sideWall(1); sideWall(-1);
+
+/* ---------------------------------------------------------------------------
+   Gable end walls (gambrel outline, planked)
+--------------------------------------------------------------------------- */
+function gableShape() {
+  const s = new THREE.Shape();
+  s.moveTo(-HALF_W, 0);
+  s.lineTo(HALF_W, 0);
+  s.lineTo(HALF_W, WALL_H);
+  s.lineTo(KNEE_X, KNEE_Y);
+  s.lineTo(0, RIDGE_Y);
+  s.lineTo(-KNEE_X, KNEE_Y);
+  s.lineTo(-HALF_W, WALL_H);
+  s.lineTo(-HALF_W, 0);
+  return new THREE.ShapeGeometry(s);
+}
+const gableMat = sidingMaterial(1 / 2.4, 1 / RIDGE_Y);
+const gableFront = shadowed(new THREE.Mesh(gableShape(), gableMat));
+gableFront.position.z = HALF_L + 0.02;
+building.add(gableFront);
+const gableBack = shadowed(new THREE.Mesh(gableShape(), gableMat));
+gableBack.position.z = -(HALF_L + 0.02);
+gableBack.rotation.y = Math.PI;
+building.add(gableBack);
+
+/* ---------------------------------------------------------------------------
+   Corner boards
+--------------------------------------------------------------------------- */
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+  const post = box(0.32, WALL_H + 0.02, 0.32, trimMat);
+  post.position.set(sx * HALF_W, WALL_H / 2, sz * HALF_L);
+  building.add(post);
+}
+
+/* ---------------------------------------------------------------------------
+   Corrugated gambrel roof
+--------------------------------------------------------------------------- */
+const CORR_PERIOD = 0.24, CORR_AMP = 0.04;
+
+function corrugatedGeo(spanZ, slopeLen) {
+  const segX = Math.max(24, Math.ceil(spanZ / CORR_PERIOD) * 3);
+  const geo = new THREE.PlaneGeometry(spanZ, slopeLen, segX, 4);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const px = pos.getX(i);
+    pos.setZ(i, CORR_AMP * Math.sin((px / CORR_PERIOD) * Math.PI * 2));
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function addRoofFace(a, b) {
+  // orient so the surface normal points outward (away from barn core)
+  let dir = b.clone().sub(a);
+  let normal = new V2(dir.y, -dir.x);
+  const ref = a.clone().add(b).multiplyScalar(0.5).sub(new V2(0, WALL_H * 0.55));
+  if (normal.dot(ref) < 0) { const t = a; a = b; b = t; dir = b.clone().sub(a); }
+  const slopeLen = dir.length();
+  dir.normalize();
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+
+  const geo = corrugatedGeo(SPAN_Z, slopeLen);
+  const mesh = shadowed(new THREE.Mesh(geo, metalMaterial(SPAN_Z / 1.1, slopeLen / 1.3)));
+
+  const xAxis = new V3(0, 0, -1);
+  const yAxis = new V3(dir.x, dir.y, 0);
+  const zAxis = new V3(dir.y, -dir.x, 0);
+  const m = new THREE.Matrix4().makeBasis(xAxis, yAxis, zAxis);
+  m.setPosition(mid.x + zAxis.x * 0.06, mid.y + zAxis.y * 0.06, 0);
+  mesh.applyMatrix4(m);
+  building.add(mesh);
+}
+
+const eaveR = new V2(HALF_W, WALL_H);
+const kneeR = new V2(KNEE_X, KNEE_Y);
+const ridge = new V2(0, RIDGE_Y);
+const eaveL = new V2(-HALF_W, WALL_H);
+const kneeL = new V2(-KNEE_X, KNEE_Y);
+const eaveR_ext = eaveR.clone().add(eaveR.clone().sub(kneeR).normalize().multiplyScalar(0.45));
+const eaveL_ext = eaveL.clone().add(eaveL.clone().sub(kneeL).normalize().multiplyScalar(0.45));
+
+addRoofFace(eaveR_ext.clone(), kneeR.clone());
+addRoofFace(kneeR.clone(), ridge.clone());
+addRoofFace(eaveL_ext.clone(), kneeL.clone());
+addRoofFace(kneeL.clone(), ridge.clone());
+
+// Ridge cap
+const upAngle = Math.atan2(ridge.y - kneeR.y, kneeR.x - ridge.x);
+for (const s of [1, -1]) {
+  const cap = box(0.55, 0.05, SPAN_Z, metalMaterial(SPAN_Z / 1.1, 0.4, 0x82888b));
+  cap.rotation.z = -s * upAngle;
+  cap.position.set(s * 0.18, RIDGE_Y - 0.02, 0);
+  building.add(cap);
+}
+
+// Eave fascia boards
+for (const s of [-1, 1]) {
+  const f = box(0.1, 0.45, SPAN_Z, trimMat);
+  f.position.set(s * eaveR_ext.x, eaveR_ext.y - 0.2, 0);
+  building.add(f);
+}
+
+// Rake boards along the gambrel edge at both gable ends
+const rakeSegs = [[eaveR_ext, kneeR], [kneeR, ridge], [eaveL_ext, kneeL], [kneeL, ridge]];
+for (const [a, b] of rakeSegs) {
+  const dir = b.clone().sub(a);
+  const len = dir.length();
+  const mid = a.clone().add(b).multiplyScalar(0.5);
+  const ang = Math.atan2(dir.y, dir.x);
+  for (const zEnd of [HALF_L + 0.35, -(HALF_L + 0.35)]) {
+    const r = box(len + 0.12, 0.2, 0.3, trimMat);
+    r.rotation.z = ang;
+    r.position.set(mid.x, mid.y, zEnd);
+    building.add(r);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Big sliding door on the front gable
+--------------------------------------------------------------------------- */
+const DOOR_W = 3.4, DOOR_H = 4.2, DOOR_T = 0.14;
+const doorZ = HALF_L + 0.16;
+const doorMat = sidingMaterial(DOOR_W / 2.4, 1, 0xd0c9c9); // tinted slightly different
+doorMat.color.setScalar(0.86);
+
+const doorGroup = new THREE.Group();
+doorGroup.position.set(0, 0, doorZ);
+const panel = box(DOOR_W, DOOR_H, DOOR_T, doorMat);
+panel.position.y = DOOR_H / 2;
+doorGroup.add(panel);
+
+const bz = DOOR_T / 2 + 0.03;
+const bTop = box(DOOR_W - 0.1, 0.22, 0.05, battenMat); bTop.position.set(0, DOOR_H - 0.4, bz);
+const bBot = box(DOOR_W - 0.1, 0.22, 0.05, battenMat); bBot.position.set(0, 0.4, bz);
+doorGroup.add(bTop, bBot);
+{
+  const dx = DOOR_W - 0.35, dy = DOOR_H - 1.0;
+  const diag = box(Math.hypot(dx, dy), 0.22, 0.05, battenMat);
+  diag.rotation.z = Math.atan2(dy, dx);
+  diag.position.set(0, DOOR_H / 2, bz);
+  doorGroup.add(diag);
+}
+// handle
+const handle = box(0.09, 0.55, 0.08, darkMetalMat);
+handle.position.set(DOOR_W / 2 - 0.45, DOOR_H / 2, DOOR_T / 2 + 0.06);
+doorGroup.add(handle);
+building.add(doorGroup);
+
+// Door frame trim (behind slider)
+const frameZ = HALF_L + 0.05;
+const fL = box(0.24, DOOR_H + 0.45, 0.16, trimMat); fL.position.set(-(DOOR_W / 2 + 0.22), (DOOR_H + 0.45) / 2, frameZ);
+const fR = box(0.24, DOOR_H + 0.45, 0.16, trimMat); fR.position.set(DOOR_W / 2 + 0.22, (DOOR_H + 0.45) / 2, frameZ);
+const fT = box(DOOR_W + 0.7, 0.28, 0.16, trimMat); fT.position.set(0, DOOR_H + 0.28, frameZ);
+building.add(fL, fR, fT);
+
+// Slider track + hangers
+const track = box(DOOR_W * 1.95, 0.12, 0.14, darkMetalMat);
+track.position.set(0, DOOR_H + 0.5, doorZ - 0.04);
+building.add(track);
+for (const s of [-1, 1]) {
+  const hanger = box(0.07, 0.42, 0.06, darkMetalMat);
+  hanger.position.set(s * DOOR_W * 0.34, DOOR_H + 0.28, doorZ + DOOR_T / 2 - 0.02);
+  building.add(hanger);
+  const roller = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.1, 16), darkMetalMat));
+  roller.rotation.z = Math.PI / 2;
+  roller.position.set(s * DOOR_W * 0.34, DOOR_H + 0.5, doorZ - 0.04);
+  building.add(roller);
+}
+
+/* ---------------------------------------------------------------------------
+   Windows
+--------------------------------------------------------------------------- */
+function makeWindow(w, h) {
+  const g = new THREE.Group();
+  const t = 0.11, dp = 0.13;
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.1, h - 0.1), glassMat);
+  glass.position.z = -0.02; glass.receiveShadow = true;
+  g.add(glass);
+  // frame
+  const top = box(w + 0.14, t, dp, trimMat); top.position.set(0, h / 2, 0.02);
+  const bot = box(w + 0.14, t, dp, trimMat); bot.position.set(0, -h / 2, 0.02);
+  const lft = box(t, h, dp, trimMat); lft.position.set(-w / 2, 0, 0.02);
+  const rgt = box(t, h, dp, trimMat); rgt.position.set(w / 2, 0, 0.02);
+  g.add(top, bot, lft, rgt);
+  // muntins
+  const mv = box(0.05, h - 0.1, 0.05, trimMat); mv.position.z = 0.03;
+  const mh = box(w - 0.1, 0.05, 0.05, trimMat); mh.position.z = 0.03;
+  g.add(mv, mh);
+  // sill
+  const sill = box(w + 0.3, 0.11, 0.24, trimMat); sill.position.set(0, -h / 2 - 0.05, 0.06);
+  g.add(sill);
+  g.traverse(o => { if (o.isMesh) { o.castShadow = true; } });
+  return g;
+}
+
+// Side-wall windows
+for (const s of [-1, 1]) {
+  for (const z of [-4.5, 0, 4.5]) {
+    const win = makeWindow(1.1, 1.4);
+    win.position.set(s * (HALF_W + 0.02), 2.7, z);
+    win.rotation.y = s * Math.PI / 2;
+    building.add(win);
+  }
+}
+// Gable loft windows
+const loftF = makeWindow(1.0, 1.2);
+loftF.position.set(0, 6.0, HALF_L + 0.05);
+building.add(loftF);
+const loftB = makeWindow(1.0, 1.2);
+loftB.position.set(0, 6.0, -(HALF_L + 0.05));
+loftB.rotation.y = Math.PI;
+building.add(loftB);
+
+/* ---------------------------------------------------------------------------
+   Cupola + weathervane
+--------------------------------------------------------------------------- */
+const cupola = new THREE.Group();
+cupola.position.set(0, RIDGE_Y, 0);
+building.add(cupola);
+
+const cBody = box(1.3, 1.15, 1.3, cupolaBodyMat);
+cBody.position.y = 0.55;
+cupola.add(cBody);
+// louver slats
+for (let i = 0; i < 4; i++) {
+  const slat = box(1.05, 0.12, 0.04, trimMat);
+  slat.position.set(0, 0.28 + i * 0.22, 0.66);
+  slat.rotation.x = -0.35;
+  cupola.add(slat);
+  const slatB = slat.clone(); slatB.position.z = -0.66; slatB.rotation.x = 0.35;
+  cupola.add(slatB);
+}
+// pyramid roof
+const cRoof = shadowed(new THREE.Mesh(new THREE.ConeGeometry(1.05, 0.8, 4), metalMaterial(1, 1, 0x82888b)));
+cRoof.rotation.y = Math.PI / 4;
+cRoof.position.y = 1.55;
+cupola.add(cRoof);
+// weathervane
+const rod = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.0, 10), darkMetalMat));
+rod.position.y = 2.35; cupola.add(rod);
+const ball = shadowed(new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 12), darkMetalMat));
+ball.position.y = 2.55; cupola.add(ball);
+const arrowHead = shadowed(new THREE.Mesh(new THREE.ConeGeometry(0.11, 0.36, 12), darkMetalMat));
+arrowHead.rotation.z = -Math.PI / 2; arrowHead.position.set(0.55, 2.85, 0); cupola.add(arrowHead);
+const arrowTail = box(0.34, 0.24, 0.02, darkMetalMat); arrowTail.position.set(-0.42, 2.85, 0); cupola.add(arrowTail);
+const arrowShaft = box(0.9, 0.03, 0.03, darkMetalMat); arrowShaft.position.set(0.05, 2.85, 0); cupola.add(arrowShaft);
+for (const s of [-1, 1]) {
+  const bar = box(0.03, 0.03, 0.5, darkMetalMat); bar.position.set(0, 2.85 - 0.35, 0); cupola.add(bar);
+  const nsE = box(0.5, 0.03, 0.03, darkMetalMat); nsE.position.set(0, 2.85 - 0.35, 0); cupola.add(nsE);
+}
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key/fill/rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xbcd3e6, 0x3a2f26, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.5);
+key.position.set(14, 20, 12);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 90;
+key.shadow.camera.left = -18;
+key.shadow.camera.right = 18;
+key.shadow.camera.top = 18;
+key.shadow.camera.bottom = -18;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.03;
+key.shadow.radius = 5;
+key.target.position.set(0, 4, 0);
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.55);
+fill.position.set(-14, 10, -4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd8ac, 0.95);
+rim.position.set(-8, 12, -16);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Shadow-only ground
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(220, 220),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+}
+window.addEventListener('resize', onResize);
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

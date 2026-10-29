@@ -1,0 +1,1004 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Holographic Koi Streamer</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0c11; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(180, 225, 235, 0.45); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none; text-shadow: 0 0 12px rgba(0,255,220,0.25);
+  }
+</style>
+</head>
+<body>
+<div id="hint">Holographic Koi Streamer — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0c11);
+scene.fog = new THREE.FogExp2(0x0a0c11, 0.026);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(4.6, 1.9, 6.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 3.2;
+controls.maxDistance = 18;
+controls.target.set(0, 0.15, 0);
+controls.maxPolarAngle = Math.PI * 0.92;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting
+ * ------------------------------------------------------------------ */
+
+const hemi = new THREE.HemisphereLight(0x2e6f88, 0x120a1c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xbfe9ff, 2.1);
+key.position.set(4.5, 6.5, 4.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 6;
+key.shadow.camera.bottom = -6;
+key.shadow.radius = 3.5;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xff5fd0, 0.75);
+fill.position.set(-5.5, 1.6, 3.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0x50ffe0, 1.35);
+rim.position.set(-2.5, 3.0, -6.0);
+scene.add(rim);
+
+const glowA = new THREE.PointLight(0x18e8ff, 12.0, 12, 2.0);
+glowA.position.set(2.4, 0.6, 1.2);
+scene.add(glowA);
+
+const glowB = new THREE.PointLight(0xff35c8, 9.0, 12, 2.0);
+glowB.position.set(-2.6, -0.5, -1.4);
+scene.add(glowB);
+
+const goldSpark = new THREE.PointLight(0xffc25e, 6.0, 9, 2.0);
+goldSpark.position.set(0.2, 1.9, -0.6);
+scene.add(goldSpark);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-catching ground plane + faint holo grid
+ * ------------------------------------------------------------------ */
+
+const groundY = -2.05;
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42, color: 0x000000 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY;
+ground.receiveShadow = true;
+scene.add(ground);
+
+const grid = new THREE.GridHelper(40, 40, 0x1c5f6e, 0x123c48);
+grid.position.y = groundY + 0.002;
+grid.material.transparent = true;
+grid.material.opacity = 0.16;
+grid.material.depthWrite = false;
+scene.add(grid);
+
+/* ------------------------------------------------------------------ *
+ *  The one centered object
+ * ------------------------------------------------------------------ */
+
+const koi = new THREE.Group();
+scene.add(koi);
+
+/* --- Shape profile of the windsock -------------------------------- *
+ *  t = 0  -> mouth ring (wide open)
+ *  t = 1  -> tail opening (split, fluttering)
+ * ------------------------------------------------------------------ */
+
+const LENGTH = 5.0;          // nose-to-tail-hem length of the sock body
+const MOUTH_R = 0.72;        // radius of the rigid mouth hoop
+const SEG_U = 220;           // segments along the body
+const SEG_V = 96;            // segments around the tube
+
+// Radius profile: wide mouth, bulging belly, tapering waist toward tail.
+function radiusProfile(t) {
+  // Bulge just behind the mouth, then a long graceful taper.
+  const belly = Math.exp(-Math.pow((t - 0.17) / 0.20, 2)) * 0.26;
+  const taper = Math.pow(1.0 - t, 0.72);
+  let r = MOUTH_R * (0.60 + 0.40 * taper) + belly;
+  // slight re-flare where the tail hem flutters open
+  r += Math.exp(-Math.pow((t - 0.965) / 0.055, 2)) * 0.10;
+  return r;
+}
+
+// Vertical (dorsoventral) squash so the sock reads like a fish body, not a pipe.
+function squashProfile(t) {
+  return 1.16 - 0.30 * Math.pow(t, 1.4);
+}
+
+// The centerline: a fish arcing through air, drooping slightly at the tail.
+function centerline(t, out) {
+  const x = -LENGTH * 0.42 + t * LENGTH;
+  const bodyWave = Math.sin(t * Math.PI * 1.55 + 0.35) * 0.42 * Math.pow(t, 0.85);
+  const y = 0.30 * Math.sin(t * Math.PI * 0.9) - 0.62 * Math.pow(t, 2.3) + 0.15;
+  const z = bodyWave;
+  out.set(x, y, z);
+  return out;
+}
+
+// Frenet-ish frame built from a finite difference of the centerline.
+const _p0 = new THREE.Vector3();
+const _p1 = new THREE.Vector3();
+const _tan = new THREE.Vector3();
+const _nrm = new THREE.Vector3();
+const _bin = new THREE.Vector3();
+const UP = new THREE.Vector3(0, 1, 0);
+
+function frameAt(t, pos, tan, nrm, bin) {
+  const h = 0.0015;
+  centerline(Math.max(0, t - h), _p0);
+  centerline(Math.min(1, t + h), _p1);
+  tan.copy(_p1).sub(_p0).normalize();
+  if (!isFinite(tan.x) || tan.lengthSq() < 1e-8) tan.set(1, 0, 0);
+  bin.copy(UP).cross(tan);
+  if (bin.lengthSq() < 1e-6) bin.set(0, 0, 1);
+  bin.normalize();
+  nrm.copy(tan).cross(bin).normalize();
+  centerline(t, pos);
+}
+
+/* --- Ripple field: soft billowing waves in the fabric -------------- */
+function ripple(t, ang) {
+  // Longitudinal travelling waves (the "frozen mid-billow" look)
+  const w1 = Math.sin(t * 17.0 - ang * 2.0) * 0.030;
+  const w2 = Math.sin(t * 9.0 + ang * 3.0 + 1.1) * 0.042;
+  // Circumferential flutter panels — like sewn fabric gores
+  const w3 = Math.sin(ang * 8.0 + t * 5.0) * 0.024 * Math.pow(t, 0.6);
+  // Big soft belly billow
+  const w4 = Math.sin(t * 3.4 + 0.6) * 0.055 * Math.sin(ang + 0.4);
+  const gate = Math.min(1.0, t / 0.06); // keep the mouth hoop perfectly circular
+  return (w1 + w2 + w3 + w4) * gate;
+}
+
+/* --- Split-tail hem: the trailing edge flutters into ribbons ------- */
+// Extra longitudinal extension beyond the sock, forming two long tail lobes.
+function tailExtend(ang) {
+  // two lobes: top (ang≈+90deg) and bottom (ang≈-90deg) of the tube
+  const s = Math.sin(ang);
+  const lobe = Math.pow(Math.abs(s), 1.6);
+  return lobe * 1.35;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Build the koi sock body geometry (open tube, double sided)
+ * ------------------------------------------------------------------ */
+
+function buildSockGeometry() {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const pos = new THREE.Vector3();
+  const tan = new THREE.Vector3();
+  const nrm = new THREE.Vector3();
+  const bin = new THREE.Vector3();
+  const v = new THREE.Vector3();
+
+  const rows = SEG_U + 1;
+  const cols = SEG_V + 1;
+
+  for (let i = 0; i < rows; i++) {
+    const t = i / SEG_U;
+
+    for (let j = 0; j < cols; j++) {
+      const ang = (j / SEG_V) * Math.PI * 2.0;
+
+      // Each column may extend past t=1 to form the fluttering split tail.
+      const ext = tailExtend(ang);
+      const tt = t <= 0.82 ? t : 0.82 + (t - 0.82) * (1.0 + ext * 1.05);
+      const tClamped = Math.min(tt, 1.0);
+      const beyond = Math.max(0.0, tt - 1.0); // how far into the ribbon tail
+
+      frameAt(tClamped, pos, tan, nrm, bin);
+
+      let r = radiusProfile(tClamped);
+      r *= 1.0 + ripple(tClamped, ang);
+
+      const sq = squashProfile(tClamped);
+      let cy = Math.sin(ang) * r * sq;
+      let cz = Math.cos(ang) * r;
+
+      // Koi belly: flatten the underside a touch
+      cy += Math.max(0, -Math.sin(ang)) * r * 0.10 * (1.0 - tClamped * 0.5);
+
+      v.copy(pos)
+        .addScaledVector(nrm, cy)
+        .addScaledVector(bin, cz);
+
+      if (beyond > 0.0) {
+        // Ribbon tail: sweep along the tangent, drooping and flaring.
+        const b = beyond;
+        v.addScaledVector(tan, b * 1.0);
+        v.y -= b * b * 0.55 + b * 0.12;
+        // ribbon curls / flutters
+        const curl = Math.sin(b * 6.0 + ang * 2.0) * 0.16 * b;
+        v.addScaledVector(bin, curl);
+        v.addScaledVector(nrm, Math.sin(b * 4.4 + ang) * 0.13 * b);
+        // ribbons spread apart vertically as they trail
+        v.y += Math.sin(ang) * b * 0.42;
+        v.z += Math.cos(ang) * b * 0.10;
+      }
+
+      positions.push(v.x, v.y, v.z);
+      normals.push(0, 0, 0);
+      uvs.push(t, j / SEG_V);
+    }
+  }
+
+  for (let i = 0; i < SEG_U; i++) {
+    for (let j = 0; j < SEG_V; j++) {
+      const a = i * cols + j;
+      const b = a + cols;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d);
+      indices.push(b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+const sockGeo = buildSockGeometry();
+
+/* ------------------------------------------------------------------ *
+ *  Holographic film material (iridescent + scanlines + scales)
+ * ------------------------------------------------------------------ */
+
+const holoUniforms = {
+  uTime: { value: 0 },
+  uScanDensity: { value: 380.0 },
+  uScanStrength: { value: 0.30 },
+  uIriStrength: { value: 1.0 },
+  uScaleDensity: { value: new THREE.Vector2(58.0, 26.0) },
+  uScaleGlow: { value: 0.55 }
+};
+
+function injectHolo(shader) {
+  shader.uniforms.uTime = holoUniforms.uTime;
+  shader.uniforms.uScanDensity = holoUniforms.uScanDensity;
+  shader.uniforms.uScanStrength = holoUniforms.uScanStrength;
+  shader.uniforms.uIriStrength = holoUniforms.uIriStrength;
+  shader.uniforms.uScaleDensity = holoUniforms.uScaleDensity;
+  shader.uniforms.uScaleGlow = holoUniforms.uScaleGlow;
+
+  shader.vertexShader = shader.vertexShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vHoloWPos;
+       varying vec3 vHoloWNrm;
+       varying vec2 vHoloUv;`
+    )
+    .replace(
+      '#include <begin_vertex>',
+      `#include <begin_vertex>
+       vHoloUv = uv;
+       vHoloWPos = (modelMatrix * vec4(transformed, 1.0)).xyz;
+       vHoloWNrm = normalize(mat3(modelMatrix) * objectNormal);`
+    );
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+       uniform float uTime;
+       uniform float uScanDensity;
+       uniform float uScanStrength;
+       uniform float uIriStrength;
+       uniform vec2  uScaleDensity;
+       uniform float uScaleGlow;
+       varying vec3 vHoloWPos;
+       varying vec3 vHoloWNrm;
+       varying vec2 vHoloUv;
+
+       // smooth spectral ramp — teal -> magenta -> gold, wrapping
+       vec3 holoSpectrum(float h) {
+         h = fract(h);
+         vec3 teal    = vec3(0.10, 1.00, 0.88);
+         vec3 blue    = vec3(0.22, 0.45, 1.00);
+         vec3 magenta = vec3(1.00, 0.18, 0.78);
+         vec3 gold    = vec3(1.00, 0.76, 0.25);
+         vec3 lime    = vec3(0.55, 1.00, 0.45);
+         float s = h * 5.0;
+         vec3 c;
+         if (s < 1.0)      c = mix(teal,    blue,    smoothstep(0.0, 1.0, s));
+         else if (s < 2.0) c = mix(blue,    magenta, smoothstep(0.0, 1.0, s - 1.0));
+         else if (s < 3.0) c = mix(magenta, gold,    smoothstep(0.0, 1.0, s - 2.0));
+         else if (s < 4.0) c = mix(gold,    lime,    smoothstep(0.0, 1.0, s - 3.0));
+         else              c = mix(lime,    teal,    smoothstep(0.0, 1.0, s - 4.0));
+         return c;
+       }
+
+       // rounded-diamond koi scale field
+       float scaleField(vec2 uv, out float edge) {
+         vec2 p = uv * uScaleDensity;
+         p.y += 0.5 * floor(p.x);           // brick / overlap offset
+         vec2 f = fract(p) - 0.5;
+         float d = length(vec2(f.x * 1.0, f.y * 1.35));
+         edge = smoothstep(0.50, 0.34, d) - smoothstep(0.36, 0.20, d);
+         return smoothstep(0.52, 0.16, d);
+       }`
+    )
+    .replace(
+      '#include <dithering_fragment>',
+      `#include <dithering_fragment>
+       {
+         vec3 N = normalize(vHoloWNrm);
+         vec3 V = normalize(cameraPosition - vHoloWPos);
+         float fres = 1.0 - abs(dot(N, V));
+         float nv   = dot(N, V);
+
+         // thin-film hue driven by view angle, position along the body and time
+         float hue = fres * 1.65
+                   + vHoloUv.x * 1.25
+                   + vHoloWPos.y * 0.16
+                   + uTime * 0.045
+                   + sin(vHoloUv.y * 6.2831 * 2.0 + uTime * 0.35) * 0.10;
+         vec3 iri = holoSpectrum(hue);
+         vec3 iri2 = holoSpectrum(hue + 0.42);
+         iri = mix(iri, iri2, 0.35);
+
+         // film sheen: strongest at grazing angles
+         float sheen = pow(clamp(fres, 0.0, 1.0), 1.35);
+         gl_FragColor.rgb += iri * sheen * 0.95 * uIriStrength;
+         gl_FragColor.rgb = mix(gl_FragColor.rgb, gl_FragColor.rgb * iri * 1.9, 0.42);
+
+         // ---- glowing semi-transparent scale pattern on the flanks ----
+         float flank = pow(clamp(abs(dot(N, vec3(0.0, 0.0, 1.0))), 0.0, 1.0), 0.75);
+         flank = max(flank, pow(clamp(abs(N.z), 0.0, 1.0), 1.2));
+         float bodyMask = smoothstep(0.02, 0.16, vHoloUv.x) * (1.0 - smoothstep(0.74, 0.94, vHoloUv.x));
+         float edge;
+         float sc = scaleField(vHoloUv, edge);
+         vec3 scaleCol = holoSpectrum(hue + 0.28) * 0.7 + vec3(0.35, 0.95, 1.0) * 0.35;
+         float scalePulse = 0.72 + 0.28 * sin(uTime * 1.6 - vHoloUv.x * 9.0);
+         gl_FragColor.rgb += scaleCol * (sc * 0.16 + edge * 0.85) * uScaleGlow * flank * bodyMask * scalePulse;
+
+         // ---- faint scanline shimmer ----
+         float scan = sin(vHoloWPos.y * uScanDensity * 0.06 - uTime * 5.0);
+         scan = 0.5 + 0.5 * scan;
+         float scanMask = 1.0 - uScanStrength * (1.0 - pow(scan, 1.6));
+         gl_FragColor.rgb *= scanMask;
+
+         // slow horizontal holo sweep band
+         float band = exp(-pow((fract(vHoloUv.x * 1.0 - uTime * 0.11) - 0.5) * 5.5, 2.0));
+         gl_FragColor.rgb += iri * band * 0.28;
+
+         // rim ignition
+         gl_FragColor.rgb += holoSpectrum(hue + 0.6) * pow(fres, 4.0) * 0.65;
+
+         // alpha: thin film — more opaque edge-on, glassy face-on
+         float a = gl_FragColor.a;
+         a *= mix(0.42, 1.0, pow(fres, 0.85));
+         a = clamp(a + edge * 0.22 * bodyMask * flank + band * 0.10, 0.0, 1.0);
+         gl_FragColor.a = a;
+
+         // tiny hint of interference speckle
+         float grain = fract(sin(dot(vHoloUv * 512.0, vec2(12.9898, 78.233))) * 43758.5453);
+         gl_FragColor.rgb += (grain - 0.5) * 0.018;
+
+         // keep facing-away faces from going flat black
+         gl_FragColor.rgb += iri * 0.05 * (1.0 - abs(nv));
+       }`
+    );
+}
+
+function makeHoloMaterial(opts = {}) {
+  const mat = new THREE.MeshPhysicalMaterial(Object.assign({
+    color: 0x0d2b38,
+    metalness: 0.55,
+    roughness: 0.18,
+    transparent: true,
+    opacity: 0.86,
+    side: THREE.DoubleSide,
+    transmission: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.12,
+    sheen: 1.0,
+    sheenColor: new THREE.Color(0x8affff),
+    sheenRoughness: 0.35,
+    iridescence: 1.0,
+    iridescenceIOR: 1.9,
+    iridescenceThicknessRange: [120, 720],
+    envMapIntensity: 1.2,
+    depthWrite: false
+  }, opts));
+  mat.onBeforeCompile = injectHolo;
+  mat.customProgramCacheKey = () => 'holo-film-v1';
+  return mat;
+}
+
+const filmMat = makeHoloMaterial();
+
+const sock = new THREE.Mesh(sockGeo, filmMat);
+sock.castShadow = true;
+sock.receiveShadow = true;
+koi.add(sock);
+
+/* --- Inner ghost shell: gives the tube volumetric depth ------------ */
+const innerMat = new THREE.MeshBasicMaterial({
+  color: 0x0f7f96,
+  transparent: true,
+  opacity: 0.10,
+  side: THREE.BackSide,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending
+});
+const innerShell = new THREE.Mesh(sockGeo, innerMat);
+innerShell.scale.setScalar(0.965);
+koi.add(innerShell);
+
+/* --- Wireframe fold lines: the "frozen billow" contour readout ----- */
+const foldMat = new THREE.MeshBasicMaterial({
+  color: 0x63fff0,
+  wireframe: true,
+  transparent: true,
+  opacity: 0.045,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending
+});
+const folds = new THREE.Mesh(sockGeo, foldMat);
+folds.scale.setScalar(1.004);
+koi.add(folds);
+
+/* ------------------------------------------------------------------ *
+ *  Mouth hoop (the rigid ring that holds the sock open)
+ * ------------------------------------------------------------------ */
+
+const hoopGroup = new THREE.Group();
+{
+  const p = new THREE.Vector3(), tn = new THREE.Vector3(), nn = new THREE.Vector3(), bn = new THREE.Vector3();
+  frameAt(0, p, tn, nn, bn);
+
+  const r0 = radiusProfile(0);
+  const sq0 = squashProfile(0);
+
+  // Ellipse matching the mouth cross-section
+  const hoopPts = [];
+  const HN = 128;
+  for (let i = 0; i <= HN; i++) {
+    const a = (i / HN) * Math.PI * 2;
+    hoopPts.push(new THREE.Vector3(0, Math.sin(a) * r0 * sq0, Math.cos(a) * r0));
+  }
+  const hoopCurve = new THREE.CatmullRomCurve3(hoopPts, true, 'centripetal', 0.5);
+  const hoopGeo = new THREE.TubeGeometry(hoopCurve, 240, 0.036, 16, true);
+
+  const hoopMat = new THREE.MeshPhysicalMaterial({
+    color: 0x1a3f4c,
+    metalness: 1.0,
+    roughness: 0.14,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
+    iridescence: 1.0,
+    iridescenceIOR: 2.1,
+    iridescenceThicknessRange: [180, 880],
+    emissive: 0x0d5f70,
+    emissiveIntensity: 0.55
+  });
+
+  const hoop = new THREE.Mesh(hoopGeo, hoopMat);
+  hoop.castShadow = true;
+  hoop.position.copy(p);
+  hoopGroup.add(hoop);
+
+  // Glow halo just inside the mouth
+  const halo = new THREE.Mesh(
+    new THREE.RingGeometry(r0 * 0.10, r0 * 0.99, 96, 1),
+    new THREE.MeshBasicMaterial({
+      color: 0x28e6ff,
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  halo.rotation.y = Math.PI / 2;
+  halo.scale.set(1, sq0, 1);
+  halo.position.copy(p).addScaledVector(tn, 0.02);
+  hoopGroup.add(halo);
+
+  // Lip seam: a thin bright ring hugging the fabric edge
+  const lipCurvePts = [];
+  for (let i = 0; i <= HN; i++) {
+    const a = (i / HN) * Math.PI * 2;
+    lipCurvePts.push(new THREE.Vector3(0, Math.sin(a) * r0 * sq0 * 1.012, Math.cos(a) * r0 * 1.012));
+  }
+  const lipCurve = new THREE.CatmullRomCurve3(lipCurvePts, true, 'centripetal', 0.5);
+  const lip = new THREE.Mesh(
+    new THREE.TubeGeometry(lipCurve, 200, 0.010, 8, true),
+    new THREE.MeshBasicMaterial({ color: 0xd8fff8, transparent: true, opacity: 0.75, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  lip.position.copy(p).addScaledVector(tn, -0.03);
+  hoopGroup.add(lip);
+}
+koi.add(hoopGroup);
+
+/* ------------------------------------------------------------------ *
+ *  Eyes — holographic orbs mounted just behind the mouth ring
+ * ------------------------------------------------------------------ */
+
+function makeEye(side) {
+  const g = new THREE.Group();
+
+  const p = new THREE.Vector3(), tn = new THREE.Vector3(), nn = new THREE.Vector3(), bn = new THREE.Vector3();
+  const te = 0.075;
+  frameAt(te, p, tn, nn, bn);
+  const r = radiusProfile(te);
+  const sq = squashProfile(te);
+
+  const ang = side > 0 ? 0.30 : Math.PI - 0.30; // both slightly above the midline
+  const ey = Math.sin(ang) * r * sq * 0.62;
+  const ez = Math.cos(ang) * r;
+
+  const base = new THREE.Vector3()
+    .copy(p)
+    .addScaledVector(nn, ey + r * 0.22)
+    .addScaledVector(bn, ez * (side > 0 ? 1 : -1) * 0.98);
+
+  const outward = new THREE.Vector3()
+    .addScaledVector(bn, side > 0 ? 1 : -1)
+    .addScaledVector(nn, 0.35)
+    .normalize();
+
+  const sphere = new THREE.Mesh(
+    new THREE.SphereGeometry(0.165, 40, 28),
+    new THREE.MeshPhysicalMaterial({
+      color: 0x061820,
+      metalness: 0.2,
+      roughness: 0.05,
+      transmission: 0.85,
+      thickness: 0.3,
+      ior: 1.5,
+      clearcoat: 1.0,
+      iridescence: 1.0,
+      iridescenceIOR: 2.0,
+      iridescenceThicknessRange: [200, 900],
+      transparent: true,
+      opacity: 0.95
+    })
+  );
+  sphere.position.copy(base);
+  sphere.castShadow = true;
+  g.add(sphere);
+
+  const pupil = new THREE.Mesh(
+    new THREE.SphereGeometry(0.075, 24, 18),
+    new THREE.MeshBasicMaterial({ color: 0x0a1418 })
+  );
+  pupil.position.copy(base).addScaledVector(outward, 0.095);
+  g.add(pupil);
+
+  const spark = new THREE.Mesh(
+    new THREE.SphereGeometry(0.026, 16, 12),
+    new THREE.MeshBasicMaterial({ color: 0x8ffff4, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  spark.position.copy(base).addScaledVector(outward, 0.155).addScaledVector(nn, 0.045);
+  g.add(spark);
+
+  const iris = new THREE.Mesh(
+    new THREE.TorusGeometry(0.155, 0.014, 12, 48),
+    new THREE.MeshBasicMaterial({ color: 0x2fe9ff, transparent: true, opacity: 0.55, blending: THREE.AdditiveBlending, depthWrite: false })
+  );
+  iris.position.copy(base);
+  iris.lookAt(base.clone().add(outward));
+  g.add(iris);
+
+  return g;
+}
+
+koi.add(makeEye(1));
+koi.add(makeEye(-1));
+
+/* ------------------------------------------------------------------ *
+ *  Fins — translucent holographic film membranes
+ * ------------------------------------------------------------------ */
+
+function buildFinGeometry(len, height, curl, ribs = 9, segs = 26) {
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  const rows = ribs + 1;
+  const cols = segs + 1;
+
+  for (let i = 0; i < rows; i++) {
+    const u = i / ribs;                 // across the fin span (root -> tip)
+    for (let j = 0; j < cols; j++) {
+      const v = j / segs;               // along the chord
+      // fin outline: wide at root, sweeping to a soft point
+      const chord = len * (1.0 - Math.pow(u, 1.6) * 0.65);
+      const x = v * chord;
+      const y = (u - 0.5) * height * (1.0 - Math.pow(v, 1.7) * 0.72);
+      // scalloped trailing edge + gentle curl out of plane
+      const z = Math.sin(u * Math.PI * (ribs - 1)) * 0.018 * v
+              + curl * Math.pow(v, 1.6) * (0.4 + 0.6 * Math.abs(u - 0.5) * 2.0);
+      positions.push(x, y, z);
+      uvs.push(v, u);
+    }
+  }
+  for (let i = 0; i < ribs; i++) {
+    for (let j = 0; j < segs; j++) {
+      const a = i * cols + j;
+      const b = a + cols;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+const finMat = makeHoloMaterial({
+  color: 0x123543,
+  opacity: 0.6,
+  roughness: 0.12,
+  metalness: 0.35
+});
+
+function placeFin(t, angle, scale, rotZ, rotY, curl, height) {
+  const p = new THREE.Vector3(), tn = new THREE.Vector3(), nn = new THREE.Vector3(), bn = new THREE.Vector3();
+  frameAt(t, p, tn, nn, bn);
+  const r = radiusProfile(t);
+  const sq = squashProfile(t);
+
+  const geo = buildFinGeometry(1.0, height, curl);
+  const fin = new THREE.Mesh(geo, finMat);
+  fin.castShadow = true;
+
+  const surf = new THREE.Vector3()
+    .copy(p)
+    .addScaledVector(nn, Math.sin(angle) * r * sq * 0.92)
+    .addScaledVector(bn, Math.cos(angle) * r * 0.92);
+
+  // Build an orientation basis: fin sweeps backward along the body,
+  // spreading outward from the surface.
+  const outward = new THREE.Vector3()
+    .addScaledVector(nn, Math.sin(angle))
+    .addScaledVector(bn, Math.cos(angle))
+    .normalize();
+
+  const back = tn.clone().multiplyScalar(-1);
+  const side = new THREE.Vector3().crossVectors(outward, back).normalize();
+
+  const m = new THREE.Matrix4().makeBasis(back, side, outward);
+  fin.position.copy(surf);
+  fin.quaternion.setFromRotationMatrix(m);
+  fin.rotateZ(rotZ);
+  fin.rotateY(rotY);
+  fin.scale.setScalar(scale);
+  return fin;
+}
+
+// Pectoral fins (left / right, just behind the head)
+koi.add(placeFin(0.20, 0.10, 0.92, -0.25, 0.55, 0.20, 0.62));
+koi.add(placeFin(0.20, Math.PI - 0.10, 0.92, 0.25, -0.55, -0.20, 0.62));
+// Pelvic fins (lower, mid-body)
+koi.add(placeFin(0.46, -0.85, 0.62, -0.15, 0.35, 0.14, 0.50));
+koi.add(placeFin(0.46, Math.PI + 0.85, 0.62, 0.15, -0.35, -0.14, 0.50));
+// Dorsal fin (top ridge)
+koi.add(placeFin(0.34, Math.PI * 0.5, 1.05, 0.0, 0.0, 0.10, 0.34));
+// Anal fin (underside, aft)
+koi.add(placeFin(0.66, -Math.PI * 0.5, 0.62, 0.0, 0.0, -0.10, 0.26));
+
+/* ------------------------------------------------------------------ *
+ *  Whiskers (barbels) — thin glowing filaments from the mouth
+ * ------------------------------------------------------------------ */
+
+function makeBarbel(side) {
+  const p = new THREE.Vector3(), tn = new THREE.Vector3(), nn = new THREE.Vector3(), bn = new THREE.Vector3();
+  frameAt(0.012, p, tn, nn, bn);
+  const r = radiusProfile(0.012);
+  const sq = squashProfile(0.012);
+
+  const start = new THREE.Vector3()
+    .copy(p)
+    .addScaledVector(nn, -0.42 * r * sq)
+    .addScaledVector(bn, side * 0.80 * r);
+
+  const pts = [];
+  const N = 24;
+  for (let i = 0; i <= N; i++) {
+    const s = i / N;
+    const q = start.clone();
+    q.addScaledVector(tn, -0.10 - s * 0.30);
+    q.addScaledVector(bn, side * (0.28 * s + 0.30 * Math.sin(s * 2.2)));
+    q.y -= s * s * 0.75 + s * 0.10;
+    q.addScaledVector(nn, Math.sin(s * 5.0) * 0.05);
+    pts.push(q);
+  }
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
+  const geo = new THREE.TubeGeometry(curve, 90, 0.016, 8, false);
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: 0x0e3742,
+    metalness: 0.8,
+    roughness: 0.2,
+    emissive: 0x18b6c8,
+    emissiveIntensity: 0.5,
+    iridescence: 1.0,
+    iridescenceIOR: 1.9,
+    transparent: true,
+    opacity: 0.85
+  });
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  return m;
+}
+koi.add(makeBarbel(1));
+koi.add(makeBarbel(-1));
+
+/* ------------------------------------------------------------------ *
+ *  Tail ribbon streamers — extra fluttering strands off the split tail
+ * ------------------------------------------------------------------ */
+
+const ribbonGroup = new THREE.Group();
+{
+  const ribbonMat = makeHoloMaterial({
+    color: 0x15303f,
+    opacity: 0.5,
+    metalness: 0.4,
+    roughness: 0.14
+  });
+
+  const p = new THREE.Vector3(), tn = new THREE.Vector3(), nn = new THREE.Vector3(), bn = new THREE.Vector3();
+  frameAt(1.0, p, tn, nn, bn);
+  const rEnd = radiusProfile(1.0);
+  const sqEnd = squashProfile(1.0);
+
+  const RIB = 7;
+  for (let k = 0; k < RIB; k++) {
+    const f = (k / (RIB - 1)) * 2 - 1;      // -1 .. 1
+    const lobe = f >= 0 ? 1 : -1;
+    const ang = Math.PI * 0.5 * lobe + f * 0.55;
+
+    const pts = [];
+    const N = 30;
+    const startPt = new THREE.Vector3()
+      .copy(p)
+      .addScaledVector(nn, Math.sin(ang) * rEnd * sqEnd)
+      .addScaledVector(bn, Math.cos(ang) * rEnd);
+
+    const len = 1.5 + Math.abs(f) * 0.85 + (k % 2) * 0.22;
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      const q = startPt.clone();
+      q.addScaledVector(tn, s * len);
+      q.y += Math.sin(ang) * s * 0.60 - s * s * 0.62;
+      q.addScaledVector(bn, Math.sin(s * 3.4 + k * 1.3) * 0.20 * s + Math.cos(ang) * s * 0.22);
+      q.addScaledVector(nn, Math.sin(s * 4.6 + k * 0.8) * 0.14 * s);
+      pts.push(q);
+    }
+    const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal', 0.5);
+
+    // Flat-ish ribbon: a very squashed tube reads as fluttering film
+    const geo = new THREE.TubeGeometry(curve, 120, 0.085, 10, false);
+    const posA = geo.attributes.position;
+    const nrmA = geo.attributes.normal;
+    // squash along Z-ish local axis to flatten into a ribbon
+    for (let i = 0; i < posA.count; i++) {
+      const ny = nrmA.getY(i);
+      posA.setY(i, posA.getY(i) - ny * 0.062);
+    }
+    posA.needsUpdate = true;
+    geo.computeVertexNormals();
+
+    const ribbon = new THREE.Mesh(geo, ribbonMat);
+    ribbon.castShadow = true;
+    ribbonGroup.add(ribbon);
+  }
+}
+koi.add(ribbonGroup);
+
+/* ------------------------------------------------------------------ *
+ *  Volumetric holo aura + drifting motes
+ * ------------------------------------------------------------------ */
+
+const auraMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  side: THREE.BackSide,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uTime: holoUniforms.uTime },
+  vertexShader: `
+    varying vec3 vN; varying vec3 vW;
+    void main() {
+      vN = normalize(mat3(modelMatrix) * normal);
+      vec4 wp = modelMatrix * vec4(position, 1.0);
+      vW = wp.xyz;
+      gl_Position = projectionMatrix * viewMatrix * wp;
+    }`,
+  fragmentShader: `
+    uniform float uTime;
+    varying vec3 vN; varying vec3 vW;
+    void main() {
+      vec3 V = normalize(cameraPosition - vW);
+      float f = pow(1.0 - abs(dot(normalize(vN), V)), 3.0);
+      float band = 0.5 + 0.5 * sin(vW.y * 9.0 - uTime * 1.4);
+      vec3 c = mix(vec3(0.05, 0.85, 0.95), vec3(0.95, 0.25, 0.85), 0.5 + 0.5 * sin(uTime * 0.3 + vW.x * 0.6));
+      gl_FragColor = vec4(c * f * (0.35 + 0.35 * band), f * 0.14);
+    }`
+});
+const aura = new THREE.Mesh(new THREE.SphereGeometry(3.9, 48, 32), auraMat);
+aura.position.set(0, 0, 0);
+koi.add(aura);
+
+// Motes
+const MOTES = 900;
+const motePos = new Float32Array(MOTES * 3);
+const moteSeed = new Float32Array(MOTES);
+for (let i = 0; i < MOTES; i++) {
+  const a = Math.random() * Math.PI * 2;
+  const rr = 1.0 + Math.random() * 3.4;
+  const yy = (Math.random() - 0.5) * 4.2;
+  motePos[i * 3 + 0] = Math.cos(a) * rr * (0.9 + Math.random() * 0.6);
+  motePos[i * 3 + 1] = yy;
+  motePos[i * 3 + 2] = Math.sin(a) * rr;
+  moteSeed[i] = Math.random() * 6.2831;
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+moteGeo.setAttribute('aSeed', new THREE.BufferAttribute(moteSeed, 1));
+const moteMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  uniforms: { uTime: holoUniforms.uTime, uPix: { value: renderer.getPixelRatio() } },
+  vertexShader: `
+    attribute float aSeed;
+    uniform float uTime; uniform float uPix;
+    varying float vS;
+    void main() {
+      vS = aSeed;
+      vec3 p = position;
+      p.y += sin(uTime * 0.35 + aSeed) * 0.30;
+      p.x += sin(uTime * 0.22 + aSeed * 1.7) * 0.18;
+      p.z += cos(uTime * 0.26 + aSeed * 1.3) * 0.18;
+      vec4 mv = modelViewMatrix * vec4(p, 1.0);
+      gl_PointSize = (1.6 + 2.4 * (0.5 + 0.5 * sin(uTime + aSeed))) * uPix * (10.0 / -mv.z);
+      gl_Position = projectionMatrix * mv;
+    }`,
+  fragmentShader: `
+    uniform float uTime;
+    varying float vS;
+    void main() {
+      vec2 d = gl_PointCoord - 0.5;
+      float m = smoothstep(0.5, 0.0, length(d));
+      vec3 c = mix(vec3(0.2, 1.0, 0.95), vec3(1.0, 0.6, 0.25), 0.5 + 0.5 * sin(vS * 2.0 + uTime * 0.4));
+      float tw = 0.35 + 0.65 * (0.5 + 0.5 * sin(uTime * 1.7 + vS * 3.0));
+      gl_FragColor = vec4(c, m * 0.32 * tw);
+    }`
+});
+const motes = new THREE.Points(moteGeo, moteMat);
+scene.add(motes);
+
+/* ------------------------------------------------------------------ *
+ *  Center + scale the whole koi
+ * ------------------------------------------------------------------ */
+
+koi.updateMatrixWorld(true);
+{
+  const box = new THREE.Box3();
+  // measure only the fabric + fins (skip the huge aura sphere)
+  aura.visible = false;
+  box.setFromObject(koi);
+  aura.visible = true;
+
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  const size = new THREE.Vector3();
+  box.getSize(size);
+
+  const inner = new THREE.Group();
+  while (koi.children.length) inner.add(koi.children[0]);
+  inner.position.sub(center);
+  koi.add(inner);
+
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const s = 5.6 / (maxDim > 0 ? maxDim : 1);
+  koi.scale.setScalar(s);
+  koi.position.set(0, 0.2, 0);
+  koi.rotation.y = -0.35;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Animation
+ * ------------------------------------------------------------------ */
+
+const clock = new THREE.Clock();
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  moteMat.uniforms.uPix.value = renderer.getPixelRatio();
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  holoUniforms.uTime.value = t;
+
+  // gentle idle sway — the streamer breathing in a slow breeze
+  koi.rotation.z = Math.sin(t * 0.42) * 0.035;
+  koi.position.y = 0.2 + Math.sin(t * 0.55) * 0.05;
+
+  glowA.intensity = 10.0 + Math.sin(t * 1.3) * 3.0;
+  glowB.intensity = 8.0 + Math.sin(t * 0.9 + 1.7) * 2.5;
+  goldSpark.intensity = 5.0 + Math.sin(t * 1.8 + 0.6) * 2.0;
+
+  motes.rotation.y = t * 0.02;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

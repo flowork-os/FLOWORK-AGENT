@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Marble Sundial Column</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14161a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(235,232,226,0.42); letter-spacing: 0.09em; text-transform: uppercase;
+    pointer-events: none; user-select: none; white-space: nowrap;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Marble Sundial Column &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);
+scene.fog = new THREE.FogExp2(0x14161a, 0.028);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(2.35, 1.75, 2.75);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.5;
+controls.target.set(0, 0.95, 0);
+controls.minDistance = 1.6;
+controls.maxDistance = 8.0;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ============================================================
+   Small math / noise helpers (deterministic)
+   ============================================================ */
+let _seed = 20260721;
+function rand() {
+  // mulberry32
+  _seed |= 0; _seed = (_seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(_seed ^ (_seed >>> 15), 1 | _seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+function randRange(a, b) { return a + (b - a) * rand(); }
+
+// Value noise (3D) with smooth interpolation — used for marble veining & pitting.
+const PERM = new Uint8Array(512);
+(function buildPerm() {
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = Math.floor(rand() * (i + 1));
+    const t = p[i]; p[i] = p[j]; p[j] = t;
+  }
+  for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+})();
+function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+function hash3(xi, yi, zi) {
+  return PERM[(PERM[(PERM[xi & 255] + (yi & 255)) & 255] + (zi & 255)) & 255] / 255;
+}
+function valueNoise3(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = fade(xf), v = fade(yf), w = fade(zf);
+  const c000 = hash3(xi, yi, zi),       c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi),   c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1),   c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  const x00 = lerp(c000, c100, u), x10 = lerp(c010, c110, u);
+  const x01 = lerp(c001, c101, u), x11 = lerp(c011, c111, u);
+  return lerp(lerp(x00, x10, v), lerp(x01, x11, v), w);
+}
+function fbm3(x, y, z, octaves = 5, lac = 2.03, gain = 0.5) {
+  let a = 0.5, f = 1, sum = 0, norm = 0;
+  for (let i = 0; i < octaves; i++) {
+    sum += a * valueNoise3(x * f, y * f, z * f);
+    norm += a; a *= gain; f *= lac;
+  }
+  return sum / norm;
+}
+
+/* ============================================================
+   Procedural textures (CanvasTexture — no external assets)
+   ============================================================ */
+
+// --- Carrara marble: soft warm-white body, grey-green veins, faint pitting ---
+function makeMarbleTextures(w = 1024, h = 1024, opts = {}) {
+  const veinScale   = opts.veinScale   !== undefined ? opts.veinScale   : 3.2;
+  const veinStrength= opts.veinStrength!== undefined ? opts.veinStrength: 1.0;
+  const pitDensity  = opts.pitDensity  !== undefined ? opts.pitDensity  : 900;
+  const uRepeatWrap = opts.seamlessU   !== undefined ? opts.seamlessU   : true;
+
+  const cAlb = document.createElement('canvas'); cAlb.width = w; cAlb.height = h;
+  const gAlb = cAlb.getContext('2d');
+  const imgA = gAlb.createImageData(w, h);
+  const dA = imgA.data;
+
+  const cRgh = document.createElement('canvas'); cRgh.width = w; cRgh.height = h;
+  const gRgh = cRgh.getContext('2d');
+  const imgR = gRgh.createImageData(w, h);
+  const dR = imgR.data;
+
+  // height buffer for the bump/normal map
+  const hbuf = new Float32Array(w * h);
+
+  const TAU = Math.PI * 2;
+
+  for (let y = 0; y < h; y++) {
+    const v = y / h;
+    for (let x = 0; x < w; x++) {
+      const u = x / w;
+
+      // Seamless in U by sampling on a cylinder cross-section
+      let nx, nz;
+      if (uRepeatWrap) {
+        nx = Math.cos(u * TAU) * veinScale;
+        nz = Math.sin(u * TAU) * veinScale;
+      } else {
+        nx = u * veinScale * 2.0; nz = 11.7;
+      }
+      const ny = v * veinScale * 3.0;
+
+      // domain-warped fbm -> vein field
+      const wx = fbm3(nx * 0.55 + 13.1, ny * 0.55, nz * 0.55) * 2.0 - 1.0;
+      const wy = fbm3(nx * 0.55, ny * 0.55 + 7.7, nz * 0.55) * 2.0 - 1.0;
+
+      const base = fbm3(nx + wx * 1.35, ny * 1.6 + wy * 1.35, nz + wx * 0.6, 5);
+      // ridged: thin dark filaments
+      let vein = Math.abs(base - 0.5) * 2.0;
+      vein = 1.0 - vein;
+      vein = Math.pow(Math.max(vein, 0), 9.0);           // primary vein network
+      const vein2 = Math.pow(Math.max(1.0 - Math.abs(fbm3(nx * 2.4 + 4.0, ny * 3.1, nz * 2.4, 4) - 0.5) * 2.0, 0), 16.0);
+
+      const veinAmt = Math.min(1, (vein * 0.85 + vein2 * 0.55) * veinStrength);
+
+      // cloudy off-white body
+      const cloud = fbm3(nx * 0.9 + 31.0, ny * 0.9, nz * 0.9, 4);
+      const grain = fbm3(nx * 26.0, ny * 26.0, nz * 26.0, 2);
+
+      // base marble colour (warm ivory-white)
+      let r = 238 + (cloud - 0.5) * 16 + (grain - 0.5) * 7;
+      let g = 236 + (cloud - 0.5) * 15 + (grain - 0.5) * 7;
+      let b = 229 + (cloud - 0.5) * 18 + (grain - 0.5) * 7;
+
+      // veins: cool grey-green
+      r = lerp(r, 138 + cloud * 22, veinAmt);
+      g = lerp(g, 141 + cloud * 22, veinAmt);
+      b = lerp(b, 137 + cloud * 20, veinAmt);
+
+      // broad weather-staining wash near the bottom / random blotches
+      const stain = Math.pow(Math.max(fbm3(nx * 0.7 + 60.0, ny * 0.5 + 3.0, nz * 0.7, 4) - 0.42, 0) * 2.4, 1.5);
+      const ageMix = Math.min(0.42, stain * 0.5 + Math.max(0, (v - 0.62)) * 0.45);
+      r = lerp(r, 176, ageMix); g = lerp(g, 170, ageMix); b = lerp(b, 152, ageMix);
+
+      const i4 = (y * w + x) * 4;
+      dA[i4] = Math.max(0, Math.min(255, r));
+      dA[i4 + 1] = Math.max(0, Math.min(255, g));
+      dA[i4 + 2] = Math.max(0, Math.min(255, b));
+      dA[i4 + 3] = 255;
+
+      // roughness: polished planes are smooth; veins and stains slightly duller
+      let rough = 0.20 + veinAmt * 0.20 + ageMix * 0.34 + (grain - 0.5) * 0.06;
+      rough = Math.max(0.08, Math.min(0.95, rough));
+      const rq = Math.round(rough * 255);
+      dR[i4] = rq; dR[i4 + 1] = rq; dR[i4 + 2] = rq; dR[i4 + 3] = 255;
+
+      // height: veins sit microscopically proud/recessed, plus fine crystal grain
+      hbuf[y * w + x] = (grain - 0.5) * 0.22 - veinAmt * 0.12 + (cloud - 0.5) * 0.10;
+    }
+  }
+
+  // --- weather pitting: small dark craters punched into albedo + height + roughness ---
+  for (let p = 0; p < pitDensity; p++) {
+    const px = Math.floor(rand() * w);
+    const py = Math.floor(rand() * h);
+    const rad = Math.max(1.0, Math.pow(rand(), 2.6) * 6.5 + 0.8);
+    const deep = 0.35 + rand() * 0.65;
+    const r2 = rad * rad;
+    const x0 = Math.floor(px - rad), x1 = Math.ceil(px + rad);
+    const y0 = Math.max(0, Math.floor(py - rad)), y1 = Math.min(h - 1, Math.ceil(py + rad));
+    for (let yy = y0; yy <= y1; yy++) {
+      for (let xx = x0; xx <= x1; xx++) {
+        const dx = xx - px, dy = yy - py;
+        const d2 = dx * dx + dy * dy;
+        if (d2 > r2) continue;
+        const t = 1.0 - Math.sqrt(d2) / rad;
+        const f = t * t * deep;
+        const wx2 = ((xx % w) + w) % w;
+        const idx = (yy * w + wx2);
+        const i4 = idx * 4;
+        dA[i4]     = Math.max(0, dA[i4]     * (1 - f * 0.30));
+        dA[i4 + 1] = Math.max(0, dA[i4 + 1] * (1 - f * 0.30));
+        dA[i4 + 2] = Math.max(0, dA[i4 + 2] * (1 - f * 0.28));
+        dR[i4] = dR[i4 + 1] = dR[i4 + 2] = Math.min(255, dR[i4] + f * 90);
+        hbuf[idx] -= f * 0.9;
+      }
+    }
+  }
+
+  gAlb.putImageData(imgA, 0, 0);
+  gRgh.putImageData(imgR, 0, 0);
+
+  // --- derive a normal map from the height buffer (Sobel-ish central difference) ---
+  const cNrm = document.createElement('canvas'); cNrm.width = w; cNrm.height = h;
+  const gNrm = cNrm.getContext('2d');
+  const imgN = gNrm.createImageData(w, h);
+  const dN = imgN.data;
+  const strength = 2.4;
+  for (let y = 0; y < h; y++) {
+    const ym = (y - 1 + h) % h, yp = (y + 1) % h;
+    for (let x = 0; x < w; x++) {
+      const xm = (x - 1 + w) % w, xp = (x + 1) % w;
+      const hl = hbuf[y * w + xm], hr = hbuf[y * w + xp];
+      const hd = hbuf[yp * w + x], hu = hbuf[ym * w + x];
+      let nxv = (hl - hr) * strength;
+      let nyv = (hd - hu) * strength;
+      let nzv = 1.0;
+      const len = Math.hypot(nxv, nyv, nzv) || 1;
+      nxv /= len; nyv /= len; nzv /= len;
+      const i4 = (y * w + x) * 4;
+      dN[i4]     = Math.round((nxv * 0.5 + 0.5) * 255);
+      dN[i4 + 1] = Math.round((nyv * 0.5 + 0.5) * 255);
+      dN[i4 + 2] = Math.round((nzv * 0.5 + 0.5) * 255);
+      dN[i4 + 3] = 255;
+    }
+  }
+  gNrm.putImageData(imgN, 0, 0);
+
+  const mk = (canvas, srgb) => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.wrapS = THREE.RepeatWrapping;
+    t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    t.needsUpdate = true;
+    return t;
+  };
+
+  return {
+    map: mk(cAlb, true),
+    roughnessMap: mk(cRgh, false),
+    normalMap: mk(cNrm, false)
+  };
+}
+
+// --- Bronze: patinated verdigris-flecked metal ---
+function makeBronzeTextures(w = 512, h = 512) {
+  const cA = document.createElement('canvas'); cA.width = w; cA.height = h;
+  const gA = cA.getContext('2d'); const iA = gA.createImageData(w, h); const dA = iA.data;
+  const cR = document.createElement('canvas'); cR.width = w; cR.height = h;
+  const gR = cR.getContext('2d'); const iR = gR.createImageData(w, h); const dR = iR.data;
+
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const u = x / w, v = y / h;
+      const nx = Math.cos(u * Math.PI * 2) * 3.0, nz = Math.sin(u * Math.PI * 2) * 3.0;
+      const ny = v * 6.0;
+      const n = fbm3(nx, ny, nz, 5);
+      const patina = Math.pow(Math.max(n - 0.46, 0) * 2.3, 1.4);
+      const speck = fbm3(nx * 9.0, ny * 9.0, nz * 9.0, 3);
+
+      // warm bronze base
+      let r = 150 + (speck - 0.5) * 26;
+      let g = 104 + (speck - 0.5) * 22;
+      let b = 58 + (speck - 0.5) * 18;
+      // verdigris / dark patina in recesses
+      r = lerp(r, 74, patina * 0.75);
+      g = lerp(g, 104, patina * 0.75);
+      b = lerp(b, 84, patina * 0.70);
+
+      const i4 = (y * w + x) * 4;
+      dA[i4] = r; dA[i4 + 1] = g; dA[i4 + 2] = b; dA[i4 + 3] = 255;
+
+      let rough = 0.26 + patina * 0.46 + (speck - 0.5) * 0.14;
+      rough = Math.max(0.12, Math.min(0.95, rough));
+      const rq = Math.round(rough * 255);
+      dR[i4] = rq; dR[i4 + 1] = rq; dR[i4 + 2] = rq; dR[i4 + 3] = 255;
+    }
+  }
+  gA.putImageData(iA, 0, 0);
+  gR.putImageData(iR, 0, 0);
+
+  const mk = (canvas, srgb) => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.wrapS = t.wrapT = THREE.RepeatWrapping;
+    t.anisotropy = Math.min(8, renderer.capabilities.getMaxAnisotropy());
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return { map: mk(cA, true), roughnessMap: mk(cR, false) };
+}
+
+/* ============================================================
+   Dial face texture: incised Roman numerals + hour lines
+   (drawn 2D, used as albedo + roughness + normal on the plate top)
+   ============================================================ */
+function makeDialFaceTextures(size = 1400) {
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  const g = c.getContext('2d');
+  const R = size / 2;
+
+  // --- polished marble ground (reuse noise directly in 2D, planar) ---
+  const img = g.createImageData(size, size);
+  const d = img.data;
+  const hbuf = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = (x / size) * 6.0, v = (y / size) * 6.0;
+      const wx = fbm3(u * 0.6 + 5.0, v * 0.6, 2.5) * 2 - 1;
+      const base = fbm3(u + wx * 1.3, v * 1.4 + wx * 0.7, 9.3, 5);
+      let vein = 1.0 - Math.abs(base - 0.5) * 2.0;
+      vein = Math.pow(Math.max(vein, 0), 10.0);
+      const vein2 = Math.pow(Math.max(1 - Math.abs(fbm3(u * 2.2 + 20, v * 2.6, 4.1, 4) - 0.5) * 2, 0), 15.0);
+      const veinAmt = Math.min(1, vein * 0.9 + vein2 * 0.5);
+      const cloud = fbm3(u * 0.85 + 40, v * 0.85, 17.0, 4);
+      const grain = fbm3(u * 24, v * 24, 3.7, 2);
+
+      let r = 240 + (cloud - .5) * 14 + (grain - .5) * 6;
+      let gg = 238 + (cloud - .5) * 13 + (grain - .5) * 6;
+      let b = 231 + (cloud - .5) * 16 + (grain - .5) * 6;
+      r = lerp(r, 140 + cloud * 20, veinAmt);
+      gg = lerp(gg, 143 + cloud * 20, veinAmt);
+      b = lerp(b, 139 + cloud * 18, veinAmt);
+
+      // faint age wash toward the rim
+      const dx = (x - R) / R, dy = (y - R) / R;
+      const rr = Math.hypot(dx, dy);
+      const rim = Math.max(0, rr - 0.72) / 0.28;
+      const stain = Math.pow(Math.max(fbm3(u * 0.8 + 71, v * 0.8, 6.6, 4) - 0.45, 0) * 2.2, 1.4);
+      const age = Math.min(0.4, rim * 0.28 + stain * 0.4);
+      r = lerp(r, 178, age); gg = lerp(gg, 172, age); b = lerp(b, 154, age);
+
+      const i4 = (y * size + x) * 4;
+      d[i4] = r; d[i4 + 1] = gg; d[i4 + 2] = b; d[i4 + 3] = 255;
+      hbuf[y * size + x] = (grain - 0.5) * 0.18 - veinAmt * 0.10;
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // --- engraving helpers -------------------------------------------------
+  // Everything incised is drawn twice: a dark groove + a light lower-lip
+  // highlight, which reads as a carved V-cut under raking light.
+  const numerals = ['VI', 'VII', 'VIII', 'IX', 'X', 'XI', 'XII', 'I', 'II', 'III', 'IIII', 'V', 'VI'];
+  // hour angles: noon at "north" (top of face, away from viewer at rest)
+  const hours = [];
+  for (let i = 0; i <= 12; i++) hours.push(i);
+
+  g.save();
+  g.translate(R, R);
+
+  const rOuter = R * 0.955;
+  const rChap  = R * 0.865;   // outer chapter ring
+  const rChapIn= R * 0.735;   // inner chapter ring
+  const rTick  = R * 0.700;
+  const rInner = R * 0.335;
+
+  function ring(radius, lw, col, alpha) {
+    g.beginPath();
+    g.arc(0, 0, radius, 0, Math.PI * 2);
+    g.lineWidth = lw; g.strokeStyle = col; g.globalAlpha = alpha; g.stroke();
+    g.globalAlpha = 1;
+  }
+  // incised concentric rings (groove + highlight offset)
+  function incisedRing(radius, lw) {
+    ring(radius + lw * 0.42, lw * 0.55, '#ffffff', 0.42);
+    ring(radius, lw, '#4b4a44', 0.85);
+    ring(radius - lw * 0.18, lw * 0.35, '#2e2d29', 0.5);
+  }
+  incisedRing(rOuter, 5);
+  incisedRing(rChap, 4);
+  incisedRing(rChapIn, 3.4);
+  incisedRing(rInner, 3.0);
+
+  // --- hour lines radiating from the gnomon root (dial centre offset) ---
+  // Roman-numeral hours arranged over a 180°+ sweep; noon straight "up".
+  const hourSpan = 15 * Math.PI / 180; // decorative even spacing
+  for (let i = 0; i < hours.length; i++) {
+    const h = hours[i];
+    const ang = (h - 6) * hourSpan;      // -90°..+90°
+    const a = ang - Math.PI / 2;         // rotate so noon points -Y (up in texture)
+    const cos = Math.cos(a), sin = Math.sin(a);
+    const isMajor = true;
+    const x0 = cos * rInner, y0 = sin * rInner;
+    const x1 = cos * rTick,  y1 = sin * rTick;
+
+    // highlight lip
+    g.beginPath();
+    g.moveTo(x0 - sin * 2.2, y0 + cos * 2.2);
+    g.lineTo(x1 - sin * 2.2, y1 + cos * 2.2);
+    g.lineWidth = 2.4; g.strokeStyle = 'rgba(255,255,255,0.5)'; g.stroke();
+    // groove
+    g.beginPath();
+    g.moveTo(x0, y0); g.lineTo(x1, y1);
+    g.lineWidth = isMajor ? 4.6 : 2.6;
+    g.strokeStyle = 'rgba(62,60,54,0.9)';
+    g.stroke();
+    g.beginPath();
+    g.moveTo(x0, y0); g.lineTo(x1, y1);
+    g.lineWidth = 1.8; g.strokeStyle = 'rgba(38,37,33,0.75)'; g.stroke();
+  }
+
+  // half-hour minor ticks
+  for (let i = 0; i < hours.length - 1; i++) {
+    const ang = (hours[i] - 6 + 0.5) * hourSpan;
+    const a = ang - Math.PI / 2;
+    const cos = Math.cos(a), sin = Math.sin(a);
+    g.beginPath();
+    g.moveTo(cos * (rTick - R * 0.055), sin * (rTick - R * 0.055));
+    g.lineTo(cos * rTick, sin * rTick);
+    g.lineWidth = 2.4; g.strokeStyle = 'rgba(70,68,61,0.85)'; g.stroke();
+  }
+
+  // --- Roman numerals in the chapter ring, rotated to face outward ---
+  const numR = (rChap + rChapIn) * 0.5;
+  g.textAlign = 'center';
+  g.textBaseline = 'middle';
+  const fontPx = Math.round(R * 0.088);
+  for (let i = 0; i < hours.length; i++) {
+    const label = numerals[i];
+    const ang = (hours[i] - 6) * hourSpan;
+    const a = ang - Math.PI / 2;
+    g.save();
+    g.rotate(a + Math.PI / 2);        // numeral baseline tangent, feet inward
+    g.translate(0, -numR);
+    g.font = `600 ${fontPx}px "Times New Roman", Georgia, serif`;
+
+    // engraved look: bright lower lip then dark groove
+    g.fillStyle = 'rgba(255,255,255,0.55)';
+    g.fillText(label, 1.7, 2.0);
+    g.fillStyle = 'rgba(56,54,48,0.94)';
+    g.fillText(label, 0, 0);
+    g.fillStyle = 'rgba(30,29,26,0.55)';
+    g.fillText(label, -0.6, -0.7);
+    g.restore();
+  }
+
+  // --- motto engraved along the lower arc + centre marks ---
+  const motto = 'HORAS·NON·NUMERO·NISI·SERENAS';
+  const mottoR = R * 0.545;
+  g.font = `500 ${Math.round(R * 0.042)}px "Times New Roman", Georgia, serif`;
+  const startA = Math.PI * 0.30, endA = Math.PI * 0.70;
+  for (let i = 0; i < motto.length; i++) {
+    const t = i / (motto.length - 1);
+    const a = startA + (endA - startA) * t;
+    g.save();
+    g.rotate(a - Math.PI / 2);
+    g.translate(0, mottoR);
+    g.rotate(Math.PI);
+    g.fillStyle = 'rgba(255,255,255,0.45)';
+    g.fillText(motto[i], 1.2, 1.4);
+    g.fillStyle = 'rgba(64,62,55,0.92)';
+    g.fillText(motto[i], 0, 0);
+    g.restore();
+  }
+
+  // small carved rosette at the gnomon root
+  g.strokeStyle = 'rgba(66,64,57,0.8)';
+  for (let i = 0; i < 16; i++) {
+    const a = (i / 16) * Math.PI * 2;
+    g.beginPath();
+    g.moveTo(Math.cos(a) * R * 0.055, Math.sin(a) * R * 0.055);
+    g.lineTo(Math.cos(a) * R * 0.115, Math.sin(a) * R * 0.115);
+    g.lineWidth = 2.0; g.stroke();
+  }
+  g.restore();
+
+  // --- chipped-edge nicks around the plate rim ---
+  g.save();
+  g.translate(R, R);
+  for (let i = 0; i < 26; i++) {
+    const a = rand() * Math.PI * 2;
+    const rr = rOuter + randRange(-R * 0.012, R * 0.02);
+    const s = randRange(R * 0.006, R * 0.022);
+    g.beginPath();
+    g.moveTo(Math.cos(a) * rr, Math.sin(a) * rr);
+    g.lineTo(Math.cos(a + 0.02) * (rr - s), Math.sin(a + 0.02) * (rr - s));
+    g.lineTo(Math.cos(a - 0.03) * (rr - s * 0.5), Math.sin(a - 0.03) * (rr - s * 0.5));
+    g.closePath();
+    g.fillStyle = `rgba(${180 + rand() * 30 | 0},${176 + rand() * 28 | 0},${164 + rand() * 26 | 0},0.85)`;
+    g.fill();
+  }
+  g.restore();
+
+  // --- pitting speckle on the face ---
+  for (let i = 0; i < 700; i++) {
+    const a = rand() * Math.PI * 2;
+    const rr = Math.sqrt(rand()) * R * 0.985;
+    const x = R + Math.cos(a) * rr, y = R + Math.sin(a) * rr;
+    const rad = Math.pow(rand(), 2.4) * 3.6 + 0.5;
+    g.beginPath();
+    g.arc(x, y, rad, 0, Math.PI * 2);
+    g.fillStyle = `rgba(120,116,104,${0.05 + rand() * 0.18})`;
+    g.fill();
+  }
+
+  // ===== derive roughness + normal from the drawn result =====
+  const drawn = g.getImageData(0, 0, size, size).data;
+
+  // roughness: engraved (dark) areas are rougher; polished field is glassy
+  const cR = document.createElement('canvas'); cR.width = cR.height = size;
+  const gR = cR.getContext('2d'); const iR = gR.createImageData(size, size); const dR = iR.data;
+  for (let i = 0; i < size * size; i++) {
+    const i4 = i * 4;
+    const lum = (drawn[i4] * 0.299 + drawn[i4 + 1] * 0.587 + drawn[i4 + 2] * 0.114) / 255;
+    // dark = groove = rough
+    const rough = Math.max(0.10, Math.min(0.95, 0.16 + (1.0 - lum) * 0.85));
+    const q = Math.round(rough * 255);
+    dR[i4] = dR[i4 + 1] = dR[i4 + 2] = q; dR[i4 + 3] = 255;
+    // fold engraving depth into the height buffer (dark => recessed)
+    hbuf[i] += -(1.0 - lum) * 0.62;
+  }
+  gR.putImageData(iR, 0, 0);
+
+  // blur height slightly so grooves get soft shoulders
+  const tmp = new Float32Array(size * size);
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const xm = Math.max(0, x - 1), xp = Math.min(size - 1, x + 1);
+      const ym = Math.max(0, y - 1), yp = Math.min(size - 1, y + 1);
+      tmp[y * size + x] = (
+        hbuf[y * size + xm] + hbuf[y * size + xp] +
+        hbuf[ym * size + x] + hbuf[yp * size + x] +
+        hbuf[y * size + x] * 2
+      ) / 6;
+    }
+  }
+
+  const cN = document.createElement('canvas'); cN.width = cN.height = size;
+  const gN = cN.getContext('2d'); const iN = gN.createImageData(size, size); const dN = iN.data;
+  const st = 3.0;
+  for (let y = 0; y < size; y++) {
+    const ym = Math.max(0, y - 1), yp = Math.min(size - 1, y + 1);
+    for (let x = 0; x < size; x++) {
+      const xm = Math.max(0, x - 1), xp = Math.min(size - 1, x + 1);
+      let nxv = (tmp[y * size + xm] - tmp[y * size + xp]) * st;
+      let nyv = (tmp[yp * size + x] - tmp[ym * size + x]) * st;
+      let nzv = 1.0;
+      const len = Math.hypot(nxv, nyv, nzv) || 1;
+      const i4 = (y * size + x) * 4;
+      dN[i4]     = Math.round((nxv / len * 0.5 + 0.5) * 255);
+      dN[i4 + 1] = Math.round((nyv / len * 0.5 + 0.5) * 255);
+      dN[i4 + 2] = Math.round((nzv / len * 0.5 + 0.5) * 255);
+      dN[i4 + 3] = 255;
+    }
+  }
+  gN.putImageData(iN, 0, 0);
+
+  const mk = (canvas, srgb) => {
+    const t = new THREE.CanvasTexture(canvas);
+    t.wrapS = t.wrapT = THREE.ClampToEdgeWrapping;
+    t.anisotropy = Math.min(16, renderer.capabilities.getMaxAnisotropy());
+    if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+    return t;
+  };
+  return { map: mk(c, true), roughnessMap: mk(cR, false), normalMap: mk(cN, false) };
+}
+
+/* ============================================================
+   Materials
+   ============================================================ */
+const marbleTex = makeMarbleTextures(1024, 1024, { veinScale: 3.0, veinStrength: 1.0, pitDensity: 1100 });
+const marbleTexFine = makeMarbleTextures(768, 768, { veinScale: 5.0, veinStrength: 0.85, pitDensity: 700 });
+const bronzeTex = makeBronzeTextures(512, 512);
+const dialTex = makeDialFaceTextures(1400);
+
+const marbleMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: marbleTex.map,
+  roughnessMap: marbleTex.roughnessMap,
+  normalMap: marbleTex.normalMap,
+  normalScale: new THREE.Vector2(0.42, 0.42),
+  roughness: 1.0,
+  metalness: 0.0,
+  clearcoat: 0.32,
+  clearcoatRoughness: 0.34,
+  sheen: 0.18,
+  sheenColor: new THREE.Color(0xfff4e2),
+  sheenRoughness: 0.7,
+  envMapIntensity: 0.9
+});
+
+const marbleMatFine = marbleMat.clone();
+marbleMatFine.map = marbleTexFine.map;
+marbleMatFine.roughnessMap = marbleTexFine.roughnessMap;
+marbleMatFine.normalMap = marbleTexFine.normalMap;
+marbleMatFine.normalScale = new THREE.Vector2(0.55, 0.55);
+
+const marbleCarvedMat = marbleMat.clone();
+marbleCarvedMat.normalScale = new THREE.Vector2(0.8, 0.8);
+marbleCarvedMat.clearcoat = 0.14;
+marbleCarvedMat.color = new THREE.Color(0xf3efe6);
+
+const dialMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: dialTex.map,
+  roughnessMap: dialTex.roughnessMap,
+  normalMap: dialTex.normalMap,
+  normalScale: new THREE.Vector2(0.9, 0.9),
+  roughness: 1.0,
+  metalness: 0.0,
+  clearcoat: 0.45,
+  clearcoatRoughness: 0.22,
+  envMapIntensity: 1.0
+});
+
+const dialEdgeMat = marbleMatFine.clone();
+
+const bronzeMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  map: bronzeTex.map,
+  roughnessMap: bronzeTex.roughnessMap,
+  roughness: 1.0,
+  metalness: 0.94,
+  envMapIntensity: 1.15
+});
+
+/* ============================================================
+   Environment (procedural gradient env map for believable specular)
+   ============================================================ */
+(function buildEnv() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 256;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 256);
+  grad.addColorStop(0.00, '#6d7887');
+  grad.addColorStop(0.35, '#4a5260');
+  grad.addColorStop(0.52, '#2c3038');
+  grad.addColorStop(1.00, '#15171b');
+  g.fillStyle = grad; g.fillRect(0, 0, 512, 256);
+  // a warm "sun" blob to give marble a directional sheen
+  const sun = g.createRadialGradient(150, 58, 4, 150, 58, 96);
+  sun.addColorStop(0, 'rgba(255,240,214,0.95)');
+  sun.addColorStop(1, 'rgba(255,240,214,0)');
+  g.fillStyle = sun; g.fillRect(0, 0, 512, 256);
+  // cool bounce from the opposite side
+  const cool = g.createRadialGradient(390, 120, 4, 390, 120, 130);
+  cool.addColorStop(0, 'rgba(140,170,210,0.42)');
+  cool.addColorStop(1, 'rgba(140,170,210,0)');
+  g.fillStyle = cool; g.fillRect(0, 0, 512, 256);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const env = pmrem.fromEquirectangular(tex).texture;
+  scene.environment = env;
+  tex.dispose();
+  pmrem.dispose();
+})();
+
+/* ============================================================
+   THE OBJECT: Marble Sundial Column
+   ============================================================ */
+const sundial = new THREE.Group();
+scene.add(sundial);
+
+const TWO_PI = Math.PI * 2;
+
+function markShadow(mesh) {
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+/* ---------- helper: lathe profile with subtle chip/erosion jitter ---------- */
+function latheFromProfile(pts, segments, jitter) {
+  const geo = new THREE.LatheGeometry(pts, segments);
+  geo.computeVertexNormals();
+  if (jitter) {
+    const pos = geo.attributes.position;
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      const r = Math.hypot(x, z);
+      if (r < 1e-5) continue;
+      const n = fbm3(x * 22, y * 22, z * 22, 3) - 0.5;
+      const n2 = fbm3(x * 90, y * 90, z * 90, 2) - 0.5;
+      const off = n * jitter + n2 * jitter * 0.35;
+      const s = (r + off) / r;
+      pos.setX(i, x * s);
+      pos.setZ(i, z * s);
+      pos.setY(i, y + n2 * jitter * 0.5);
+    }
+    pos.needsUpdate = true;
+    geo.computeVertexNormals();
+  }
+  return geo;
+}
+
+/* ============ 1. PLINTH / BASE (square stepped block) ============ */
+function makeStepBlock(w, h, d, bevel, seed) {
+  // A box with softened, slightly chipped edges via a bevelled box built from
+  // an extruded rounded rectangle.
+  const shape = new THREE.Shape();
+  const hw = w / 2, hd = d / 2, r = bevel;
+  shape.moveTo(-hw + r, -hd);
+  shape.lineTo(hw - r, -hd);
+  shape.quadraticCurveTo(hw, -hd, hw, -hd + r);
+  shape.lineTo(hw, hd - r);
+  shape.quadraticCurveTo(hw, hd, hw - r, hd);
+  shape.lineTo(-hw + r, hd);
+  shape.quadraticCurveTo(-hw, hd, -hw, hd - r);
+  shape.lineTo(-hw, -hd + r);
+  shape.quadraticCurveTo(-hw, -hd, -hw + r, -hd);
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: h,
+    bevelEnabled: true,
+    bevelThickness: bevel * 0.75,
+    bevelSize: bevel * 0.75,
+    bevelSegments: 3,
+    curveSegments: 6
+  });
+  geo.rotateX(-Math.PI / 2);
+  geo.translate(0, h, 0);   // extrude grows -Y after rotate; normalise to sit on 0..h
+
+  // erode edges a touch
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n = fbm3(x * 14 + seed, y * 14, z * 14, 3) - 0.5;
+    const n2 = fbm3(x * 70 + seed, y * 70, z * 70, 2) - 0.5;
+    const amt = 0.0032;
+    pos.setXYZ(i, x + (n + n2 * 0.5) * amt, y + (n2) * amt * 0.8, z + (n + n2 * 0.5) * amt);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  geo.computeBoundingBox();
+
+  // planar-ish UVs so marble texture tiles sensibly
+  const bb = geo.boundingBox;
+  const uv = geo.attributes.uv;
+  if (uv) {
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+      uv.setXY(i, (x - bb.min.x) / (bb.max.x - bb.min.x) * 1.2 + z * 0.35, (y - bb.min.y) / Math.max(1e-4, (bb.max.y - bb.min.y)) * 0.5);
+    }
+    uv.needsUpdate = true;
+  }
+  return geo;
+}
+
+const plinthGroup = new THREE.Group();
+
+// Lowest step
+const step1 = markShadow(new THREE.Mesh(makeStepBlock(0.86, 0.10, 0.86, 0.028, 1.0), marbleMat));
+step1.position.y = 0.0;
+plinthGroup.add(step1);
+
+// Second step
+const step2 = markShadow(new THREE.Mesh(makeStepBlock(0.70, 0.085, 0.70, 0.024, 5.0), marbleMat));
+step2.position.y = 0.10;
+plinthGroup.add(step2);
+
+// Torus/scotia base moulding of the column (round, on top of the square plinth)
+{
+  const pts = [];
+  const push = (x, y) => pts.push(new THREE.Vector2(x, y));
+  push(0.0000, 0.000);
+  push(0.2650, 0.000);
+  push(0.2660, 0.014);
+  push(0.2640, 0.030);   // fillet
+  push(0.2560, 0.046);
+  push(0.2480, 0.058);   // torus roll
+  push(0.2400, 0.070);
+  push(0.2210, 0.084);
+  push(0.2060, 0.096);   // scotia
+  push(0.1980, 0.110);
+  push(0.1975, 0.124);
+  push(0.2010, 0.136);   // small fillet up to shaft
+  push(0.1935, 0.150);
+  push(0.1900, 0.164);
+  const geo = latheFromProfile(pts, 128, 0.0016);
+  // cylindrical UVs
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    uv.setXY(i, (Math.atan2(z, x) / TWO_PI + 0.5) * 2.0, y * 3.0);
+  }
+  uv.needsUpdate = true;
+  const base = markShadow(new THREE.Mesh(geo, marbleMatFine));
+  base.position.y = 0.185;
+  plinthGroup.add(base);
+}
+
+sundial.add(plinthGroup);
+
+/* ============ 2. FLUTED SHAFT ============ */
+/*
+   A short Doric-ish shaft with 20 flutes (concave channels) and a gentle
+   entasis (mid-swell). Built as a custom BufferGeometry so the flutes are
+   real geometry, not a bump map.
+*/
+const SHAFT_BOTTOM = 0.345;
+const SHAFT_TOP    = 1.245;
+const SHAFT_H = SHAFT_TOP - SHAFT_BOTTOM;
+
+function makeFlutedShaft() {
+  const FLUTES = 20;
+  const RAD_SEG = FLUTES * 12;     // angular resolution
+  const HEIGHT_SEG = 150;
+
+  const rBottom = 0.1875;
+  const rTop = 0.1560;
+  const entasis = 0.0105;          // mid swell
+
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  // flute depth tapers off at the very top/bottom (stopped flutes)
+  function fluteEnvelope(t) {
+    const a = THREE.MathUtils.smoothstep(t, 0.0, 0.055);
+    const b = 1.0 - THREE.MathUtils.smoothstep(t, 0.93, 0.995);
+    return Math.min(a, b);
+  }
+
+  function radiusAt(t, theta) {
+    // base radius with entasis
+    const taper = rBottom + (rTop - rBottom) * t;
+    const swell = Math.sin(Math.PI * Math.min(1, Math.max(0, t))) * entasis;
+    let r = taper + swell;
+
+    // flutes: concave scallops separated by narrow fillets (arris)
+    const phase = theta * FLUTES;
+    const s = phase - Math.floor(phase);           // 0..1 within one flute cell
+    // cosine channel; the fillet is where the cosine tops out
+    let channel = 0.5 - 0.5 * Math.cos(s * TWO_PI); // 0 at fillet, 1 at flute centre
+    channel = Math.pow(channel, 0.72);
+    const depth = 0.0088 * fluteEnvelope(t);
+    r -= channel * depth;
+
+    // age: micro erosion + a few chipped bites near the bottom
+    const n = fbm3(Math.cos(theta) * 9.0, t * 16.0, Math.sin(theta) * 9.0, 4) - 0.5;
+    r += n * 0.0011;
+    const chip = Math.pow(Math.max(fbm3(Math.cos(theta) * 5.0 + 30, t * 7.0, Math.sin(theta) * 5.0, 3) - 0.62, 0) * 3.2, 2.0);
+    r -= chip * 0.0055 * (1.0 - THREE.MathUtils.smoothstep(t, 0.12, 0.5)) ;
+    const chipTop = Math.pow(Math.max(fbm3(Math.cos(theta) * 6.0 + 80, t * 9.0 + 4, Math.sin(theta) * 6.0, 3) - 0.66, 0) * 3.2, 2.0);
+    r -= chipTop * 0.0045 * THREE.MathUtils.smoothstep(t, 0.72, 0.98);
+
+    return r;
+  }
+
+  for (let j = 0; j <= HEIGHT_SEG; j++) {
+    const t = j / HEIGHT_SEG;
+    const y = SHAFT_BOTTOM + t * SHAFT_H;
+    for (let i = 0; i <= RAD_SEG; i++) {
+      const u = i / RAD_SEG;
+      const theta = u * TWO_PI;
+      const r = radiusAt(t, u);
+      positions.push(Math.cos(theta) * r, y, Math.sin(theta) * r);
+      uvs.push(u * 2.4, t * 2.6);
+      normals.push(0, 0, 0);
+    }
+  }
+  const rowLen = RAD_SEG + 1;
+  for (let j = 0; j < HEIGHT_SEG; j++) {
+    for (let i = 0; i < RAD_SEG; i++) {
+      const a = j * rowLen + i;
+      const b = a + 1;
+      const c = a + rowLen;
+      const d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const shaft = markShadow(new THREE.Mesh(makeFlutedShaft(), marbleMat));
+sundial.add(shaft);
+
+// Astragal (bead) + apophyge at the top of the shaft, under the capital
+{
+  const pts = [];
+  const p = (x, y) => pts.push(new THREE.Vector2(x, y));
+  p(0.0000, 0.000);
+  p(0.1585, 0.000);
+  p(0.1600, 0.008);
+  p(0.1640, 0.016);   // bead
+  p(0.1650, 0.024);
+  p(0.1630, 0.032);
+  p(0.1585, 0.038);
+  p(0.1560, 0.044);
+  p(0.1575, 0.052);
+  p(0.1620, 0.060);
+  const geo = latheFromProfile(pts, 128, 0.0012);
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    uv.setXY(i, (Math.atan2(z, x) / TWO_PI + 0.5) * 2.0, y * 6.0);
+  }
+  uv.needsUpdate = true;
+  const bead = markShadow(new THREE.Mesh(geo, marbleMatFine));
+  bead.position.y = SHAFT_TOP - 0.006;
+  sundial.add(bead);
+}
+
+/* ============ 3. CARVED ACANTHUS BAND AT THE CAPITAL ============ */
+/*
+   A ring of 12 acanthus leaves: each leaf is a lathe-free custom surface —
+   a curved, lobed blade that flares outward and rolls over at the tip, with
+   a central rib and side veins. Built once, instanced around the capital in
+   two staggered tiers (classic Corinthian arrangement, compressed).
+*/
+function makeAcanthusLeaf(opts) {
+  const o = Object.assign({
+    height: 0.20,
+    width: 0.115,
+    thickness: 0.020,
+    curl: 0.55,
+    flare: 0.052,
+    lobes: 3,
+    seed: 0.0
+  }, opts || {});
+
+  const NU = 26;   // across the blade
+  const NV = 40;   // along the blade
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  // silhouette half-width as a function of v (0 base → 1 tip), with lobes
+  function halfWidth(v) {
+    // overall leaf outline: narrow at base, widest ~0.45, pointed tip
+    const outline = Math.sin(Math.pow(v, 0.72) * Math.PI) * 0.98 + 0.06 * (1 - v);
+    // lobe scalloping
+    const lobe = 1.0 + 0.20 * Math.cos(v * Math.PI * (o.lobes * 2 - 0.4)) * Math.sin(v * Math.PI);
+    return Math.max(0.012, outline * lobe) * (o.width * 0.5);
+  }
+
+  // spine: rises, tilts outward, then rolls forward at the tip
+  function spine(v) {
+    const y = o.height * (v - 0.10 * Math.pow(v, 3.2));
+    // outward flare grows then the tip curls back over
+    const out = o.flare * Math.pow(v, 1.7) + o.curl * o.height * 0.30 * Math.pow(Math.max(0, v - 0.55) / 0.45, 2.3);
+    return { y: y, z: out };
+  }
+
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;
+    const sp = spine(v);
+    const hw = halfWidth(v);
+    // blade cross-section: concave gutter near the base, flatter near the tip
+    const cup = 0.62 * (1.0 - v * 0.55);
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      const s = (u - 0.5) * 2.0;           // -1..1
+      const x = s * hw;
+      // cross-sectional dish (leaf curls up at the sides)
+      const dish = (1.0 - s * s) ;
+      const zc = -cup * hw * dish * 0.85;
+      // gentle veins ripple
+      const ripple = Math.sin(s * Math.PI * (o.lobes * 2)) * 0.16 * hw * (1 - v * 0.4);
+      const noise = (fbm3(u * 6 + o.seed, v * 8, 3.3 + o.seed, 3) - 0.5) * 0.0022;
+
+      const y = sp.y + Math.abs(s) * hw * 0.20 * (1.0 - v) + ripple * 0.35 + noise;
+      const z = sp.z + zc + ripple * 0.5 + noise;
+      positions.push(x, y, z);
+      uvs.push(u * 1.5, v * 1.5);
+    }
+  }
+
+  const rowLen = NU + 1;
+  const frontCount = positions.length / 3;
+  for (let j = 0; j < NV; j++) {
+    for (let i = 0; i < NU; i++) {
+      const a = j * rowLen + i, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, b, c);
+      indices.push(b, d, c);
+    }
+  }
+
+  // back shell (offset by thickness along -Z-ish) so the leaf is a solid slab
+  for (let j = 0; j <= NV; j++) {
+    for (let i = 0; i <= NU; i++) {
+      const idx = (j * rowLen + i) * 3;
+      const x = positions[idx], y = positions[idx + 1], z = positions[idx + 2];
+      const v = j / NV;
+      const th = o.thickness * (1.0 - 0.55 * v) + 0.002;
+      positions.push(x, y - th * 0.25, z - th);
+      uvs.push((i / NU) * 1.5, v * 1.5);
+    }
+  }
+  for (let j = 0; j < NV; j++) {
+    for (let i = 0; i < NU; i++) {
+      const a = frontCount + j * rowLen + i, b = a + 1, c = a + rowLen, d = c + 1;
+      indices.push(a, c, b);
+      indices.push(b, c, d);
+    }
+  }
+  // rim strip joining front and back along the silhouette
+  for (let j = 0; j < NV; j++) {
+    // left edge (i = 0)
+    let a = j * rowLen, c = (j + 1) * rowLen;
+    let a2 = frontCount + a, c2 = frontCount + c;
+    indices.push(a, a2, c);
+    indices.push(c, a2, c2);
+    // right edge (i = NU)
+    let b = j * rowLen + NU, d = (j + 1) * rowLen + NU;
+    let b2 = frontCount + b, d2 = frontCount + d;
+    indices.push(b, d, b2);
+    indices.push(d, d2, b2);
+  }
+  // base cap
+  for (let i = 0; i < NU; i++) {
+    const a = i, b = i + 1;
+    const a2 = frontCount + i, b2 = frontCount + i + 1;
+    indices.push(a, b, a2);
+    indices.push(b, b2, a2);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const capitalGroup = new THREE.Group();
+capitalGroup.position.y = SHAFT_TOP + 0.045;
+sundial.add(capitalGroup);
+
+// Bell/core of the capital that the leaves wrap
+{
+  const pts = [];
+  const p = (x, y) => pts.push(new THREE.Vector2(x, y));
+  p(0.0000, -0.010);
+  p(0.1560, -0.010);
+  p(0.1570, 0.010);
+  p(0.1600, 0.040);
+  p(0.1660, 0.075);
+  p(0.1745, 0.110);
+  p(0.1840, 0.145);
+  p(0.1930, 0.178);
+  p(0.1985, 0.202);
+  p(0.1995, 0.216);
+  p(0.0000, 0.216);
+  const geo = latheFromProfile(pts, 96, 0.0012);
+  const pos = geo.attributes.position, uv = geo.attributes.uv;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    uv.setXY(i, (Math.atan2(z, x) / TWO_PI + 0.5) * 2.0, y * 4.0);
+  }
+  uv.needsUpdate = true;
+  const bell = markShadow(new THREE.Mesh(geo, marbleCarvedMat));
+  capitalGroup.add(bell);
+}
+
+// Two staggered tiers of acanthus leaves
+const leafGeoLower = makeAcanthusLeaf({ height: 0.135, width: 0.098, thickness: 0.016, curl: 0.62, flare: 0.030, lobes: 3, seed: 1.7 });
+const leafGeoUpper = makeAcanthusLeaf({ height: 0.150, width: 0.104, thickness: 0.015, curl: 0.70, flare: 0.040, lobes: 3, seed: 4.3 });
+
+function addLeafRing(geo, count, radius, yPos, tiltDeg, angleOffset, scaleJitter) {
+  for (let i = 0; i < count; i++) {
+    const a = angleOffset + (i / count) * TWO_PI;
+    const leaf = markShadow(new THREE.Mesh(geo, marbleCarvedMat));
+    const s = 1.0 + (rand() - 0.5) * scaleJitter;
+    leaf.scale.set(s, s * (1 + (rand() - 0.5) * 0.06), s);
+    leaf.position.set(Math.cos(a) * radius, yPos + (rand() - 0.5) * 0.004, Math.sin(a) * radius);
+    // orient: leaf's local +Z points outward, +Y up
+    leaf.rotation.order = 'YXZ';
+    leaf.rotation.y = -a + Math.PI / 2;
+    leaf.rotation.x = THREE.MathUtils.degToRad(tiltDeg + (rand() - 0.5) * 3.0);
+    leaf.rotation.z = (rand() - 0.5) * 0.05;
+    capitalGroup.add(leaf);
+  }
+}
+addLeafRing(leafGeoLower, 10, 0.150, -0.004, -8, 0.0, 0.07);
+addLeafRing(leafGeoUpper, 10, 0.163, 0.062, -13, Math.PI / 10, 0.07);
+
+// Small volute-ish corner scrolls tucked under the abacus (torus arcs)
+for (let i = 0; i < 4; i++) {
+  const a = (i / 4) * TWO_PI + Math.PI / 4;
+  const scroll = new THREE.Group();
+  const spiralPts = [];
+  for (let k = 0; k <= 40; k++) {
+    const t = k / 40;
+    const ang = t * Math.PI * 2.3;
+    const rr = 0.036 * (1.0 - 0.62 * t);
+    spiralPts.push(new THREE.Vector3(Math.cos(ang) * rr, Math.sin(ang) * rr - t * 0.010, 0));
+  }
+  const curve = new THREE.CatmullRomCurve3(spiralPts);
+  const tube = new THREE.TubeGeometry(curve, 60, 0.0085, 8, false);
+  const m = markShadow(new THREE.Mesh(tube, marbleCarvedMat));
+  scroll.add(m);
+  scroll.position.set(Math.cos(a) * 0.176, 0.176, Math.sin(a) * 0.176);
+  scroll.rotation.y = -a + Math.PI / 2;
+  scroll.rotation.x = -0.22;
+  capitalGroup.add(scroll);
+}
+
+// Abacus: square slab crowning the capital, with concave sides
+{
+  const geo = makeStepBlock(0.455, 0.052, 0.455, 0.030, 9.0);
+  const abacus = markShadow(new THREE.Mesh(geo, marbleMatFine));
+  abacus.position.y = capitalGroup.position.y + 0.214;
+  sundial.add(abacus);
+
+  // thin cyma fillet under the abacus
+  const filletPts = [
+    new THREE.Vector2(0.0, 0.0),
+    new THREE.Vector2(0.202, 0.0),
+    new THREE.Vector2(0.208, 0.010),
+    new THREE.Vector2(0.206, 0.020),
+    new THREE.Vector2(0.196, 0.020),
+    new THREE.Vector2(0.0, 0.020)
+  ];
+  const fg = latheFromProfile(filletPts, 96, 0.0008);
+  const fPos = fg.attributes.position, fUv = fg.attributes.uv;
+  for (let i = 0; i < fPos.count; i++) {
+    const x = fPos.getX(i), y = fPos.getY(i), z = fPos.getZ(i);
+    fUv.setXY(i, (Math.atan2(z, x) / TWO_PI + 0.5) * 2.0, y * 10.0);
+  }
+  fUv.needsUpdate = true;
+  const fillet = markShadow(new THREE.Mesh(fg, marbleMatFine));
+  fillet.position.y = capitalGroup.position.y + 0.196;
+  sundial.add(fillet);
+}
+
+/* ============ 4. TILTED SUNDIAL PLATE + GNOMON ============ */
+const PLATE_TOP_Y = capitalGroup.position.y + 0.052 + 0.214;   // top face of abacus
+const DIAL_TILT = THREE.MathUtils.degToRad(24);                // tilted toward the sky
+const DIAL_R = 0.335;
+const DIAL_T = 0.038;
+
+const dialGroup = new THREE.Group();
+dialGroup.position.set(0, PLATE_TOP_Y + 0.075, 0);
+dialGroup.rotation.x = -DIAL_TILT;                             // tips the "noon" edge up... 
+dialGroup.rotation.y = THREE.MathUtils.degToRad(18);           // slight aesthetic yaw
+sundial.add(dialGroup);
+
+// small marble wedge/bolster under the plate so the tilt reads as supported
+{
+  const wedgeShape = new THREE.Shape();
+  wedgeShape.moveTo(-0.175, 0);
+  wedgeShape.lineTo(0.175, 0);
+  wedgeShape.lineTo(0.175, 0.052);
+  wedgeShape.lineTo(-0.175, 0.052 + Math.tan(DIAL_TILT) * 0.35);
+  wedgeShape.closePath();
+  const wg = new THREE.ExtrudeGeometry(wedgeShape, {
+    depth: 0.30, bevelEnabled: true, bevelThickness: 0.008, bevelSize: 0.008, bevelSegments: 2, curveSegments: 2
+  });
+  wg.translate(0, 0, -0.15);
+  wg.rotateY(THREE.MathUtils.degToRad(18));
+  const uvW = wg.attributes.uv, posW = wg.attributes.position;
+  if (uvW) {
+    for (let i = 0; i < posW.count; i++) {
+      uvW.setXY(i, posW.getX(i) * 2.2 + posW.getZ(i) * 0.8, posW.getY(i) * 3.0);
+    }
+    uvW.needsUpdate = true;
+  }
+  const wedge = markShadow(new THREE.Mesh(wg, marbleMatFine));
+  wedge.position.y = PLATE_TOP_Y;
+  sundial.add(wedge);
+}
+
+// --- the dial plate: a shallow cylinder; top gets the engraved face texture ---
+function makeDialPlate() {
+  const RS = 192;
+  const geo = new THREE.CylinderGeometry(DIAL_R, DIAL_R * 0.985, DIAL_T, RS, 1, false);
+  // chipped rim: nudge outer-edge vertices inward at a few spots
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const r = Math.hypot(x, z);
+    if (r < DIAL_R * 0.85) continue;
+    const th = Math.atan2(z, x);
+    const chip = Math.pow(Math.max(fbm3(Math.cos(th) * 4.0, y * 30.0 + 12.0, Math.sin(th) * 4.0, 4) - 0.60, 0) * 3.0, 1.8);
+    const micro = (fbm3(Math.cos(th) * 22.0, y * 40.0, Math.sin(th) * 22.0, 3) - 0.5) * 0.0016;
+    const nr = r - chip * 0.011 - micro;
+    const s = nr / r;
+    pos.setX(i, x * s); pos.setZ(i, z * s);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const plateGeo = makeDialPlate();
+// group=0 side, 1 top, 2 bottom for CylinderGeometry
+const plate = new THREE.Mesh(plateGeo, [dialEdgeMat, dialMat, dialEdgeMat]);
+plate.castShadow = true;
+plate.receiveShadow = true;
+dialGroup.add(plate);
+
+// raised chamfer ring around the plate rim (a torus, slightly nicked)
+{
+  const tg = new THREE.TorusGeometry(DIAL_R * 0.998, 0.0085, 12, 180);
+  const tp = tg.attributes.position;
+  for (let i = 0; i < tp.count; i++) {
+    const x = tp.getX(i), y = tp.getY(i), z = tp.getZ(i);
+    const n = (fbm3(x * 26, y * 26, z * 26, 3) - 0.5) * 0.0018;
+    const r = Math.hypot(x, y) || 1;
+    tp.setXYZ(i, x * (1 + n / r), y * (1 + n / r), z + n * 0.4);
+  }
+  tp.needsUpdate = true;
+  tg.computeVertexNormals();
+  tg.rotateX(-Math.PI / 2);
+  const rim = markShadow(new THREE.Mesh(tg, marbleMatFine));
+  rim.position.y = DIAL_T * 0.5 - 0.004;
+  dialGroup.add(rim);
+}
+
+/* --- GNOMON: bronze triangular blade, hypotenuse pointing celestial-north --- */
+function makeGnomonBlade() {
+  const L = 0.235;     // base run along the noon line
+  const H = 0.175;     // vertical rise at the root
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(L, 0.006);
+  // slight ogee on the styles' hypotenuse for an antique silhouette
+  shape.quadraticCurveTo(L * 0.42, H * 0.36, 0.012, H);
+  shape.lineTo(0, H * 0.86);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.011,
+    bevelEnabled: true,
+    bevelThickness: 0.0022,
+    bevelSize: 0.0022,
+    bevelSegments: 2,
+    curveSegments: 24
+  });
+  geo.translate(0, 0, -0.0055);
+  const uv = geo.attributes.uv, pos = geo.attributes.position;
+  if (uv) {
+    for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) * 4.0, pos.getY(i) * 4.0);
+    uv.needsUpdate = true;
+  }
+  return geo;
+}
+
+const gnomonGroup = new THREE.Group();
+gnomonGroup.position.set(0, DIAL_T * 0.5 - 0.002, 0);
+dialGroup.add(gnomonGroup);
+
+{
+  const blade = markShadow(new THREE.Mesh(makeGnomonBlade(), bronzeMat));
+  // lay the blade in the plane containing the noon line: rotate so extrusion
+  // depth is horizontal across the dial and the triangle stands upright.
+  blade.rotation.x = -Math.PI / 2;             // shape XY -> dial XZ plane, standing
+  blade.rotation.z = 0;
+  blade.position.set(-0.02, 0, 0);
+  // orient the run toward "noon" (=-Z in dial local space)
+  const holder = new THREE.Group();
+  holder.rotation.y = Math.PI / 2;             // point the base run along -Z
+  holder.add(blade);
+  gnomonGroup.add(holder);
+
+  // decorative pierced circle in the blade is faked by a small bronze ring boss
+  const bossGeo = new THREE.TorusGeometry(0.021, 0.0045, 10, 32);
+  const boss = markShadow(new THREE.Mesh(bossGeo, bronzeMat));
+  boss.position.set(0, 0.056, -0.083);
+  boss.rotation.y = Math.PI / 2;
+  gnomonGroup.add(boss);
+
+  // bronze foot plate anchoring the gnomon to the dial
+  const footGeo = new THREE.CylinderGeometry(0.040, 0.044, 0.010, 40);
+  const foot = markShadow(new THREE.Mesh(footGeo, bronzeMat));
+  foot.position.y = 0.001;
+  gnomonGroup.add(foot);
+
+  // two small bronze rivets
+  for (const dz of [-0.026, 0.026]) {
+    const rivet = markShadow(new THREE.Mesh(new THREE.SphereGeometry(0.0058, 16, 12), bronzeMat));
+    rivet.position.set(0.024, 0.007, dz);
+    gnomonGroup.add(rivet);
+  }
+
+  // bronze nodus bead partway up the style (marks the date on the dial)
+  const nodus = markShadow(new THREE.Mesh(new THREE.SphereGeometry(0.0085, 18, 14), bronzeMat));
+  nodus.position.set(0, 0.108, -0.020);
+  gnomonGroup.add(nodus);
+}
+
+/* ============ centre + ground the whole assembly ============ */
+sundial.position.y = 0;
+
+/* ============================================================
+   Ground: receives shadow only
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 96),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.46 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// A very dim disc so the object doesn't float in pure void (kept subtle)
+const groundTint = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 96),
+  new THREE.MeshStandardMaterial({ color: 0x1b1e23, roughness: 0.96, metalness: 0.0 })
+);
+groundTint.rotation.x = -Math.PI / 2;
+groundTint.position.y = -0.002;
+groundTint.receiveShadow = false;
+scene.add(groundTint);
+
+/* ============================================================
+   Lighting: hemisphere ambient + hard key (sun) + fill + rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x9fb4cc, 0x2a2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1dc, 3.15);
+key.position.set(3.0, 4.4, 2.1);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 14;
+key.shadow.camera.left = -1.9;
+key.shadow.camera.right = 1.9;
+key.shadow.camera.top = 2.6;
+key.shadow.camera.bottom = -0.6;
+key.shadow.bias = -0.00035;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 2.2;
+key.target.position.set(0, 1.1, 0);
+scene.add(key);
+scene.add(key.target);
+
+// Hard little sun for the gnomon shadow across the dial — tight, crisp shadow
+const sunSpot = new THREE.SpotLight(0xffeccd, 26.0, 12.0, THREE.MathUtils.degToRad(22), 0.45, 1.6);
+sunSpot.position.set(2.1, 3.2, 1.6);
+sunSpot.target.position.set(0, PLATE_TOP_Y + 0.08, 0);
+sunSpot.castShadow = true;
+sunSpot.shadow.mapSize.set(2048, 2048);
+sunSpot.shadow.camera.near = 0.6;
+sunSpot.shadow.camera.far = 9.0;
+sunSpot.shadow.bias = -0.00018;
+sunSpot.shadow.normalBias = 0.004;
+sunSpot.shadow.radius = 1.0;
+scene.add(sunSpot);
+scene.add(sunSpot.target);
+
+const fill = new THREE.DirectionalLight(0x9dc0e8, 0.62);
+fill.position.set(-3.2, 1.9, 2.6);
+fill.castShadow = false;
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdfe8ff, 1.25);
+rim.position.set(-1.6, 2.4, -3.4);
+rim.castShadow = false;
+scene.add(rim);
+
+// gentle bounce from below to keep the underside of the plate readable
+const bounce = new THREE.PointLight(0x6f757f, 1.05, 4.0, 2.0);
+bounce.position.set(0, 0.35, 0.9);
+scene.add(bounce);
+
+/* ============================================================
+   Resize + render loop
+   ============================================================ */
+function onResize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(w, h);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

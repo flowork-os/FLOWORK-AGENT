@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crystal Cavern Lake</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #050512; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   CONFIG & PALETTE — luminous mineral fantasy
+   ============================================================ */
+const CONFIG = {
+  seed: 20260815,
+  cavernRadius: 86,        // horizontal radius of the rock shell
+  cavernSquash: 0.55,      // vertical squash of the shell sphere
+  cavernLift: 6,           // shell sphere center height
+  lakeRadius: 24,          // glassy subterranean lake
+  shoreOuter: 88,          // rocky shore ring outer radius
+  fogColor: 0x050512,
+  fogDensity: 0.0058
+};
+const PALETTE = {
+  rockDeep:    0x241d3c,
+  rockLit:     0x9c92c4,
+  amethyst:    0x9b5de5,
+  amethystHot: 0xc77dff,
+  aquamarine:  0x39d0d8,
+  aquaHot:     0x8ef9f3,
+  waterBody:   0x071f2c,
+  waterGlow:   0x1c586a,
+  wormGreen:   0xaaffcc,
+  wormBlue:    0x9fd8ff,
+  mistTint:    0x6fb8d8,
+  keyLight:    0xbfd8ff,
+  fillSky:     0x4a3f7a,
+  fillGround:  0x101024
+};
+
+/* ============================================================
+   SEEDED PRNG & SMALL HELPERS — all randomness flows through prng()
+   ============================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const prng = mulberry32(CONFIG.seed);
+const rr = (lo, hi) => lo + prng() * (hi - lo);           // random in range
+const ri = (lo, hi) => Math.floor(rr(lo, hi + 1));        // random int inclusive
+const pick = (arr) => arr[Math.floor(prng() * arr.length)];
+// smooth spatial noise from layered trig (deterministic, position-based)
+function ridged(x, y, z) {
+  return Math.sin(x * 0.13 + 2.1) * Math.cos(z * 0.11 - 1.3) * 0.5 +
+         Math.sin(x * 0.31 - 0.7) * Math.sin(z * 0.27 + 0.4) * 0.3 +
+         Math.cos(y * 0.21 + x * 0.05) * 0.2;
+}
+// height of the cavern ceiling shell above a point at planar distance rho
+function ceilingHeight(rho) {
+  const r = Math.min(rho, CONFIG.cavernRadius - 2);
+  return CONFIG.cavernLift + CONFIG.cavernSquash *
+         Math.sqrt(CONFIG.cavernRadius * CONFIG.cavernRadius - r * r);
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.fogColor);
+scene.fog = new THREE.FogExp2(CONFIG.fogColor, CONFIG.fogDensity);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 400);
+camera.position.set(11, 20, 48);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 8, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 26;
+controls.maxDistance = 62;
+controls.maxPolarAngle = 1.45;
+
+/* ============================================================
+   PROCEDURAL CANVAS TEXTURES
+   ============================================================ */
+function makeRockTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 512;
+  const g = c.getContext('2d');
+  g.fillStyle = '#4b4266'; g.fillRect(0, 0, 512, 512);
+  // mineral strata bands
+  for (let i = 0; i < 26; i++) {
+    g.strokeStyle = `rgba(${ri(90, 140)},${ri(80, 120)},${ri(140, 190)},0.2)`;
+    g.lineWidth = rr(4, 16);
+    g.beginPath();
+    const y0 = rr(0, 512);
+    g.moveTo(0, y0);
+    g.bezierCurveTo(140, y0 + rr(-40, 40), 360, y0 + rr(-40, 40), 512, y0 + rr(-30, 30));
+    g.stroke();
+  }
+  // speckle grain
+  for (let i = 0; i < 2600; i++) {
+    const v = ri(50, 160);
+    g.fillStyle = `rgba(${v},${v - 8},${v + 30},${rr(0.06, 0.3).toFixed(2)})`;
+    g.fillRect(rr(0, 512), rr(0, 512), rr(1, 3), rr(1, 3));
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+function makeGlowTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  const grad = g.createRadialGradient(64, 64, 2, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return new THREE.CanvasTexture(c);
+}
+function makeCausticTexture() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#03141d'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 120; i++) {
+    const x = rr(0, 256), y = rr(0, 256), r = rr(6, 26);
+    const grad = g.createRadialGradient(x, y, 1, x, y, r);
+    grad.addColorStop(0, 'rgba(120,220,240,0.16)');
+    grad.addColorStop(0.6, 'rgba(70,160,200,0.07)');
+    grad.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+const rockTex = makeRockTexture();
+const glowTex = makeGlowTexture();
+const causticTex = makeCausticTexture();
+
+/* ============================================================
+   SHARED MATERIALS — one palette-driven set, reused everywhere
+   ============================================================ */
+const rockMat = new THREE.MeshStandardMaterial({
+  color: PALETTE.rockLit, map: rockTex, roughness: 0.94, metalness: 0.06,
+  emissive: PALETTE.rockDeep, emissiveIntensity: 0.3
+});
+const shellMat = new THREE.MeshStandardMaterial({
+  color: 0x847aa8, map: rockTex, roughness: 0.97, metalness: 0.04,
+  side: THREE.BackSide, emissive: 0x1c1636, emissiveIntensity: 0.55
+});
+function crystalMaterial(color, hot) {
+  return new THREE.MeshPhysicalMaterial({
+    color, emissive: hot, emissiveIntensity: 0.55,
+    roughness: 0.12, metalness: 0.0, transparent: true, opacity: 0.82,
+    clearcoat: 0.8, clearcoatRoughness: 0.2, flatShading: true,
+    side: THREE.DoubleSide
+  });
+}
+const amethystMat = crystalMaterial(PALETTE.amethyst, 0x5a1f9e);
+const aquaMat = crystalMaterial(PALETTE.aquamarine, 0x0f6f78);
+const pulseMats = [amethystMat, aquaMat];            // animated emissive pulse
+const waterMat = new THREE.MeshPhysicalMaterial({
+  color: PALETTE.waterBody, roughness: 0.05, metalness: 0.4,
+  transparent: true, opacity: 0.72, emissive: PALETTE.waterGlow,
+  emissiveMap: causticTex, emissiveIntensity: 0.45, side: THREE.DoubleSide
+});
+const shardMat = new THREE.MeshPhysicalMaterial({
+  roughness: 0.18, metalness: 0.05, flatShading: true,
+  emissive: 0xffffff, emissiveIntensity: 0.22, color: 0xffffff
+});
+const dropMat = new THREE.MeshBasicMaterial({ color: 0xbdefff, transparent: true, opacity: 0.85 });
+
+/* ============================================================
+   CRYSTAL GEOMETRY — hexagonal shaft pinched into a faceted tip
+   ============================================================ */
+function makeCrystalGeometry(height, radius) {
+  const geo = new THREE.CylinderGeometry(radius, radius * rr(0.85, 1.1), height, 6, 5, false);
+  const pos = geo.attributes.position;
+  const jitter = rr(0, Math.PI);                     // per-geometry facet twist
+  for (let i = 0; i < pos.count; i++) {
+    const t = (pos.getY(i) + height / 2) / height;   // 0 bottom → 1 top
+    let s = 1;
+    if (t > 0.55) {                                  // taper the crown to a point
+      const k = (t - 0.55) / 0.45;
+      s = 1 - 0.92 * Math.pow(k, 1.35);
+    }
+    const wob = 1 + 0.06 * Math.sin(t * 9 + jitter); // slight columnar wobble
+    pos.setX(i, pos.getX(i) * s * wob);
+    pos.setZ(i, pos.getZ(i) * s * wob);
+  }
+  geo.translate(0, height / 2, 0);
+  geo.computeVertexNormals();
+  return geo;
+}
+// a few shared variants keep draw data light while staying varied
+const crystalGeos = [];
+for (let i = 0; i < 5; i++) crystalGeos.push(makeCrystalGeometry(1, rr(0.16, 0.24)));
+
+/* ============================================================
+   BUILDER: crystal cluster (towering amethyst / aquamarine)
+   ============================================================ */
+function buildCrystalCluster(mat, mainHeight, count) {
+  const grp = new THREE.Group();
+  const mound = new THREE.Mesh(new THREE.DodecahedronGeometry(mainHeight * 0.34, 1), rockMat);
+  mound.scale.y = 0.42;
+  mound.position.y = -mainHeight * 0.1;
+  mound.castShadow = mound.receiveShadow = true;
+  grp.add(mound);
+  for (let i = 0; i < count; i++) {
+    const first = i === 0;
+    const h = first ? mainHeight : mainHeight * rr(0.3, 0.72);
+    const spike = new THREE.Mesh(pick(crystalGeos), mat);
+    spike.scale.set(h * rr(0.85, 1.25), h, h * rr(0.85, 1.25));
+    const ang = rr(0, Math.PI * 2);
+    const rad = first ? 0 : mainHeight * rr(0.12, 0.3);
+    spike.position.set(Math.cos(ang) * rad, -h * 0.08, Math.sin(ang) * rad);
+    spike.rotation.set(first ? rr(-0.06, 0.06) : rr(-0.4, 0.4), rr(0, Math.PI * 2),
+                       first ? rr(-0.06, 0.06) : rr(-0.4, 0.4));
+    spike.castShadow = true;
+    grp.add(spike);
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: cavern shell — rocky dome, walls and shore floor
+   ============================================================ */
+function buildCavernShell() {
+  const grp = new THREE.Group();
+  // dome + walls: squashed sphere viewed from inside, vertex-displaced
+  const dome = new THREE.SphereGeometry(CONFIG.cavernRadius, 56, 36);
+  const dp = dome.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < dp.count; i++) {
+    v.fromBufferAttribute(dp, i);
+    const n = ridged(v.x, v.y, v.z);
+    v.multiplyScalar(1 + n * 0.055);
+    dp.setXYZ(i, v.x, v.y, v.z);
+  }
+  dome.computeVertexNormals();
+  const shell = new THREE.Mesh(dome, shellMat);
+  shell.scale.y = CONFIG.cavernSquash;
+  shell.position.y = CONFIG.cavernLift;
+  shell.receiveShadow = true;
+  grp.add(shell);
+  // shore floor: ring with a lake-shaped hole, rising toward the walls
+  const ring = new THREE.RingGeometry(CONFIG.lakeRadius - 1.5, CONFIG.shoreOuter, 96, 10);
+  const rp = ring.attributes.position;
+  for (let i = 0; i < rp.count; i++) {
+    const x = rp.getX(i), y = rp.getY(i);
+    const rho = Math.sqrt(x * x + y * y);
+    const rim = THREE.MathUtils.smoothstep(rho, CONFIG.lakeRadius, CONFIG.shoreOuter);
+    const h = rim * rim * 7 + Math.max(0, ridged(x, 0, y)) * 1.6 * rim - 0.35;
+    rp.setZ(i, h);
+  }
+  ring.computeVertexNormals();
+  rockTex.repeat.set(6, 6);
+  const floor = new THREE.Mesh(ring, rockMat);
+  floor.rotation.x = -Math.PI / 2;
+  floor.receiveShadow = true;
+  grp.add(floor);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: glassy lake surface (mirrored geometry supplies the
+   "perfect reflection" seen through the translucent water)
+   ============================================================ */
+function buildLakeSurface() {
+  const grp = new THREE.Group();
+  const water = new THREE.Mesh(new THREE.CircleGeometry(CONFIG.lakeRadius + 0.6, 72), waterMat);
+  water.rotation.x = -Math.PI / 2;
+  water.position.y = 0.06;
+  grp.add(water);
+  // faint glowing shoreline ring
+  const rim = new THREE.Mesh(
+    new THREE.RingGeometry(CONFIG.lakeRadius + 0.2, CONFIG.lakeRadius + 1.1, 72),
+    new THREE.MeshBasicMaterial({ color: 0x66e6ff, transparent: true, opacity: 0.14, side: THREE.DoubleSide })
+  );
+  rim.rotation.x = -Math.PI / 2;
+  rim.position.y = 0.1;
+  grp.add(rim);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: natural crystal bridge arcing across the lake
+   ============================================================ */
+function buildCrystalBridge() {
+  const grp = new THREE.Group();
+  const span = CONFIG.lakeRadius * 2.35;
+  const slabGeo = new THREE.BoxGeometry(1, 0.55, 3.4);
+  const slabs = 17;
+  // rocky abutments seating each end of the arc on the shore
+  for (const side of [-1, 1]) {
+    const foot = new THREE.Mesh(new THREE.DodecahedronGeometry(2.6, 1), rockMat);
+    foot.scale.set(1.2, 0.6, 1);
+    foot.position.set(side * span * 0.5, 0.2, 0);
+    foot.castShadow = foot.receiveShadow = true;
+    grp.add(foot);
+  }
+  for (let i = 0; i < slabs; i++) {
+    const t = i / (slabs - 1);
+    const x = (t - 0.5) * span;
+    const y = 0.9 + Math.sin(t * Math.PI) * 5.4;
+    const slab = new THREE.Mesh(slabGeo, i % 2 ? amethystMat : aquaMat);
+    slab.scale.set(span / slabs * 1.16, 1, rr(0.85, 1.05));
+    slab.position.set(x, y, rr(-0.15, 0.15));
+    slab.rotation.z = -Math.cos(t * Math.PI) * Math.PI * 0.155; // follow the arc tangent
+    slab.rotation.y = rr(-0.05, 0.05);
+    slab.castShadow = slab.receiveShadow = true;
+    grp.add(slab);
+    if (i % 3 === 1) {                                // crystal spike railings
+      for (const side of [-1, 1]) {
+        const h = rr(1.1, 2.2);
+        const spike = new THREE.Mesh(pick(crystalGeos), i % 2 ? aquaMat : amethystMat);
+        spike.scale.set(h, h, h);
+        spike.position.set(x, y + 0.2, side * 1.75);
+        spike.rotation.set(side * 0.35 * rr(0.6, 1.3), rr(0, 6.28), 0);
+        spike.castShadow = true;
+        grp.add(spike);
+      }
+    }
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: stalactite field (instanced) + drip site bookkeeping
+   ============================================================ */
+const dripSites = [];   // {x, z, tipY} — filled while placing stalactites
+function buildStalactiteField() {
+  const grp = new THREE.Group();
+  const coneGeo = new THREE.ConeGeometry(1, 1, 7);
+  coneGeo.translate(0, -0.5, 0);                     // hang from origin downward
+  const count = 110;
+  const inst = new THREE.InstancedMesh(coneGeo, rockMat, count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  const s = new THREE.Vector3(), p = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    const overLake = i < 26;                         // guarantee drippers over water
+    const ang = rr(0, Math.PI * 2);
+    const rho = overLake ? rr(3, CONFIG.lakeRadius - 3) : rr(CONFIG.lakeRadius, 66);
+    p.set(Math.cos(ang) * rho, ceilingHeight(rho) * rr(0.9, 0.99), Math.sin(ang) * rho);
+    const len = rr(1.6, overLake ? 7.5 : 5.5);
+    s.set(rr(0.3, 0.9), len, rr(0.3, 0.9));
+    e.set(rr(-0.05, 0.05), rr(0, Math.PI * 2), rr(-0.05, 0.05));
+    q.setFromEuler(e);
+    m.compose(p, q, s);
+    inst.setMatrixAt(i, m);
+    if (overLake && len > 4.4 && dripSites.length < 10) {
+      dripSites.push({ x: p.x, z: p.z, tipY: p.y - len });
+    }
+  }
+  inst.castShadow = true;
+  grp.add(inst);
+  // matching stalagmites rising from the shore
+  const stalag = new THREE.InstancedMesh(new THREE.ConeGeometry(1, 1, 7), rockMat, 40);
+  for (let i = 0; i < 40; i++) {
+    const ang = rr(0, Math.PI * 2);
+    const rho = rr(CONFIG.lakeRadius + 4, 62);
+    p.set(Math.cos(ang) * rho, 0, Math.sin(ang) * rho);
+    s.set(rr(0.5, 1.4), rr(1.2, 4.6), rr(0.5, 1.4));
+    e.set(0, rr(0, Math.PI * 2), 0);
+    q.setFromEuler(e);
+    m.compose(p, q, s);
+    stalag.setMatrixAt(i, m);
+  }
+  stalag.castShadow = stalag.receiveShadow = true;
+  grp.add(stalag);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: glowworm constellations on the ceiling
+   ============================================================ */
+const wormLayers = [];  // for the twinkle animation
+function buildGlowwormCanopy() {
+  const grp = new THREE.Group();
+  const layerSpecs = [
+    { n: 240, color: PALETTE.wormGreen, size: 0.62, speed: 1.7, phase: 0.0 },
+    { n: 200, color: PALETTE.wormBlue,  size: 0.5,  speed: 2.3, phase: 2.1 },
+    { n: 160, color: 0xd8ffe8,          size: 0.42, speed: 1.1, phase: 4.2 }
+  ];
+  const anchorPts = [];
+  for (const spec of layerSpecs) {
+    const positions = new Float32Array(spec.n * 3);
+    for (let i = 0; i < spec.n; i++) {
+      const ang = rr(0, Math.PI * 2);
+      const rho = Math.sqrt(prng()) * 70;
+      const x = Math.cos(ang) * rho, z = Math.sin(ang) * rho;
+      const y = ceilingHeight(rho) * rr(0.86, 0.97);
+      positions.set([x, y, z], i * 3);
+      if (i % 6 === 0) anchorPts.push(new THREE.Vector3(x, y, z));
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+    const mat = new THREE.PointsMaterial({
+      color: spec.color, size: spec.size, map: glowTex, transparent: true,
+      opacity: 0.75, depthWrite: false, blending: THREE.AdditiveBlending,
+      sizeAttenuation: true
+    });
+    const pts = new THREE.Points(geo, mat);
+    grp.add(pts);
+    wormLayers.push({ mat, speed: spec.speed, phase: spec.phase });
+  }
+  // faint silk threads linking nearby worms into "constellations"
+  const linePos = [];
+  for (const a of anchorPts) {
+    let best = null, bestD = 1e9;
+    for (const b of anchorPts) {
+      const d = a.distanceToSquared(b);
+      if (d > 0.01 && d < bestD && d < 90) { bestD = d; best = b; }
+    }
+    if (best) linePos.push(a.x, a.y, a.z, best.x, best.y, best.z);
+  }
+  const lineGeo = new THREE.BufferGeometry();
+  lineGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
+  const threads = new THREE.LineSegments(lineGeo,
+    new THREE.LineBasicMaterial({ color: 0x87ffc8, transparent: true, opacity: 0.1 }));
+  grp.add(threads);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: scattered mineral shards on the shore (instanced)
+   ============================================================ */
+function buildMineralShards() {
+  const grp = new THREE.Group();
+  const geo = new THREE.OctahedronGeometry(0.5, 0);
+  const count = 150;
+  const inst = new THREE.InstancedMesh(geo, shardMat, count);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  const s = new THREE.Vector3(), p = new THREE.Vector3(), col = new THREE.Color();
+  const tints = [PALETTE.amethyst, PALETTE.amethystHot, PALETTE.aquamarine, PALETTE.aquaHot, 0xf0e6ff];
+  for (let i = 0; i < count; i++) {
+    const ang = rr(0, Math.PI * 2);
+    const rho = rr(CONFIG.lakeRadius + 1.5, 58);
+    const rim = THREE.MathUtils.smoothstep(rho, CONFIG.lakeRadius, CONFIG.shoreOuter);
+    p.set(Math.cos(ang) * rho, rim * rim * 7 - 0.15, Math.sin(ang) * rho);
+    const sc = rr(0.25, 1.15);
+    s.set(sc * rr(0.6, 1), sc * rr(0.9, 2.1), sc * rr(0.6, 1));
+    e.set(rr(0, 3.14), rr(0, 6.28), rr(0, 3.14));
+    q.setFromEuler(e);
+    m.compose(p, q, s);
+    inst.setMatrixAt(i, m);
+    inst.setColorAt(i, col.setHex(pick(tints)).multiplyScalar(rr(0.55, 1)));
+  }
+  inst.instanceColor.needsUpdate = true;
+  inst.castShadow = true;
+  grp.add(inst);
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: drifting mist sprites over the lake
+   ============================================================ */
+const mistSprites = [];
+function buildMistLayer() {
+  const grp = new THREE.Group();
+  for (let i = 0; i < 7; i++) {
+    const mat = new THREE.SpriteMaterial({
+      map: glowTex, color: PALETTE.mistTint, transparent: true,
+      opacity: rr(0.04, 0.09), depthWrite: false, blending: THREE.AdditiveBlending
+    });
+    const spr = new THREE.Sprite(mat);
+    const ang = rr(0, Math.PI * 2), rho = rr(4, 30);
+    spr.position.set(Math.cos(ang) * rho, rr(2, 9), Math.sin(ang) * rho);
+    spr.scale.setScalar(rr(22, 40));
+    grp.add(spr);
+    mistSprites.push({ spr, baseY: spr.position.y, speed: rr(0.05, 0.14), phase: rr(0, 6.28) });
+  }
+  return grp;
+}
+
+/* ============================================================
+   BUILDER: dripping water — falling drops + expanding ripples
+   ============================================================ */
+const drips = [];
+function buildDripSystem() {
+  const grp = new THREE.Group();
+  const dropGeo = new THREE.SphereGeometry(0.14, 8, 6);
+  const rippleGeo = new THREE.RingGeometry(0.55, 0.72, 40);
+  for (const site of dripSites) {
+    const drop = new THREE.Mesh(dropGeo, dropMat);
+    drop.position.set(site.x, site.tipY, site.z);
+    grp.add(drop);
+    const rMat = new THREE.MeshBasicMaterial({
+      color: 0x9fe8ff, transparent: true, opacity: 0, side: THREE.DoubleSide, depthWrite: false
+    });
+    const ripple = new THREE.Mesh(rippleGeo, rMat);
+    ripple.rotation.x = -Math.PI / 2;
+    ripple.position.set(site.x, 0.12, site.z);
+    grp.add(ripple);
+    drips.push({ drop, ripple, rMat, site, period: rr(2.6, 5.2), phase: rr(0, 5) });
+  }
+  return grp;
+}
+
+/* ============================================================
+   ASSEMBLY & LAYOUT
+   ============================================================ */
+scene.add(buildCavernShell());
+scene.add(buildLakeSurface());
+scene.add(buildStalactiteField());   // fills dripSites first
+scene.add(buildGlowwormCanopy());
+scene.add(buildMineralShards());
+scene.add(buildMistLayer());
+scene.add(buildDripSystem());
+
+// reflectables: everything near/over the water gets a mirrored twin
+const reflectables = new THREE.Group();
+const bridge = buildCrystalBridge();
+reflectables.add(bridge);
+
+const towerAmethyst = buildCrystalCluster(amethystMat, 17, 9);   // hero amethyst
+towerAmethyst.position.set(-27, 0, -13);
+reflectables.add(towerAmethyst);
+
+const towerAqua = buildCrystalCluster(aquaMat, 15, 9);           // hero aquamarine
+towerAqua.position.set(24, 0, -19);
+reflectables.add(towerAqua);
+
+const islet = buildCrystalCluster(aquaMat, 7, 7);                // islet in the lake
+islet.position.set(7, 0.1, 9);
+reflectables.add(islet);
+
+const isletTwo = buildCrystalCluster(amethystMat, 5, 6);
+isletTwo.position.set(-11, 0.1, 6);
+reflectables.add(isletTwo);
+scene.add(reflectables);
+
+// mirrored copy under the water plane completes the reflection illusion;
+// cloned, faded materials keep the reflection ghostly rather than solid
+const mirrored = reflectables.clone();
+mirrored.scale.y = -0.92;
+mirrored.traverse((o) => {
+  if (o.isMesh) {
+    o.castShadow = o.receiveShadow = false;
+    const m = o.material.clone();
+    m.transparent = true;
+    m.opacity = (o.material.transparent ? o.material.opacity : 1) * 0.42;
+    m.depthWrite = false;
+    o.material = m;
+  }
+});
+scene.add(mirrored);
+
+// supporting shore clusters (outside the water — no mirror needed)
+const shoreSpots = [
+  { mat: amethystMat, h: 9,  x: 40,  z: 18 },
+  { mat: aquaMat,     h: 11, x: -38, z: 22 },
+  { mat: amethystMat, h: 7,  x: 2,   z: -40 },
+  { mat: aquaMat,     h: 6,  x: -18, z: 38 },
+  { mat: amethystMat, h: 8,  x: 34,  z: -38 },
+  { mat: aquaMat,     h: 5,  x: 18,  z: 40 }
+];
+for (const spot of shoreSpots) {
+  const cl = buildCrystalCluster(spot.mat, spot.h, ri(5, 8));
+  cl.position.set(spot.x, 0.4, spot.z);
+  cl.rotation.y = rr(0, Math.PI * 2);
+  scene.add(cl);
+}
+
+/* ============================================================
+   LIGHTING RIG — key shaft + cool fill + living crystal accents
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(PALETTE.fillSky, PALETTE.fillGround, 1.15);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(PALETTE.keyLight, 2.1);   // pale shaft from a crack
+key.position.set(26, 52, 14);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = key.shadow.camera.bottom = -60;
+key.shadow.camera.right = key.shadow.camera.top = 60;
+key.shadow.camera.far = 140;
+key.shadow.bias = -0.0004;
+scene.add(key, key.target);
+
+const pulseLight = new THREE.PointLight(0xa06cff, 520, 120, 1.6); // hue-shifting heart
+pulseLight.position.set(0, 12, 0);
+scene.add(pulseLight);
+
+const amethystGlow = new THREE.PointLight(PALETTE.amethystHot, 300, 70, 1.7);
+amethystGlow.position.set(-27, 10, -13);
+scene.add(amethystGlow);
+
+const aquaGlow = new THREE.PointLight(PALETTE.aquaHot, 300, 70, 1.7);
+aquaGlow.position.set(24, 9, -19);
+scene.add(aquaGlow);
+
+const ceilingWash = new THREE.PointLight(0x8fa8ff, 560, 160, 1.8); // lifts the dome rock
+ceilingWash.position.set(0, 34, 0);
+scene.add(ceilingWash);
+
+/* ============================================================
+   ANIMATION LOOP — pulsing hue, drips, twinkle, mist, water
+   ============================================================ */
+const clock = new THREE.Clock();
+const hueColor = new THREE.Color();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 1) cavern-wide pulsing light that drifts slowly around the hue wheel
+  const hue = (0.72 + t * 0.014) % 1;                // violet → cyan → back
+  hueColor.setHSL(hue, 0.75, 0.62);
+  pulseLight.color.copy(hueColor);
+  pulseLight.intensity = 480 + Math.sin(t * 0.8) * 160;
+  amethystGlow.intensity = 280 + Math.sin(t * 0.63 + 1.7) * 90;
+  aquaGlow.intensity = 280 + Math.sin(t * 0.71 + 3.9) * 90;
+  pulseMats[0].emissiveIntensity = 0.5 + Math.sin(t * 0.9) * 0.22;
+  pulseMats[1].emissiveIntensity = 0.5 + Math.sin(t * 0.9 + Math.PI) * 0.22;
+
+  // 2) stalactite drips: fall, splash, ripple, repeat
+  for (const d of drips) {
+    const p = ((t + d.phase) % d.period) / d.period;
+    if (p < 0.32) {                                  // falling drop
+      const k = p / 0.32;
+      d.drop.visible = true;
+      d.drop.position.y = d.site.tipY - (d.site.tipY - 0.1) * (k * k);
+      d.drop.scale.setScalar(0.7 + k * 0.5);
+      d.rMat.opacity = 0;
+    } else {                                         // expanding ripple ring
+      const k = (p - 0.32) / 0.68;
+      d.drop.visible = false;
+      d.ripple.scale.setScalar(0.4 + k * 4.2);
+      d.rMat.opacity = 0.5 * (1 - k);
+    }
+  }
+
+  // 3) glowworm constellations twinkle in offset waves
+  for (const w of wormLayers) {
+    w.mat.opacity = 0.55 + 0.35 * Math.sin(t * w.speed + w.phase);
+  }
+
+  // 4) mist banks breathe and drift in a slow orbit
+  for (const mSpr of mistSprites) {
+    mSpr.spr.position.y = mSpr.baseY + Math.sin(t * mSpr.speed * 3 + mSpr.phase) * 0.8;
+    const orbit = t * mSpr.speed * 0.22 + mSpr.phase;
+    mSpr.spr.position.x += Math.cos(orbit) * 0.008;
+    mSpr.spr.position.z += Math.sin(orbit) * 0.008;
+    mSpr.spr.material.opacity = 0.045 + 0.035 * (0.5 + 0.5 * Math.sin(t * 0.3 + mSpr.phase));
+  }
+
+  // 5) water caustics slide slowly beneath the glassy surface
+  causticTex.offset.set(t * 0.008, t * 0.005);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

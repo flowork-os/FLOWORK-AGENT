@@ -1,0 +1,759 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alchemist's Laboratory</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0914}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   ALCHEMIST'S LABORATORY — fantasy candlelit, entirely procedural.
+   config/palette -> prng/helpers -> textures -> materials -> builders ->
+   assembly -> lighting -> render setup -> animation loop -> resize
+   ========================================================================== */
+
+/* ---------- 1. CONFIG & PALETTE ------------------------------------------ */
+const CONFIG = { seed: 20250816, roomW: 14, roomD: 12, roomH: 6.0, shadowRes: 2048, fogColor: 0x171021, fogDensity: 0.028 };
+const PAL = {
+  stoneFloor: 0x7a7285, stoneWall: 0x7d7189, woodDark: 0x4a3320, woodMid: 0x7a5430, woodWarm: 0xa8763f,
+  iron: 0x2a262f, ironLight: 0x4e4655, brass: 0xd0993d, copper: 0xb56333, pewter: 0x9d9aa5,
+  glass: 0xdaf0ec, ember: 0xff6a20, wax: 0xefe3c6, flame: 0xffce7e, parchment: 0xe4d5aa,
+  potionGreen: 0x3ddd83, potionViolet: 0x9b4cf0, potionAmber: 0xffab3c, potionBlue: 0x46b8ec,
+  herb: 0x7c8a4c, herbDry: 0xa89459, rope: 0xb09868
+};
+
+/* ---------- 2. SEEDED PRNG & GEOMETRY HELPERS ---------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + rand() * (b - a);
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+const pickOne = (arr) => arr[Math.floor(rand() * arr.length)];
+const shaded = (m) => { m.castShadow = true; m.receiveShadow = true; return m; };
+function box(w, h, d, mat, x = 0, y = 0, z = 0){
+  const m = shaded(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat));
+  m.position.set(x, y, z); return m;
+}
+const cyl = (rt, rb, h, mat, seg = 12) =>
+  shaded(new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat));
+const lathe = (profile, mat, seg = 22) =>
+  shaded(new THREE.Mesh(new THREE.LatheGeometry(profile.map(p => new THREE.Vector2(p[0], p[1])), seg), mat));
+function tube(pts, radius, mat, seg = 32){
+  const curve = new THREE.CatmullRomCurve3(pts.map(p => new THREE.Vector3(p[0], p[1], p[2])));
+  const m = new THREE.Mesh(new THREE.TubeGeometry(curve, seg, radius, 7, false), mat);
+  m.castShadow = true; return m;
+}
+/** Room shell pieces must not cast shadows or the whole interior goes black. */
+const noCast = (m) => { m.castShadow = false; return m; };
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES -------------------------------- */
+const newCanvas = (s) => { const c = document.createElement('canvas'); c.width = c.height = s; return c; };
+function finishTex(canvas, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+/** Irregular flagstone paving. */
+function texFlagstone(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d'), cell = 64;
+  g.fillStyle = '#2a2431'; g.fillRect(0, 0, S, S);
+  for (let gy = 0; gy < S; gy += cell) for (let gx = -cell; gx < S; gx += cell){
+    const v = 0.66 + rand() * 0.34, x = gx + ((gy / cell) % 2) * cell * 0.5;
+    g.fillStyle = `rgb(${(158 * v) | 0},${(148 * v) | 0},${(168 * v) | 0})`;
+    g.fillRect(x + 3, gy + 3, cell - 6, cell - 6);
+    for (let s = 0; s < 26; s++){
+      g.fillStyle = rand() > 0.5 ? `rgba(255,250,240,${rand() * 0.2})` : `rgba(12,7,18,${rand() * 0.25})`;
+      g.fillRect(x + 3 + rand() * (cell - 6), gy + 3 + rand() * (cell - 6), 2 + rand() * 5, 2 + rand() * 4);
+    }
+  }
+  return finishTex(c, 4, 3.5);
+}
+/** Coursed stone blocks for the walls. */
+function texWallStone(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d'), rowH = 52;
+  g.fillStyle = '#231d2b'; g.fillRect(0, 0, S, S);
+  for (let y = 0, row = 0; y < S; y += rowH, row++) for (let x = -92; x < S; x += 92){
+    const v = 0.62 + rand() * 0.38, px = x + (row % 2) * 46;
+    g.fillStyle = `rgb(${(168 * v) | 0},${(154 * v) | 0},${(180 * v) | 0})`;
+    g.fillRect(px + 3, y + 3, 86, rowH - 6);
+    g.fillStyle = `rgba(0,0,0,${0.1 + rand() * 0.16})`; g.fillRect(px + 3, y + rowH - 12, 86, 9);
+    for (let s = 0; s < 14; s++){
+      g.fillStyle = `rgba(255,242,224,${rand() * 0.12})`;
+      g.fillRect(px + 4 + rand() * 82, y + 4 + rand() * (rowH - 10), 3 + rand() * 8, 2);
+    }
+  }
+  return finishTex(c, 3, 1.4);
+}
+/** Dark grained hardwood with knots. */
+function texWood(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#6a4728'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 190; i++){
+    const y = rand() * S;
+    g.strokeStyle = `rgba(${40 + rand() * 70 | 0},${24 + rand() * 42 | 0},${10 + rand() * 24 | 0},${0.18 + rand() * 0.48})`;
+    g.lineWidth = 0.5 + rand() * 2.4; g.beginPath(); g.moveTo(0, y);
+    for (let x = 0; x <= S; x += 32) g.lineTo(x, y + Math.sin((x + i * 40) * 0.014) * 5.5);
+    g.stroke();
+  }
+  g.strokeStyle = 'rgba(38,22,10,0.3)'; g.lineWidth = 1.4;
+  for (let i = 0; i < 7; i++){
+    const kx = rand() * S, ky = rand() * S, tilt = rand();
+    for (let k = 6; k > 0; k--){ g.beginPath(); g.ellipse(kx, ky, k * 2.6, k * 1.5, tilt, 0, Math.PI * 2); g.stroke(); }
+  }
+  return finishTex(c, 2, 2);
+}
+/** Glowing sigil ring for the floor circle, drawn on a transparent canvas. */
+function texRuneRing(){
+  const S = 1024, c = newCanvas(S), g = c.getContext('2d'), cx = S / 2, cy = S / 2;
+  const ring = (r, w, a) => { g.strokeStyle = `rgba(196,140,255,${a})`; g.lineWidth = w;
+                              g.beginPath(); g.arc(cx, cy, r, 0, Math.PI * 2); g.stroke(); };
+  ring(470, 7, 0.95); ring(444, 3, 0.6); ring(352, 5, 0.85); ring(196, 4, 0.8); ring(120, 8, 0.9);
+  g.strokeStyle = 'rgba(150,255,205,0.85)'; g.lineWidth = 5;
+  for (let k = 0; k < 2; k++){
+    g.beginPath();
+    for (let i = 0; i <= 5; i++){
+      const a = (i / 5) * Math.PI * 2 + k * Math.PI / 5;
+      g[i ? 'lineTo' : 'moveTo'](cx + Math.cos(a) * 340, cy + Math.sin(a) * 340);
+    }
+    g.closePath(); g.stroke();
+  }
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  const glyphs = 'ᚠᚢᚦᚱᚷᚾᛁᛇᛒᛚᛟᛠ';
+  for (const band of [{ n: 24, r: 408, size: 54, spin: Math.PI / 2 }, { n: 10, r: 158, size: 42, spin: 0 }]){
+    for (let i = 0; i < band.n; i++){
+      const a = (i / band.n) * Math.PI * 2;
+      g.save(); g.translate(cx + Math.cos(a) * band.r, cy + Math.sin(a) * band.r); g.rotate(a + band.spin);
+      g.font = `bold ${band.size}px serif`;
+      g.fillStyle = band.spin ? `rgba(${200 + rand() * 55 | 0},${170 + rand() * 60 | 0},255,0.95)` : 'rgba(160,255,215,0.9)';
+      g.fillText(glyphs[(i * (band.spin ? 1 : 3)) % glyphs.length], 0, 0); g.restore();
+    }
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+/** Handwritten grimoire spread with an alchemical diagram. */
+function texGrimoire(){
+  const S = 512, c = newCanvas(S), g = c.getContext('2d');
+  g.fillStyle = '#e0cd9e'; g.fillRect(0, 0, S, S);
+  for (let i = 0; i < 900; i++){
+    g.fillStyle = `rgba(${110 + rand() * 60 | 0},${86 + rand() * 40 | 0},${52 + rand() * 30 | 0},${rand() * 0.15})`;
+    g.fillRect(rand() * S, rand() * S, 2 + rand() * 9, 2 + rand() * 6);
+  }
+  g.fillStyle = 'rgba(58,38,20,0.78)';
+  for (let col = 0; col < 2; col++) for (let l = 0; l < 22; l++){
+    if (col === 1 && l > 5 && l < 15) continue;
+    const x0 = 30 + col * 258;
+    for (let x = x0, w = 0; x < x0 + 200; x += w + 5){ w = 8 + rand() * 26; g.fillRect(x, 40 + l * 20, w, 3.4); }
+  }
+  g.strokeStyle = 'rgba(70,44,24,0.9)'; g.lineWidth = 2.8;
+  g.beginPath(); g.arc(390, 250, 78, 0, Math.PI * 2); g.stroke();
+  g.beginPath();
+  for (let i = 0; i <= 3; i++){
+    const a = (i / 3) * Math.PI * 2 - Math.PI / 2;
+    g[i ? 'lineTo' : 'moveTo'](390 + Math.cos(a) * 78, 250 + Math.sin(a) * 78);
+  }
+  g.closePath(); g.stroke();
+  g.fillStyle = 'rgba(120,30,140,0.8)'; g.beginPath(); g.arc(390, 250, 15, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = 'rgba(40,26,14,0.35)'; g.lineWidth = 5;
+  g.beginPath(); g.moveTo(S / 2, 0); g.lineTo(S / 2, S); g.stroke();
+  return finishTex(c, 1, 1);
+}
+/** Soft radial sprite shared by steam, embers and dust motes. */
+function texSpark(){
+  const S = 64, c = newCanvas(S), g = c.getContext('2d');
+  const grd = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.35, 'rgba(255,255,255,0.4)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+/** Leaded window pane lit by a violet night sky. */
+function texWindow(){
+  const S = 256, c = newCanvas(S), g = c.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, S);
+  grd.addColorStop(0, '#8a6ede'); grd.addColorStop(0.55, '#4b3a8c'); grd.addColorStop(1, '#241c4d');
+  g.fillStyle = grd; g.fillRect(0, 0, S, S);
+  g.strokeStyle = '#191420'; g.lineWidth = 7;
+  for (let i = 1; i < 4; i++){
+    g.beginPath(); g.moveTo(i * S / 4, 0); g.lineTo(i * S / 4, S); g.stroke();
+    g.beginPath(); g.moveTo(0, i * S / 4); g.lineTo(S, i * S / 4); g.stroke();
+  }
+  return finishTex(c, 1, 1);
+}
+
+/* ---------- 4. SHARED MATERIALS ------------------------------------------ */
+const TEX = { floor: texFlagstone(), wall: texWallStone(), wood: texWood(),
+              rune: texRuneRing(), page: texGrimoire(), spark: texSpark(), win: texWindow() };
+const std = (o) => new THREE.MeshStandardMaterial(o);
+const MAT = {
+  floor:    std({ map: TEX.floor, color: PAL.stoneFloor, roughness: 0.94, metalness: 0.02 }),
+  wall:     std({ map: TEX.wall, color: PAL.stoneWall, roughness: 0.97 }),
+  wood:     std({ map: TEX.wood, color: PAL.woodMid, roughness: 0.8, metalness: 0.04 }),
+  woodDark: std({ map: TEX.wood, color: PAL.woodDark, roughness: 0.88 }),
+  woodWarm: std({ map: TEX.wood, color: PAL.woodWarm, roughness: 0.7, metalness: 0.05 }),
+  iron:     std({ color: PAL.iron, roughness: 0.55, metalness: 0.85 }),
+  ironRough:std({ color: PAL.ironLight, roughness: 0.74, metalness: 0.6 }),
+  brass:    std({ color: PAL.brass, roughness: 0.22, metalness: 1.0 }),
+  copper:   std({ color: PAL.copper, roughness: 0.28, metalness: 1.0 }),
+  pewter:   std({ color: PAL.pewter, roughness: 0.4, metalness: 0.9 }),
+  wax:      std({ color: PAL.wax, roughness: 0.6 }),
+  parch:    std({ map: TEX.page, color: PAL.parchment, roughness: 0.9 }),
+  herb:     std({ color: PAL.herb, roughness: 0.9, side: THREE.DoubleSide }),
+  herbDry:  std({ color: PAL.herbDry, roughness: 0.92, side: THREE.DoubleSide }),
+  rope:     std({ color: PAL.rope, roughness: 0.95 }),
+  window:   std({ map: TEX.win, emissive: 0x8f74f0, emissiveIntensity: 1.1, roughness: 0.5 }),
+  glass:    new THREE.MeshPhysicalMaterial({ color: PAL.glass, roughness: 0.06, metalness: 0.0, transparent: true,
+              opacity: 0.24, side: THREE.DoubleSide, clearcoat: 1.0, clearcoatRoughness: 0.04, depthWrite: false }),
+  rune:     new THREE.MeshBasicMaterial({ map: TEX.rune, transparent: true, opacity: 0.9,
+              blending: THREE.AdditiveBlending, depthWrite: false })
+};
+/** Emissive brew body — one shared material per hue keeps state changes cheap. */
+const potionMat = (hex, i) => std({ color: hex, emissive: hex, emissiveIntensity: i,
+  roughness: 0.3, transparent: true, opacity: 0.94 });
+const POTION = { green: potionMat(PAL.potionGreen, 1.0), violet: potionMat(PAL.potionViolet, 1.1),
+                 amber: potionMat(PAL.potionAmber, 0.85), blue: potionMat(PAL.potionBlue, 0.9) };
+const flameMat = new THREE.MeshBasicMaterial({ color: PAL.flame, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false });
+
+/* ---------- 5. BUILDER FUNCTIONS ----------------------------------------- */
+/** Stone shell: floor, three walls, plank ceiling, beams and an arched window. */
+function buildRoom(){
+  const g = new THREE.Group(), { roomW: W, roomD: D, roomH: H } = CONFIG;
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(W, D), MAT.floor);
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(W, D), MAT.woodDark);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = H; g.add(floor, ceil);
+  // Walls, the plinth skirting that hides the floor seam, and the window frame.
+  for (const s of [[W, H, 0.4, MAT.wall, 0, H / 2, -D / 2 - 0.2], [0.4, H, D, MAT.wall, -W / 2 - 0.2, H / 2, 0],
+    [0.4, H, D, MAT.wall, W / 2 + 0.2, H / 2, 0], [W, 0.34, 0.28, MAT.ironRough, 0, 0.17, -D / 2 + 0.14],
+    [0.28, 0.34, D, MAT.ironRough, -W / 2 + 0.14, 0.17, 0], [0.28, 0.34, D, MAT.ironRough, W / 2 - 0.14, 0.17, 0],
+    [0.46, 0.28, D, MAT.woodDark, 0, H - 0.68, 0], [2.02, 0.16, 0.22, MAT.ironRough, 2.6, 2.64, -D / 2 + 0.08],
+    [0.16, 2.1, 0.22, MAT.ironRough, 1.71, 3.7, -D / 2 + 0.08], [0.16, 2.1, 0.22, MAT.ironRough, 3.49, 3.7, -D / 2 + 0.08],
+    [0.09, 2.0, 0.1, MAT.iron, 2.6, 3.7, -D / 2 + 0.1]]) g.add(noCast(box(...s)));
+  for (let i = 0; i < 5; i++) g.add(noCast(box(W, 0.32, 0.4, MAT.woodDark, 0, H - 0.4, -4.6 + i * 2.3)));
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 2.0), MAT.window);
+  const arch = new THREE.Mesh(new THREE.TorusGeometry(0.86, 0.13, 8, 16, Math.PI), MAT.ironRough);
+  pane.position.set(2.6, 3.7, -D / 2 + 0.03); arch.position.set(2.6, 4.7, -D / 2 + 0.06);
+  g.add(pane, noCast(arch)); return g;
+}
+/** Glowing sigil circle inlaid in the flagstones with orbiting gem inlays. */
+function buildRuneCircle(){
+  const g = new THREE.Group();
+  const outer = new THREE.Mesh(new THREE.PlaneGeometry(5.4, 5.4), MAT.rune);
+  const inner = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.4), MAT.rune.clone());
+  outer.rotation.x = inner.rotation.x = -Math.PI / 2;
+  outer.position.y = 0.015; inner.position.y = 0.03; inner.material.opacity = 0.55;
+  g.add(outer, inner); g.userData.inner = inner;
+  const gemMat = std({ color: PAL.potionViolet, emissive: PAL.potionViolet, emissiveIntensity: 1.6, roughness: 0.2, metalness: 0.3 });
+  const gems = new THREE.InstancedMesh(new THREE.OctahedronGeometry(0.13, 0), gemMat, 6), m4 = new THREE.Matrix4();
+  for (let i = 0; i < 6; i++){
+    const a = (i / 6) * Math.PI * 2;
+    m4.makeTranslation(Math.cos(a) * 2.25, 0.12, Math.sin(a) * 2.25); gems.setMatrixAt(i, m4);
+  }
+  gems.instanceMatrix.needsUpdate = true; g.add(gems); g.userData.gems = gems; return g;
+}
+/** Heavy iron cauldron on a stone fire ring over glowing coals. */
+function buildCauldron(){
+  const g = new THREE.Group();
+  const pot = lathe([[0.02, 0], [0.44, 0.03], [0.78, 0.14], [1.02, 0.36], [1.18, 0.64],
+                     [1.22, 0.94], [1.14, 1.2], [1.06, 1.38], [1.12, 1.46], [1.05, 1.48]], MAT.iron, 26);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(1.09, 0.07, 8, 24), MAT.ironRough);
+  pot.position.y = 0.62; rim.rotation.x = Math.PI / 2; rim.position.y = 2.1; g.add(pot, rim);
+  for (const s of [-1, 1]){
+    const h = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.045, 6, 12, Math.PI), MAT.ironRough);
+    h.position.set(s * 1.16, 1.9, 0); h.rotation.set(0, Math.PI / 2, -s * Math.PI / 2); g.add(h);
+  }
+  for (let i = 0; i < 3; i++){
+    const a = (i / 3) * Math.PI * 2 + 0.4, leg = cyl(0.09, 0.13, 0.7, MAT.iron, 8);
+    leg.position.set(Math.cos(a) * 0.62, 0.35, Math.sin(a) * 0.62);
+    leg.rotation.set(Math.sin(a) * 0.22, 0, -Math.cos(a) * 0.22); g.add(leg);
+  }
+  // Bubbling brew surface — its vertices are displaced every frame.
+  const brewGeo = new THREE.CircleGeometry(1.02, 36), brew = new THREE.Mesh(brewGeo, POTION.green.clone());
+  brew.material.emissiveIntensity = 1.3; brew.rotation.x = -Math.PI / 2; brew.position.y = 1.86;
+  g.add(brew); g.userData.brew = brew; g.userData.brewBase = brewGeo.attributes.position.array.slice();
+  const ringMat = std({ color: 0x554d5e, roughness: 0.95 });
+  for (let i = 0; i < 14; i++){
+    const a = (i / 14) * Math.PI * 2;
+    const s = box(0.34, 0.26, 0.3, ringMat, Math.cos(a) * 1.5, 0.13, Math.sin(a) * 1.5);
+    s.rotation.y = a; s.scale.setScalar(rr(0.85, 1.2)); g.add(s);
+  }
+  const coalMat = std({ color: 0x33211a, emissive: PAL.ember, emissiveIntensity: 0.9, roughness: 0.95 });
+  const coals = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.15, 0), coalMat, 34), d = new THREE.Object3D();
+  for (let i = 0; i < 34; i++){
+    const a = rand() * Math.PI * 2, r = rand() * 1.25;
+    d.position.set(Math.cos(a) * r, 0.08 + rand() * 0.07, Math.sin(a) * r);
+    d.rotation.set(rand() * 3, rand() * 3, rand() * 3); d.scale.setScalar(rr(0.55, 1.25));
+    d.updateMatrix(); coals.setMatrixAt(i, d.matrix);
+  }
+  g.add(coals); g.userData.coals = coals; return g;
+}
+/** Conical flask with an emissive brew and a cork. */
+function makeFlask(potion, scale = 1){
+  const g = new THREE.Group();
+  const liq = lathe([[0.001, 0.01], [0.3, 0.02], [0.31, 0.06], [0.23, 0.24], [0.17, 0.36], [0.001, 0.37]], potion, 16);
+  const cork = cyl(0.09, 0.1, 0.1, MAT.woodWarm, 8); cork.position.y = 0.85;
+  g.add(lathe([[0.001, 0], [0.34, 0], [0.36, 0.05], [0.29, 0.3], [0.16, 0.52],
+               [0.105, 0.64], [0.1, 0.76], [0.135, 0.8], [0.125, 0.82]], MAT.glass, 18), liq, cork);
+  g.userData.liquid = liq; g.scale.setScalar(scale); return g;
+}
+/** Round-bottom retort with a long swan neck. */
+function makeRetort(potion){
+  const g = new THREE.Group(), bulb = new THREE.Mesh(new THREE.SphereGeometry(0.3, 16, 12), MAT.glass);
+  const brew = new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 10, 0, 6.283, 1.41, 1.73), potion);
+  bulb.position.y = brew.position.y = 0.3; g.userData.liquid = brew;
+  g.add(bulb, brew, tube([[0, 0.55, 0], [0.05, 0.78, 0], [0.26, 0.86, 0], [0.55, 0.72, 0], [0.72, 0.5, 0]], 0.05, MAT.glass, 26));
+  return g;
+}
+/** Apothecary jar with a copper lid and a suspended specimen. */
+function makeJar(hue, h = 0.44){
+  const g = new THREE.Group();
+  const fill = cyl(0.145, 0.145, h * 0.72, std({ color: hue, emissive: hue, emissiveIntensity: 0.35,
+    transparent: true, opacity: 0.62, roughness: 0.4 }), 12);
+  const spec = new THREE.Mesh(new THREE.IcosahedronGeometry(0.07, 0), MAT.wax);
+  const lid = cyl(0.15, 0.16, 0.07, MAT.copper, 10);
+  fill.position.y = h * 0.38; spec.position.y = h * 0.4; lid.position.y = h + 0.03;
+  spec.rotation.set(rand() * 3, rand() * 3, rand() * 3);
+  g.add(lathe([[0.001, 0], [0.16, 0], [0.175, 0.04], [0.175, h - 0.06], [0.15, h - 0.01], [0.145, h]], MAT.glass, 12),
+        fill, spec, lid); return g;
+}
+/** Melted candle: drooping wax stack, wick and an additive flame. */
+function makeCandle(h = 0.4, r = 0.075){
+  const g = new THREE.Group(), stick = cyl(r * 0.94, r, h, MAT.wax, 10);
+  stick.position.y = h / 2; g.add(stick);
+  for (let i = 0; i < 4; i++){
+    const a = rand() * Math.PI * 2, d = new THREE.Mesh(new THREE.SphereGeometry(r * 0.4, 6, 5), MAT.wax);
+    d.position.set(Math.cos(a) * r * 0.9, h * rr(0.28, 0.82), Math.sin(a) * r * 0.9);
+    d.scale.y = rr(1.6, 3.2); g.add(d);
+  }
+  const pool = cyl(r * 1.5, r * 1.7, 0.03, MAT.wax, 12), wick = cyl(0.008, 0.008, 0.07, MAT.iron, 5);
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.045, 0.16, 8), flameMat);
+  pool.position.y = 0.015; wick.position.y = h + 0.03; flame.position.y = h + 0.11;
+  g.add(pool, wick, flame); g.userData.flame = flame; return g;
+}
+/** Long work bench crowded with distillation glassware and brass tools. */
+function buildAlchemyBench(){
+  const g = new THREE.Group();
+  g.add(box(4.8, 0.16, 1.5, MAT.wood, 0, 1.02, 0), box(4.6, 0.1, 1.2, MAT.woodDark, 0, 0.3, 0),
+        box(4.8, 0.14, 0.1, MAT.woodDark, 0, 0.87, 0.7));
+  for (const sx of [-2.2, 2.2]) for (const sz of [-0.6, 0.6]) g.add(box(0.16, 1.0, 0.16, MAT.woodDark, sx, 0.5, sz));
+  // Retort on an iron stand, dripping into a catcher flask.
+  const stand = new THREE.Group(), post = cyl(0.03, 0.03, 0.9, MAT.iron, 8);
+  const retort = makeRetort(POTION.violet), catcher = makeFlask(POTION.violet, 0.8);
+  post.position.set(-0.2, 1.55, 0); retort.position.set(0.06, 1.36, 0); catcher.position.set(-0.85, 1.1, 0.08);
+  stand.add(box(0.5, 0.05, 0.35, MAT.iron, 0, 1.13, 0), post, box(0.4, 0.04, 0.05, MAT.iron, 0.02, 1.72, 0), retort);
+  stand.position.set(-1.55, 0, 0.05); g.add(stand, catcher); g.userData.retort = retort;
+  // Copper alembic still with a helical condenser coil.
+  const alem = new THREE.Group(), helix = [], drip = makeFlask(POTION.green, 0.65);
+  for (let i = 0; i <= 34; i++){
+    const t = i / 34, a = t * Math.PI * 5.2;
+    helix.push([0.36 + Math.cos(a) * 0.2, 0.94 - t * 0.62, Math.sin(a) * 0.2]);
+  }
+  alem.add(lathe([[0.001, 0], [0.3, 0.02], [0.38, 0.16], [0.36, 0.36], [0.24, 0.5], [0.14, 0.58], [0.13, 0.62]], MAT.copper, 18),
+    lathe([[0.15, 0.62], [0.3, 0.68], [0.26, 0.86], [0.13, 0.98], [0.05, 1.04]], MAT.brass, 18),
+    tube(helix, 0.035, MAT.copper, 52),
+    tube([[0.05, 1.02, 0], [0.24, 1.02, 0], [0.4, 0.98, 0], [0.5, 0.94, 0]], 0.035, MAT.brass, 14));
+  alem.position.set(0.62, 1.1, -0.1); drip.position.set(1.06, 1.1, 0.24); g.add(alem, drip);
+  // Rack of three bubbling flasks.
+  const rack = new THREE.Group(), hues = [POTION.green, POTION.blue, POTION.violet], flasks = [];
+  rack.add(box(1.3, 0.06, 0.34, MAT.woodDark, 0, 1.13, 0));
+  for (let i = 0; i < 3; i++){
+    const f = makeFlask(hues[i], 0.72); f.position.set(-0.42 + i * 0.42, 1.16, 0); rack.add(f); flasks.push(f);
+  }
+  rack.position.set(1.95, 0, 0.2); g.add(rack); g.userData.flasks = flasks;
+  // Brass balance scale with two swinging pans.
+  const scale = new THREE.Group(), col = cyl(0.025, 0.03, 0.52, MAT.brass, 8);
+  const beam = box(0.72, 0.03, 0.03, MAT.brass, 0, 0.55, 0);
+  col.position.y = 0.28; scale.add(cyl(0.16, 0.2, 0.05, MAT.brass, 12), col, beam);
+  for (const s of [-1, 1]){
+    const pan = lathe([[0.001, 0], [0.11, 0.015], [0.12, 0.045]], MAT.brass, 12);
+    const wire = cyl(0.005, 0.005, 0.17, MAT.brass, 4);
+    pan.position.set(s * 0.32, 0.38, 0); wire.position.set(s * 0.32, 0.465, 0); scale.add(pan, wire);
+  }
+  scale.position.set(-2.05, 1.1, -0.35); g.add(scale); g.userData.scale = beam;
+  // Mortar, pestle, loose brass tools and a bench candle.
+  const mortar = lathe([[0.001, 0], [0.14, 0.01], [0.16, 0.1], [0.14, 0.17], [0.16, 0.19]], MAT.pewter, 14);
+  const pestle = cyl(0.035, 0.055, 0.22, MAT.pewter, 8), cd = makeCandle(0.34, 0.07);
+  mortar.position.set(-2.1, 1.1, 0.42); pestle.position.set(-1.9, 1.2, 0.5); pestle.rotation.z = 0.8;
+  cd.position.set(2.05, 1.1, -0.42); g.add(mortar, pestle, cd); g.userData.candle = cd;
+  for (let i = 0; i < 4; i++){
+    const t = cyl(0.014, 0.014, rr(0.22, 0.34), MAT.brass, 6);
+    t.position.set(rr(-0.4, 0.3), 1.12, 0.55); t.rotation.set(Math.PI / 2, 0, rr(-0.5, 0.5)); g.add(t);
+  }
+  return g;
+}
+/** Tall shelving crammed with jars, specimens and stacked tomes. */
+function buildShelfUnit(w = 5.0, h = 4.2){
+  const g = new THREE.Group(), shelves = 4, jars = [];
+  g.add(box(w, 0.1, 0.62, MAT.woodDark, 0, 0.06, 0), box(w - 0.3, h, 0.06, MAT.wood, 0, h / 2, -0.3),
+        box(w, 0.16, 0.7, MAT.woodDark, 0, h + 0.06, 0));
+  for (const sx of [-w / 2 + 0.09, w / 2 - 0.09]) g.add(box(0.18, h, 0.62, MAT.woodDark, sx, h / 2, 0));
+  for (let s = 0; s < shelves; s++){
+    const y = 0.62 + s * ((h - 0.9) / (shelves - 1)), n = ri(5, 7);
+    g.add(box(w - 0.2, 0.09, 0.6, MAT.wood, 0, y, 0));
+    for (let i = 0; i < n; i++){
+      const hue = pickOne([PAL.potionGreen, PAL.potionViolet, PAL.potionAmber, PAL.potionBlue, 0xd06a9a]);
+      const jar = makeJar(hue, rr(0.3, 0.5));
+      jar.position.set(-w / 2 + 0.45 + i * ((w - 0.9) / (n - 1)) + rr(-0.07, 0.07), y + 0.05, rr(-0.14, 0.12));
+      g.add(jar); jars.push(jar);
+    }
+    if (s % 2 === 0){
+      for (let b = 0; b < 3; b++){
+        const bk = box(rr(0.11, 0.17), rr(0.26, 0.36), 0.3,
+          std({ color: pickOne([0x7a3d31, 0x3f547a, 0x51643b, 0x6d4468]), roughness: 0.85 }),
+          w / 2 - 0.55 - b * 0.17, y + 0.2, 0.05);
+        bk.rotation.z = b === 2 ? 0.24 : 0; g.add(bk);
+      }
+    } else {
+      const skull = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), MAT.wax);
+      skull.position.set(w / 2 - 0.62, y + 0.19, 0.02); skull.scale.set(1, 0.94, 1.16); skull.castShadow = true;
+      g.add(skull, box(0.16, 0.06, 0.16, MAT.wax, w / 2 - 0.62, y + 0.08, 0.06));
+    }
+  }
+  g.userData.jars = jars; return g;
+}
+/** Reading lectern carrying the open grimoire and drifting glyphs. */
+function buildLectern(){
+  const g = new THREE.Group(), post = cyl(0.11, 0.14, 1.0, MAT.wood, 10);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), MAT.wood);
+  post.position.y = 0.72; knob.position.y = 0.68;
+  g.add(lathe([[0.5, 0], [0.52, 0.08], [0.28, 0.16], [0.14, 0.24]], MAT.woodDark, 16), post, knob);
+  const desk = new THREE.Group(), left = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.09, 0.86), MAT.parch);
+  left.position.set(-0.34, 0.1, -0.01); left.rotation.z = 0.07; left.castShadow = true;
+  const right = left.clone(); right.position.x = 0.34; right.rotation.z = -0.07;
+  desk.add(box(1.4, 0.07, 0.98, MAT.wood, 0, 0, 0), box(1.4, 0.08, 0.09, MAT.woodDark, 0, 0.07, 0.46),
+    left, right, box(0.1, 0.12, 0.88, std({ color: 0x63304a, roughness: 0.8 }), 0, 0.08, -0.01));
+  desk.position.set(0, 1.26, 0); desk.rotation.x = -0.34; g.add(desk);
+  // Runes lifting off the open page.
+  const glyphMat = new THREE.MeshBasicMaterial({ color: PAL.potionViolet, transparent: true, opacity: 0.85,
+    blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+  const glyphs = new THREE.Group();
+  for (let i = 0; i < 7; i++){
+    const q = new THREE.Mesh(new THREE.PlaneGeometry(0.11, 0.11), glyphMat);
+    q.position.set(rr(-0.4, 0.4), rr(0.1, 0.6), rr(-0.25, 0.25));
+    q.userData.phase = rand() * 6.28; q.userData.y0 = q.position.y; glyphs.add(q);
+  }
+  glyphs.position.set(0, 1.5, 0); g.add(glyphs); g.userData.glyphs = glyphs;
+  const cd = makeCandle(0.3, 0.065); cd.position.set(0.56, 1.35, 0.36); cd.rotation.x = -0.34;
+  g.add(cd); g.userData.candle = cd; return g;
+}
+/** Ceiling rack of drying herb bundles on rope hangers. */
+function buildHerbRack(len = 4.4){
+  const g = new THREE.Group(), bundles = [], pole = cyl(0.055, 0.055, len, MAT.woodWarm, 10);
+  pole.rotation.z = Math.PI / 2; g.add(pole);
+  for (const sx of [-len / 2 + 0.2, len / 2 - 0.2]){
+    const rope = cyl(0.016, 0.016, 1.0, MAT.rope, 5); rope.position.set(sx, 0.5, 0); g.add(rope);
+  }
+  for (let i = 0; i < 6; i++){
+    const b = new THREE.Group(), mat = i % 2 ? MAT.herbDry : MAT.herb, stemN = ri(7, 10);
+    const twine = cyl(0.02, 0.02, 0.16, MAT.rope, 5); twine.position.y = -0.08; b.add(twine);
+    for (let s = 0; s < stemN; s++){
+      const a = (s / stemN) * Math.PI * 2 + rand(), stem = cyl(0.012, 0.02, rr(0.42, 0.68), mat, 4);
+      const leaf = new THREE.Mesh(new THREE.ConeGeometry(0.07, 0.32, 4), mat);
+      stem.position.set(Math.cos(a) * 0.06, -0.42, Math.sin(a) * 0.06);
+      stem.rotation.set(Math.sin(a) * 0.22, 0, -Math.cos(a) * 0.22);
+      leaf.position.set(Math.cos(a) * 0.13, -0.74, Math.sin(a) * 0.13);
+      leaf.rotation.z = Math.PI; leaf.scale.set(1, rr(0.7, 1.4), 0.45); b.add(stem, leaf);
+    }
+    const bud = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 6), mat);
+    bud.position.y = -0.86; bud.scale.set(1, 1.7, 1); b.add(bud);
+    b.position.set(-len / 2 + 0.5 + i * ((len - 1.0) / 5), -0.12, rr(-0.1, 0.1));
+    b.userData.phase = rand() * 6.28; g.add(b); bundles.push(b);
+  }
+  g.userData.bundles = bundles; return g;
+}
+/** Wrought-iron floor candelabra with four melted tapers. */
+function buildCandelabra(){
+  const g = new THREE.Group(), candles = [], shaft = cyl(0.05, 0.07, 1.6, MAT.iron, 8);
+  shaft.position.y = 0.92;
+  g.add(lathe([[0.34, 0], [0.36, 0.06], [0.16, 0.12], [0.07, 0.18]], MAT.iron, 14), shaft);
+  for (let i = 0; i < 3; i++){
+    const a = (i / 3) * Math.PI * 2, cx = Math.cos(a) * 0.42, cz = Math.sin(a) * 0.42;
+    const cup = lathe([[0.001, 0], [0.1, 0.01], [0.11, 0.05]], MAT.iron, 10), cd = makeCandle(rr(0.28, 0.46), 0.075);
+    cup.position.set(cx, 1.72, cz); cd.position.set(cx, 1.75, cz); candles.push(cd);
+    g.add(tube([[0, 1.6, 0], [cx * 0.55, 1.78, cz * 0.55], [cx, 1.72, cz]], 0.03, MAT.iron, 12), cup, cd);
+  }
+  const cd = makeCandle(0.5, 0.08); cd.position.y = 1.72; g.add(cd); candles.push(cd);
+  g.userData.candles = candles; return g;
+}
+/** Brass armillary orrery on a turned side table. */
+function buildOrrery(){
+  const g = new THREE.Group(), rings = new THREE.Group(), stem = cyl(0.03, 0.04, 0.5, MAT.brass, 8);
+  const rAx = [[0, 0, 0], [Math.PI / 2, 0, 0.35], [0.4, Math.PI / 2, 0]];
+  g.add(lathe([[0.4, 0], [0.42, 0.07], [0.13, 0.14], [0.1, 0.9], [0.16, 0.96], [0.5, 1.02], [0.52, 1.08]], MAT.woodDark, 18));
+  for (let i = 0; i < 3; i++){
+    const t = new THREE.Mesh(new THREE.TorusGeometry(0.42 - i * 0.07, 0.018, 6, 30), MAT.brass);
+    const p = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), MAT.pewter), a = (i / 3) * Math.PI * 2;
+    t.rotation.set(rAx[i][0], rAx[i][1], rAx[i][2]); t.castShadow = true;
+    p.position.set(Math.cos(a) * (0.42 - i * 0.07), Math.sin(a) * 0.1, Math.sin(a) * (0.42 - i * 0.07));
+    rings.add(t, p);
+  }
+  rings.add(new THREE.Mesh(new THREE.SphereGeometry(0.09, 14, 10),
+    std({ color: PAL.potionAmber, emissive: PAL.potionAmber, emissiveIntensity: 1.6, roughness: 0.3 })));
+  rings.position.y = 1.55; stem.position.y = 1.28; g.add(rings, stem); g.userData.rings = rings; return g;
+}
+/** Corner of banded crates, a hooped barrel and a sack of raw reagents. */
+function buildStorageCorner(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const s = rr(0.68, 0.86);
+    const c = box(s, 0.7, s, MAT.woodWarm, rr(-0.16, 0.16), 0.36 + i * 0.72, rr(-0.16, 0.16));
+    c.rotation.y = rr(-0.4, 0.4); g.add(c);
+    for (const oy of [-0.24, 0.24]){
+      const band = box(s * 1.02, 0.05, s * 1.02, MAT.ironRough, c.position.x, c.position.y + oy, c.position.z);
+      band.rotation.y = c.rotation.y; g.add(band);
+    }
+  }
+  const barrel = lathe([[0.001, 0], [0.34, 0], [0.42, 0.24], [0.44, 0.5], [0.42, 0.76], [0.34, 1.0], [0.001, 1.0]], MAT.woodDark, 18);
+  const sack = lathe([[0.001, 0], [0.3, 0.02], [0.34, 0.24], [0.24, 0.46], [0.1, 0.56], [0.14, 0.62]],
+    std({ color: 0xb29c73, roughness: 0.98 }), 14);
+  barrel.position.set(1.1, 0, 0.35); sack.position.set(-0.85, 0, 0.55); g.add(barrel, sack);
+  for (const by of [0.22, 0.52, 0.82]){
+    const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.435, 0.028, 6, 18), MAT.ironRough);
+    hoop.rotation.x = Math.PI / 2; hoop.position.set(1.1, by, 0.35); g.add(hoop);
+  }
+  return g;
+}
+/** Chained oil lantern hanging from a ceiling beam. */
+function buildHangingLantern(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 5; i++){
+    const link = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.014, 5, 10), MAT.ironRough);
+    link.position.y = -i * 0.09; link.rotation.y = (i % 2) * Math.PI / 2; g.add(link);
+  }
+  const body = lathe([[0.001, 0], [0.16, 0.02], [0.18, 0.08], [0.17, 0.34], [0.2, 0.38], [0.1, 0.46], [0.04, 0.5]], MAT.ironRough, 12);
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffc06a, transparent: true, opacity: 0.8 }));
+  body.position.y = -0.94; glow.position.y = -0.72; g.add(body, glow); g.userData.glow = glow; return g;
+}
+
+/* ---------- 6. SCENE ASSEMBLY & LAYOUT ----------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(CONFIG.fogColor);
+scene.fog = new THREE.FogExp2(CONFIG.fogColor, CONFIG.fogDensity);   // smoky candlelit depth
+scene.add(buildRoom());
+/** Place a built group so the layout reads as one line per structure. */
+const place = (group, x, z, ry = 0, y = 0) =>
+  (group.position.set(x, y, z), group.rotation.y = ry, scene.add(group), group);
+const runeCircle = place(buildRuneCircle(), 0.5, 2.2);
+const cauldron = place(buildCauldron(), -2.5, -1.6);
+const bench = place(buildAlchemyBench(), 4.1, -0.6, -Math.PI / 2);
+const shelfA = place(buildShelfUnit(5.0, 4.2), -3.3, -5.4);
+const shelfB = place(buildShelfUnit(4.0, 3.4), -6.3, -0.6, Math.PI / 2);
+const lectern = place(buildLectern(), -3.5, 2.0, 0.9);
+const herbRack = place(buildHerbRack(4.4), 0.9, -2.3, 0, 4.5);
+const herbRack2 = place(buildHerbRack(3.0), -3.2, 0.4, Math.PI / 2, 4.5);
+const candelabra = place(buildCandelabra(), 2.9, 3.4);
+const orrery = place(buildOrrery(), 2.5, -4.6);
+place(buildStorageCorner(), -5.7, -3.6, 0.3);
+const lantern = place(buildHangingLantern(), 5.2, 2.4, 0, 5.4);
+
+// Loose floor candles and faint reagent stains across the flagstones.
+const floorCandles = [];
+for (const p of [[-1.2, 3.9], [5.4, 0.9], [-6.0, 1.9]]){
+  const cd = makeCandle(rr(0.24, 0.42), 0.09); cd.position.set(p[0], 0, p[1]);
+  scene.add(cd); floorCandles.push(cd);
+}
+const spillMat = std({ color: 0x5f5344, roughness: 1.0, transparent: true, opacity: 0.5 });
+for (let i = 0; i < 9; i++){
+  const s = new THREE.Mesh(new THREE.CircleGeometry(rr(0.16, 0.42), 10), spillMat);
+  s.rotation.x = -Math.PI / 2; s.position.set(rr(-5, 5.5), 0.012, rr(-4.5, 4.5)); scene.add(s);
+}
+/** Additive point cloud used for cauldron vapour, embers and dust motes. */
+function makePoints(count, color, size, opacity, spread, x, y, z){
+  const pos = new Float32Array(count * 3), seeds = new Float32Array(count);
+  for (let i = 0; i < count; i++){
+    pos[i * 3] = rr(-spread.x, spread.x); pos[i * 3 + 1] = rr(0, spread.y);
+    pos[i * 3 + 2] = rr(-spread.z, spread.z); seeds[i] = rand();
+  }
+  const geo = new THREE.BufferGeometry().setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const p = new THREE.Points(geo, new THREE.PointsMaterial({ color, size, map: TEX.spark, transparent: true,
+    opacity, depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+  p.userData.seeds = seeds; p.userData.spread = spread;
+  p.position.set(x, y, z); scene.add(p); return p;
+}
+const steam = makePoints(140, 0x9ff0c4, 0.2, 0.26, { x: 0.9, y: 2.8, z: 0.9 }, -2.5, 2.0, -1.6);
+const embers = makePoints(55, PAL.ember, 0.1, 0.7, { x: 1.2, y: 1.4, z: 1.2 }, -2.5, 0.2, -1.6);
+const motes = makePoints(220, 0xffd9a8, 0.06, 0.35, { x: 6.4, y: 5.0, z: 5.4 }, 0, 0.3, 0);
+
+// Bubbles rising through the brew, drawn from one instanced mesh.
+const BUBBLE_N = 40, bubbleData = [];
+const bubbleMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.055, 8, 6),
+  std({ color: PAL.potionGreen, emissive: PAL.potionGreen, emissiveIntensity: 1.2,
+        transparent: true, opacity: 0.85, roughness: 0.2 }), BUBBLE_N);
+for (let i = 0; i < BUBBLE_N; i++){
+  const a = rand() * Math.PI * 2, r = rand() * 0.85;
+  bubbleData.push({ x: Math.cos(a) * r, z: Math.sin(a) * r, t: rand(), sp: rr(0.25, 0.6), s: rr(0.5, 1.3) });
+}
+bubbleMesh.position.set(-2.5, 0, -1.6); scene.add(bubbleMesh);
+
+/* ---------- 7. LIGHTING RIG ---------------------------------------------- */
+scene.add(new THREE.HemisphereLight(0x6f5fa0, 0x3b2c33, 1.0), new THREE.AmbientLight(0x5c4a6e, 0.7));
+// Key: warm lantern light from high front-left; the only shadow caster.
+const key = new THREE.DirectionalLight(0xffcb92, 1.5);
+key.position.set(-5.5, 9.5, 7.5); key.castShadow = true; key.shadow.mapSize.set(CONFIG.shadowRes, CONFIG.shadowRes);
+key.shadow.camera.left = key.shadow.camera.bottom = -10; key.shadow.camera.right = key.shadow.camera.top = 10;
+key.shadow.camera.near = 1; key.shadow.camera.far = 32; key.shadow.bias = -0.0016;
+// Cool moon shaft through the arched window, plus a broad warm room fill.
+const moon = new THREE.SpotLight(0xa894ff, 26, 16, 0.55, 0.6, 1.4);
+moon.position.set(2.6, 4.3, -5.4); moon.target.position.set(2.4, 0, -1.4);
+const roomFill = new THREE.PointLight(0xffb877, 15, 20, 1.6); roomFill.position.set(0.5, 4.4, 1.2);
+scene.add(key, moon, moon.target, roomFill);
+/** Potion / ember / candle practical, positioned and added in one call. */
+const practical = (color, intensity, dist, x, y, z) => {
+  const l = new THREE.PointLight(color, intensity, dist, 2.0);
+  l.position.set(x, y, z); scene.add(l); return l;
+};
+const cauldronLight = practical(PAL.potionGreen, 9, 11, -2.5, 2.3, -1.6);
+const emberLight = practical(PAL.ember, 5, 6, -2.5, 0.35, -1.6);
+const runeLight = practical(PAL.potionViolet, 7, 9, 0.5, 0.5, 2.2);
+const benchLight = practical(PAL.potionViolet, 5, 7, 3.7, 1.7, -0.6);
+const benchLight2 = practical(PAL.potionGreen, 4, 6, 3.8, 1.7, -2.2);
+const candelabraLight = practical(0xffb15e, 8, 9, 2.9, 2.1, 3.4);
+const lecternLight = practical(0xffbb70, 6, 6, -3.3, 1.9, 2.3);
+const lanternLight = practical(0xffc06a, 6, 8, 5.2, 4.7, 2.4);
+practical(0xa27bff, 4, 8, -3.3, 2.4, -4.5);   // cool bounce over the jar shelves
+
+/* ---------- 8. RENDERER, CAMERA, CONTROLS -------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight); renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 120);
+camera.position.set(3.0, 4.8, 11.4);
+const controls = new OrbitControls(camera, renderer.domElement);   // gentle auto-orbit of the room
+controls.target.set(-0.2, 1.85, -0.7);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.6;
+controls.minDistance = 8; controls.maxDistance = 17;
+controls.minPolarAngle = 0.7; controls.maxPolarAngle = 1.42;
+controls.update();
+
+/* ---------- 9. ANIMATION LOOP -------------------------------------------- */
+const clock = new THREE.Clock(), dummyM = new THREE.Object3D();
+const allCandles = [...candelabra.userData.candles, ...floorCandles, bench.userData.candle, lectern.userData.candle];
+const brewPos = cauldron.userData.brew.geometry.attributes.position, brewBase = cauldron.userData.brewBase;
+
+function driftPoints(pts, t, rise, swirl){
+  const arr = pts.geometry.attributes.position.array, seeds = pts.userData.seeds, sp = pts.userData.spread;
+  for (let i = 0; i < seeds.length; i++){
+    const s = seeds[i];
+    arr[i * 3 + 1] = ((arr[i * 3 + 1] + rise * (0.4 + s * 0.9)) % sp.y + sp.y) % sp.y;
+    arr[i * 3] += Math.sin(t * (0.4 + s) + s * 9) * swirl;
+    arr[i * 3 + 2] += Math.cos(t * (0.35 + s) + s * 7) * swirl;
+    if (arr[i * 3] > sp.x) arr[i * 3] -= sp.x * 2; else if (arr[i * 3] < -sp.x) arr[i * 3] += sp.x * 2;
+    if (arr[i * 3 + 2] > sp.z) arr[i * 3 + 2] -= sp.z * 2; else if (arr[i * 3 + 2] < -sp.z) arr[i * 3 + 2] += sp.z * 2;
+  }
+  pts.geometry.attributes.position.needsUpdate = true;
+}
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime(), dt = Math.min(clock.getDelta(), 0.05);
+
+  // (a) Cauldron: rippling brew, rising bubbles, breathing coals.
+  for (let i = 0; i < brewPos.count; i++){
+    const x = brewBase[i * 3], y = brewBase[i * 3 + 1];
+    brewPos.array[i * 3 + 2] = Math.sin(t * 2.1 + x * 3.4) * 0.045 + Math.cos(t * 1.5 + y * 4.1) * 0.035;
+  }
+  brewPos.needsUpdate = true;
+  cauldron.userData.brew.material.emissiveIntensity = 1.2 + Math.sin(t * 3.1) * 0.3;
+  cauldron.userData.coals.material.emissiveIntensity = 0.8 + Math.sin(t * 4.7) * 0.28 + Math.sin(t * 11.3) * 0.12;
+  for (let i = 0; i < BUBBLE_N; i++){
+    const b = bubbleData[i];
+    b.t += dt * b.sp; if (b.t > 1) b.t -= 1;
+    dummyM.position.set(b.x * (1 - b.t * 0.35), 1.5 + b.t * 0.55, b.z * (1 - b.t * 0.35));
+    dummyM.scale.setScalar(b.s * (0.3 + b.t * 0.9) * (b.t > 0.9 ? (1 - b.t) * 10 : 1));
+    dummyM.updateMatrix(); bubbleMesh.setMatrixAt(i, dummyM.matrix);
+  }
+  bubbleMesh.instanceMatrix.needsUpdate = true;
+
+  // (b) Candle flames flicker; the practical lights breathe in sympathy.
+  for (let i = 0; i < allCandles.length; i++){
+    const f = allCandles[i].userData.flame;
+    const k = 1 + Math.sin(t * (7 + i * 1.7) + i) * 0.16 + Math.sin(t * (19 + i * 3)) * 0.07;
+    f.scale.set(0.9 + (k - 1) * 0.6, k, 0.9 + (k - 1) * 0.6);
+    f.material.opacity = 0.82 + (k - 1) * 0.7;
+  }
+  candelabraLight.intensity = 8 + Math.sin(t * 6.3) + Math.sin(t * 15.1) * 0.4;
+  cauldronLight.intensity = 9 + Math.sin(t * 2.6) * 1.6 + Math.sin(t * 7.9) * 0.6;
+  lecternLight.intensity = 6 + Math.sin(t * 5.1 + 1.3) * 0.7;
+  lanternLight.intensity = 6 + Math.sin(t * 3.7 + 0.6) * 0.8;
+  emberLight.intensity = 5 + Math.sin(t * 4.7) * 1.1;
+  benchLight.intensity = 5 + Math.sin(t * 3.4 + 2.1) * 1.2;
+  benchLight2.intensity = 4 + Math.sin(t * 4.2 + 0.7);
+  lantern.userData.glow.material.opacity = 0.72 + Math.sin(t * 5.5) * 0.14;
+
+  // (c) The rune circle pulses while its inner sigil counter-rotates.
+  runeCircle.userData.inner.rotation.z = -t * 0.22;
+  runeCircle.rotation.y = t * 0.05;
+  runeCircle.userData.gems.material.emissiveIntensity = 1.5 + Math.sin(t * 2.8) * 0.6;
+  runeLight.intensity = 7 + Math.sin(t * 2.2) * 1.8;
+  MAT.rune.opacity = 0.78 + Math.sin(t * 1.7) * 0.16;
+
+  // (d) Glassware shimmers; the orrery and balance turn slowly.
+  for (let i = 0; i < bench.userData.flasks.length; i++){
+    const liq = bench.userData.flasks[i].userData.liquid;
+    liq.material.emissiveIntensity = 1.0 + Math.sin(t * (2.4 + i * 0.8) + i * 2) * 0.4;
+    bench.userData.flasks[i].position.y = 1.16 + Math.sin(t * 1.4 + i) * 0.004;
+  }
+  bench.userData.retort.userData.liquid.material.emissiveIntensity = 1.1 + Math.sin(t * 3.3) * 0.4;
+  orrery.userData.rings.rotation.y = t * 0.28;
+  orrery.userData.rings.children[2].rotation.z = 0.35 + Math.sin(t * 0.5) * 0.25;
+  bench.userData.scale.rotation.z = Math.sin(t * 0.8) * 0.045;
+  for (const shelf of [shelfA, shelfB])
+    for (let i = 0; i < shelf.userData.jars.length; i += 3)
+      shelf.userData.jars[i].children[1].material.emissiveIntensity = 0.35 + Math.sin(t * 1.6 + i) * 0.25;
+
+  // (e) Herb bundles sway; glyphs drift above the grimoire; the lantern rocks.
+  for (const rack of [herbRack, herbRack2]){
+    for (const b of rack.userData.bundles){
+      b.rotation.z = Math.sin(t * 0.7 + b.userData.phase) * 0.045;
+      b.rotation.x = Math.cos(t * 0.55 + b.userData.phase) * 0.035;
+    }
+  }
+  for (const q of lectern.userData.glyphs.children){
+    q.position.y = q.userData.y0 + Math.sin(t * 0.9 + q.userData.phase) * 0.12;
+    q.rotation.y = t * 0.5 + q.userData.phase;
+    q.material.opacity = 0.55 + Math.sin(t * 2.0 + q.userData.phase) * 0.3;
+  }
+  lantern.rotation.z = Math.sin(t * 0.45) * 0.035;
+
+  // (f) Vapour, embers and dust drift through the room.
+  for (const [p, rise, swirl] of [[steam, 0.5, 0.16], [embers, 0.35, 0.1], [motes, 0.08, 0.05]])
+    driftPoints(p, t, dt * rise, dt * swirl);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 10. RESIZE --------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

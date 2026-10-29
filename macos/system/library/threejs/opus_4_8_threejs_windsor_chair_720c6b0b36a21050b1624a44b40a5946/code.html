@@ -1,0 +1,397 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Windsor Chair — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e9e7e2; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #4a4640;
+    letter-spacing: .3px; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="info">Windsor chair — drag to orbit · scroll to zoom</div>
+
+<!-- three.js + OrbitControls via ES-module importmap (jsDelivr CDN) -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ * Renderer
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ * Scene & camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe9e7e2); // neutral studio backdrop
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.05, 100);
+
+/* ------------------------------------------------------------------ *
+ * Lighting: hemisphere fill + directional key (shadows) + soft fill
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8a7f70, 0.65);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.3);
+key.position.set(2.6, 4.2, 3.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 14;
+key.shadow.camera.left = -1.3;
+key.shadow.camera.right = 1.3;
+key.shadow.camera.top = 1.6;
+key.shadow.camera.bottom = -0.2;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xdce7ff, 0.5);
+fill.position.set(-3.0, 2.0, -2.2);
+scene.add(fill);
+
+/* ------------------------------------------------------------------ *
+ * Procedural warm-wood texture (CanvasTexture)
+ * ------------------------------------------------------------------ */
+function makeWoodTexture() {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 512;
+  const ctx = c.getContext('2d');
+
+  // warm base tone
+  ctx.fillStyle = '#a26c37';
+  ctx.fillRect(0, 0, 512, 512);
+
+  // longitudinal grain streaks
+  for (let i = 0; i < 260; i++) {
+    const x = Math.random() * 512;
+    const shade = 20 + Math.random() * 40;
+    const dark = Math.random() > 0.5;
+    ctx.strokeStyle = dark
+      ? `rgba(${90 - shade},${58 - shade * 0.5},${26},0.28)`
+      : `rgba(${190 + shade * 0.3},${140 + shade * 0.3},${88},0.20)`;
+    ctx.lineWidth = 0.6 + Math.random() * 2.2;
+    ctx.beginPath();
+    ctx.moveTo(x, 0);
+    // gently wavering vertical grain line
+    for (let y = 0; y <= 512; y += 24) {
+      ctx.lineTo(x + Math.sin(y * 0.03 + i) * 6, y);
+    }
+    ctx.stroke();
+  }
+
+  // fine speckle for surface break-up
+  for (let i = 0; i < 5000; i++) {
+    ctx.fillStyle = `rgba(60,40,20,${Math.random() * 0.05})`;
+    ctx.fillRect(Math.random() * 512, Math.random() * 512, 1, 1);
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = 4;
+  return tex;
+}
+const woodTex = makeWoodTexture();
+
+/* ------------------------------------------------------------------ *
+ * Materials (warm wood, per-part tuning)
+ * ------------------------------------------------------------------ */
+const seatMat = new THREE.MeshStandardMaterial({
+  map: woodTex, color: 0xf1e6d6, roughness: 0.62, metalness: 0.0
+});
+const bowMat = new THREE.MeshStandardMaterial({
+  map: woodTex, color: 0xe9dcc9, roughness: 0.55, metalness: 0.0
+});
+const legMat = new THREE.MeshStandardMaterial({
+  color: 0x9c6a35, roughness: 0.5, metalness: 0.0
+});
+const spindleMat = new THREE.MeshStandardMaterial({
+  color: 0xb07d44, roughness: 0.48, metalness: 0.0
+});
+
+/* ------------------------------------------------------------------ *
+ * Geometry helpers
+ * ------------------------------------------------------------------ */
+// A unit-length (y: 0 → 1) lathe from a [radius, y] profile.
+function makeLathe(profile, segments = 22) {
+  const pts = profile.map(([r, y]) => new THREE.Vector2(r, y));
+  return new THREE.LatheGeometry(pts, segments);
+}
+
+// Orient a rod-mesh (built along +Y, length 1) so its base sits at `a`
+// and its tip reaches `b`. Radii are preserved; only length is stretched.
+const UP = new THREE.Vector3(0, 1, 0);
+function placeRod(mesh, a, b) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  mesh.scale.y = len;
+  mesh.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+  mesh.position.copy(a);
+}
+
+// Interpolate a point along a splayed leg at a given world height y.
+function pointAtHeight(foot, top, y) {
+  const t = (y - foot.y) / (top.y - foot.y);
+  return new THREE.Vector3().lerpVectors(foot, top, t);
+}
+
+/* ------------------------------------------------------------------ *
+ * Turned-part profiles  (radius in metres, y normalised 0..1)
+ * ------------------------------------------------------------------ */
+const legProfile = [
+  [0.011, 0.00], [0.017, 0.04], [0.011, 0.10], [0.025, 0.20],
+  [0.017, 0.30], [0.021, 0.44], [0.026, 0.56], [0.015, 0.70],
+  [0.019, 0.82], [0.013, 0.93], [0.014, 1.00]
+];
+const spindleProfile = [
+  [0.009, 0.00], [0.007, 0.12], [0.010, 0.26], [0.007, 0.45],
+  [0.006, 0.68], [0.0055, 0.85], [0.005, 1.00]
+];
+const stretcherProfile = [
+  [0.009, 0.00], [0.011, 0.12], [0.017, 0.50], [0.011, 0.88], [0.009, 1.00]
+];
+
+const legGeo = makeLathe(legProfile, 22);
+const spindleGeo = makeLathe(spindleProfile, 16);
+const stretcherGeo = makeLathe(stretcherProfile, 18);
+
+/* ------------------------------------------------------------------ *
+ * Chair group
+ * ------------------------------------------------------------------ */
+const chair = new THREE.Group();
+chair.name = 'WindsorChair';
+
+// Key dimensions (metres) — realistic Windsor chair scale
+const SEAT_TOP = 0.45;          // seating surface height
+const SEAT_THICK = 0.05;        // seat slab thickness
+const SEAT_BOTTOM = SEAT_TOP - SEAT_THICK;
+
+/* ---- 1. Contoured saddle seat ------------------------------------ */
+function buildSeat() {
+  // Rounded "D" outline: fuller toward the front (shape -y → world +z).
+  const N = 72, hw = 0.225;
+  const pts = [];
+  for (let i = 0; i < N; i++) {
+    const a = (i / N) * Math.PI * 2;
+    const depth = Math.sin(a) < 0 ? 0.215 : 0.180 * 0.92; // front fuller, back flatter
+    pts.push(new THREE.Vector2(hw * Math.cos(a), depth * Math.sin(a)));
+  }
+  const shape = new THREE.Shape(pts);
+
+  let geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.026, bevelEnabled: true,
+    bevelThickness: 0.012, bevelSize: 0.013, bevelSegments: 4, steps: 1,
+    curveSegments: 48
+  });
+  geo.rotateX(-Math.PI / 2);        // lay flat, top facing +y, front → +z
+
+  // Re-seat geometry: centred in x/z, bottom at y = 0.
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  geo.translate(-(bb.max.x + bb.min.x) / 2, -bb.min.y, -(bb.max.z + bb.min.z) / 2);
+  geo.computeBoundingBox();
+  const topY = geo.boundingBox.max.y;
+
+  // Sculpt the saddle dish: lower the seating area, keep a raised front pommel.
+  const pos = geo.attributes.position;
+  const cz = -0.02;               // bowl centred slightly behind middle
+  for (let i = 0; i < pos.count; i++) {
+    const y = pos.getY(i);
+    if (y < topY - 0.004) continue; // only the top surface
+    const x = pos.getX(i), z = pos.getZ(i);
+    const rx = x / 0.19, rz = (z - cz) / 0.19;
+    const rr = Math.min(Math.sqrt(rx * rx + rz * rz), 1);
+    const bowl = Math.cos(rr * Math.PI) * 0.5 + 0.5; // 1 at centre → 0 at rim
+    pos.setY(i, y - 0.013 * bowl);
+  }
+  geo.computeVertexNormals();
+
+  const seat = new THREE.Mesh(geo, seatMat);
+  seat.name = 'saddleSeat';
+  seat.position.y = SEAT_BOTTOM;
+  seat.castShadow = true;
+  seat.receiveShadow = true;
+  return seat;
+}
+const seat = buildSeat();
+chair.add(seat);
+
+/* ---- 2. Four splayed turned legs + H-stretchers ------------------ */
+// Attach points (just inside the seat underside) and splayed feet (on ground).
+const legDefs = [
+  { name: 'legFrontRight', top: new THREE.Vector3( 0.155, SEAT_BOTTOM + 0.01,  0.12), foot: new THREE.Vector3( 0.245, 0,  0.20) },
+  { name: 'legFrontLeft',  top: new THREE.Vector3(-0.155, SEAT_BOTTOM + 0.01,  0.12), foot: new THREE.Vector3(-0.245, 0,  0.20) },
+  { name: 'legBackRight',  top: new THREE.Vector3( 0.155, SEAT_BOTTOM + 0.01, -0.12), foot: new THREE.Vector3( 0.225, 0, -0.20) },
+  { name: 'legBackLeft',   top: new THREE.Vector3(-0.155, SEAT_BOTTOM + 0.01, -0.12), foot: new THREE.Vector3(-0.225, 0, -0.20) }
+];
+
+const legs = {};
+for (const def of legDefs) {
+  const leg = new THREE.Mesh(legGeo, legMat);
+  leg.name = def.name;
+  leg.castShadow = true;
+  leg.receiveShadow = true;
+  placeRod(leg, def.foot, def.top);
+  chair.add(leg);
+  legs[def.name] = def;
+}
+
+// Turned stretchers in an H arrangement, tying the legs at mid-height.
+const STRETCH_Y = 0.17;
+function addStretcher(name, a, b) {
+  const s = new THREE.Mesh(stretcherGeo, legMat);
+  s.name = name;
+  s.castShadow = true;
+  s.receiveShadow = true;
+  placeRod(s, a, b);
+  chair.add(s);
+  return { a, b };
+}
+// side stretchers (front↔back on each side)
+const rSide = addStretcher('stretcherRight',
+  pointAtHeight(legs.legFrontRight.foot, legs.legFrontRight.top, STRETCH_Y),
+  pointAtHeight(legs.legBackRight.foot,  legs.legBackRight.top,  STRETCH_Y));
+const lSide = addStretcher('stretcherLeft',
+  pointAtHeight(legs.legFrontLeft.foot,  legs.legFrontLeft.top,  STRETCH_Y),
+  pointAtHeight(legs.legBackLeft.foot,   legs.legBackLeft.top,   STRETCH_Y));
+// medial stretcher tying the two side stretchers together
+addStretcher('stretcherMedial',
+  new THREE.Vector3().addVectors(rSide.a, rSide.b).multiplyScalar(0.5),
+  new THREE.Vector3().addVectors(lSide.a, lSide.b).multiplyScalar(0.5));
+
+/* ---- 3. Curved bent back bow ------------------------------------- */
+// A continuous round bent stock: down into the seat at both back corners,
+// arching up and over. Slight rearward lean at the top.
+const bowPts = [
+  new THREE.Vector3(-0.205, SEAT_TOP - 0.02, -0.135),
+  new THREE.Vector3(-0.240, SEAT_TOP + 0.12, -0.160),
+  new THREE.Vector3(-0.225, SEAT_TOP + 0.30, -0.185),
+  new THREE.Vector3(-0.150, SEAT_TOP + 0.44, -0.200),
+  new THREE.Vector3( 0.000, SEAT_TOP + 0.49, -0.205),
+  new THREE.Vector3( 0.150, SEAT_TOP + 0.44, -0.200),
+  new THREE.Vector3( 0.225, SEAT_TOP + 0.30, -0.185),
+  new THREE.Vector3( 0.240, SEAT_TOP + 0.12, -0.160),
+  new THREE.Vector3( 0.205, SEAT_TOP - 0.02, -0.135)
+];
+const bowCurve = new THREE.CatmullRomCurve3(bowPts, false, 'catmullrom', 0.5);
+const bowGeo = new THREE.TubeGeometry(bowCurve, 90, 0.015, 14, false);
+const bow = new THREE.Mesh(bowGeo, bowMat);
+bow.name = 'backBow';
+bow.castShadow = true;
+bow.receiveShadow = true;
+chair.add(bow);
+
+/* ---- 4. Thin turned spindles fanning to the bow ------------------ */
+const SPINDLE_COUNT = 7;
+for (let i = 0; i < SPINDLE_COUNT; i++) {
+  const f = i / (SPINDLE_COUNT - 1);           // 0..1 left→right
+
+  // bottom: inserted along the back of the saddle seat (shallow arc)
+  const bx = THREE.MathUtils.lerp(-0.155, 0.155, f);
+  const bottom = new THREE.Vector3(
+    bx,
+    SEAT_TOP - 0.005,
+    -0.105 - Math.cos((f - 0.5) * Math.PI) * 0.012 // slight forward bow
+  );
+
+  // top: sampled along the upper arch of the bow so the spindles fan out
+  const t = THREE.MathUtils.lerp(0.30, 0.70, f);
+  const top = bowCurve.getPoint(t);
+
+  const sp = new THREE.Mesh(spindleGeo, spindleMat);
+  sp.name = 'spindle_' + i;
+  sp.castShadow = true;
+  sp.receiveShadow = true;
+  placeRod(sp, bottom, top);
+  chair.add(sp);
+}
+
+scene.add(chair);
+
+/* ------------------------------------------------------------------ *
+ * Ground plane + soft contact shadow
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(24, 24),
+  new THREE.MeshStandardMaterial({ color: 0xdedbd4, roughness: 0.96, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ * Controls + auto-frame camera to the chair's bounding box
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 0.6;
+controls.maxDistance = 6;
+controls.maxPolarAngle = Math.PI * 0.5; // stay above the floor
+
+function frameChair() {
+  const box = new THREE.Box3().setFromObject(chair);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+
+  const fitDist = (maxDim * 0.5) / Math.tan((camera.fov * 0.5) * Math.PI / 180);
+  const dir = new THREE.Vector3(1, 0.55, 1.25).normalize();
+  camera.position.copy(center).add(dir.multiplyScalar(fitDist * 1.55));
+  camera.near = maxDim / 100;
+  camera.far = maxDim * 100;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
+frameChair();
+
+/* ------------------------------------------------------------------ *
+ * Resize handling
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ------------------------------------------------------------------ *
+ * Render loop
+ * ------------------------------------------------------------------ */
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

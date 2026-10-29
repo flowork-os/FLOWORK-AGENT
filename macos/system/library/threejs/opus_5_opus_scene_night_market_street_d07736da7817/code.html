@@ -1,0 +1,756 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Asian Night Market</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#150f14}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------- 1. CONFIG & PALETTE  --  every tunable of the market lane ---------- */
+const CFG = {
+  seed: 771103,
+  laneHalf: 3.6,      // stall counters front onto x = +/- laneHalf
+  laneEnd: 13,        // lane runs from -laneEnd .. +laneEnd along z
+  steamCount: 300,
+  bulbCount: 190,
+  exposure: 1.26
+};
+const COL = {
+  cobble: 0x6b6058, wood: 0xa9743f, woodDark: 0x6d4526, bamboo: 0xd7b071,
+  steel: 0x9aa2ad, steelDark: 0x4b5058, canvasA: 0xf3e4cb, canvasB: 0xc4302c,
+  lantern: 0xff3b2e, ember: 0xff7a1e, bulb: 0xffd28a, jade: 0x2f9c86,
+  signInk: 0xffe9b0, fog: 0x241826
+};
+
+/* ---------- 2. PRNG, MESH & CANVAS HELPERS  --  all randomness is seeded ---------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CFG.seed);
+const rand = (a, b) => a + (b - a) * rng();
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = arr => arr[Math.min(arr.length - 1, Math.floor(rng() * arr.length))];
+function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true){
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = shadow;
+  return m;
+}
+const box = (w, h, d, mat, x, y, z, s) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z, s);
+const cyl = (rt, rb, h, n, mat, x, y, z, s) => mesh(new THREE.CylinderGeometry(rt, rb, h, n), mat, x, y, z, s);
+function ctx2d(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c.getContext('2d');
+}
+function canvasTex(canvas, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(canvas);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry); t.anisotropy = 4;
+  return t;
+}
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES ---------- */
+// Soft radial blob shared by every lamp halo, string bulb and steam puff.
+function makeGlowCanvas(){
+  const g = ctx2d(128, 128), grad = g.createRadialGradient(64, 64, 0, 64, 64, 64);
+  grad.addColorStop(0.00, 'rgba(255,255,255,1)'); grad.addColorStop(0.24, 'rgba(255,255,255,0.6)');
+  grad.addColorStop(0.56, 'rgba(255,255,255,0.15)'); grad.addColorStop(1.00, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return g.canvas;
+}
+const GLOW_TEX = canvasTex(makeGlowCanvas());
+
+// Worn cobbles with warm mortar, damp patches and scattered litter flecks.
+function makeCobbleCanvas(){
+  const g = ctx2d(512, 512);
+  g.fillStyle = '#2f2823'; g.fillRect(0, 0, 512, 512);
+  for (let r = 0; r < 16; r++) for (let c = 0; c < 16; c++){
+    const x = c * 32 + (r % 2) * 16, y = r * 32, v = 58 + Math.floor(rng() * 40);
+    g.fillStyle = `rgb(${v},${v - 8},${v - 20})`;
+    g.fillRect(x + 2, y + 2, 28 + rng() * 2, 28);
+  }
+  for (let i = 0; i < 30; i++){
+    const x = rng() * 512, y = rng() * 512, rad = 20 + rng() * 70;
+    const grad = g.createRadialGradient(x, y, 0, x, y, rad);
+    grad.addColorStop(0, 'rgba(46,32,26,0.45)'); grad.addColorStop(1, 'rgba(46,32,26,0)');
+    g.fillStyle = grad; g.beginPath(); g.arc(x, y, rad, 0, Math.PI * 2); g.fill();
+  }
+  for (let i = 0; i < 260; i++){
+    g.fillStyle = `rgba(${120 + rng() * 60},${96 + rng() * 60},${70 + rng() * 60},0.3)`;
+    g.fillRect(rng() * 512, rng() * 512, 2 + rng() * 4, 2 + rng() * 3);
+  }
+  return g.canvas;
+}
+
+// Awning canvas: broad vertical stripes with a weathered weave.
+function makeStripeCanvas(a, b){
+  const g = ctx2d(256, 64);
+  for (let i = 0; i < 8; i++){
+    g.fillStyle = i % 2 ? b : a;
+    g.fillRect(i * 32, 0, 32, 64);
+  }
+  g.fillStyle = 'rgba(60,36,26,0.16)';
+  for (let y = 0; y < 64; y += 5) g.fillRect(0, y, 256, 2);
+  g.fillStyle = 'rgba(255,255,255,0.10)';
+  for (let i = 0; i < 90; i++) g.fillRect(rng() * 256, rng() * 64, 3, 2);
+  return g.canvas;
+}
+
+// Sawn plank grain for counters, crates, tables and cart beds.
+function makeWoodCanvas(base, dark){
+  const g = ctx2d(256, 256);
+  g.fillStyle = base; g.fillRect(0, 0, 256, 256);
+  for (let p = 0; p < 6; p++){
+    g.fillStyle = 'rgba(60,34,16,0.35)';
+    g.fillRect(0, p * 43, 256, 2);
+    for (let i = 0; i < 40; i++){
+      g.strokeStyle = `rgba(${parseInt(dark.slice(1, 3), 16)},${parseInt(dark.slice(3, 5), 16)},${parseInt(dark.slice(5, 7), 16)},${0.06 + rng() * 0.14})`;
+      g.lineWidth = 1 + rng() * 2;
+      const y = p * 43 + 4 + rng() * 34;
+      g.beginPath(); g.moveTo(0, y);
+      g.bezierCurveTo(80, y + rand(-4, 4), 170, y + rand(-4, 4), 256, y + rand(-3, 3));
+      g.stroke();
+    }
+  }
+  return g.canvas;
+}
+
+// Hand-painted signboard: a lacquered plank with brushed glyph strokes.
+function drawGlyph(g, x, y, s){
+  g.lineCap = 'round';
+  g.lineWidth = Math.max(3, s * 0.13);
+  for (let i = 0, n = randInt(3, 6); i < n; i++){
+    g.beginPath();
+    if (rng() < 0.5){
+      const yy = y + s * (0.16 + 0.68 * rng());
+      g.moveTo(x + s * (0.08 + 0.1 * rng()), yy); g.lineTo(x + s * (0.92 - 0.14 * rng()), yy);
+    } else {
+      const xx = x + s * (0.16 + 0.68 * rng());
+      g.moveTo(xx, y + s * (0.08 + 0.1 * rng())); g.lineTo(xx, y + s * (0.92 - 0.14 * rng()));
+    }
+    g.stroke();
+  }
+}
+function makeSignCanvas(bg, ink, cells){
+  const W = 128 * cells, g = ctx2d(W, 128);
+  g.fillStyle = bg; g.fillRect(0, 0, W, 128);
+  g.fillStyle = 'rgba(0,0,0,0.18)';
+  for (let i = 0; i < 60; i++) g.fillRect(rng() * W, rng() * 128, 6 + rng() * 26, 2 + rng() * 4);
+  g.strokeStyle = ink; g.lineWidth = 5; g.strokeRect(7, 7, W - 14, 114);
+  g.shadowColor = ink; g.shadowBlur = 12; g.strokeStyle = ink;
+  for (let i = 0; i < cells; i++) drawGlyph(g, 22 + i * 128, 22, 84);
+  g.shadowBlur = 0;
+  return g.canvas;
+}
+
+// Clay pantiles for the shophouse roofs.
+function makeTileCanvas(){
+  const g = ctx2d(128, 128);
+  g.fillStyle = '#5d3227'; g.fillRect(0, 0, 128, 128);
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++){
+    const v = 92 + Math.floor(rng() * 44);
+    g.fillStyle = `rgb(${v},${Math.max(0, v - 38)},${Math.max(0, v - 50)})`;
+    g.fillRect(c * 16 + (r % 2) * 8 + 1, r * 16 + 1, 14, 13);
+  }
+  g.fillStyle = 'rgba(0,0,0,0.28)';
+  for (let r = 0; r < 8; r++) g.fillRect(0, r * 16, 128, 2);
+  return g.canvas;
+}
+
+// Shophouse facade pair: plaster albedo plus emissive canvas for the lit windows.
+function makeShopCanvases(base){
+  const W = 256, H = 256, a = ctx2d(W, H), e = ctx2d(W, H);
+  a.fillStyle = base; a.fillRect(0, 0, W, H);
+  e.fillStyle = '#000000'; e.fillRect(0, 0, W, H);
+  for (let i = 0; i < 380; i++){
+    const v = Math.floor(rng() * 44);
+    a.fillStyle = `rgba(${v + 90},${v + 74},${v + 62},${0.08 + rng() * 0.2})`;
+    a.fillRect(rng() * W, rng() * H, 4 + rng() * 24, 4 + rng() * 20);
+  }
+  for (let r = 0; r < 2; r++) for (let c = 0; c < 3; c++){
+    const x = 22 + c * 78, y = 26 + r * 118, w = 50, h = 76;
+    a.fillStyle = '#3a2c26'; a.fillRect(x - 5, y - 5, w + 10, h + 10);
+    const lit = rng() < 0.7, col = lit ? pick(['#ffca7d', '#ffb35e', '#fde3ac']) : '#241d22';
+    a.fillStyle = col; a.fillRect(x, y, w, h);
+    if (lit){ e.fillStyle = col; e.fillRect(x, y, w, h); }
+    a.fillStyle = 'rgba(40,26,20,0.85)';
+    a.fillRect(x + w / 2 - 2, y, 4, h); a.fillRect(x, y + h / 2 - 2, w, 4);
+    if (lit){ e.fillStyle = 'rgba(0,0,0,0.7)'; e.fillRect(x + w / 2 - 2, y, 4, h); e.fillRect(x, y + h / 2 - 2, w, 4); }
+  }
+  return { a: a.canvas, e: e.canvas };
+}
+const SHOPS = [makeShopCanvases('#8a6f5c'), makeShopCanvases('#7b6a72'), makeShopCanvases('#96795a')];
+
+/* ---------- 4. SHARED MATERIALS ---------- */
+const woodTex = canvasTex(makeWoodCanvas('#a9743f', '#4a2a12'), 1, 1);
+const MAT = {
+  ground: new THREE.MeshStandardMaterial({ map: canvasTex(makeCobbleCanvas(), 34, 34), roughness: 0.82, metalness: 0.06 }),
+  wood: new THREE.MeshStandardMaterial({ map: woodTex, color: 0xffffff, roughness: 0.78, metalness: 0.04 }),
+  woodDark: new THREE.MeshStandardMaterial({ color: COL.woodDark, roughness: 0.85, metalness: 0.04 }),
+  bamboo: new THREE.MeshStandardMaterial({ color: COL.bamboo, roughness: 0.72, metalness: 0.03 }),
+  steel: new THREE.MeshStandardMaterial({ color: COL.steel, roughness: 0.42, metalness: 0.75 }),
+  steelDark: new THREE.MeshStandardMaterial({ color: COL.steelDark, roughness: 0.6, metalness: 0.6 }),
+  cloth: new THREE.MeshStandardMaterial({ color: 0xe8d9bf, roughness: 0.92, metalness: 0.0 }),
+  rope: new THREE.MeshStandardMaterial({ color: 0x2b2118, roughness: 0.9, metalness: 0.05 }),
+  lantern: new THREE.MeshStandardMaterial({ color: 0xd93a22, emissive: 0xc21a06, emissiveIntensity: 2.9, roughness: 0.55 }),
+  coal: new THREE.MeshStandardMaterial({ color: 0x2a1a14, emissive: COL.ember, emissiveIntensity: 2.6, roughness: 0.9 }),
+  roof: new THREE.MeshStandardMaterial({ map: canvasTex(makeTileCanvas(), 2, 6), roughness: 0.92, metalness: 0.03 })
+};
+const stripeMats = [
+  new THREE.MeshStandardMaterial({ map: canvasTex(makeStripeCanvas('#f4e6cd', '#c4302c'), 2, 1), roughness: 0.9, side: THREE.DoubleSide }),
+  new THREE.MeshStandardMaterial({ map: canvasTex(makeStripeCanvas('#f2e7d2', '#2f7f6d'), 2, 1), roughness: 0.9, side: THREE.DoubleSide }),
+  new THREE.MeshStandardMaterial({ map: canvasTex(makeStripeCanvas('#f6ead0', '#e08a1e'), 2, 1), roughness: 0.9, side: THREE.DoubleSide })
+];
+function glowSprite(hex, size, opacity = 0.8){
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: GLOW_TEX, color: hex, blending: THREE.AdditiveBlending,
+    transparent: true, opacity, depthWrite: false, toneMapped: false }));
+  s.scale.set(size, size, 1);
+  return s;
+}
+
+/* ---------- 5. BUILDER FUNCTIONS  --  each returns its own Group ---------- */
+// Stacked bamboo steamer baskets, lid ajar, ready to vent.
+function buildSteamerStack(levels){
+  const g = new THREE.Group();
+  for (let i = 0; i < levels; i++){
+    g.add(cyl(0.33, 0.33, 0.17, 16, MAT.bamboo, 0, 0.09 + i * 0.18, 0));
+    const hoop = mesh(new THREE.TorusGeometry(0.33, 0.022, 6, 18), MAT.woodDark, 0, 0.09 + i * 0.18, 0, false);
+    hoop.rotation.x = Math.PI / 2; g.add(hoop);
+  }
+  const lid = cyl(0.35, 0.33, 0.1, 16, MAT.bamboo, 0.04, 0.06 + levels * 0.18, 0.03);
+  lid.rotation.z = 0.09; g.add(lid);
+  g.add(cyl(0.06, 0.06, 0.05, 8, MAT.woodDark, 0.04, 0.12 + levels * 0.18, 0.03));
+  return g;
+}
+
+// Charcoal skewer grill: glowing coal bed, grill bars and rows of skewers.
+function buildSkewerGrill(){
+  const g = new THREE.Group();
+  g.add(box(0.7, 0.28, 1.7, MAT.steelDark, 0, 0.14, 0));
+  g.add(box(0.6, 0.06, 1.6, MAT.coal, 0, 0.27, 0, false));
+  const emberGlow = glowSprite(COL.ember, 1.7, 0.55);
+  emberGlow.position.y = 0.34; g.add(emberGlow);
+  for (let i = 0; i < 7; i++) g.add(cyl(0.012, 0.012, 0.68, 5, MAT.steel, 0, 0.32, -0.66 + i * 0.22));
+  const meatMat = new THREE.MeshStandardMaterial({ color: 0xa8562c, roughness: 0.72 });
+  const stickMat = new THREE.MeshStandardMaterial({ color: 0xe6cf9d, roughness: 0.8 });
+  for (let i = 0; i < 9; i++){
+    const z = -0.68 + i * 0.17, stick = cyl(0.014, 0.014, 0.95, 5, stickMat, 0.1, 0.36, z);
+    stick.rotation.z = Math.PI / 2; g.add(stick);
+    for (let m = 0; m < 3; m++) g.add(box(0.11, 0.1, 0.1, meatMat, -0.16 + m * 0.16, 0.38, z));
+  }
+  g.userData = { emberGlow };
+  return g;
+}
+
+// Slatted crate brimming with market fruit.
+function buildFruitCrate(){
+  const g = new THREE.Group();
+  const w = 0.72, d = 0.56, h = 0.34;
+  g.add(box(w, 0.05, d, MAT.wood, 0, 0.02, 0));
+  for (const [sx, sz, bw, bd] of [[w / 2, 0, 0.05, d], [-w / 2, 0, 0.05, d], [0, d / 2, w, 0.05], [0, -d / 2, w, 0.05]]){
+    for (let i = 0; i < 2; i++) g.add(box(bw, 0.1, bd, MAT.wood, sx, 0.1 + i * 0.16, sz));
+  }
+  const fruitCols = [0xf0932b, 0xc0392b, 0x7fb800, 0xe8c547, 0xd35400];
+  for (let i = 0; i < 14; i++){
+    const r = rand(0.075, 0.105);
+    g.add(mesh(new THREE.SphereGeometry(r, 10, 8),
+      new THREE.MeshStandardMaterial({ color: pick(fruitCols), roughness: 0.55 }),
+      rand(-w / 2 + r, w / 2 - r), h + rand(-0.02, 0.12), rand(-d / 2 + r, d / 2 - r)));
+  }
+  return g;
+}
+
+// A full food stall: counter, striped awning, back shelf, signboard, warm light.
+function buildStall(len, stripeIdx, signHex, kind){
+  const g = new THREE.Group();
+  g.add(box(2.2, 1.0, len, MAT.wood, 0, 0.5, 0));
+  g.add(box(2.36, 0.1, len + 0.16, MAT.woodDark, 0, 1.03, 0));
+  g.add(box(2.3, 0.34, len - 0.2, MAT.woodDark, 0, 0.2, 0));
+  for (let i = 0; i < 4; i++){
+    g.add(cyl(0.06, 0.06, 3.0, 8, MAT.steel, i < 2 ? -1.0 : 1.0, 1.5, i % 2 ? -len / 2 + 0.3 : len / 2 - 0.3));
+  }
+  const awning = box(2.5, 0.1, len + 0.5, stripeMats[stripeIdx], -0.22, 2.98, 0);
+  awning.rotation.z = -0.14; g.add(awning);
+  const valance = mesh(new THREE.PlaneGeometry(len + 0.5, 0.34), stripeMats[stripeIdx], 1.05, 2.75, 0, false);
+  valance.rotation.y = Math.PI / 2; g.add(valance);
+  // back shelf: panel, two boards, jars of condiments and stacked bowls
+  g.add(box(0.12, 1.6, len - 0.4, MAT.woodDark, -1.06, 1.8, 0));
+  g.add(box(0.46, 0.05, len - 0.5, MAT.wood, -0.84, 1.52, 0), box(0.46, 0.05, len - 0.5, MAT.wood, -0.84, 2.18, 0));
+  const jarMat = new THREE.MeshStandardMaterial({ color: 0xdfe7d8, roughness: 0.3, metalness: 0.1, transparent: true, opacity: 0.85 });
+  for (let i = 0; i < 5; i++){
+    const z = -len / 2 + 0.6 + i * (len - 1.2) / 4;
+    g.add(cyl(0.1, 0.1, 0.24, 10, jarMat, -0.84, 1.67, z));
+    g.add(cyl(0.13, 0.1, 0.08, 10, MAT.bamboo, -0.84, 2.25 + (i % 2) * 0.08, z));
+  }
+  // counter dressing varies by stall trade
+  if (kind === 'steamer'){
+    for (let i = 0; i < 3; i++){
+      const st = buildSteamerStack(randInt(2, 4));
+      st.position.set(rand(-0.3, 0.4), 1.08, -len / 2 + 0.9 + i * (len - 1.8) / 2);
+      g.add(st);
+    }
+  } else if (kind === 'grill'){
+    const grill = buildSkewerGrill();
+    grill.position.set(0.2, 1.08, 0); g.add(grill);
+    g.userData.grill = grill;
+  } else if (kind === 'fruit'){
+    for (let i = 0; i < 3; i++){
+      const cr = buildFruitCrate();
+      cr.position.set(rand(-0.2, 0.4), 1.08, -len / 2 + 0.8 + i * (len - 1.6) / 2);
+      cr.rotation.y = rand(-0.3, 0.3); g.add(cr);
+    }
+  } else {
+    const wok = cyl(0.44, 0.2, 0.28, 18, MAT.steelDark, 0.1, 1.22, -0.6);
+    g.add(wok, cyl(0.5, 0.5, 0.14, 18, MAT.steelDark, 0.1, 1.1, -0.6));
+    const bowlMat = new THREE.MeshStandardMaterial({ color: 0xf6efe1, roughness: 0.5 });
+    for (let i = 0; i < 5; i++){
+      g.add(cyl(0.16, 0.1, 0.13, 12, bowlMat, rand(-0.3, 0.4), 1.14, rand(0.1, len / 2 - 0.4)));
+    }
+    const flame = glowSprite(COL.ember, 1.3, 0.5);
+    flame.position.set(0.1, 1.12, -0.6); g.add(flame);
+    g.userData.flame = flame;
+  }
+  // painted signboard hung on the awning front edge
+  const signTex = canvasTex(makeSignCanvas('#7a1f1a', '#' + new THREE.Color(signHex).getHexString(), 3));
+  const sign = box(0.12, 0.66, 2.0, new THREE.MeshStandardMaterial({ map: signTex, emissiveMap: signTex,
+    emissive: 0xffffff, emissiveIntensity: 0.95, roughness: 0.7 }), 1.06, 2.24, 0);
+  g.add(sign);
+  const lamp = new THREE.PointLight(0xffb861, 26, 9, 1.9);
+  lamp.position.set(0.3, 2.5, 0); g.add(lamp);
+  const halo = glowSprite(0xffc078, 2.6, 0.3);
+  halo.position.set(0.3, 2.45, 0); g.add(halo);
+  g.userData.lamp = lamp; g.userData.halo = halo; g.userData.sign = sign;
+  return g;
+}
+
+// Paper lantern: ribbed globe, brass caps and a tassel, with its own halo.
+function buildLantern(scale, withLight){
+  const g = new THREE.Group();
+  const body = mesh(new THREE.SphereGeometry(0.3, 14, 10), MAT.lantern, 0, 0, 0, false);
+  body.scale.set(1, 0.82, 1); g.add(body);
+  for (let i = 0; i < 6; i++){
+    const rib = mesh(new THREE.TorusGeometry(0.3, 0.012, 4, 14, Math.PI), MAT.woodDark, 0, 0, 0, false);
+    rib.rotation.set(Math.PI / 2, 0, (i / 6) * Math.PI);
+    rib.scale.set(1, 1, 0.82); g.add(rib);
+  }
+  g.add(cyl(0.1, 0.1, 0.07, 10, MAT.woodDark, 0, 0.26, 0, false));
+  g.add(cyl(0.1, 0.1, 0.06, 10, MAT.woodDark, 0, -0.26, 0, false));
+  const tassel = cyl(0.02, 0.05, 0.24, 6, new THREE.MeshStandardMaterial({ color: 0xf5c542, emissive: 0x6a4a10, emissiveIntensity: 0.8, roughness: 0.7 }), 0, -0.4, 0, false);
+  g.add(tassel);
+  const halo = glowSprite(0xff5a28, 1.7, 0.32);
+  g.add(halo);
+  g.scale.setScalar(scale);
+  if (withLight){
+    const lamp = new THREE.PointLight(0xff7a45, 22, 10, 1.9);
+    g.add(lamp); g.userData.lamp = lamp;
+  }
+  g.userData.halo = halo; g.userData.phase = rand(0, 6.28);
+  return g;
+}
+
+// Folding table with stools, chopsticks and a couple of bowls left behind.
+function buildTableSet(){
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.07, 0.9, MAT.wood, 0, 0.72, 0));
+  for (let i = 0; i < 4; i++){
+    const leg = cyl(0.035, 0.035, 0.72, 6, MAT.steel, i < 2 ? -0.62 : 0.62, 0.36, i % 2 ? -0.34 : 0.34);
+    leg.rotation.z = (i < 2 ? 1 : -1) * 0.05; g.add(leg);
+  }
+  const bowlMat = new THREE.MeshStandardMaterial({ color: 0xf6efe1, roughness: 0.5 });
+  for (let i = 0; i < 3; i++){
+    g.add(cyl(0.15, 0.09, 0.12, 12, bowlMat, rand(-0.5, 0.5), 0.81, rand(-0.25, 0.25)));
+  }
+  for (let i = 0; i < 3; i++){
+    const stool = new THREE.Group();
+    stool.add(cyl(0.19, 0.19, 0.06, 12, MAT.wood, 0, 0.44, 0));
+    for (let k = 0; k < 3; k++){
+      const a = (k / 3) * Math.PI * 2;
+      const leg = cyl(0.028, 0.028, 0.44, 6, MAT.woodDark, Math.cos(a) * 0.13, 0.22, Math.sin(a) * 0.13);
+      leg.rotation.set(Math.sin(a) * 0.1, 0, -Math.cos(a) * 0.1); stool.add(leg);
+    }
+    const a = (i / 3) * Math.PI * 2 + 0.6;
+    stool.position.set(Math.cos(a) * 1.05, 0, Math.sin(a) * 0.95);
+    g.add(stool);
+  }
+  return g;
+}
+
+// Vendor bicycle cart: frame, spoked wheels, produce tray and a wicker basket.
+function buildBicycleCart(){
+  const g = new THREE.Group();
+  const wheels = [];
+  for (const [x, r] of [[-0.75, 0.34], [0.62, 0.34]]){
+    const w = new THREE.Group();
+    w.add(mesh(new THREE.TorusGeometry(r, 0.045, 8, 20), MAT.steelDark, 0, 0, 0, false));
+    for (let s = 0; s < 6; s++){
+      const spoke = cyl(0.012, 0.012, r * 2, 4, MAT.steel, 0, 0, 0, false);
+      spoke.rotation.z = (s / 6) * Math.PI; w.add(spoke);
+    }
+    w.position.set(x, r, 0);
+    g.add(w); wheels.push(w);
+  }
+  const frameMat = new THREE.MeshStandardMaterial({ color: 0x2f6f63, roughness: 0.5, metalness: 0.5 });
+  for (const [x, y, z, len, rz] of [[-0.2, 0.62, 0, 1.2, Math.PI / 2], [-0.5, 0.62, 0, 0.7, 0.9], [0.3, 0.62, 0, 0.8, -1.0]]){
+    const bar = cyl(0.035, 0.035, len, 6, frameMat, x, y, z);
+    bar.rotation.z = rz; g.add(bar);
+  }
+  g.add(cyl(0.04, 0.04, 0.55, 6, frameMat, 0.62, 0.85, 0));
+  const bars = cyl(0.028, 0.028, 0.5, 6, MAT.steelDark, 0.62, 1.12, 0);
+  bars.rotation.x = Math.PI / 2; g.add(bars);
+  g.add(box(0.36, 0.09, 0.18, MAT.woodDark, -0.5, 0.95, 0));
+  // produce tray over the rear wheel plus a wicker front basket
+  g.add(box(1.0, 0.12, 0.66, MAT.wood, -0.55, 1.02, 0));
+  const cr = buildFruitCrate();
+  cr.position.set(-0.55, 1.08, 0); cr.scale.setScalar(0.95); g.add(cr);
+  const basket = cyl(0.22, 0.18, 0.26, 12, MAT.bamboo, 0.72, 1.0, 0);
+  g.add(basket);
+  for (let i = 0; i < 5; i++){
+    g.add(mesh(new THREE.SphereGeometry(0.07, 8, 6), new THREE.MeshStandardMaterial({ color: pick([0xe8c547, 0x7fb800, 0xf0932b]), roughness: 0.6 }),
+      0.72 + rand(-0.08, 0.08), 1.14, rand(-0.08, 0.08)));
+  }
+  g.userData = { wheels };
+  return g;
+}
+
+// Two-storey shophouse backing the stalls: shutters, balcony rail, laundry pole.
+function buildShophouse(depth, len, h, variant){
+  const g = new THREE.Group();
+  const f = SHOPS[variant % SHOPS.length];
+  const rx = Math.max(1, Math.round(len / 4)), ry = Math.max(1, Math.round(h / 4));
+  const wall = new THREE.MeshStandardMaterial({ map: canvasTex(f.a, rx, ry), emissiveMap: canvasTex(f.e, rx, ry),
+    emissive: 0xffffff, emissiveIntensity: 1.15, roughness: 0.88, metalness: 0.04 });
+  const cap = new THREE.MeshStandardMaterial({ color: 0x4a3a34, roughness: 0.95 });
+  g.add(mesh(new THREE.BoxGeometry(depth, h, len), [wall, wall, cap, cap, wall, wall], 0, h / 2, 0));
+  g.add(box(depth + 0.5, 0.24, len + 0.5, MAT.woodDark, 0, h + 0.12, 0));
+  // pitched pantile roof with a ridge beam and generous eaves
+  for (const sgn of [-1, 1]){
+    const slab = box(depth * 0.68, 0.14, len + 0.5, MAT.roof, sgn * depth * 0.26, h + 0.56, 0);
+    slab.rotation.z = sgn * 0.40; g.add(slab);
+  }
+  const ridge = cyl(0.13, 0.13, len + 0.6, 8, MAT.woodDark, 0, h + 1.02, 0);
+  ridge.rotation.x = Math.PI / 2; g.add(ridge);
+  g.add(box(depth + 0.35, 0.22, len + 0.35, MAT.woodDark, 0, h * 0.5, 0));
+  // balcony railing and a laundry pole poking over the lane
+  for (let i = 0; i < 7; i++){
+    g.add(cyl(0.035, 0.035, 0.5, 6, MAT.woodDark, depth / 2 + 0.12, h * 0.5 + 0.35, -len / 2 + 0.4 + i * (len - 0.8) / 6));
+  }
+  const rail = cyl(0.04, 0.04, len - 0.6, 6, MAT.woodDark, depth / 2 + 0.12, h * 0.5 + 0.6, 0);
+  rail.rotation.x = Math.PI / 2; g.add(rail);
+  const pole = cyl(0.035, 0.035, 1.6, 6, MAT.bamboo, depth / 2 + 0.75, h * 0.62, rand(-len / 3, len / 3));
+  pole.rotation.x = Math.PI / 2; g.add(pole);
+  for (let i = 0; i < 3; i++){
+    g.add(mesh(new THREE.PlaneGeometry(0.34, 0.5), MAT.cloth, depth / 2 + 0.75, h * 0.62 - 0.28, pole.position.z - 0.5 + i * 0.5, false));
+  }
+  return g;
+}
+
+// Lantern pole: a bamboo mast carrying one big lantern over the lane.
+function buildLanternPole(){
+  const g = new THREE.Group();
+  g.add(cyl(0.08, 0.1, 4.2, 8, MAT.bamboo, 0, 2.1, 0));
+  const arm = cyl(0.06, 0.06, 1.1, 6, MAT.bamboo, 0.5, 4.1, 0);
+  arm.rotation.z = Math.PI / 2; g.add(arm);
+  g.add(cyl(0.015, 0.015, 0.35, 4, MAT.rope, 0.98, 3.9, 0, false));
+  const lantern = buildLantern(1.25, true);
+  lantern.position.set(0.98, 3.5, 0); g.add(lantern);
+  g.userData = { lantern };
+  return g;
+}
+
+/* ---------- 6. SCENE, RENDERER & CAMERA ---------- */
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(COL.fog, 0.023);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = CFG.exposure;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 400);
+camera.position.set(10.5, 28, 17.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+controls.target.set(0, 2.0, 0);
+controls.minDistance = 18; controls.maxDistance = 60;
+controls.maxPolarAngle = 1.2;
+
+// Warm dusk dome: plum overhead melting into the market's amber haze.
+const skyCtx = ctx2d(8, 256);
+const skyGrad = skyCtx.createLinearGradient(0, 0, 0, 256);
+skyGrad.addColorStop(0.00, '#150f26'); skyGrad.addColorStop(0.44, '#33203c');
+skyGrad.addColorStop(0.72, '#5c3038'); skyGrad.addColorStop(1.00, '#241826');
+skyCtx.fillStyle = skyGrad; skyCtx.fillRect(0, 0, 8, 256);
+scene.add(new THREE.Mesh(new THREE.SphereGeometry(160, 24, 16), new THREE.MeshBasicMaterial({
+  map: canvasTex(skyCtx.canvas), side: THREE.BackSide, fog: false, toneMapped: false })));
+
+/* ---------- 7. LAYOUT  --  lane, stall rows, shophouses, props ---------- */
+const ground = mesh(new THREE.PlaneGeometry(150, 150), MAT.ground, 0, 0, 0, false);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+const market = new THREE.Group(); scene.add(market);
+
+const STALLS = [
+  { s: -1, z: -9.6, len: 4.2, stripe: 0, sign: 0xffe1a0, kind: 'grill' },
+  { s: -1, z: -4.6, len: 4.0, stripe: 1, sign: 0xffefc4, kind: 'steamer' },
+  { s: -1, z: 0.6, len: 4.4, stripe: 2, sign: 0xffe1a0, kind: 'noodle' },
+  { s: -1, z: 6.0, len: 4.0, stripe: 0, sign: 0xfff0cc, kind: 'fruit' },
+  { s: -1, z: 10.8, len: 3.8, stripe: 1, sign: 0xffe1a0, kind: 'steamer' },
+  { s: 1, z: -11.0, len: 4.0, stripe: 2, sign: 0xffefc4, kind: 'fruit' },
+  { s: 1, z: -6.0, len: 4.2, stripe: 0, sign: 0xffe1a0, kind: 'noodle' },
+  { s: 1, z: -0.8, len: 4.0, stripe: 1, sign: 0xfff0cc, kind: 'grill' },
+  { s: 1, z: 4.4, len: 4.4, stripe: 2, sign: 0xffe1a0, kind: 'steamer' },
+  { s: 1, z: 9.6, len: 4.0, stripe: 0, sign: 0xffefc4, kind: 'noodle' }
+];
+const stalls = [];
+for (const st of STALLS){
+  const s = buildStall(st.len, st.stripe, st.sign, st.kind);
+  s.position.set(st.s * (CFG.laneHalf + 1.1), 0, st.z);
+  if (st.s > 0) s.rotation.y = Math.PI;
+  market.add(s); stalls.push(s);
+}
+for (const [s, z, len, h, v] of [[-1, -9, 9, 5.9, 0], [-1, 1, 9, 5.2, 1], [-1, 10.5, 8, 6.2, 2],
+                                 [1, -10, 9, 6.0, 2], [1, 0, 9, 5.0, 0], [1, 9.5, 8, 5.6, 1]]){
+  const sh = buildShophouse(3.6, len, h, v);
+  sh.position.set(s * 7.8, 0, z);
+  if (s > 0) sh.rotation.y = Math.PI;
+  market.add(sh);
+}
+// distant rooftops, far outside the orbit so they only ever read as skyline
+for (let i = 0; i < 16; i++){
+  const ang = (i / 16) * Math.PI * 2 + rand(-0.15, 0.15), rad = rand(38, 62), h = rand(7, 17), w = rand(6, 11);
+  scene.add(mesh(new THREE.BoxGeometry(w, h, w), new THREE.MeshStandardMaterial({ color: 0x4a3a3e, roughness: 0.95,
+    emissive: 0x1d1116, emissiveIntensity: 1.0 }), Math.cos(ang) * rad, h / 2, Math.sin(ang) * rad, false));
+}
+
+const lanternPoles = [];
+for (const [x, z, ry] of [[-CFG.laneHalf - 0.3, -7.2, 0], [CFG.laneHalf + 0.3, -2.2, Math.PI],
+                          [-CFG.laneHalf - 0.3, 3.4, 0], [CFG.laneHalf + 0.3, 8.6, Math.PI]]){
+  const p = buildLanternPole();
+  p.position.set(x, 0, z); p.rotation.y = ry;
+  market.add(p); lanternPoles.push(p.userData.lantern);
+}
+// hanging lantern rows strung across the lane between the stall awnings
+const hangLanterns = [];
+for (const z of [-11.5, -8.5, -5.5, -2.5, 0.5, 3.5, 6.5, 9.5]){
+  const y = 3.9 + Math.sin(z * 0.4) * 0.12;
+  const wire = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(-CFG.laneHalf - 1.3, y + 0.35, z),
+    new THREE.Vector3(0, y - 0.3, z),
+    new THREE.Vector3(CFG.laneHalf + 1.3, y + 0.35, z)
+  ]);
+  market.add(mesh(new THREE.TubeGeometry(wire, 16, 0.018, 4, false), MAT.rope, 0, 0, 0, false));
+  for (let i = 1; i < 4; i++){
+    const p = wire.getPoint(i / 4), lan = buildLantern(rand(1.0, 1.3), i === 2);
+    lan.position.set(p.x, p.y - 0.42, p.z);
+    market.add(lan); hangLanterns.push(lan);
+  }
+}
+// folding tables, spare stools, crates and carts filling the lane itself
+for (const [x, z, ry] of [[-0.4, -7.0, 0.3], [0.8, -1.4, -0.5], [-0.6, 5.2, 0.9], [0.9, 11.2, -0.2]]){
+  const t = buildTableSet();
+  t.position.set(x, 0, z); t.rotation.y = ry; market.add(t);
+}
+const carts = [];
+for (const [x, z, ry, sc] of [[-1.7, -5.0, 0.55, 1.15], [1.9, 11.8, 2.4, 1.05]]){
+  const c = buildBicycleCart();
+  c.position.set(x, 0, z); c.rotation.y = ry; c.scale.setScalar(sc);
+  market.add(c); carts.push(c);
+}
+for (let i = 0; i < 12; i++){
+  const cr = buildFruitCrate();
+  const s = rng() < 0.5 ? -1 : 1;
+  cr.position.set(s * rand(2.2, 3.2), rng() < 0.35 ? 0.38 : 0, rand(-12, 12));
+  cr.rotation.y = rand(0, Math.PI); market.add(cr);
+}
+for (let i = 0; i < 7; i++){
+  const stool = new THREE.Group();
+  stool.add(cyl(0.19, 0.19, 0.06, 12, MAT.wood, 0, 0.44, 0));
+  for (let k = 0; k < 3; k++){
+    const a = (k / 3) * Math.PI * 2;
+    stool.add(cyl(0.028, 0.028, 0.44, 6, MAT.woodDark, Math.cos(a) * 0.13, 0.22, Math.sin(a) * 0.13));
+  }
+  stool.position.set((rng() < 0.5 ? -1 : 1) * rand(2.0, 3.1), 0, rand(-12, 12));
+  market.add(stool);
+}
+// bins, gas bottles and a stack of spare bamboo poles behind the stalls
+for (let i = 0; i < 6; i++){
+  const x = (rng() < 0.5 ? -1 : 1) * rand(6.2, 7.4), z = rand(-11, 11);
+  market.add(cyl(0.3, 0.26, 0.8, 12, MAT.steelDark, x, 0.4, z));
+  market.add(cyl(0.32, 0.32, 0.06, 12, MAT.steel, x, 0.83, z));
+}
+
+/* ---------- 8. STRING BULBS, STEAM & LIGHTING RIG ---------- */
+// Every festoon bulb lives in one Points cloud so the whole strand costs one call.
+const bulbPos = new Float32Array(CFG.bulbCount * 3);
+const bulbCol = new Float32Array(CFG.bulbCount * 3);
+const bulbPhase = new Float32Array(CFG.bulbCount);
+let bulbIdx = 0;
+for (const [zA, zB, x] of [[-12.5, 12.5, -CFG.laneHalf - 0.55], [-12.5, 12.5, CFG.laneHalf + 0.55],
+                           [-12.5, 12.5, 0]]){
+  const seg = 3, span = (zB - zA) / seg;
+  for (let s = 0; s < seg; s++){
+    const curve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(x, 4.35, zA + s * span),
+      new THREE.Vector3(x + rand(-0.25, 0.25), 3.85, zA + (s + 0.5) * span),
+      new THREE.Vector3(x, 4.35, zA + (s + 1) * span)
+    ]);
+    market.add(mesh(new THREE.TubeGeometry(curve, 20, 0.014, 4, false), MAT.rope, 0, 0, 0, false));
+    const per = Math.floor(CFG.bulbCount / 9);
+    for (let i = 0; i < per && bulbIdx < CFG.bulbCount; i++, bulbIdx++){
+      const p = curve.getPoint((i + 0.5) / per);
+      bulbPos.set([p.x, p.y - 0.09, p.z], bulbIdx * 3);
+      bulbPhase[bulbIdx] = rand(0, 6.28);
+    }
+  }
+}
+const bulbGeo = new THREE.BufferGeometry();
+bulbGeo.setAttribute('position', new THREE.BufferAttribute(bulbPos, 3));
+bulbGeo.setAttribute('color', new THREE.BufferAttribute(bulbCol, 3));
+bulbGeo.setDrawRange(0, bulbIdx);
+scene.add(new THREE.Points(bulbGeo, new THREE.PointsMaterial({ map: GLOW_TEX, size: 0.62, transparent: true,
+  opacity: 0.95, depthWrite: false, blending: THREE.AdditiveBlending, vertexColors: true, toneMapped: false })));
+
+// Steam plumes climbing out of the steamer baskets, woks and grills.
+const steamOrigins = [];
+for (const st of STALLS){
+  if (st.kind === 'fruit') continue;
+  steamOrigins.push(new THREE.Vector3(st.s * (CFG.laneHalf + 0.3), 1.45, st.z + rand(-0.8, 0.8)));
+}
+const steamGeo = new THREE.BufferGeometry();
+steamGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(CFG.steamCount * 3), 3));
+steamGeo.setAttribute('color', new THREE.BufferAttribute(new Float32Array(CFG.steamCount * 3), 3));
+const steamData = [];
+for (let i = 0; i < CFG.steamCount; i++){
+  const o = steamOrigins[i % steamOrigins.length];
+  steamData.push({ ox: o.x, oy: o.y, oz: o.z, r: rand(0.05, 0.35), a: rand(0, 6.28),
+                   life: rand(2.6, 4.8), t: rand(0, 5), rise: rand(0.5, 0.95) });
+}
+scene.add(new THREE.Points(steamGeo, new THREE.PointsMaterial({ map: GLOW_TEX, size: 1.45, transparent: true,
+  opacity: 0.55, depthWrite: false, blending: THREE.AdditiveBlending, vertexColors: true, toneMapped: false })));
+
+// Layered rig: a cool moon key for form, generous warm fill so nothing goes
+// black at night, and lantern-coloured accents pooling along the lane.
+const moon = new THREE.DirectionalLight(0xbcc8ff, 1.15);
+moon.position.set(16, 26, 12);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -22; moon.shadow.camera.right = 22;
+moon.shadow.camera.top = 22; moon.shadow.camera.bottom = -22;
+moon.shadow.camera.far = 80; moon.shadow.bias = -0.0006; moon.shadow.normalBias = 0.03;
+scene.add(moon);
+scene.add(new THREE.HemisphereLight(0x6b4c7a, 0x4a3324, 1.15));
+scene.add(new THREE.AmbientLight(0xffd2a0, 0.5));
+const rim = new THREE.DirectionalLight(0xff9a52, 0.55); rim.position.set(-14, 8, -16);
+const back = new THREE.DirectionalLight(0x7fd6c4, 0.3); back.position.set(-6, 10, 18);
+scene.add(rim, back);
+
+const lanePools = [];
+for (const [x, z, hex, power] of [[0, -9.5, 0xff9d4a, 44], [0, -3.0, 0xffc46a, 42],
+                                  [0, 3.0, 0xff8f3c, 42], [0, 9.5, 0xffbf72, 40]]){
+  const light = new THREE.PointLight(hex, power, 13, 1.9);
+  light.position.set(x, 3.4, z);
+  scene.add(light);
+  lanePools.push({ light, base: power, phase: rand(0, 6.28), rate: rand(0.8, 1.7) });
+}
+
+/* ---------- 9. ANIMATION LOOP ---------- */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.getElapsedTime();
+
+  // festoon bulbs twinkle warm-to-amber along the strands
+  const bc = bulbGeo.attributes.color.array;
+  for (let i = 0; i < bulbIdx; i++){
+    const f = 0.72 + 0.28 * Math.sin(t * 1.6 + bulbPhase[i]), o = i * 3;
+    bc[o] = f; bc[o + 1] = f * 0.76; bc[o + 2] = f * 0.42;
+  }
+  bulbGeo.attributes.color.needsUpdate = true;
+
+  // steam curls up from the baskets and woks, spreading as it fades
+  const sp = steamGeo.attributes.position.array, sc = steamGeo.attributes.color.array;
+  for (let i = 0; i < CFG.steamCount; i++){
+    const d = steamData[i];
+    d.t += dt;
+    if (d.t > d.life) d.t -= d.life;
+    const k = d.t / d.life, o = i * 3, spread = d.r + k * 0.8;
+    sp[o] = d.ox + Math.cos(d.a + k * 1.4) * spread;
+    sp[o + 1] = d.oy + k * d.life * d.rise;
+    sp[o + 2] = d.oz + Math.sin(d.a + k * 1.4) * spread;
+    const fade = Math.sin(Math.PI * k) * 0.36;
+    sc[o] = fade; sc[o + 1] = fade * 0.9; sc[o + 2] = fade * 0.8;
+  }
+  steamGeo.attributes.position.needsUpdate = true;
+  steamGeo.attributes.color.needsUpdate = true;
+
+  // hanging lanterns sway on their wires and breathe with the draught
+  for (let i = 0; i < hangLanterns.length; i++){
+    const lan = hangLanterns[i], ph = lan.userData.phase;
+    lan.rotation.z = Math.sin(t * 0.8 + ph) * 0.09;
+    lan.rotation.x = Math.cos(t * 0.62 + ph) * 0.06;
+    const f = 0.82 + 0.18 * Math.sin(t * 1.4 + ph);
+    lan.userData.halo.material.opacity = 0.32 * f;
+    if (lan.userData.lamp) lan.userData.lamp.intensity = 22 * f;
+  }
+  for (const lan of lanternPoles){
+    lan.rotation.z = Math.sin(t * 0.55 + lan.userData.phase) * 0.07;
+    lan.userData.halo.material.opacity = 0.46 + 0.14 * Math.sin(t * 1.1 + lan.userData.phase);
+  }
+
+  // stall lamps, coal beds and wok flames flicker at their own rates
+  for (let i = 0; i < stalls.length; i++){
+    const u = stalls[i].userData, f = 0.88 + 0.12 * Math.sin(t * (1.1 + i * 0.13) + i);
+    u.lamp.intensity = 26 * f;
+    u.halo.material.opacity = 0.3 * f;
+    u.sign.material.emissiveIntensity = 0.85 * f;
+    if (u.grill) u.grill.userData.emberGlow.material.opacity = 0.45 + 0.25 * Math.abs(Math.sin(t * 2.3 + i));
+    if (u.flame) u.flame.material.opacity = 0.4 + 0.3 * Math.abs(Math.sin(t * 3.1 + i));
+  }
+  MAT.coal.emissiveIntensity = 2.3 + 0.7 * Math.sin(t * 2.6);
+
+  // parked bicycle carts rock gently and their wheels creep round
+  for (let i = 0; i < carts.length; i++){
+    const c = carts[i];
+    c.rotation.z = Math.sin(t * 0.5 + i * 2.1) * 0.012;
+    for (const w of c.userData.wheels) w.rotation.z += dt * 0.12 * (i ? -1 : 1);
+  }
+
+  // lantern light pools along the lane pulse slightly out of phase
+  for (const p of lanePools) p.light.intensity = p.base * (0.88 + 0.12 * Math.sin(t * p.rate + p.phase));
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 10. RESIZE ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

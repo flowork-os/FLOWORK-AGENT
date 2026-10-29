@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liquid Chrome Arm Cuff</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0c0e; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 11px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    letter-spacing: .14em; text-transform: uppercase; color: rgba(200,214,230,.35);
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Liquid Chrome Arm Cuff — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0c0d10);
+scene.fog = new THREE.FogExp2(0x0c0d10, 0.012);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(0.0, 6.5, 20.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.minDistance = 9;
+controls.maxDistance = 48;
+controls.target.set(0, 0.4, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural studio environment (drives the chrome reflections)
+ *  Built from emissive planes rendered into a PMREM cube target.
+ * ------------------------------------------------------------------ */
+function buildEnvironment(rendererRef) {
+  const envScene = new THREE.Scene();
+
+  // Gradient sky dome: deep blue-black up top, cool silver at the horizon.
+  const skyGeo = new THREE.SphereGeometry(60, 48, 32);
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      cTop:    { value: new THREE.Color(0x05070d) },
+      cHoriz:  { value: new THREE.Color(0x2b3b52) },
+      cBottom: { value: new THREE.Color(0x08090c) }
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vPos;
+      void main() {
+        vPos = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 cTop, cHoriz, cBottom;
+      varying vec3 vPos;
+      void main() {
+        float h = vPos.y;
+        vec3 col = h > 0.0
+          ? mix(cHoriz, cTop, pow(clamp(h, 0.0, 1.0), 0.55))
+          : mix(cHoriz, cBottom, pow(clamp(-h, 0.0, 1.0), 0.45));
+        gl_FragColor = vec4(col, 1.0);
+      }
+    `
+  });
+  envScene.add(new THREE.Mesh(skyGeo, skyMat));
+
+  // Softbox / strip-light rig: the bright shapes chrome actually mirrors.
+  const panel = (w, h, color, intensity, pos, look) => {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({
+        color: new THREE.Color(color).multiplyScalar(intensity),
+        side: THREE.DoubleSide
+      })
+    );
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.lookAt(new THREE.Vector3(look[0], look[1], look[2]));
+    envScene.add(m);
+    return m;
+  };
+
+  // Big key softbox — warm-neutral, upper front-left.
+  panel(26, 14, 0xffffff, 5.2, [-16, 16, 14], [0, 0, 0]);
+  // Cool blue fill from the right — gives the signature silver/blue tone.
+  panel(22, 20, 0x5f8dd6, 3.4, [20, 6, -6], [0, 0, 0]);
+  // Deep blue rim from behind.
+  panel(20, 10, 0x2c56b0, 3.0, [-6, 4, -22], [0, 2, 0]);
+  // Narrow horizontal streak lights → those long stretched highlights.
+  panel(46, 1.1, 0xffffff, 7.0, [0, 9.0, -3], [0, 0, 0]);
+  panel(46, 0.7, 0xbcd4ff, 5.0, [0, -6.0, 4], [0, 0, 0]);
+  panel(1.0, 30, 0xdfe9ff, 4.0, [-13, 2, -2], [0, 2, 0]);
+  panel(0.8, 30, 0x86a9e8, 3.2, [13, 2, 2], [0, 2, 0]);
+  // Dark occluders — chrome needs blacks as much as whites.
+  panel(30, 18, 0x03040a, 1.0, [0, -12, 0], [0, 0, 0]);
+  panel(16, 16, 0x05060b, 1.0, [-2, 3, 24], [0, 0, 0]);
+
+  const pmrem = new THREE.PMREMGenerator(rendererRef);
+  pmrem.compileEquirectangularShader();
+  const target = pmrem.fromScene(envScene, 0.02);
+  pmrem.dispose();
+  skyGeo.dispose();
+  skyMat.dispose();
+  return target.texture;
+}
+
+const envMap = buildEnvironment(renderer);
+scene.environment = envMap;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere ambient + key / fill / rim, soft shadows
+ * ------------------------------------------------------------------ */
+scene.add(new THREE.HemisphereLight(0x8fb4e8, 0x1a1d24, 0.55));
+
+const key = new THREE.DirectionalLight(0xfff4e8, 2.5);
+key.position.set(-8, 13, 9);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 4;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.03;
+{
+  const c = key.shadow.camera;
+  c.near = 1; c.far = 45;
+  c.left = -12; c.right = 12; c.top = 12; c.bottom = -12;
+  c.updateProjectionMatrix();
+}
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x6f9bdd, 1.15);
+fill.position.set(11, 4, 7);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0x9ec6ff, 2.0);
+rim.position.set(2, 6, -13);
+scene.add(rim);
+
+const kicker = new THREE.PointLight(0xbcd8ff, 22, 26, 2.0);
+kicker.position.set(4.5, -3.5, 5.0);
+scene.add(kicker);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-only ground plane
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -4.6;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  THE OBJECT — one wide sculptural arm cuff.
+ *
+ *  Real-world scale: an upper-arm cuff. Inner opening ~ 75mm x 62mm,
+ *  band height ~ 52mm, ribbon thickness ~ 3.5mm, with an open gap.
+ *  Scene units: 1 unit = 10mm, so radii ~3.7, height ~5.2.
+ *
+ *  Construction: a closed ribbon swept along an OPEN TEARDROP path.
+ *  The ribbon is a rounded-rectangle cross-section (superellipse) whose
+ *  radius is modulated by layered noise → drips, bulges and ripples that
+ *  read as frozen molten metal. Normals are area-weighted & the seam is
+ *  welded so the mirror surface is perfectly continuous.
+ * ------------------------------------------------------------------ */
+
+/* ---- small deterministic value-noise (no assets, no randomness drift) -- */
+function hash2(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return s - Math.floor(s);
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = smooth(xf), v = smooth(yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+function fbm(x, y, oct = 4) {
+  let sum = 0, amp = 0.5, fx = x, fy = y, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * (vnoise(fx, fy) * 2 - 1);
+    norm += amp;
+    amp *= 0.5; fx *= 2.03; fy *= 1.97;
+  }
+  return sum / norm;
+}
+
+/* ---- teardrop centreline of the cuff -------------------------------- */
+// t in [0,1] maps around an open teardrop: wide rounded belly at the
+// bottom tapering to a narrow point at the top, with the opening (gap)
+// centred on the tapered tip.
+const GAP = 0.148;                 // fraction of the loop left open
+const TSTART = GAP * 0.5;
+const TSPAN = 1.0 - GAP;
+
+const RX = 3.75;                   // half-width  (37.5 mm)
+const RZ = 3.15;                   // half-depth  (31.5 mm)
+
+function teardropPoint(t, out) {
+  // angle 0 at the tip (top), sweeping fully around
+  const a = t * Math.PI * 2.0;
+  // teardrop profile: sin(a/2)^p pinches one end into a point
+  const s = Math.sin(a * 0.5);
+  const pinch = Math.pow(Math.abs(s), 1.35);
+  const x = -Math.sin(a) * RX * (0.42 + 0.58 * pinch);
+  const y = -Math.cos(a) * RZ * (0.86 + 0.14 * pinch) + RZ * 0.10;
+  // gentle sculptural twist out of plane along the band
+  const z = Math.sin(a * 1.0) * 0.30 + Math.sin(a * 2.0 + 0.7) * 0.18;
+  out.set(x, y, z);
+  return out;
+}
+
+/* ---- ribbon cross-section: rounded rectangle (superellipse) --------- */
+const BAND_H = 2.62;   // half-height of the band  → 52.4 mm tall
+const BAND_T = 0.185;  // half-thickness           → 3.7 mm
+const SE_N = 5.0;      // superellipse exponent (roundness of the edges)
+
+function sectionOffset(phi, out) {
+  const c = Math.cos(phi), s = Math.sin(phi);
+  const k = 1.0 / SE_N;
+  const u = Math.sign(c) * Math.pow(Math.abs(c), 2 * k * 0.5 + 0.0);
+  const v = Math.sign(s) * Math.pow(Math.abs(s), 2 * k * 0.5 + 0.0);
+  out.set(u, v);
+  return out;
+}
+
+/* ---- build the swept, noise-displaced ribbon ------------------------ */
+const SEG_U = 620;   // along the band
+const SEG_V = 132;   // around the cross-section
+const TWIST = 0.62;  // total ribbon twist (radians) across the band
+
+const tmpP = new THREE.Vector3();
+const tmpP2 = new THREE.Vector3();
+const tmpUV = new THREE.Vector2();
+
+// Precompute the centreline frame (tangent / normal / binormal), with a
+// rotation-minimizing frame so the ribbon never flips.
+const centers = [], tangents = [], normals = [], binormals = [];
+{
+  const eps = 1e-4;
+  for (let i = 0; i <= SEG_U; i++) {
+    const u = i / SEG_U;
+    const t = TSTART + u * TSPAN;
+    const p = teardropPoint(t, new THREE.Vector3());
+    const pa = teardropPoint(t - eps, tmpP);
+    const pb = teardropPoint(t + eps, tmpP2);
+    const tan = new THREE.Vector3().subVectors(pb, pa).normalize();
+    centers.push(p);
+    tangents.push(tan);
+  }
+  // initial normal
+  let n = new THREE.Vector3(0, 0, 1);
+  n.sub(tangents[0].clone().multiplyScalar(tangents[0].dot(n)));
+  if (n.lengthSq() < 1e-6) n.set(0, 1, 0).sub(tangents[0].clone().multiplyScalar(tangents[0].dot(new THREE.Vector3(0, 1, 0))));
+  n.normalize();
+  for (let i = 0; i <= SEG_U; i++) {
+    if (i > 0) {
+      // parallel transport
+      const prevT = tangents[i - 1], curT = tangents[i];
+      const axis = new THREE.Vector3().crossVectors(prevT, curT);
+      const len = axis.length();
+      if (len > 1e-8) {
+        axis.divideScalar(len);
+        const ang = Math.atan2(len, prevT.dot(curT));
+        n.applyAxisAngle(axis, ang);
+      }
+      n.sub(curT.clone().multiplyScalar(curT.dot(n))).normalize();
+    }
+    normals.push(n.clone());
+    binormals.push(new THREE.Vector3().crossVectors(tangents[i], n).normalize());
+  }
+}
+
+/* Displacement field: ripples, drips and bulges of frozen molten metal. */
+function molten(u, phi, i) {
+  // u  : 0..1 along the band
+  // phi: 0..2PI around the cross-section
+  const cu = Math.cos(phi), su = Math.sin(phi);
+
+  // long, slow travelling swells along the band (the "flow")
+  let d = 0.0;
+  d += 0.185 * Math.sin(u * Math.PI * 6.0 + 0.6);
+  d += 0.105 * Math.sin(u * Math.PI * 11.0 - 1.2);
+  d += 0.060 * Math.sin(u * Math.PI * 19.0 + 2.4);
+
+  // drips: sharp, localized bulges that hang toward the band's lower edge
+  const dripPhase = u * 9.0;
+  const dcell = Math.floor(dripPhase);
+  const dfrac = dripPhase - dcell;
+  const dseed = hash2(dcell * 3.1, 7.7);
+  const dw = Math.exp(-Math.pow((dfrac - 0.35 - 0.3 * dseed) * 3.4, 2));
+  // biased to the "down" side of the cross-section (su < 0)
+  const dside = Math.max(0.0, -su) ** 1.4;
+  d += 1.05 * dw * dside * (0.35 + 0.65 * dseed) * 0.42;
+
+  // bulges that swell through the whole ribbon (thickened molten pools)
+  const bPhase = u * 4.0 + 0.31;
+  const bcell = Math.floor(bPhase);
+  const bfrac = bPhase - bcell;
+  const bseed = hash2(bcell * 5.7, 1.3);
+  const bw = Math.exp(-Math.pow((bfrac - 0.5) * 2.6, 2));
+  d += 0.30 * bw * (0.4 + 0.6 * bseed);
+
+  // fine fbm ripples wrapping around the section (surface tension wrinkles)
+  d += 0.34 * fbm(u * 13.0, phi * 1.35, 4);
+  d += 0.13 * fbm(u * 31.0 + 5.0, phi * 2.6 + 2.0, 3);
+
+  // ripple bands running across the width of the cuff
+  d += 0.10 * Math.sin(phi * 3.0 + u * 20.0) * (0.5 + 0.5 * Math.sin(u * Math.PI * 3.0));
+
+  // taper the whole band toward the open tips so it thins like poured metal
+  const tip = Math.min(1.0, Math.pow(Math.min(u, 1 - u) / 0.16, 0.85));
+  return { d, tip, cu, su };
+}
+
+function buildCuffGeometry() {
+  const cols = SEG_U + 1;
+  const rows = SEG_V;                    // cross-section is closed (wraps)
+  const count = cols * rows;
+  const positions = new Float32Array(count * 3);
+  const uvs = new Float32Array(count * 2);
+  const indices = [];
+
+  const P = new THREE.Vector3();
+  const off = new THREE.Vector2();
+
+  for (let i = 0; i < cols; i++) {
+    const u = i / SEG_U;
+    const c = centers[i], N = normals[i], B = binormals[i];
+
+    // taper the band height near the open tips (teardrop point)
+    const tipT = Math.min(1.0, Math.pow(Math.min(u, 1 - u) / 0.18, 0.7));
+    const hScale = 0.40 + 0.60 * tipT;
+    const tScale = 0.62 + 0.38 * tipT;
+
+    // sculptural twist of the ribbon along its length
+    const tw = TWIST * Math.sin(u * Math.PI * 1.0) + 0.22 * Math.sin(u * Math.PI * 3.0);
+    const ct = Math.cos(tw), st = Math.sin(tw);
+
+    for (let j = 0; j < rows; j++) {
+      const phi = (j / rows) * Math.PI * 2.0;
+      sectionOffset(phi, off);
+
+      const m = molten(u, phi, i);
+
+      // base rounded-rect section, scaled to band height / thickness
+      let ax = off.x * BAND_T * tScale;   // through-thickness axis
+      let ay = off.y * BAND_H * hScale;   // along-the-band-height axis
+
+      // molten displacement pushes outward along the section normal
+      const nx = off.x, ny = off.y;
+      const nl = Math.hypot(nx, ny) || 1;
+      const swell = m.d * 0.30 * m.tip;
+      ax += (nx / nl) * swell * 0.75;
+      ay += (ny / nl) * swell * 1.55;
+
+      // extra thickness where the molten pools bulge
+      ax *= 1.0 + 0.55 * Math.max(0, m.d);
+
+      // apply twist in the section plane
+      const rx = ax * ct - ay * st;
+      const ry = ax * st + ay * ct;
+
+      // N = through-thickness direction, B = band-height direction
+      P.copy(c)
+        .addScaledVector(N, rx)
+        .addScaledVector(B, ry);
+
+      const k = (i * rows + j) * 3;
+      positions[k]     = P.x;
+      positions[k + 1] = P.y;
+      positions[k + 2] = P.z;
+
+      const k2 = (i * rows + j) * 2;
+      uvs[k2]     = u * 6.0;
+      uvs[k2 + 1] = j / rows;
+    }
+  }
+
+  for (let i = 0; i < cols - 1; i++) {
+    for (let j = 0; j < rows; j++) {
+      const j2 = (j + 1) % rows;
+      const a = i * rows + j;
+      const b = i * rows + j2;
+      const c2 = (i + 1) * rows + j;
+      const d2 = (i + 1) * rows + j2;
+      indices.push(a, c2, b);
+      indices.push(b, c2, d2);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  g.computeBoundingSphere();
+  return g;
+}
+
+const cuffGeo = buildCuffGeometry();
+
+/* ---- liquid chrome material ---------------------------------------- */
+const chrome = new THREE.MeshPhysicalMaterial({
+  color: 0xf2f6ff,
+  metalness: 1.0,
+  roughness: 0.045,
+  envMap: envMap,
+  envMapIntensity: 2.15,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.03,
+  side: THREE.DoubleSide,
+  flatShading: false
+});
+
+// Tint the reflections toward silver/blue and add a faint anisotropic
+// "flow" shimmer so the mirror surface reads as liquid, not solid.
+chrome.onBeforeCompile = (shader) => {
+  shader.uniforms.uTime = { value: 0 };
+  chrome.userData.shader = shader;
+
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', `#include <common>
+      varying vec3 vObjPos;
+      varying vec3 vObjNrm;
+    `)
+    .replace('#include <begin_vertex>', `#include <begin_vertex>
+      vObjPos = position;
+      vObjNrm = normal;
+    `);
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', `#include <common>
+      uniform float uTime;
+      varying vec3 vObjPos;
+      varying vec3 vObjNrm;
+    `)
+    .replace('#include <dithering_fragment>', `#include <dithering_fragment>
+      // stretched silver-blue grading of the reflected environment
+      vec3 col = gl_FragColor.rgb;
+      float lum = dot(col, vec3(0.2126, 0.7152, 0.0722));
+      vec3 cool = vec3(0.62, 0.76, 1.06);
+      vec3 warm = vec3(1.06, 1.00, 0.94);
+      vec3 tint = mix(cool, warm, smoothstep(0.35, 0.95, lum));
+      col *= tint;
+
+      // faint flowing sheen bands — molten metal still moving
+      float flow = sin(vObjPos.y * 3.1 + vObjPos.x * 1.7 + uTime * 0.45)
+                 * sin(vObjPos.z * 4.3 - uTime * 0.31);
+      col += vec3(0.10, 0.14, 0.22) * flow * smoothstep(0.15, 0.9, lum) * 0.35;
+
+      // subtle rim brightening keeps the silhouette liquid-bright
+      float fres = pow(1.0 - abs(dot(normalize(vObjNrm), vec3(0.0, 0.0, 1.0))), 3.0);
+      col += vec3(0.05, 0.07, 0.12) * fres * 0.5;
+
+      gl_FragColor.rgb = col;
+    `);
+};
+
+const cuff = new THREE.Mesh(cuffGeo, chrome);
+cuff.castShadow = true;
+cuff.receiveShadow = true;
+
+// Present the cuff as it would sit on an arm: axis roughly horizontal,
+// tilted for a sculptural three-quarter read. One single centered object.
+const cuffGroup = new THREE.Group();
+cuffGroup.add(cuff);
+cuffGroup.rotation.set(-0.30, 0.42, 0.14);
+cuffGroup.position.set(0, 0.35, 0);
+scene.add(cuffGroup);
+
+// Center it exactly on the origin using its own bounds.
+cuffGeo.computeBoundingBox();
+{
+  const c = new THREE.Vector3();
+  cuffGeo.boundingBox.getCenter(c);
+  cuffGeo.translate(-c.x, -c.y, -c.z);
+  cuffGeo.computeBoundingSphere();
+}
+
+/* ------------------------------------------------------------------ *
+ *  Loop
+ * ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const sh = chrome.userData.shader;
+  if (sh) sh.uniforms.uTime.value = t;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

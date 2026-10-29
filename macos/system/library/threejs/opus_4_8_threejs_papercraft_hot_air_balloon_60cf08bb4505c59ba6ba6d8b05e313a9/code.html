@@ -1,0 +1,869 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Papercraft Hot Air Balloon</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16181c; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(235, 231, 222, 0.42); letter-spacing: 0.08em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &nbsp;•&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   Renderer / Scene / Camera
+   ========================================================================== */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181c);
+scene.fog = new THREE.Fog(0x16181c, 26, 62);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(7.4, 5.2, 10.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 6;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 3.4, 0);
+
+/* ==========================================================================
+   Paper fiber-grain texture (procedural canvas)
+   ========================================================================== */
+
+function makePaperTextures(size = 512) {
+  // --- Bump/normal source: fibrous speckle + faint laid lines ---
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+
+  ctx.fillStyle = '#808080';
+  ctx.fillRect(0, 0, size, size);
+
+  const img = ctx.getImageData(0, 0, size, size);
+  const d = img.data;
+
+  // Value-noise helper (seeded, deterministic)
+  let seed = 20260720;
+  const rnd = () => {
+    seed = (seed * 1664525 + 1013904223) % 4294967296;
+    return seed / 4294967296;
+  };
+
+  const gridN = 64;
+  const grid = new Float32Array(gridN * gridN);
+  for (let i = 0; i < grid.length; i++) grid[i] = rnd();
+  const smoothNoise = (x, y) => {
+    const gx = x * gridN, gy = y * gridN;
+    const x0 = Math.floor(gx), y0 = Math.floor(gy);
+    const fx = gx - x0, fy = gy - y0;
+    const sx = fx * fx * (3 - 2 * fx), sy = fy * fy * (3 - 2 * fy);
+    const i00 = grid[((y0 % gridN) + gridN) % gridN * gridN + (((x0 % gridN) + gridN) % gridN)];
+    const i10 = grid[((y0 % gridN) + gridN) % gridN * gridN + ((((x0 + 1) % gridN) + gridN) % gridN)];
+    const i01 = grid[(((y0 + 1) % gridN) + gridN) % gridN * gridN + (((x0 % gridN) + gridN) % gridN)];
+    const i11 = grid[(((y0 + 1) % gridN) + gridN) % gridN * gridN + ((((x0 + 1) % gridN) + gridN) % gridN)];
+    return (i00 * (1 - sx) + i10 * sx) * (1 - sy) + (i01 * (1 - sx) + i11 * sx) * sy;
+  };
+
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const u = x / size, v = y / size;
+      // stretched fibers: noise sampled anisotropically, two directions
+      const fibreA = smoothNoise(u * 3.0, v * 11.0);
+      const fibreB = smoothNoise(u * 9.0 + 0.31, v * 2.4 + 0.77);
+      const grit = rnd();
+      let n = 0.44 * fibreA + 0.36 * fibreB + 0.20 * grit;
+      // faint laid lines like handmade stock
+      n += 0.045 * Math.sin(v * Math.PI * 2 * 96);
+      const val = Math.max(0, Math.min(255, 128 + (n - 0.5) * 150));
+      const idx = (y * size + x) * 4;
+      d[idx] = d[idx + 1] = d[idx + 2] = val;
+      d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+
+  const bump = new THREE.CanvasTexture(c);
+  bump.wrapS = bump.wrapT = THREE.RepeatWrapping;
+  bump.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  // --- Roughness map: broader mottling so sheen varies across the sheet ---
+  const c2 = document.createElement('canvas');
+  c2.width = c2.height = 256;
+  const ctx2 = c2.getContext('2d');
+  const img2 = ctx2.createImageData(256, 256);
+  const d2 = img2.data;
+  for (let y = 0; y < 256; y++) {
+    for (let x = 0; x < 256; x++) {
+      const u = x / 256, v = y / 256;
+      const n = 0.6 * smoothNoise(u * 2.0, v * 2.0) + 0.4 * smoothNoise(u * 6.0 + 0.5, v * 6.0 + 0.5);
+      const val = 180 + n * 60;
+      const idx = (y * 256 + x) * 4;
+      d2[idx] = d2[idx + 1] = d2[idx + 2] = Math.min(255, val);
+      d2[idx + 3] = 255;
+    }
+  }
+  ctx2.putImageData(img2, 0, 0);
+  const rough = new THREE.CanvasTexture(c2);
+  rough.wrapS = rough.wrapT = THREE.RepeatWrapping;
+
+  return { bump, rough };
+}
+
+const PAPER = makePaperTextures(512);
+
+/* ==========================================================================
+   Materials
+   ========================================================================== */
+
+const PALETTE = {
+  cream:  0xf2e6cf,
+  coral:  0xe8785e,
+  teal:   0x2f8f8a,
+  creamDeep: 0xe4d4b6,
+  kraft:  0xb98a55,
+  kraftDark: 0x9a6f42,
+  kraftLight: 0xd0a473,
+  cord:   0xe6d9bd,
+  charcoal: 0x4a4038
+};
+
+function paperMat(color, opts = {}) {
+  const m = new THREE.MeshStandardMaterial({
+    color,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.94,
+    metalness: 0.0,
+    side: opts.side || THREE.DoubleSide,
+    flatShading: opts.flatShading !== undefined ? opts.flatShading : true
+  });
+  m.bumpMap = PAPER.bump;
+  m.bumpScale = opts.bumpScale !== undefined ? opts.bumpScale : 0.012;
+  m.roughnessMap = PAPER.rough;
+  if (opts.repeat) {
+    // clone so each material can carry its own tiling
+    m.bumpMap = PAPER.bump.clone();
+    m.bumpMap.needsUpdate = true;
+    m.bumpMap.wrapS = m.bumpMap.wrapT = THREE.RepeatWrapping;
+    m.bumpMap.repeat.set(opts.repeat[0], opts.repeat[1]);
+    m.roughnessMap = PAPER.rough.clone();
+    m.roughnessMap.needsUpdate = true;
+    m.roughnessMap.wrapS = m.roughnessMap.wrapT = THREE.RepeatWrapping;
+    m.roughnessMap.repeat.set(opts.repeat[0] * 0.5, opts.repeat[1] * 0.5);
+  }
+  return m;
+}
+
+const MAT = {
+  cream: paperMat(PALETTE.cream, { repeat: [1.4, 3.0], bumpScale: 0.014 }),
+  coral: paperMat(PALETTE.coral, { repeat: [1.4, 3.0], bumpScale: 0.014 }),
+  teal:  paperMat(PALETTE.teal,  { repeat: [1.4, 3.0], bumpScale: 0.014 }),
+  tabCream: paperMat(PALETTE.creamDeep, { repeat: [1.2, 2.0], bumpScale: 0.010, roughness: 0.96 }),
+  crease: paperMat(0xd8c9ab, { repeat: [1, 1], bumpScale: 0.006, roughness: 0.9, flatShading: false }),
+  kraft: paperMat(PALETTE.kraft, { repeat: [3.0, 1.5], bumpScale: 0.016, roughness: 0.95 }),
+  kraftDark: paperMat(PALETTE.kraftDark, { repeat: [2.0, 2.0], bumpScale: 0.016, roughness: 0.96 }),
+  kraftLight: paperMat(PALETTE.kraftLight, { repeat: [2.0, 2.0], bumpScale: 0.014, roughness: 0.93 }),
+  cord: paperMat(PALETTE.cord, { repeat: [1, 6], bumpScale: 0.006, roughness: 0.92, flatShading: false }),
+  charcoal: paperMat(PALETTE.charcoal, { repeat: [2, 2], bumpScale: 0.010, roughness: 0.88 })
+};
+
+/* ==========================================================================
+   Balloon root
+   ========================================================================== */
+
+const balloon = new THREE.Group();
+scene.add(balloon);
+
+/* --------------------------------------------------------------------------
+   Envelope profile — classic teardrop
+   r(t), y(t) with t in [0,1] from crown (top) to mouth (bottom)
+   -------------------------------------------------------------------------- */
+
+const ENV = {
+  gores: 12,
+  segs: 26,           // vertical divisions per gore
+  maxR: 2.62,
+  top: 8.35,          // y at crown
+  bottom: 3.05        // y at mouth ring
+};
+
+function envelopeProfile(t) {
+  // t: 0 at crown, 1 at mouth
+  const h = ENV.top - ENV.bottom;
+  const y = ENV.top - t * h;
+
+  // Radius: bulbous upper sphere tapering to a narrow mouth (teardrop)
+  // Use a smooth blend of a sine lobe and a taper.
+  const a = Math.pow(Math.sin(Math.pow(t, 0.78) * Math.PI * 0.5), 0.62); // rise from 0 to 1
+  const widen = Math.sin(Math.min(1, t * 1.02) * Math.PI); // fullness
+  let r = ENV.maxR * (0.985 * Math.pow(widen, 0.52) + 0.015 * a);
+
+  // Taper the lower third into the neck, but keep a real mouth opening
+  const tt = Math.max(0, (t - 0.60) / 0.40);
+  const neck = 1.0 - 0.72 * Math.pow(tt, 1.55);
+  r *= neck;
+
+  // Flatten the very crown a touch (paper cap)
+  if (t < 0.06) r = Math.max(r, ENV.maxR * 0.16 * (t / 0.06 + 0.35));
+
+  const minR = ENV.maxR * 0.155;
+  r = Math.max(r, minR * (t > 0.5 ? 1 : 0.42));
+  return { r: r, y: y };
+}
+
+/* --------------------------------------------------------------------------
+   One gore panel: a faceted quad-strip lens shape, slightly domed outward,
+   built as its own flat-shaded card so seams read as creases.
+   -------------------------------------------------------------------------- */
+
+function buildGore(index) {
+  const N = ENV.gores;
+  const segs = ENV.segs;
+  const halfAngle = (Math.PI / N) * 0.955;  // slight gap -> seam channel
+  const bulge = 1.0;                        // faceted chord vs. true circle
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  // Cross-strip subdivision: 4 columns across gore width for gentle faceting
+  const cols = 4;
+
+  const rowRadius = [];
+  const rowY = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const p = envelopeProfile(t);
+    rowRadius.push(p.r);
+    rowY.push(p.y);
+  }
+
+  for (let i = 0; i <= segs; i++) {
+    const r = rowRadius[i];
+    const y = rowY[i];
+    for (let j = 0; j <= cols; j++) {
+      const s = j / cols;                       // 0..1 across gore
+      const ang = -halfAngle + s * 2 * halfAngle;
+      // Slight outward bulge in the middle of a panel — paper puffs a bit
+      const puff = 1 + 0.028 * Math.sin(s * Math.PI) * bulge;
+      const rr = r * puff;
+      positions.push(Math.sin(ang) * rr, y, Math.cos(ang) * rr);
+      uvs.push(s, 1 - i / segs);
+    }
+  }
+
+  for (let i = 0; i < segs; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * (cols + 1) + j;
+      const b = a + 1;
+      const c = a + (cols + 1);
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* --------------------------------------------------------------------------
+   Seam ribs / raised crease strips along each gore boundary,
+   plus scalloped glue tabs that peek out along the seam.
+   -------------------------------------------------------------------------- */
+
+function buildSeamRib(offsetOut = 0.028, width = 0.055) {
+  const segs = ENV.segs;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const p = envelopeProfile(t);
+    const r = p.r + offsetOut;
+    const y = p.y;
+    // half-width in angle depends on radius, keep constant arc width
+    const dA = Math.max(0.004, width / Math.max(0.12, r));
+    for (let j = 0; j <= 2; j++) {
+      const s = j / 2;
+      const ang = (-dA + s * 2 * dA);
+      // ridge: middle column pushed further out
+      const ridge = (j === 1) ? 0.022 : 0.0;
+      const rr = r + ridge;
+      positions.push(Math.sin(ang) * rr, y, Math.cos(ang) * rr);
+      uvs.push(s, 1 - t);
+    }
+  }
+  for (let i = 0; i < segs; i++) {
+    for (let j = 0; j < 2; j++) {
+      const a = i * 3 + j, b = a + 1, c = a + 3, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* Glue tabs: small trapezoid flaps sticking out sideways along a seam */
+function buildGlueTabs(count = 9) {
+  const geoms = [];
+  for (let k = 0; k < count; k++) {
+    const t = 0.075 + (k / (count - 1)) * 0.85;
+    const p = envelopeProfile(t);
+    const p2 = envelopeProfile(Math.min(1, t + 0.055));
+
+    const r = p.r + 0.020;
+    const r2 = p2.r + 0.020;
+    const y1 = p.y, y2 = p2.y;
+    const out = 0.085;   // how far the tab sticks out from the surface
+
+    const dA1 = out / Math.max(0.15, r);
+    const dA2 = out / Math.max(0.15, r2);
+    const inner = 0.012;
+
+    const pos = [];
+    const push = (ang, rr, yy) => pos.push(Math.sin(ang) * rr, yy, Math.cos(ang) * rr);
+    // trapezoid flap on +angle side
+    push(inner, r, y1);
+    push(dA1, r * 1.004, y1 - 0.02);
+    push(dA2 * 0.75, r2 * 1.004, y2 + 0.02);
+    push(inner, r2, y2);
+
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 1], 2));
+    g.setIndex([0, 1, 2, 0, 2, 3]);
+    g.computeVertexNormals();
+    geoms.push(g);
+  }
+  return geoms;
+}
+
+/* --------------------------------------------------------------------------
+   Assemble the envelope
+   -------------------------------------------------------------------------- */
+
+const envelope = new THREE.Group();
+envelope.name = 'envelope';
+balloon.add(envelope);
+
+const goreMats = [MAT.cream, MAT.coral, MAT.teal];
+
+const goreGeo = buildGore(0);
+const ribGeo = buildSeamRib();
+const tabGeos = buildGlueTabs(9);
+
+for (let i = 0; i < ENV.gores; i++) {
+  const rot = (i / ENV.gores) * Math.PI * 2;
+
+  const panel = new THREE.Mesh(goreGeo, goreMats[i % 3]);
+  panel.rotation.y = rot;
+  panel.castShadow = true;
+  panel.receiveShadow = true;
+  envelope.add(panel);
+
+  // seam rib sits on the boundary between panel i and i+1
+  const seamRot = rot + Math.PI / ENV.gores;
+  const rib = new THREE.Mesh(ribGeo, MAT.tabCream);
+  rib.rotation.y = seamRot;
+  rib.castShadow = true;
+  rib.receiveShadow = true;
+  envelope.add(rib);
+
+  // glue tabs along alternating seams
+  if (i % 2 === 0) {
+    for (const tg of tabGeos) {
+      const tab = new THREE.Mesh(tg, MAT.tabCream);
+      tab.rotation.y = seamRot;
+      tab.castShadow = true;
+      tab.receiveShadow = true;
+      envelope.add(tab);
+    }
+  }
+}
+
+/* Interior liner so the mouth doesn't look hollow-through */
+{
+  const linerPts = [];
+  for (let i = 0; i <= ENV.segs; i++) {
+    const p = envelopeProfile(i / ENV.segs);
+    linerPts.push(new THREE.Vector2(Math.max(0.02, p.r * 0.985), p.y));
+  }
+  const linerGeo = new THREE.LatheGeometry(linerPts, ENV.gores * 2);
+  const liner = new THREE.Mesh(linerGeo, paperMat(0xd9c9a8, { roughness: 0.99, flatShading: false, side: THREE.BackSide }));
+  liner.receiveShadow = true;
+  envelope.add(liner);
+}
+
+/* --------------------------------------------------------------------------
+   Crown cap: a small faceted paper disc + ring at the very top
+   -------------------------------------------------------------------------- */
+{
+  const crown = new THREE.Group();
+  const topP = envelopeProfile(0.0);
+  const capR = Math.max(0.30, topP.r + 0.05);
+
+  const capGeo = new THREE.CylinderGeometry(capR * 0.86, capR, 0.10, ENV.gores, 1, false);
+  const cap = new THREE.Mesh(capGeo, MAT.tabCream);
+  cap.position.y = topP.y + 0.02;
+  cap.castShadow = true; cap.receiveShadow = true;
+  crown.add(cap);
+
+  const ringGeo = new THREE.TorusGeometry(capR * 0.62, 0.045, 6, ENV.gores * 2);
+  const ring = new THREE.Mesh(ringGeo, MAT.coral);
+  ring.rotation.x = Math.PI / 2;
+  ring.position.y = topP.y + 0.10;
+  ring.castShadow = true; ring.receiveShadow = true;
+  crown.add(ring);
+
+  // little folded paper tabs radiating from the cap
+  for (let i = 0; i < ENV.gores; i++) {
+    const a = (i / ENV.gores) * Math.PI * 2 + Math.PI / ENV.gores;
+    const flap = new THREE.Mesh(new THREE.PlaneGeometry(0.20, 0.16), MAT.tabCream);
+    flap.position.set(Math.sin(a) * capR * 1.02, topP.y - 0.02, Math.cos(a) * capR * 1.02);
+    flap.rotation.set(-0.85, a, 0, 'YXZ');
+    flap.castShadow = true; flap.receiveShadow = true;
+    crown.add(flap);
+  }
+  envelope.add(crown);
+}
+
+/* --------------------------------------------------------------------------
+   Mouth ring (skirt) at the bottom of the envelope — a faceted band
+   -------------------------------------------------------------------------- */
+
+const mouth = envelopeProfile(1.0);
+const MOUTH_R = mouth.r;
+const MOUTH_Y = mouth.y;
+
+{
+  const band = new THREE.Mesh(
+    new THREE.CylinderGeometry(MOUTH_R * 1.03, MOUTH_R * 0.97, 0.26, ENV.gores, 1, true),
+    MAT.charcoal
+  );
+  band.position.y = MOUTH_Y - 0.11;
+  band.castShadow = true; band.receiveShadow = true;
+  envelope.add(band);
+
+  const lip = new THREE.Mesh(
+    new THREE.TorusGeometry(MOUTH_R * 0.985, 0.038, 6, ENV.gores * 2),
+    MAT.tabCream
+  );
+  lip.rotation.x = Math.PI / 2;
+  lip.position.y = MOUTH_Y - 0.235;
+  lip.castShadow = true; lip.receiveShadow = true;
+  envelope.add(lip);
+}
+
+/* ==========================================================================
+   Burner frame — a small paper cage under the mouth
+   ========================================================================== */
+
+const BASKET_TOP = 1.28;
+
+{
+  const burner = new THREE.Group();
+  const bY = MOUTH_Y - 0.55;
+
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.048, 0.048, 0.62, 6), MAT.charcoal);
+  post.position.y = bY + 0.30;
+  post.castShadow = true; post.receiveShadow = true;
+  burner.add(post);
+
+  const box = new THREE.Mesh(new THREE.CylinderGeometry(0.20, 0.16, 0.24, 8), MAT.coral);
+  box.position.y = bY - 0.02;
+  box.castShadow = true; box.receiveShadow = true;
+  burner.add(box);
+
+  const coil = new THREE.Mesh(new THREE.TorusGeometry(0.17, 0.028, 5, 16), MAT.tabCream);
+  coil.rotation.x = Math.PI / 2;
+  coil.position.y = bY - 0.16;
+  coil.castShadow = true;
+  burner.add(coil);
+
+  balloon.add(burner);
+}
+
+/* ==========================================================================
+   Four paper cords (flat folded strips, not tubes)
+   ========================================================================== */
+
+const CORD_TOP_R = MOUTH_R * 0.80;
+const cordsGroup = new THREE.Group();
+balloon.add(cordsGroup);
+
+const BASKET_R = 0.86;
+
+function buildCordStrip(angle) {
+  const topY = MOUTH_Y - 0.16;
+  const botY = BASKET_TOP - 0.06;
+  const steps = 14;
+  const w = 0.042;      // strip half-width
+  const pos = [];
+  const uv = [];
+  const idx = [];
+
+  for (let i = 0; i <= steps; i++) {
+    const t = i / steps;
+    const y = topY + (botY - topY) * t;
+    // radius eases in from the mouth to the basket corner, with a gentle sag
+    const r = CORD_TOP_R + (BASKET_R * 0.92 - CORD_TOP_R) * (t * t * (3 - 2 * t));
+    const sag = 0.010 * Math.sin(t * Math.PI);
+    const rr = r + sag;
+    const cx = Math.sin(angle) * rr;
+    const cz = Math.cos(angle) * rr;
+    // strip is flat, facing tangentially; widen along the tangent direction
+    const tx = Math.cos(angle), tz = -Math.sin(angle);
+    // slight twist so the paper catches light
+    const twist = Math.sin(t * Math.PI * 1.6) * 0.30;
+    const wy = Math.sin(twist) * w;
+    const scale = Math.cos(twist);
+    pos.push(cx - tx * w * scale, y - wy, cz - tz * w * scale);
+    pos.push(cx + tx * w * scale, y + wy, cz + tz * w * scale);
+    uv.push(0, t, 1, t);
+  }
+  for (let i = 0; i < steps; i++) {
+    const a = i * 2, b = a + 1, c = a + 2, d = a + 3;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+for (let i = 0; i < 4; i++) {
+  const a = (i / 4) * Math.PI * 2 + Math.PI / 4;
+  const cord = new THREE.Mesh(buildCordStrip(a), MAT.cord);
+  cord.castShadow = true;
+  cord.receiveShadow = true;
+  cordsGroup.add(cord);
+
+  // paper anchor tab where the cord meets the mouth ring
+  const anchor = new THREE.Mesh(new THREE.PlaneGeometry(0.14, 0.20), MAT.tabCream);
+  anchor.position.set(Math.sin(a) * (CORD_TOP_R + 0.005), MOUTH_Y - 0.16, Math.cos(a) * (CORD_TOP_R + 0.005));
+  anchor.rotation.y = a;
+  anchor.castShadow = true; anchor.receiveShadow = true;
+  cordsGroup.add(anchor);
+}
+
+/* ==========================================================================
+   Kraft basket — corrugated stock, woven look, scalloped rim
+   ========================================================================== */
+
+const basket = new THREE.Group();
+balloon.add(basket);
+
+const BASKET_H = 0.98;
+const BASKET_BOT = BASKET_TOP - BASKET_H;
+const SIDES = 4;      // square folded box, slightly flared
+
+/* --- Side walls: flat cards, slightly flared outward --- */
+function buildBasketWall() {
+  const wTop = BASKET_R * 0.99;
+  const wBot = BASKET_R * 0.84;
+  const cols = 6, rows = 6;
+  const pos = [], uv = [], idx = [];
+  for (let r = 0; r <= rows; r++) {
+    const tv = r / rows;
+    const y = BASKET_TOP - tv * BASKET_H;
+    const halfW = wTop + (wBot - wTop) * tv;
+    const depth = wTop + (wBot - wTop) * tv;
+    for (let c = 0; c <= cols; c++) {
+      const tu = c / cols;
+      const x = (-1 + 2 * tu) * halfW;
+      // gentle outward bow in the middle of the panel (paper bulge)
+      const bow = 0.035 * Math.sin(tu * Math.PI) * Math.sin(tv * Math.PI + 0.4);
+      pos.push(x, y, depth + bow);
+      uv.push(tu, 1 - tv);
+    }
+  }
+  for (let r = 0; r < rows; r++) {
+    for (let c = 0; c < cols; c++) {
+      const a = r * (cols + 1) + c, b = a + 1, cc = a + cols + 1, d = cc + 1;
+      idx.push(a, cc, b, b, cc, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+const wallGeo = buildBasketWall();
+for (let i = 0; i < SIDES; i++) {
+  const wall = new THREE.Mesh(wallGeo, MAT.kraft);
+  wall.rotation.y = (i / SIDES) * Math.PI * 2;
+  wall.castShadow = true;
+  wall.receiveShadow = true;
+  basket.add(wall);
+}
+
+/* --- Woven look: horizontal corrugated ribs + vertical warp strips --- */
+{
+  const weave = new THREE.Group();
+  const rows = 6;
+  for (let r = 0; r < rows; r++) {
+    const tv = (r + 0.5) / rows;
+    const y = BASKET_TOP - tv * BASKET_H;
+    const halfW = (BASKET_R * 0.99) + ((BASKET_R * 0.84) - (BASKET_R * 0.99)) * tv;
+    const bow = 0.035 * Math.sin(0.5 * Math.PI) * Math.sin(tv * Math.PI + 0.4);
+    const mat = (r % 2 === 0) ? MAT.kraftDark : MAT.kraftLight;
+
+    for (let i = 0; i < SIDES; i++) {
+      const rib = new THREE.Mesh(
+        new THREE.BoxGeometry(halfW * 2 * 0.985, BASKET_H / rows * 0.46, 0.026),
+        mat
+      );
+      rib.position.set(0, y, halfW + bow + 0.014);
+      rib.rotation.y = (i / SIDES) * Math.PI * 2;
+      rib.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), (i / SIDES) * Math.PI * 2);
+      rib.castShadow = true;
+      rib.receiveShadow = true;
+      weave.add(rib);
+    }
+  }
+  // vertical warp strips
+  const warps = 5;
+  for (let w = 0; w < warps; w++) {
+    const tu = (w + 0.5) / warps;
+    for (let i = 0; i < SIDES; i++) {
+      const halfWTop = BASKET_R * 0.99;
+      const x = (-1 + 2 * tu) * halfWTop * 0.94;
+      const strip = new THREE.Mesh(
+        new THREE.BoxGeometry(0.05, BASKET_H * 0.94, 0.02),
+        MAT.kraftLight
+      );
+      strip.position.set(x, BASKET_TOP - BASKET_H / 2, halfWTop * 0.93 + 0.024);
+      strip.rotation.y = (i / SIDES) * Math.PI * 2;
+      strip.position.applyAxisAngle(new THREE.Vector3(0, 1, 0), (i / SIDES) * Math.PI * 2);
+      strip.castShadow = true;
+      strip.receiveShadow = true;
+      weave.add(strip);
+    }
+  }
+  basket.add(weave);
+}
+
+/* --- Corner folds (visible glued edges of the box) --- */
+for (let i = 0; i < SIDES; i++) {
+  const a = (i / SIDES) * Math.PI * 2 + Math.PI / 4;
+  const rTop = BASKET_R * 0.99 * Math.SQRT2;
+  const rBot = BASKET_R * 0.84 * Math.SQRT2;
+  const rMid = (rTop + rBot) / 2;
+  const fold = new THREE.Mesh(
+    new THREE.BoxGeometry(0.075, BASKET_H, 0.075),
+    MAT.kraftDark
+  );
+  fold.position.set(Math.sin(a) * rMid * 0.985, BASKET_TOP - BASKET_H / 2, Math.cos(a) * rMid * 0.985);
+  fold.rotation.y = a;
+  fold.rotation.z = (rTop - rBot) / BASKET_H * 0.5 * 0;
+  fold.castShadow = true; fold.receiveShadow = true;
+  basket.add(fold);
+}
+
+/* --- Scalloped rim: a ring of overlapping paper semicircles --- */
+{
+  const rim = new THREE.Group();
+  const rimY = BASKET_TOP + 0.045;
+  const scallops = 28;
+  const rimR = BASKET_R * 1.055;
+
+  // flat rim band the scallops attach to
+  const bandShape = new THREE.Shape();
+  bandShape.absarc(0, 0, rimR, 0, Math.PI * 2, false);
+  const hole = new THREE.Path();
+  hole.absarc(0, 0, rimR - 0.13, 0, Math.PI * 2, true);
+  bandShape.holes.push(hole);
+  const bandGeo = new THREE.ExtrudeGeometry(bandShape, { depth: 0.075, bevelEnabled: false, curveSegments: 48 });
+  bandGeo.rotateX(-Math.PI / 2);
+  const band = new THREE.Mesh(bandGeo, MAT.kraftDark);
+  band.position.y = rimY;
+  band.castShadow = true; band.receiveShadow = true;
+  rim.add(band);
+
+  const scallopGeo = new THREE.CircleGeometry(0.115, 14, 0, Math.PI);
+  for (let i = 0; i < scallops; i++) {
+    const a = (i / scallops) * Math.PI * 2;
+    const s = new THREE.Mesh(scallopGeo, i % 2 === 0 ? MAT.kraftLight : MAT.kraft);
+    s.position.set(Math.sin(a) * rimR * 0.99, rimY + 0.078, Math.cos(a) * rimR * 0.99);
+    s.rotation.set(-Math.PI / 2, 0, -a, 'YXZ');
+    // orient: lay flat, petals pointing outward
+    s.rotation.set(0, 0, 0);
+    s.rotation.y = a;
+    s.rotation.x = -Math.PI / 2;
+    s.rotation.z = 0;
+    s.castShadow = true; s.receiveShadow = true;
+    rim.add(s);
+  }
+  basket.add(rim);
+}
+
+/* --- Basket floor + underside --- */
+{
+  const floorR = BASKET_R * 0.84;
+  const floor = new THREE.Mesh(
+    new THREE.BoxGeometry(floorR * 2, 0.07, floorR * 2),
+    MAT.kraftDark
+  );
+  floor.position.y = BASKET_BOT + 0.035;
+  floor.castShadow = true; floor.receiveShadow = true;
+  basket.add(floor);
+
+  // two skids under the basket
+  for (let i = -1; i <= 1; i += 2) {
+    const skid = new THREE.Mesh(
+      new THREE.BoxGeometry(floorR * 1.9, 0.05, 0.10),
+      MAT.charcoal
+    );
+    skid.position.set(0, BASKET_BOT - 0.02, i * floorR * 0.55);
+    skid.castShadow = true; skid.receiveShadow = true;
+    basket.add(skid);
+  }
+
+  // a couple of folded paper "sandbags" hanging on the outside
+  for (let i = 0; i < 2; i++) {
+    const a = Math.PI * 0.25 + i * Math.PI;
+    const bag = new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.13, 0.26, 6), MAT.cream);
+    const rr = BASKET_R * 1.0;
+    bag.position.set(Math.sin(a) * rr, BASKET_TOP - 0.36, Math.cos(a) * rr);
+    bag.rotation.y = a;
+    bag.castShadow = true; bag.receiveShadow = true;
+    basket.add(bag);
+  }
+}
+
+/* ==========================================================================
+   Center + scale the single object
+   ========================================================================== */
+
+{
+  const box = new THREE.Box3().setFromObject(balloon);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  const min = box.min.clone();
+  // keep it standing on/near the ground plane, centered on XZ
+  balloon.position.x -= center.x;
+  balloon.position.z -= center.z;
+  balloon.position.y -= min.y - 0.02;
+
+  const newBox = new THREE.Box3().setFromObject(balloon);
+  const size = new THREE.Vector3();
+  newBox.getSize(size);
+  controls.target.set(0, size.y * 0.52, 0);
+  controls.update();
+}
+
+/* ==========================================================================
+   Lighting
+   ========================================================================== */
+
+const hemi = new THREE.HemisphereLight(0xbfd4e8, 0x2a241d, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e0, 2.35);
+key.position.set(6.5, 10.5, 7.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 44;
+key.shadow.camera.left = -9;
+key.shadow.camera.right = 9;
+key.shadow.camera.top = 13;
+key.shadow.camera.bottom = -3;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.022;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xa8c4e0, 0.62);
+fill.position.set(-7.5, 4.0, 5.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.05);
+rim.position.set(-4.0, 6.5, -9.0);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffc890, 0.55, 9, 2);
+bounce.position.set(0, 2.2, 0);
+scene.add(bounce);
+
+/* ==========================================================================
+   Shadow-catcher ground
+   ========================================================================== */
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.36 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ==========================================================================
+   Resize + render loop
+   ========================================================================== */
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

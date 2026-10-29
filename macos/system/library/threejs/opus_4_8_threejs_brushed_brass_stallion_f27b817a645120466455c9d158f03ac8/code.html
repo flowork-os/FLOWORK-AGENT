@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Brushed Brass Stallion</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17181b; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    font: 12px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(235, 220, 190, 0.45); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Brushed Brass Stallion &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   RENDERER / SCENE / CAMERA
+   ========================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14151a);
+scene.fog = new THREE.Fog(0x14151a, 6.0, 18.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(2.55, 1.62, 3.35);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.minDistance = 1.9;
+controls.maxDistance = 9.0;
+controls.maxPolarAngle = Math.PI * 0.5;
+controls.target.set(0, 1.05, 0);
+
+/* ============================================================================
+   PROCEDURAL TEXTURES — brushed metal grain + patina
+   ========================================================================== */
+
+// Deterministic pseudo-random so the look is stable across reloads.
+let _seed = 20260720;
+function rnd() {
+  _seed = (_seed * 1664525 + 1013904223) & 0xffffffff;
+  return ((_seed >>> 8) & 0xffffff) / 0xffffff;
+}
+
+// --- brushed anisotropic grain -> roughness map + normal map -----------------
+const GRAIN_W = 1024, GRAIN_H = 1024;
+
+function makeGrainCanvas() {
+  const c = document.createElement('canvas');
+  c.width = GRAIN_W; c.height = GRAIN_H;
+  const ctx = c.getContext('2d');
+
+  // base mid grey
+  ctx.fillStyle = '#8a8a8a';
+  ctx.fillRect(0, 0, GRAIN_W, GRAIN_H);
+
+  // Long horizontal brush strokes (the directional grain).
+  ctx.globalAlpha = 1.0;
+  for (let i = 0; i < 5200; i++) {
+    const y = rnd() * GRAIN_H;
+    const x = rnd() * GRAIN_W;
+    const len = 60 + rnd() * 620;
+    const v = 138 + (rnd() - 0.5) * 150;
+    const a = 0.05 + rnd() * 0.30;
+    const h = 0.5 + rnd() * 1.9;
+    ctx.strokeStyle = `rgba(${v | 0},${v | 0},${v | 0},${a.toFixed(3)})`;
+    ctx.lineWidth = h;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + len, y + (rnd() - 0.5) * 1.2);
+    ctx.stroke();
+    // wrap-around for seamless tiling in X
+    if (x + len > GRAIN_W) {
+      ctx.beginPath();
+      ctx.moveTo(x - GRAIN_W, y);
+      ctx.lineTo(x - GRAIN_W + len, y + (rnd() - 0.5) * 1.2);
+      ctx.stroke();
+    }
+  }
+
+  // Faint fine speckle for micro-roughness
+  const img = ctx.getImageData(0, 0, GRAIN_W, GRAIN_H);
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    const n = (rnd() - 0.5) * 26;
+    d[i] = Math.max(0, Math.min(255, d[i] + n));
+    d[i + 1] = d[i];
+    d[i + 2] = d[i];
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+const grainCanvas = makeGrainCanvas();
+
+function grainTexture(repX, repY, rot) {
+  const t = new THREE.CanvasTexture(grainCanvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX, repY);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if (rot) { t.center.set(0.5, 0.5); t.rotation = rot; }
+  t.needsUpdate = true;
+  return t;
+}
+
+// Normal map derived from the grain (shallow, purely directional)
+function makeGrainNormal(strength) {
+  const src = document.createElement('canvas');
+  src.width = GRAIN_W; src.height = GRAIN_H;
+  const sctx = src.getContext('2d');
+  sctx.drawImage(grainCanvas, 0, 0);
+  const s = sctx.getImageData(0, 0, GRAIN_W, GRAIN_H).data;
+
+  const out = sctx.createImageData(GRAIN_W, GRAIN_H);
+  const o = out.data;
+  const idx = (x, y) => (((y + GRAIN_H) % GRAIN_H) * GRAIN_W + ((x + GRAIN_W) % GRAIN_W)) * 4;
+  for (let y = 0; y < GRAIN_H; y++) {
+    for (let x = 0; x < GRAIN_W; x++) {
+      const l = s[idx(x - 1, y)], r = s[idx(x + 1, y)];
+      const u = s[idx(x, y - 1)], dn = s[idx(x, y + 1)];
+      const dx = (r - l) / 255 * strength;
+      const dy = (dn - u) / 255 * strength * 2.4; // stronger across the grain
+      // normalize (-dx, -dy, 1)
+      const nx = -dx, ny = -dy, nz = 1.0;
+      const inv = 1 / Math.sqrt(nx * nx + ny * ny + nz * nz);
+      const k = idx(x, y);
+      o[k]     = ((nx * inv) * 0.5 + 0.5) * 255;
+      o[k + 1] = ((ny * inv) * 0.5 + 0.5) * 255;
+      o[k + 2] = ((nz * inv) * 0.5 + 0.5) * 255;
+      o[k + 3] = 255;
+    }
+  }
+  const c = document.createElement('canvas');
+  c.width = GRAIN_W; c.height = GRAIN_H;
+  c.getContext('2d').putImageData(out, 0, 0);
+  return c;
+}
+
+const grainNormalCanvas = makeGrainNormal(2.6);
+
+function grainNormalTexture(repX, repY, rot) {
+  const t = new THREE.CanvasTexture(grainNormalCanvas);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX, repY);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if (rot) { t.center.set(0.5, 0.5); t.rotation = rot; }
+  t.needsUpdate = true;
+  return t;
+}
+
+// --- studio environment (procedural gradient + soft strip lights) ------------
+function makeStudioEnvironment() {
+  const c = document.createElement('canvas');
+  c.width = 1024; c.height = 512;
+  const ctx = c.getContext('2d');
+
+  // vertical gradient: warm-ish ceiling -> dark floor
+  const g = ctx.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0.00, '#c9c2b4');
+  g.addColorStop(0.30, '#6c6a68');
+  g.addColorStop(0.52, '#2e2f33');
+  g.addColorStop(0.75, '#191a1e');
+  g.addColorStop(1.00, '#101114');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1024, 512);
+
+  // soft rectangular "softbox" highlights the brass can reflect
+  const boxes = [
+    { x: 190, y: 110, w: 250, h: 130, a: 1.0,  col: '255,246,226' },
+    { x: 640, y: 140, w: 190, h: 100, a: 0.62, col: '226,236,255' },
+    { x: 880, y: 190, w: 150, h: 80,  a: 0.42, col: '255,228,196' },
+    { x: 430, y: 330, w: 300, h: 60,  a: 0.18, col: '190,200,220' }
+  ];
+  for (const b of boxes) {
+    const rg = ctx.createRadialGradient(b.x, b.y, 4, b.x, b.y, Math.max(b.w, b.h) * 0.8);
+    rg.addColorStop(0, `rgba(${b.col},${b.a})`);
+    rg.addColorStop(1, `rgba(${b.col},0)`);
+    ctx.fillStyle = rg;
+    ctx.save();
+    ctx.translate(b.x, b.y);
+    ctx.scale(1, b.h / b.w);
+    ctx.beginPath();
+    ctx.arc(0, 0, b.w * 0.85, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+  }
+
+  // horizon band
+  const hb = ctx.createLinearGradient(0, 250, 0, 300);
+  hb.addColorStop(0, 'rgba(120,116,108,0.0)');
+  hb.addColorStop(0.5, 'rgba(140,134,120,0.20)');
+  hb.addColorStop(1, 'rgba(120,116,108,0.0)');
+  ctx.fillStyle = hb;
+  ctx.fillRect(0, 250, 1024, 50);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.needsUpdate = true;
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const envRT = pmrem.fromEquirectangular(tex);
+  tex.dispose();
+  pmrem.dispose();
+  return envRT.texture;
+}
+
+const envMap = makeStudioEnvironment();
+scene.environment = envMap;
+
+/* ============================================================================
+   MATERIALS — warm brushed brass, darker patina, dark base stone
+   ========================================================================== */
+
+const brassRough  = grainTexture(5, 5);
+const brassNormal = grainNormalTexture(5, 5);
+
+const brassMat = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(0xb98f42),
+  metalness: 1.0,
+  roughness: 0.34,
+  roughnessMap: brassRough,
+  normalMap: brassNormal,
+  normalScale: new THREE.Vector2(0.42, 0.42),
+  envMap: envMap,
+  envMapIntensity: 1.15,
+  clearcoat: 0.10,
+  clearcoatRoughness: 0.55
+});
+
+// Slightly darker/rougher brass for mane + tail ribbons (cast detail)
+const brassRibbonMat = brassMat.clone();
+brassRibbonMat.color = new THREE.Color(0xa87f37);
+brassRibbonMat.roughness = 0.42;
+brassRibbonMat.roughnessMap = grainTexture(2.0, 9.0);
+brassRibbonMat.normalMap = grainNormalTexture(2.0, 9.0);
+brassRibbonMat.normalScale = new THREE.Vector2(0.6, 0.6);
+brassRibbonMat.envMapIntensity = 1.05;
+
+// Patina brass — hooves, muscle grooves, recesses
+const patinaMat = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(0x4a3418),
+  metalness: 1.0,
+  roughness: 0.62,
+  roughnessMap: grainTexture(7, 7),
+  normalMap: grainNormalTexture(7, 7),
+  normalScale: new THREE.Vector2(0.5, 0.5),
+  envMap: envMap,
+  envMapIntensity: 0.75
+});
+
+// Deep patina for hooves
+const hoofMat = patinaMat.clone();
+hoofMat.color = new THREE.Color(0x3a2913);
+hoofMat.roughness = 0.55;
+hoofMat.envMapIntensity = 0.9;
+
+// Eye — near-black polished
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x120d07, metalness: 0.9, roughness: 0.16, envMap: envMap, envMapIntensity: 1.2
+});
+
+// Base — dark patinated bronze/stone plinth with brass fillet
+const baseStoneMat = new THREE.MeshPhysicalMaterial({
+  color: new THREE.Color(0x1d1c1e),
+  metalness: 0.55,
+  roughness: 0.78,
+  roughnessMap: grainTexture(3, 3),
+  normalMap: grainNormalTexture(3, 3),
+  normalScale: new THREE.Vector2(0.35, 0.35),
+  envMap: envMap,
+  envMapIntensity: 0.55
+});
+
+const baseBrassMat = brassMat.clone();
+baseBrassMat.color = new THREE.Color(0x9c7734);
+baseBrassMat.roughness = 0.40;
+baseBrassMat.roughnessMap = grainTexture(12, 2);
+baseBrassMat.normalMap = grainNormalTexture(12, 2);
+
+/* ============================================================================
+   GEOMETRY HELPERS
+   ========================================================================== */
+
+// A tapered, curved limb/body segment built from a CatmullRom tube with
+// per-point radius via a custom sweep (Tube geometry with variable radius).
+function sweepAlongCurve(curve, radiusFn, tubularSegments, radialSegments, twist = 0) {
+  const geo = new THREE.BufferGeometry();
+  const frames = curve.computeFrenetFrames(tubularSegments, false);
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const P = new THREE.Vector3();
+  const N = new THREE.Vector3();
+  const B = new THREE.Vector3();
+
+  for (let i = 0; i <= tubularSegments; i++) {
+    const u = i / tubularSegments;
+    curve.getPointAt(u, P);
+    N.copy(frames.normals[i]);
+    B.copy(frames.binormals[i]);
+    const rad = radiusFn(u);
+    const rx = (rad.x !== undefined) ? rad.x : rad;
+    const ry = (rad.y !== undefined) ? rad.y : rad;
+    const tw = twist * u;
+
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = j / radialSegments * Math.PI * 2 + tw;
+      const cx = Math.cos(v), sy = Math.sin(v);
+      const nx = N.x * cx + B.x * sy;
+      const ny = N.y * cx + B.y * sy;
+      const nz = N.z * cx + B.z * sy;
+      // elliptical cross-section
+      const px = P.x + (N.x * cx * rx + B.x * sy * ry);
+      const py = P.y + (N.y * cx * rx + B.y * sy * ry);
+      const pz = P.z + (N.z * cx * rx + B.z * sy * ry);
+      positions.push(px, py, pz);
+      normals.push(nx, ny, nz);
+      uvs.push(u, j / radialSegments);
+    }
+  }
+
+  for (let i = 0; i < tubularSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = (radialSegments + 1) * i + j;
+      const b = (radialSegments + 1) * (i + 1) + j;
+      const c = (radialSegments + 1) * (i + 1) + j + 1;
+      const d = (radialSegments + 1) * i + j + 1;
+      indices.push(a, b, d);
+      indices.push(b, c, d);
+    }
+  }
+
+  geo.setIndex(indices);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function curveFrom(points, tension = 0.5) {
+  return new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(p[0], p[1], p[2])), false, 'catmullrom', tension);
+}
+
+// Sphere-based volume, deformable via a scale + shear, used for muscle masses.
+function blob(rx, ry, rz, seg = 32) {
+  const g = new THREE.SphereGeometry(1, seg, Math.max(12, seg / 2));
+  g.scale(rx, ry, rz);
+  return g;
+}
+
+// A flat "ribbon" strip for mane/tail: a swept rectangle along a curve with
+// sinusoidal waviness and taper.
+function ribbonGeometry(curve, widthFn, thickFn, segs = 60, waveAmp = 0.0, wavePhase = 0) {
+  const geo = new THREE.BufferGeometry();
+  const frames = curve.computeFrenetFrames(segs, false);
+  const pos = [], idx = [], uvs = [];
+  const P = new THREE.Vector3();
+
+  for (let i = 0; i <= segs; i++) {
+    const u = i / segs;
+    curve.getPointAt(u, P);
+    const N = frames.normals[i], B = frames.binormals[i];
+    const w = widthFn(u);
+    const t = thickFn(u);
+    const roll = waveAmp * Math.sin(u * Math.PI * 3.1 + wavePhase);
+
+    // four corners of a rounded rect cross-section (8-gon for softer edges)
+    const K = 8;
+    for (let j = 0; j < K; j++) {
+      const a = (j / K) * Math.PI * 2;
+      // superellipse-ish flattened profile
+      const ca = Math.cos(a), sa = Math.sin(a);
+      const ex = Math.sign(ca) * Math.pow(Math.abs(ca), 0.55) * w;
+      const ey = Math.sign(sa) * Math.pow(Math.abs(sa), 0.55) * t;
+      const rx = ex * Math.cos(roll) - ey * Math.sin(roll);
+      const ry = ex * Math.sin(roll) + ey * Math.cos(roll);
+      pos.push(
+        P.x + N.x * rx + B.x * ry,
+        P.y + N.y * rx + B.y * ry,
+        P.z + N.z * rx + B.z * ry
+      );
+      uvs.push(j / K, u);
+    }
+  }
+  const K = 8;
+  for (let i = 0; i < segs; i++) {
+    for (let j = 0; j < K; j++) {
+      const j2 = (j + 1) % K;
+      const a = i * K + j, b = (i + 1) * K + j, c = (i + 1) * K + j2, d = i * K + j2;
+      idx.push(a, b, d, b, c, d);
+    }
+  }
+  geo.setIndex(idx);
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function mesh(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================================
+   THE STALLION
+   Scale: real horse ≈ 1.6 m at withers; rearing, hooves up, total height
+   from base ≈ 2.3 m. Model units = metres, but scaled to ~2.2 units tall
+   for a comfortable studio framing.
+   ========================================================================== */
+
+const stallion = new THREE.Group();
+
+/* ---- BASE: small oval plinth ---------------------------------------------- */
+const baseGroup = new THREE.Group();
+{
+  const OVAL_A = 0.62, OVAL_B = 0.42, H = 0.10;
+
+  // Oval slab body
+  const slab = new THREE.CylinderGeometry(1, 1, H, 96, 1, false);
+  slab.scale(OVAL_A, 1, OVAL_B);
+  const slabMesh = mesh(slab, baseStoneMat);
+  slabMesh.position.y = H / 2;
+  baseGroup.add(slabMesh);
+
+  // slight taper foot below
+  const foot = new THREE.CylinderGeometry(1, 0.94, 0.035, 96, 1, false);
+  foot.scale(OVAL_A * 1.055, 1, OVAL_B * 1.055);
+  const footMesh = mesh(foot, baseStoneMat);
+  footMesh.position.y = 0.0175;
+  baseGroup.add(footMesh);
+
+  // brass fillet ring at the top edge (torus squashed into an oval)
+  const ring = new THREE.TorusGeometry(1, 0.022, 16, 160);
+  ring.rotateX(Math.PI / 2);
+  ring.scale(OVAL_A, 1, OVAL_B);
+  const ringMesh = mesh(ring, baseBrassMat);
+  ringMesh.position.y = H;
+  baseGroup.add(ringMesh);
+
+  // thin brass inlay line near base bottom
+  const ring2 = new THREE.TorusGeometry(1, 0.008, 12, 160);
+  ring2.rotateX(Math.PI / 2);
+  ring2.scale(OVAL_A * 1.012, 1, OVAL_B * 1.012);
+  const ring2Mesh = mesh(ring2, baseBrassMat);
+  ring2Mesh.position.y = 0.048;
+  baseGroup.add(ring2Mesh);
+
+  // brass top plate (slightly inset), the surface the hooves stand on
+  const plate = new THREE.CylinderGeometry(1, 1, 0.014, 96);
+  plate.scale(OVAL_A * 0.965, 1, OVAL_B * 0.965);
+  const plateMesh = mesh(plate, baseBrassMat);
+  plateMesh.position.y = H + 0.006;
+  baseGroup.add(plateMesh);
+}
+stallion.add(baseGroup);
+
+const BASE_TOP = 0.118;
+
+/* ---- BODY ----------------------------------------------------------------- */
+/* The horse rears: hindquarters low & compressed near the base, spine sweeping
+   up and back-tilted ~55°, chest high, forelegs folded/striking the air.      */
+
+const horse = new THREE.Group();
+horse.position.y = BASE_TOP;
+stallion.add(horse);
+
+// Master orientation: rearing tilt about X (leaning back), slight yaw for dynamism
+horse.rotation.y = -0.22;
+
+/* --- torso: swept barrel from croup (rear) to chest (front) --- */
+// The spine curve, in local space. +Z is forward (head direction).
+const spinePts = [
+  [0.00, 0.62, -0.60],  // croup / tail root
+  [0.00, 0.78, -0.44],  // loin
+  [0.00, 0.96, -0.22],  // back
+  [0.00, 1.14,  0.02],  // withers
+  [0.00, 1.24,  0.20],  // base of neck
+];
+const spineCurve = curveFrom(spinePts, 0.5);
+
+const torsoGeo = sweepAlongCurve(
+  spineCurve,
+  (u) => {
+    // elliptical barrel: deep chest, narrower flanks
+    const bulge = Math.sin(Math.PI * Math.min(1, Math.max(0, (u - 0.02) / 0.98)));
+    const rx = 0.145 + 0.075 * bulge - 0.035 * Math.pow(u, 2.2);   // half-width
+    const ry = 0.205 + 0.095 * Math.sin(Math.PI * (0.15 + u * 0.8)) - 0.02 * u; // half-depth
+    return { x: rx, y: ry };
+  },
+  72, 40
+);
+const torso = mesh(torsoGeo, brassMat);
+horse.add(torso);
+
+// Chest / pectoral mass (front of barrel)
+{
+  const chest = mesh(blob(0.175, 0.20, 0.19, 36), brassMat);
+  chest.position.set(0, 1.185, 0.20);
+  chest.rotation.x = -0.25;
+  horse.add(chest);
+
+  const pec = mesh(blob(0.15, 0.13, 0.11, 32), brassMat);
+  pec.position.set(0, 1.09, 0.29);
+  pec.rotation.x = -0.35;
+  horse.add(pec);
+
+  // shoulder masses
+  for (const s of [-1, 1]) {
+    const shoulder = mesh(blob(0.085, 0.165, 0.135, 32), brassMat);
+    shoulder.position.set(s * 0.135, 1.115, 0.135);
+    shoulder.rotation.z = s * 0.16;
+    shoulder.rotation.x = -0.22;
+    horse.add(shoulder);
+
+    // shoulder groove (patina crease between shoulder and barrel)
+    const groove = mesh(blob(0.016, 0.115, 0.055, 20), patinaMat);
+    groove.position.set(s * 0.183, 1.10, 0.088);
+    groove.rotation.z = s * 0.20;
+    groove.rotation.x = -0.18;
+    horse.add(groove);
+  }
+
+  // barrel/ribcage swell
+  const ribs = mesh(blob(0.205, 0.235, 0.30, 40), brassMat);
+  ribs.position.set(0, 1.00, -0.02);
+  ribs.rotation.x = 0.42;
+  horse.add(ribs);
+
+  // belly under-curve
+  const belly = mesh(blob(0.165, 0.155, 0.26, 32), brassMat);
+  belly.position.set(0, 0.845, -0.10);
+  belly.rotation.x = 0.35;
+  horse.add(belly);
+}
+
+// Hindquarters — big rounded croup + haunches, compressed low
+{
+  const croup = mesh(blob(0.205, 0.225, 0.235, 40), brassMat);
+  croup.position.set(0, 0.665, -0.53);
+  croup.rotation.x = -0.20;
+  horse.add(croup);
+
+  for (const s of [-1, 1]) {
+    const haunch = mesh(blob(0.135, 0.195, 0.185, 36), brassMat);
+    haunch.position.set(s * 0.135, 0.585, -0.545);
+    haunch.rotation.z = s * 0.12;
+    horse.add(haunch);
+
+    // gaskin/thigh muscle
+    const thigh = mesh(blob(0.095, 0.155, 0.115, 32), brassMat);
+    thigh.position.set(s * 0.145, 0.455, -0.505);
+    thigh.rotation.x = 0.25;
+    horse.add(thigh);
+
+    // muscle groove: patina line separating quarter from thigh
+    const g1 = mesh(blob(0.012, 0.145, 0.085, 20), patinaMat);
+    g1.position.set(s * 0.196, 0.565, -0.505);
+    g1.rotation.z = s * 0.16;
+    g1.rotation.x = -0.10;
+    horse.add(g1);
+
+    // rear haunch crease
+    const g2 = mesh(blob(0.075, 0.010, 0.09, 20), patinaMat);
+    g2.position.set(s * 0.105, 0.66, -0.685);
+    g2.rotation.x = 0.30;
+    horse.add(g2);
+  }
+}
+
+/* --- flank muscle grooves along the barrel (patina catches here) --- */
+{
+  const grooveDefs = [
+    { s: 1, pos: [0.195, 1.00, 0.02], rot: [0.42, 0.10, 0.05], sc: [0.010, 0.16, 0.09] },
+    { s: -1, pos: [-0.195, 1.00, 0.02], rot: [0.42, -0.10, -0.05], sc: [0.010, 0.16, 0.09] },
+    { s: 1, pos: [0.186, 0.90, -0.16], rot: [0.55, 0.05, 0.0], sc: [0.010, 0.12, 0.075] },
+    { s: -1, pos: [-0.186, 0.90, -0.16], rot: [0.55, -0.05, 0.0], sc: [0.010, 0.12, 0.075] },
+    // rib hints
+    { s: 1, pos: [0.176, 1.03, -0.09], rot: [0.30, 0.0, 0.25], sc: [0.008, 0.10, 0.05] },
+    { s: -1, pos: [-0.176, 1.03, -0.09], rot: [0.30, 0.0, -0.25], sc: [0.008, 0.10, 0.05] }
+  ];
+  for (const g of grooveDefs) {
+    const m = mesh(blob(g.sc[0], g.sc[1], g.sc[2], 18), patinaMat);
+    m.position.set(g.pos[0], g.pos[1], g.pos[2]);
+    m.rotation.set(g.rot[0], g.rot[1], g.rot[2]);
+    horse.add(m);
+  }
+
+  // sternum / girth line
+  const girth = mesh(blob(0.175, 0.012, 0.10, 24), patinaMat);
+  girth.position.set(0, 0.925, 0.12);
+  girth.rotation.x = 0.30;
+  horse.add(girth);
+}
+
+/* ---- NECK ----------------------------------------------------------------- */
+// Arched, crested neck rising forward and up from the withers.
+const neckCurve = curveFrom([
+  [0.00, 1.20, 0.14],
+  [0.00, 1.36, 0.26],
+  [0.02, 1.53, 0.34],
+  [0.04, 1.69, 0.36],
+  [0.06, 1.81, 0.33]
+], 0.5);
+
+const neckGeo = sweepAlongCurve(
+  neckCurve,
+  (u) => {
+    const rx = 0.115 - 0.052 * u;              // narrows toward the poll
+    const ry = 0.165 - 0.075 * u + 0.02 * Math.sin(Math.PI * u); // deeper at base
+    return { x: rx, y: ry };
+  },
+  56, 32
+);
+const neck = mesh(neckGeo, brassMat);
+horse.add(neck);
+
+// crest (top of neck muscle, thick on a stallion)
+{
+  const crestCurve = curveFrom([
+    [0.00, 1.29, 0.22],
+    [0.01, 1.46, 0.36],
+    [0.03, 1.63, 0.44],
+    [0.05, 1.78, 0.44],
+    [0.06, 1.87, 0.38]
+  ], 0.5);
+  const crestGeo = sweepAlongCurve(crestCurve, (u) => ({
+    x: 0.052 - 0.024 * u,
+    y: 0.055 - 0.026 * u
+  }), 40, 20);
+  horse.add(mesh(crestGeo, brassMat));
+
+  // jugular groove (patina) both sides
+  for (const s of [-1, 1]) {
+    const jg = curveFrom([
+      [s * 0.085, 1.24, 0.20],
+      [s * 0.095, 1.40, 0.30],
+      [s * 0.085, 1.57, 0.36],
+      [s * 0.070, 1.72, 0.36]
+    ], 0.5);
+    const jgeo = sweepAlongCurve(jg, (u) => ({ x: 0.011 - 0.004 * u, y: 0.020 - 0.008 * u }), 28, 12);
+    horse.add(mesh(jgeo, patinaMat));
+  }
+}
+
+/* ---- HEAD ----------------------------------------------------------------- */
+const head = new THREE.Group();
+head.position.set(0.065, 1.845, 0.335);
+head.rotation.set(-0.62, 0.10, 0.06);   // tucked chin, classic rearing pose
+horse.add(head);
+
+{
+  // skull / cheek
+  const skull = mesh(blob(0.078, 0.092, 0.105, 32), brassMat);
+  skull.position.set(0, 0.0, 0.02);
+  head.add(skull);
+
+  const cheek = mesh(blob(0.075, 0.082, 0.075, 28), brassMat);
+  cheek.position.set(0, -0.035, 0.055);
+  head.add(cheek);
+
+  // muzzle: tapered snout forward and slightly down
+  const muzzleCurve = curveFrom([
+    [0, -0.01, 0.07],
+    [0, -0.045, 0.135],
+    [0, -0.085, 0.195],
+    [0, -0.115, 0.235]
+  ], 0.5);
+  const muzzleGeo = sweepAlongCurve(muzzleCurve, (u) => ({
+    x: 0.062 - 0.020 * u + 0.008 * Math.pow(u, 3),
+    y: 0.070 - 0.026 * u + 0.010 * Math.pow(u, 3)
+  }), 32, 24);
+  head.add(mesh(muzzleGeo, brassMat));
+
+  // nose tip / nostrils flare
+  const nose = mesh(blob(0.058, 0.050, 0.045, 26), brassMat);
+  nose.position.set(0, -0.122, 0.245);
+  head.add(nose);
+
+  for (const s of [-1, 1]) {
+    const nostril = mesh(blob(0.017, 0.021, 0.014, 18), patinaMat);
+    nostril.position.set(s * 0.030, -0.118, 0.276);
+    nostril.rotation.y = s * 0.3;
+    head.add(nostril);
+
+    // eye socket brow ridge
+    const brow = mesh(blob(0.028, 0.020, 0.024, 20), brassMat);
+    brow.position.set(s * 0.062, 0.036, 0.052);
+    head.add(brow);
+
+    const eye = mesh(new THREE.SphereGeometry(0.0175, 20, 16), eyeMat);
+    eye.position.set(s * 0.068, 0.021, 0.062);
+    head.add(eye);
+
+    // cheekbone groove
+    const cg = mesh(blob(0.010, 0.038, 0.040, 16), patinaMat);
+    cg.position.set(s * 0.070, -0.038, 0.045);
+    cg.rotation.x = 0.2;
+    head.add(cg);
+
+    // ---- ears: pricked, alert
+    const earCurve = curveFrom([
+      [s * 0.036, 0.075, -0.010],
+      [s * 0.046, 0.115, -0.020],
+      [s * 0.052, 0.150, -0.030]
+    ], 0.5);
+    const earGeo = sweepAlongCurve(earCurve, (u) => ({
+      x: 0.024 * (1 - u * 0.92),
+      y: 0.017 * (1 - u * 0.90)
+    }), 20, 14);
+    head.add(mesh(earGeo, brassMat));
+  }
+
+  // mouth line (patina)
+  const mouth = mesh(blob(0.045, 0.006, 0.028, 16), patinaMat);
+  mouth.position.set(0, -0.148, 0.232);
+  mouth.rotation.x = 0.35;
+  head.add(mouth);
+
+  // jaw underside
+  const jaw = mesh(blob(0.058, 0.055, 0.075, 24), brassMat);
+  jaw.position.set(0, -0.072, 0.095);
+  head.add(jaw);
+}
+
+/* ---- MANE — sculpted ribbons streaming back ------------------------------- */
+{
+  const maneGroup = new THREE.Group();
+  horse.add(maneGroup);
+
+  // Ribbon roots run along the crest from poll down to withers.
+  const ROOTS = 11;
+  for (let i = 0; i < ROOTS; i++) {
+    const t = i / (ROOTS - 1);              // 0 = poll (front), 1 = withers (back)
+    const side = (i % 2 === 0) ? 1 : -1;
+    const lateral = (0.020 + 0.030 * Math.abs(Math.sin(i * 2.1))) * side;
+
+    // root position along the crest
+    const rx = 0.055 - 0.055 * t + lateral * 0.55;
+    const ry = 1.885 - 0.60 * t;
+    const rz = 0.375 - 0.175 * t - 0.02 * Math.abs(lateral) * 6;
+
+    // stream BACK and slightly up: the flow of a leaping rear
+    const flow = 0.55 + 0.55 * (1 - t) + 0.25 * rnd();
+    const drop = 0.10 + 0.16 * t;
+    const sway = lateral * 3.4 + (rnd() - 0.5) * 0.10;
+
+    const pts = [
+      [rx, ry, rz],
+      [rx + lateral * 1.4, ry + 0.055 * flow, rz - 0.16 * flow],
+      [rx + sway * 0.55, ry + 0.035 * flow - drop * 0.25, rz - 0.36 * flow],
+      [rx + sway * 0.95, ry - 0.10 * flow - drop * 0.55, rz - 0.55 * flow],
+      [rx + sway * 1.25, ry - 0.24 * flow - drop * 0.85, rz - 0.68 * flow]
+    ];
+    const c = curveFrom(pts, 0.5);
+    const w0 = 0.030 + 0.020 * Math.sin(i * 1.7);
+    const g = ribbonGeometry(
+      c,
+      (u) => w0 * (1.0 - 0.72 * u * u) + 0.006,
+      (u) => (0.0085 + 0.004 * (1 - u)) ,
+      54, 0.55, i * 1.3
+    );
+    maneGroup.add(mesh(g, brassRibbonMat));
+  }
+
+  // A couple of heavier "lead" locks for silhouette
+  for (let k = 0; k < 3; k++) {
+    const s = (k === 1) ? 0 : (k === 0 ? 1 : -1);
+    const pts = [
+      [0.045 - k * 0.02, 1.86 - k * 0.06, 0.36 - k * 0.05],
+      [0.03 + s * 0.06, 1.85 - k * 0.05, 0.16 - k * 0.05],
+      [s * 0.10, 1.74 - k * 0.06, -0.08 - k * 0.06],
+      [s * 0.15, 1.58 - k * 0.07, -0.30 - k * 0.06],
+      [s * 0.18, 1.40 - k * 0.08, -0.46 - k * 0.05]
+    ];
+    const c = curveFrom(pts, 0.5);
+    const g = ribbonGeometry(
+      c,
+      (u) => 0.052 * (1 - 0.70 * u * u) + 0.007,
+      () => 0.011,
+      60, 0.7, k * 2.2
+    );
+    maneGroup.add(mesh(g, brassRibbonMat));
+  }
+
+  // forelock falling between the ears
+  for (let k = 0; k < 3; k++) {
+    const s = (k - 1);
+    const pts = [
+      [0.070 + s * 0.020, 1.905, 0.395],
+      [0.075 + s * 0.030, 1.885, 0.435],
+      [0.078 + s * 0.038, 1.845, 0.455],
+      [0.080 + s * 0.045, 1.800, 0.455]
+    ];
+    const c = curveFrom(pts, 0.5);
+    const g = ribbonGeometry(c, (u) => 0.021 * (1 - 0.6 * u) + 0.004, () => 0.007, 26, 0.4, k);
+    maneGroup.add(mesh(g, brassRibbonMat));
+  }
+}
+
+/* ---- TAIL — streaming ribbons off the croup ------------------------------- */
+{
+  const tailGroup = new THREE.Group();
+  horse.add(tailGroup);
+
+  // dock (fleshy root)
+  const dockCurve = curveFrom([
+    [0, 0.735, -0.66],
+    [0, 0.760, -0.74],
+    [0, 0.752, -0.82]
+  ], 0.5);
+  const dockGeo = sweepAlongCurve(dockCurve, (u) => ({ x: 0.048 - 0.014 * u, y: 0.052 - 0.016 * u }), 20, 18);
+  tailGroup.add(mesh(dockGeo, brassMat));
+
+  const STRANDS = 13;
+  for (let i = 0; i < STRANDS; i++) {
+    const t = i / (STRANDS - 1);
+    const ang = (t - 0.5) * Math.PI * 1.15;
+    const lateral = Math.sin(ang) * 0.085;
+    const vert = Math.cos(ang) * 0.045;
+    const flow = 0.85 + 0.35 * rnd();
+    const droop = 0.30 + 0.55 * rnd();
+
+    const pts = [
+      [lateral * 0.35, 0.760 + vert * 0.5, -0.80],
+      [lateral * 0.85, 0.755 + vert * 0.9 + 0.03 * flow, -0.99 * flow],
+      [lateral * 1.25, 0.680 + vert - 0.10 * droop, -1.19 * flow],
+      [lateral * 1.55, 0.545 + vert * 0.8 - 0.28 * droop, -1.33 * flow],
+      [lateral * 1.75, 0.395 + vert * 0.5 - 0.44 * droop, -1.40 * flow]
+    ];
+    const c = curveFrom(pts, 0.5);
+    const w0 = 0.030 + 0.022 * Math.abs(Math.sin(i * 1.9));
+    const g = ribbonGeometry(
+      c,
+      (u) => w0 * (1 - 0.68 * u * u) + 0.006,
+      () => 0.0095,
+      60, 0.8, i * 1.15
+    );
+    tailGroup.add(mesh(g, brassRibbonMat));
+  }
+}
+
+/* ---- LEGS ----------------------------------------------------------------- */
+/* Fore legs: folded up, striking the air (rearing).
+   Hind legs: planted on the base, deeply flexed, taking all the weight.       */
+
+function buildHoof(parent, pos, rotEuler, scale = 1) {
+  const hoofG = new THREE.Group();
+  hoofG.position.set(pos[0], pos[1], pos[2]);
+  hoofG.rotation.set(rotEuler[0], rotEuler[1], rotEuler[2]);
+  hoofG.scale.setScalar(scale);
+  parent.add(hoofG);
+
+  // coronet band (brass) then hoof capsule (patina)
+  const coronet = mesh(new THREE.CylinderGeometry(0.043, 0.047, 0.020, 24), brassMat);
+  coronet.position.y = 0.052;
+  hoofG.add(coronet);
+
+  const capsule = mesh(new THREE.CylinderGeometry(0.047, 0.058, 0.058, 26), hoofMat);
+  capsule.position.y = 0.024;
+  capsule.scale.set(1.0, 1.0, 0.92);
+  hoofG.add(capsule);
+
+  const sole = mesh(new THREE.CylinderGeometry(0.058, 0.055, 0.012, 26), hoofMat);
+  sole.position.y = -0.0045;
+  sole.scale.set(1.0, 1.0, 0.92);
+  hoofG.add(sole);
+
+  return hoofG;
+}
+
+function buildLeg(spec) {
+  const g = new THREE.Group();
+  horse.add(g);
+
+  const c = curveFrom(spec.points, 0.5);
+  const geo = sweepAlongCurve(c, (u) => {
+    const r = spec.radius(u);
+    return { x: r, y: r * (spec.flat ? 0.82 : 1.0) };
+  }, 60, 22);
+  g.add(mesh(geo, brassMat));
+
+  // joint volumes (stifle/hock/knee/fetlock) for anatomical read
+  for (const j of spec.joints) {
+    const p = c.getPointAt(j.t);
+    const m = mesh(blob(j.r * 1.05, j.r * 1.15, j.r * 1.0, 22), brassMat);
+    m.position.copy(p);
+    if (j.offset) m.position.add(new THREE.Vector3(j.offset[0], j.offset[1], j.offset[2]));
+    g.add(m);
+  }
+
+  // patina crease at the joints
+  for (const j of spec.creases || []) {
+    const p = c.getPointAt(j.t);
+    const m = mesh(blob(j.r * 1.02, j.r * 0.16, j.r * 1.02, 16), patinaMat);
+    m.position.copy(p);
+    m.rotation.x = j.rot || 0;
+    g.add(m);
+  }
+
+  // hoof at the end
+  const end = c.getPointAt(1.0);
+  const tan = c.getTangentAt(1.0);
+  const hoofRot = spec.hoofRot || [
+    Math.atan2(tan.z, -tan.y),
+    0,
+    Math.atan2(-tan.x, -tan.y)
+  ];
+  buildHoof(g, [end.x + (spec.hoofOff ? spec.hoofOff[0] : 0),
+                end.y + (spec.hoofOff ? spec.hoofOff[1] : 0),
+                end.z + (spec.hoofOff ? spec.hoofOff[2] : 0)],
+            hoofRot, spec.hoofScale || 1);
+
+  return g;
+}
+
+// ---- HIND LEGS: planted, deeply flexed, driving off the base ---------------
+for (const s of [-1, 1]) {
+  const near = s > 0 ? 1 : 0;
+  buildLeg({
+    points: [
+      [s * 0.150, 0.545, -0.545],                     // hip / stifle
+      [s * 0.160, 0.415, -0.435],                     // stifle forward
+      [s * 0.168, 0.300, -0.510 - near * 0.02],       // gaskin back
+      [s * 0.168, 0.215, -0.620 - near * 0.03],       // hock (point back)
+      [s * 0.160, 0.115, -0.545 - near * 0.02],       // cannon forward
+      [s * 0.155, 0.052, -0.500 - near * 0.015],      // fetlock
+      [s * 0.153, 0.018, -0.470 - near * 0.01]        // pastern to hoof
+    ],
+    radius: (u) => 0.088 - 0.058 * Math.pow(u, 0.75) + 0.012 * Math.sin(Math.PI * u * 1.6),
+    joints: [
+      { t: 0.16, r: 0.072 },
+      { t: 0.50, r: 0.056 },
+      { t: 0.84, r: 0.030 }
+    ],
+    creases: [
+      { t: 0.50, r: 0.058, rot: 0.5 },
+      { t: 0.84, r: 0.032, rot: 0.3 }
+    ],
+    hoofRot: [0.16, 0, 0],
+    hoofOff: [0, -0.012, 0.004],
+    hoofScale: 1.02
+  });
+}
+
+// ---- FORE LEGS: airborne, tucked and pawing --------------------------------
+// Near (viewer-left) foreleg: tightly folded, knee high.
+buildLeg({
+  points: [
+    [ 0.135, 1.115,  0.145],   // shoulder
+    [ 0.170, 1.010,  0.275],   // upper arm forward
+    [ 0.195, 0.925,  0.400],   // elbow
+    [ 0.215, 0.895,  0.520],   // knee (carpus), thrust forward
+    [ 0.220, 0.955,  0.600],   // cannon folded UP and back
+    [ 0.215, 1.030,  0.598],   // fetlock
+    [ 0.208, 1.085,  0.565]    // pastern -> hoof tucked
+  ],
+  radius: (u) => 0.082 - 0.052 * Math.pow(u, 0.7) + 0.010 * Math.sin(Math.PI * u * 1.4),
+  joints: [
+    { t: 0.14, r: 0.080 },
+    { t: 0.36, r: 0.052 },
+    { t: 0.58, r: 0.040 },
+    { t: 0.86, r: 0.027 }
+  ],
+  creases: [
+    { t: 0.58, r: 0.042, rot: 0.9 },
+    { t: 0.86, r: 0.029, rot: 1.2 }
+  ],
+  hoofRot: [2.35, 0.10, 0.06],
+  hoofOff: [0, 0.01, -0.005],
+  hoofScale: 0.98
+});
+
+// Far foreleg: extended higher, striking outward — the dramatic gesture.
+buildLeg({
+  points: [
+    [-0.135, 1.115,  0.140],
+    [-0.185, 1.055,  0.280],
+    [-0.235, 1.030,  0.430],
+    [-0.270, 1.045,  0.575],   // knee, more open
+    [-0.290, 1.115,  0.690],   // cannon reaching up/forward
+    [-0.298, 1.195,  0.735],   // fetlock
+    [-0.300, 1.258,  0.752]    // pastern -> hoof
+  ],
+  radius: (u) => 0.082 - 0.054 * Math.pow(u, 0.7) + 0.010 * Math.sin(Math.PI * u * 1.4),
+  joints: [
+    { t: 0.13, r: 0.079 },
+    { t: 0.38, r: 0.050 },
+    { t: 0.60, r: 0.039 },
+    { t: 0.86, r: 0.026 }
+  ],
+  creases: [
+    { t: 0.60, r: 0.041, rot: 0.6 },
+    { t: 0.86, r: 0.028, rot: 0.5 }
+  ],
+  hoofRot: [-0.55, -0.15, -0.10],
+  hoofOff: [0, 0.012, 0.012],
+  hoofScale: 0.98
+});
+
+/* ---- weight-bearing support: a subtle brass swirl under the tail ---------- */
+/* Classic rearing bronzes brace the tail against the base for structure.     */
+{
+  const braceCurve = curveFrom([
+    [0.0, 0.70, -0.80],
+    [0.0, 0.52, -0.96],
+    [0.0, 0.30, -1.02],
+    [0.0, 0.12, -0.96],
+    [0.0, 0.02, -0.80]
+  ], 0.5);
+  const braceGeo = sweepAlongCurve(braceCurve, (u) => ({
+    x: 0.036 - 0.006 * Math.sin(Math.PI * u),
+    y: 0.048 - 0.010 * Math.sin(Math.PI * u)
+  }), 40, 18);
+  const brace = mesh(braceGeo, brassRibbonMat);
+  horse.add(brace);
+}
+
+/* ============================================================================
+   CENTER + SCALE THE SINGLE OBJECT
+   ========================================================================== */
+scene.add(stallion);
+
+// Recentre on X/Z and sit the base at y=0, then normalise overall height.
+stallion.updateMatrixWorld(true);
+{
+  const box = new THREE.Box3().setFromObject(stallion);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+
+  const TARGET_H = 2.35;                    // ≈ a rearing stallion, in metres
+  const k = TARGET_H / size.y;
+  stallion.scale.setScalar(k);
+  stallion.updateMatrixWorld(true);
+
+  const box2 = new THREE.Box3().setFromObject(stallion);
+  const c2 = new THREE.Vector3();
+  box2.getCenter(c2);
+  stallion.position.x -= c2.x;
+  stallion.position.z -= c2.z;
+  stallion.position.y -= box2.min.y;
+  stallion.updateMatrixWorld(true);
+
+  const box3 = new THREE.Box3().setFromObject(stallion);
+  controls.target.set(0, (box3.max.y + box3.min.y) * 0.47, 0);
+  camera.position.set(2.9, box3.max.y * 0.72, 3.5);
+  controls.update();
+}
+
+/* ============================================================================
+   LIGHTING — key + fill + rim, soft shadows
+   ========================================================================== */
+
+const hemi = new THREE.HemisphereLight(0xdfe6f2, 0x1b1712, 0.35);
+scene.add(hemi);
+
+scene.add(new THREE.AmbientLight(0x30302f, 0.35));
+
+// KEY — warm, high, front-left
+const key = new THREE.DirectionalLight(0xfff2d6, 3.1);
+key.position.set(3.6, 5.4, 3.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 20;
+key.shadow.camera.left = -3.2;
+key.shadow.camera.right = 3.2;
+key.shadow.camera.top = 3.6;
+key.shadow.camera.bottom = -1.2;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.022;
+key.shadow.radius = 4;
+scene.add(key);
+
+// FILL — cool, soft, front-right low
+const fill = new THREE.DirectionalLight(0xb8ccf0, 0.85);
+fill.position.set(-4.2, 2.0, 2.6);
+scene.add(fill);
+
+// RIM — strong warm backlight to rake the brushed grain
+const rim = new THREE.SpotLight(0xffd9a0, 60, 18, Math.PI * 0.28, 0.55, 1.6);
+rim.position.set(-2.6, 4.6, -4.6);
+rim.target.position.set(0, 1.2, 0);
+rim.castShadow = false;
+scene.add(rim);
+scene.add(rim.target);
+
+// Kicker — narrow specular sweep along the flank
+const kicker = new THREE.SpotLight(0xfff4e0, 24, 14, Math.PI * 0.20, 0.7, 1.8);
+kicker.position.set(3.0, 1.4, -3.2);
+kicker.target.position.set(0, 1.1, 0);
+scene.add(kicker);
+scene.add(kicker.target);
+
+// Very soft under-bounce so the belly/hooves don't go black
+const bounce = new THREE.PointLight(0x8a6a3a, 3.0, 5.0, 2.0);
+bounce.position.set(0, 0.18, 0.9);
+scene.add(bounce);
+
+/* ---- shadow-only ground ---------------------------------------------------- */
+const shadowGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.46 })
+);
+shadowGround.rotation.x = -Math.PI / 2;
+shadowGround.position.y = 0.001;
+shadowGround.receiveShadow = true;
+scene.add(shadowGround);
+
+// Subtle radial vignette on the floor so the plinth sits in space
+{
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(256, 256, 20, 256, 256, 250);
+  g.addColorStop(0.0, 'rgba(70,68,66,0.55)');
+  g.addColorStop(0.45, 'rgba(40,39,40,0.30)');
+  g.addColorStop(1.0, 'rgba(20,21,26,0.0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 512, 512);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  const pool = new THREE.Mesh(
+    new THREE.PlaneGeometry(7, 7),
+    new THREE.MeshBasicMaterial({ map: t, transparent: true, depthWrite: false })
+  );
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.y = 0.0005;
+  scene.add(pool);
+}
+
+/* ============================================================================
+   RESIZE + RENDER LOOP
+   ========================================================================== */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

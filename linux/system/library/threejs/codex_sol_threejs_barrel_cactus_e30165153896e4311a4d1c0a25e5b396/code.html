@@ -1,0 +1,477 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Procedural Barrel Cactus</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #eee9df;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xeee9df);
+
+const camera = new THREE.PerspectiveCamera(
+  34,
+  window.innerWidth / window.innerHeight,
+  0.1,
+  100
+);
+camera.position.set(7.2, 5.2, 8.2);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.45, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.65;
+controls.minDistance = 5.4;
+controls.maxDistance = 14;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+const hemiLight = new THREE.HemisphereLight(0xfff8e9, 0x6f786c, 2.15);
+scene.add(hemiLight);
+
+const keyLight = new THREE.DirectionalLight(0xfff1d8, 4.3);
+keyLight.position.set(5.5, 8.5, 5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -5;
+keyLight.shadow.camera.right = 5;
+keyLight.shadow.camera.top = 7;
+keyLight.shadow.camera.bottom = -2;
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 20;
+keyLight.shadow.bias = -0.00025;
+keyLight.shadow.normalBias = 0.025;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xb9d7df, 1.25);
+fillLight.position.set(-5, 4, -4);
+scene.add(fillLight);
+
+const floorMaterial = new THREE.MeshStandardMaterial({
+  color: 0xded8cc,
+  roughness: 0.92,
+  metalness: 0
+});
+const floor = new THREE.Mesh(
+  new THREE.CircleGeometry(8, 128),
+  floorMaterial
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = 0;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const cactusGroup = new THREE.Group();
+scene.add(cactusGroup);
+
+const ribCount = 18;
+const cactusBottom = 1.34;
+const cactusTop = 4.72;
+const cactusHeight = cactusTop - cactusBottom;
+const maxRadius = 1.27;
+const ribAmplitude = 0.075;
+
+function smoothstep(edge0, edge1, x) {
+  const t = THREE.MathUtils.clamp((x - edge0) / (edge1 - edge0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+
+function bodyRadius(t) {
+  const lowerBulge = 0.79 + 0.21 * smoothstep(0, 0.25, t);
+  const shoulder = 1 - 0.06 * smoothstep(0.55, 0.72, t);
+  const crownT = smoothstep(0.68, 1, t);
+  const crown = Math.sqrt(Math.max(0.0035, 1 - crownT * crownT));
+  return maxRadius * lowerBulge * shoulder * crown;
+}
+
+function ridgeRadius(t) {
+  return bodyRadius(t) * (1 + ribAmplitude);
+}
+
+function ridgeNormal(theta, t) {
+  const dt = 0.001;
+  const t0 = Math.max(0, t - dt);
+  const t1 = Math.min(1, t + dt);
+  const drdy = (ridgeRadius(t1) - ridgeRadius(t0)) /
+    ((t1 - t0) * cactusHeight);
+  return new THREE.Vector3(
+    Math.cos(theta),
+    -drdy,
+    Math.sin(theta)
+  ).normalize();
+}
+
+function ridgePoint(theta, t, offset = 0) {
+  const normal = ridgeNormal(theta, t);
+  const r = ridgeRadius(t);
+  return new THREE.Vector3(
+    Math.cos(theta) * r,
+    cactusBottom + t * cactusHeight,
+    Math.sin(theta) * r
+  ).addScaledVector(normal, offset);
+}
+
+function createCactusBody() {
+  const radialSegments = ribCount * 8;
+  const verticalSegments = 46;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let iy = 0; iy <= verticalSegments; iy++) {
+    const t = iy / verticalSegments;
+    const baseR = bodyRadius(t);
+
+    for (let ix = 0; ix <= radialSegments; ix++) {
+      const u = ix / radialSegments;
+      const theta = u * Math.PI * 2;
+      const ribWave = Math.cos(theta * ribCount);
+      const secondary = Math.cos(theta * ribCount * 2) * 0.008;
+      const radius = baseR * (1 + ribAmplitude * ribWave + secondary);
+
+      positions.push(
+        Math.cos(theta) * radius,
+        cactusBottom + t * cactusHeight,
+        Math.sin(theta) * radius
+      );
+      uvs.push(u, t);
+    }
+  }
+
+  const row = radialSegments + 1;
+  for (let iy = 0; iy < verticalSegments; iy++) {
+    for (let ix = 0; ix < radialSegments; ix++) {
+      const a = iy * row + ix;
+      const b = a + row;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const bottomCenter = positions.length / 3;
+  positions.push(0, cactusBottom, 0);
+  uvs.push(0.5, 0.5);
+
+  for (let ix = 0; ix < radialSegments; ix++) {
+    indices.push(bottomCenter, ix + 1, ix);
+  }
+
+  const topCenter = positions.length / 3;
+  positions.push(0, cactusTop + 0.018, 0);
+  uvs.push(0.5, 0.5);
+
+  const topRow = verticalSegments * row;
+  for (let ix = 0; ix < radialSegments; ix++) {
+    indices.push(topCenter, topRow + ix, topRow + ix + 1);
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute(
+    'position',
+    new THREE.Float32BufferAttribute(positions, 3)
+  );
+  geometry.setAttribute(
+    'uv',
+    new THREE.Float32BufferAttribute(uvs, 2)
+  );
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+
+  return geometry;
+}
+
+const cactusMaterial = new THREE.MeshStandardMaterial({
+  color: 0x3b7f49,
+  roughness: 0.78,
+  metalness: 0,
+  side: THREE.DoubleSide
+});
+
+const cactusBody = new THREE.Mesh(createCactusBody(), cactusMaterial);
+cactusBody.castShadow = true;
+cactusBody.receiveShadow = true;
+cactusGroup.add(cactusBody);
+
+const potMaterial = new THREE.MeshStandardMaterial({
+  color: 0xa95638,
+  roughness: 0.84,
+  metalness: 0
+});
+
+const potSide = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.48, 0.98, 1.32, 96, 3, false),
+  potMaterial
+);
+potSide.position.y = 0.73;
+potSide.castShadow = true;
+potSide.receiveShadow = true;
+cactusGroup.add(potSide);
+
+const potRim = new THREE.Mesh(
+  new THREE.TorusGeometry(1.405, 0.16, 20, 96),
+  potMaterial
+);
+potRim.rotation.x = Math.PI / 2;
+potRim.position.y = 1.39;
+potRim.castShadow = true;
+potRim.receiveShadow = true;
+cactusGroup.add(potRim);
+
+const potLipInner = new THREE.Mesh(
+  new THREE.TorusGeometry(1.245, 0.045, 12, 96),
+  new THREE.MeshStandardMaterial({
+    color: 0x81402f,
+    roughness: 0.9
+  })
+);
+potLipInner.rotation.x = Math.PI / 2;
+potLipInner.position.y = 1.43;
+potLipInner.castShadow = true;
+cactusGroup.add(potLipInner);
+
+const soil = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.285, 1.285, 0.105, 96),
+  new THREE.MeshStandardMaterial({
+    color: 0x4a3528,
+    roughness: 1
+  })
+);
+soil.position.y = 1.39;
+soil.receiveShadow = true;
+cactusGroup.add(soil);
+
+const pebbleGeometry = new THREE.DodecahedronGeometry(0.055, 0);
+const pebbleMaterial = new THREE.MeshStandardMaterial({
+  color: 0xb7a387,
+  roughness: 1
+});
+const pebbleCount = 42;
+const pebbles = new THREE.InstancedMesh(
+  pebbleGeometry,
+  pebbleMaterial,
+  pebbleCount
+);
+const pebbleMatrix = new THREE.Matrix4();
+const pebbleQuaternion = new THREE.Quaternion();
+const pebbleScale = new THREE.Vector3();
+const pebblePosition = new THREE.Vector3();
+
+for (let i = 0; i < pebbleCount; i++) {
+  const angle = i * 2.399963229728653;
+  const radialFraction = Math.sqrt((i + 0.5) / pebbleCount);
+  const radius = 0.42 + radialFraction * 0.78;
+  pebblePosition.set(
+    Math.cos(angle) * radius,
+    1.465 + (i % 3) * 0.004,
+    Math.sin(angle) * radius
+  );
+  pebbleQuaternion.setFromEuler(
+    new THREE.Euler(
+      (i * 0.37) % Math.PI,
+      (i * 0.61) % Math.PI,
+      (i * 0.23) % Math.PI
+    )
+  );
+  const s = 0.7 + (i % 7) * 0.055;
+  pebbleScale.set(s * 1.25, s * 0.56, s);
+  pebbleMatrix.compose(pebblePosition, pebbleQuaternion, pebbleScale);
+  pebbles.setMatrixAt(i, pebbleMatrix);
+}
+pebbles.castShadow = true;
+pebbles.receiveShadow = true;
+cactusGroup.add(pebbles);
+
+const rowLevels = [0.16, 0.285, 0.41, 0.535, 0.655, 0.76, 0.845, 0.91];
+const areoleCount = ribCount * rowLevels.length;
+
+const areoleGeometry = new THREE.SphereGeometry(0.065, 10, 7);
+areoleGeometry.scale(1, 0.42, 1);
+
+const areoleMaterial = new THREE.MeshStandardMaterial({
+  color: 0xe6d4aa,
+  roughness: 1
+});
+
+const areoles = new THREE.InstancedMesh(
+  areoleGeometry,
+  areoleMaterial,
+  areoleCount
+);
+areoles.castShadow = true;
+
+const up = new THREE.Vector3(0, 1, 0);
+const areoleMatrix = new THREE.Matrix4();
+const areoleQuat = new THREE.Quaternion();
+const areoleScale = new THREE.Vector3(1, 1, 1);
+
+let areoleIndex = 0;
+for (let rib = 0; rib < ribCount; rib++) {
+  const theta = rib * Math.PI * 2 / ribCount;
+
+  for (const t of rowLevels) {
+    const point = ridgePoint(theta, t, 0.018);
+    const normal = ridgeNormal(theta, t);
+    areoleQuat.setFromUnitVectors(up, normal);
+    areoleMatrix.compose(point, areoleQuat, areoleScale);
+    areoles.setMatrixAt(areoleIndex++, areoleMatrix);
+  }
+}
+cactusGroup.add(areoles);
+
+const spinesPerAreole = 5;
+const spineCount = areoleCount * spinesPerAreole;
+const spineLength = 0.27;
+const spineGeometry = new THREE.ConeGeometry(0.018, spineLength, 5, 1, false);
+spineGeometry.translate(0, spineLength * 0.5, 0);
+
+const spineMaterial = new THREE.MeshStandardMaterial({
+  color: 0xf1e3bb,
+  roughness: 0.7,
+  metalness: 0
+});
+
+const spines = new THREE.InstancedMesh(
+  spineGeometry,
+  spineMaterial,
+  spineCount
+);
+spines.castShadow = true;
+
+const spineMatrix = new THREE.Matrix4();
+const spineQuat = new THREE.Quaternion();
+const spineScale = new THREE.Vector3();
+const tangent = new THREE.Vector3();
+const direction = new THREE.Vector3();
+let spineIndex = 0;
+
+for (let rib = 0; rib < ribCount; rib++) {
+  const theta = rib * Math.PI * 2 / ribCount;
+  tangent.set(-Math.sin(theta), 0, Math.cos(theta));
+
+  for (let rowIndex = 0; rowIndex < rowLevels.length; rowIndex++) {
+    const t = rowLevels[rowIndex];
+    const normal = ridgeNormal(theta, t);
+    const point = ridgePoint(theta, t, 0.05);
+    const directions = [
+      normal.clone(),
+      normal.clone().multiplyScalar(0.82).addScaledVector(tangent, 0.58),
+      normal.clone().multiplyScalar(0.82).addScaledVector(tangent, -0.58),
+      normal.clone().multiplyScalar(0.8).addScaledVector(up, 0.6),
+      normal.clone().multiplyScalar(0.82).addScaledVector(up, -0.56)
+    ];
+
+    for (let j = 0; j < directions.length; j++) {
+      direction.copy(directions[j]).normalize();
+      spineQuat.setFromUnitVectors(up, direction);
+      const scaleVariation = 0.82 + ((rib * 7 + rowIndex * 3 + j) % 7) * 0.045;
+      spineScale.set(1, scaleVariation, 1);
+      spineMatrix.compose(point, spineQuat, spineScale);
+      spines.setMatrixAt(spineIndex++, spineMatrix);
+    }
+  }
+}
+cactusGroup.add(spines);
+
+const topAreoleGeometry = new THREE.SphereGeometry(0.11, 16, 10);
+topAreoleGeometry.scale(1, 0.45, 1);
+const topAreole = new THREE.Mesh(topAreoleGeometry, areoleMaterial);
+topAreole.position.set(0, cactusTop + 0.012, 0);
+topAreole.castShadow = true;
+cactusGroup.add(topAreole);
+
+const topSpineCount = 14;
+const topSpines = new THREE.InstancedMesh(
+  spineGeometry,
+  spineMaterial,
+  topSpineCount
+);
+topSpines.castShadow = true;
+
+for (let i = 0; i < topSpineCount; i++) {
+  const angle = i * Math.PI * 2 / topSpineCount;
+  direction.set(
+    Math.cos(angle) * 0.55,
+    0.82,
+    Math.sin(angle) * 0.55
+  ).normalize();
+  spineQuat.setFromUnitVectors(up, direction);
+  spineScale.set(1, 0.82 + (i % 4) * 0.06, 1);
+  spineMatrix.compose(
+    new THREE.Vector3(0, cactusTop + 0.045, 0),
+    spineQuat,
+    spineScale
+  );
+  topSpines.setMatrixAt(i, spineMatrix);
+}
+cactusGroup.add(topSpines);
+
+const ambientDisk = new THREE.Mesh(
+  new THREE.CircleGeometry(3.8, 96),
+  new THREE.MeshBasicMaterial({
+    color: 0xc8bfae,
+    transparent: true,
+    opacity: 0.12,
+    depthWrite: false
+  })
+);
+ambientDisk.rotation.x = -Math.PI / 2;
+ambientDisk.position.y = 0.006;
+scene.add(ambientDisk);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>

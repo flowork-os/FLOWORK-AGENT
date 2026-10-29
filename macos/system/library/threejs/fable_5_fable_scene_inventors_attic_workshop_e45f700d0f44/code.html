@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Inventor's Attic Workshop</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0b0a12}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ================================================================
+// 1. CONFIG & PALETTE — cluttered steampunk attic at night
+// ================================================================
+const ROOM = { halfW: 9.3, halfD: 7.3, eaveH: 3.0, ridgeH: 7.2 };
+const SLOPE_A = Math.atan2(ROOM.ridgeH - ROOM.eaveH, ROOM.halfW);
+const SLOPE_LEN = Math.hypot(ROOM.ridgeH - ROOM.eaveH, ROOM.halfW);
+const roofYAt = (x) => ROOM.ridgeH - (ROOM.ridgeH - ROOM.eaveH) * Math.abs(x) / ROOM.halfW;
+const PAL = {
+  bg: 0x0b0a12, fog: 0x120e1c,
+  brass: 0xb08b3e, copper: 0xa25b33, iron: 0x3d3b42, steel: 0x6a6d74,
+  woodDark: 0x3c2a18, woodMid: 0x5d422a, leather: 0x5c3524, paper: 0xd8c9a0,
+  moonBlue: 0xa9c4ff, lampWarm: 0xffc978, fire: 0xff7a26, arc: 0xbfe8ff
+};
+
+// ================================================================
+// 2. SEEDED PRNG & SMALL HELPERS
+// ================================================================
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(20260816);
+const rr = (a, b) => a + (b - a) * rand();
+function mesh(geo, mat, x = 0, y = 0, z = 0, rx = 0, ry = 0, rz = 0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.rotation.set(rx, ry, rz);
+  m.castShadow = true; m.receiveShadow = true;
+  return m;
+}
+const anims = [];   // list of (t)=>{} updaters run every frame
+
+// ================================================================
+// 3. CANVAS TEXTURES (all procedural, no external assets)
+// ================================================================
+function canvasTex(w, h, draw) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function plankTexture(base, seam, rows, w, h) {
+  return canvasTex(w, h, (g) => {
+    g.fillStyle = base; g.fillRect(0, 0, w, h);
+    const rh = h / rows;
+    for (let r = 0; r < rows; r++) {
+      const y = r * rh, tint = rr(-14, 14);
+      g.fillStyle = `rgba(${tint > 0 ? 255 : 0},${tint > 0 ? 220 : 0},160,${Math.abs(tint) / 160})`;
+      g.fillRect(0, y, w, rh);
+      g.strokeStyle = seam; g.lineWidth = 3; g.strokeRect(-2, y, w + 4, rh);
+      g.strokeStyle = 'rgba(30,16,6,0.25)'; g.lineWidth = 1;
+      for (let k = 0; k < 20; k++) {                     // wavy grain streaks
+        const gy = y + rr(2, rh - 2); g.beginPath(); g.moveTo(0, gy);
+        for (let x = 0; x <= w; x += w / 8) g.lineTo(x, gy + rr(-3, 3));
+        g.stroke();
+      }
+      g.fillStyle = seam; g.fillRect(rr(0, w), y, 2, rh);  // butt joint
+      g.fillStyle = 'rgba(20,12,6,0.8)';
+      g.beginPath(); g.arc(rr(0, w), y + rh / 2, 2.2, 0, 7); g.fill();
+    }
+  });
+}
+function blueprintTexture() {
+  return canvasTex(512, 384, (g, w, h) => {
+    const grd = g.createLinearGradient(0, 0, w, h);
+    grd.addColorStop(0, '#16407e'); grd.addColorStop(1, '#0e2c5c');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    g.strokeStyle = 'rgba(190,215,255,0.16)'; g.lineWidth = 1;
+    for (let x = 0; x <= w; x += 16) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+    for (let y = 0; y <= h; y += 16) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+    g.strokeStyle = 'rgba(230,242,255,0.9)'; g.lineWidth = 2;
+    g.beginPath(); g.arc(140, 190, 82, 0, 7); g.stroke();          // master gear
+    g.beginPath(); g.arc(140, 190, 58, 0, 7); g.stroke();
+    for (let i = 0; i < 20; i++) {
+      const a = i / 20 * Math.PI * 2;
+      g.beginPath(); g.moveTo(140 + Math.cos(a) * 82, 190 + Math.sin(a) * 82);
+      g.lineTo(140 + Math.cos(a) * 94, 190 + Math.sin(a) * 94); g.stroke();
+    }
+    g.beginPath(); g.moveTo(110, 190); g.lineTo(170, 190); g.moveTo(140, 160); g.lineTo(140, 220); g.stroke();
+    g.beginPath(); g.ellipse(370, 110, 105, 34, 0, 0, 7); g.stroke(); // airship plan
+    g.beginPath(); g.moveTo(455, 96); g.lineTo(500, 78); g.lineTo(500, 140); g.lineTo(455, 124); g.stroke();
+    g.strokeRect(330, 152, 80, 22);
+    g.beginPath(); g.moveTo(265, 110); g.lineTo(240, 110); g.moveTo(240, 100); g.lineTo(240, 120); g.stroke();
+    g.beginPath(); g.moveTo(300, 250); g.lineTo(470, 250); g.lineTo(470, 330); g.stroke(); // torso sketch
+    g.strokeRect(330, 260, 90, 60); g.beginPath(); g.arc(375, 244, 16, 0, 7); g.stroke();
+    g.font = '16px monospace'; g.fillStyle = 'rgba(235,244,255,0.95)';
+    g.fillText('AUTOMATON MK-IV', 330, 356); g.fillText('SCALE 1:4', 40, 40);
+    g.strokeRect(320, 338, 172, 30);
+  });
+}
+function moonSkyTexture() {
+  return canvasTex(256, 256, (g, w, h) => {
+    const grd = g.createLinearGradient(0, 0, 0, h);
+    grd.addColorStop(0, '#050810'); grd.addColorStop(1, '#101c3c');
+    g.fillStyle = grd; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 70; i++) {
+      g.fillStyle = `rgba(220,230,255,${rr(0.25, 0.95)})`;
+      g.fillRect(rr(0, w), rr(0, h), rr(1, 2.4), rr(1, 2.4));
+    }
+    const glow = g.createRadialGradient(150, 96, 8, 150, 96, 88);
+    glow.addColorStop(0, 'rgba(214,226,255,0.85)'); glow.addColorStop(1, 'rgba(214,226,255,0)');
+    g.fillStyle = glow; g.fillRect(0, 0, w, h);
+    g.fillStyle = '#eef1fb'; g.beginPath(); g.arc(150, 96, 40, 0, 7); g.fill();
+    g.fillStyle = 'rgba(176,186,214,0.6)';
+    g.beginPath(); g.arc(136, 84, 9, 0, 7); g.fill();
+    g.beginPath(); g.arc(162, 108, 12, 0, 7); g.fill();
+    g.beginPath(); g.arc(150, 66, 5, 0, 7); g.fill();
+  });
+}
+function rugTexture() {
+  return canvasTex(256, 256, (g, w, h) => {
+    g.fillStyle = '#5e1f1a'; g.fillRect(0, 0, w, h);
+    ['#7a2c20', '#8f6a2c', '#5e1f1a', '#3f2a3c', '#8f6a2c'].forEach((c, i) => {
+      g.strokeStyle = c; g.lineWidth = 12;
+      g.beginPath(); g.arc(w / 2, h / 2, 116 - i * 22, 0, 7); g.stroke();
+    });
+    g.fillStyle = 'rgba(0,0,0,0.22)';
+    for (let i = 0; i < 300; i++) g.fillRect(rr(0, w), rr(0, h), 2, 2);
+  });
+}
+const floorTex = plankTexture('#6a4a2c', 'rgba(28,16,7,0.85)', 10, 1024, 768);
+const roofTex = plankTexture('#41301e', 'rgba(16,10,5,0.9)', 12, 512, 512);
+const wallTex = plankTexture('#4c3824', 'rgba(20,12,6,0.85)', 8, 512, 512);
+const bpTex = blueprintTexture();
+
+// ================================================================
+// 4. SHARED MATERIALS
+// ================================================================
+const M = {
+  brass: new THREE.MeshStandardMaterial({ color: PAL.brass, metalness: 0.85, roughness: 0.32 }),
+  brassDark: new THREE.MeshStandardMaterial({ color: 0x7d5f28, metalness: 0.8, roughness: 0.45 }),
+  copper: new THREE.MeshStandardMaterial({ color: PAL.copper, metalness: 0.85, roughness: 0.38 }),
+  iron: new THREE.MeshStandardMaterial({ color: PAL.iron, metalness: 0.75, roughness: 0.55 }),
+  steel: new THREE.MeshStandardMaterial({ color: PAL.steel, metalness: 0.85, roughness: 0.35 }),
+  woodDark: new THREE.MeshStandardMaterial({ color: PAL.woodDark, roughness: 0.9 }),
+  woodMid: new THREE.MeshStandardMaterial({ color: PAL.woodMid, roughness: 0.85 }),
+  leather: new THREE.MeshStandardMaterial({ color: PAL.leather, roughness: 0.8 }),
+  paper: new THREE.MeshStandardMaterial({ color: PAL.paper, roughness: 0.95 }),
+  floor: new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.88 }),
+  roof: new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.95, side: THREE.DoubleSide }),
+  wall: new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.95, side: THREE.DoubleSide }),
+  gable: new THREE.MeshStandardMaterial({ color: 0x453322, roughness: 0.95, side: THREE.DoubleSide }),
+  blueprint: new THREE.MeshStandardMaterial({ map: bpTex, emissive: 0x6f9dff, emissiveMap: bpTex, emissiveIntensity: 0.8, roughness: 0.7 }),
+  stoveGlow: new THREE.MeshStandardMaterial({ color: 0x33130a, emissive: PAL.fire, emissiveIntensity: 2.2, roughness: 0.6 }),
+  bulb: new THREE.MeshStandardMaterial({ color: 0xffe9b0, emissive: 0xffca70, emissiveIntensity: 2.4 }),
+  eye: new THREE.MeshStandardMaterial({ color: 0x220a00, emissive: 0xffa03a, emissiveIntensity: 1.8 }),
+  glass: new THREE.MeshStandardMaterial({ color: 0x9ec7c9, metalness: 0.1, roughness: 0.12, transparent: true, opacity: 0.35 })
+};
+
+// ================================================================
+// 5. RENDERER / SCENE / CAMERA / CONTROLS
+// ================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.bg);
+scene.fog = new THREE.FogExp2(PAL.fog, 0.026);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 60);
+camera.position.set(5.2, 3.5, 5.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.35, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 4.2;
+controls.maxDistance = 6.3;
+controls.minPolarAngle = 0.95;
+controls.maxPolarAngle = 1.42;
+
+// ================================================================
+// 6. BUILDERS — the attic shell, skylight, moonbeam
+// ================================================================
+function buildRoom() {
+  const g = new THREE.Group();
+  const floor = mesh(new THREE.PlaneGeometry(ROOM.halfW * 2, ROOM.halfD * 2), M.floor, 0, 0, 0, -Math.PI / 2);
+  floor.castShadow = false;
+  g.add(floor);
+  for (const s of [-1, 1]) {                      // two roof slopes + eave walls
+    const slope = mesh(new THREE.PlaneGeometry(SLOPE_LEN, ROOM.halfD * 2), M.roof, s * ROOM.halfW / 2, (ROOM.eaveH + ROOM.ridgeH) / 2, 0, 0, 0, -s * SLOPE_A);
+    slope.geometry.rotateX(-Math.PI / 2);
+    slope.castShadow = false;
+    g.add(slope);
+    const wall = mesh(new THREE.PlaneGeometry(ROOM.halfD * 2, ROOM.eaveH), M.wall, s * ROOM.halfW, ROOM.eaveH / 2, 0, 0, -s * Math.PI / 2);
+    wall.castShadow = false;
+    g.add(wall);
+  }
+  const gShape = new THREE.Shape();               // gable end walls
+  gShape.moveTo(-ROOM.halfW, 0); gShape.lineTo(ROOM.halfW, 0);
+  gShape.lineTo(ROOM.halfW, ROOM.eaveH); gShape.lineTo(0, ROOM.ridgeH);
+  gShape.lineTo(-ROOM.halfW, ROOM.eaveH);
+  const gableGeo = new THREE.ShapeGeometry(gShape);
+  for (const s of [-1, 1]) {
+    const gable = mesh(gableGeo, M.gable, 0, 0, s * ROOM.halfD);
+    gable.castShadow = false;
+    g.add(gable);
+  }
+  g.add(mesh(new THREE.BoxGeometry(0.3, 0.34, ROOM.halfD * 2), M.woodDark, 0, ROOM.ridgeH - 0.22, 0));  // ridge beam
+  for (let i = 0; i < 4; i++)                     // collar tie beams
+    g.add(mesh(new THREE.BoxGeometry(9.6, 0.28, 0.24), M.woodDark, 0, 4.85, -5.4 + i * 3.6));
+  for (const s of [-1, 1]) for (let i = 0; i < 5; i++)   // rafters under slopes
+    g.add(mesh(new THREE.BoxGeometry(SLOPE_LEN - 0.4, 0.18, 0.16), M.woodDark, s * ROOM.halfW / 2, (ROOM.eaveH + ROOM.ridgeH) / 2 - 0.16, -5.8 + i * 2.9, 0, 0, -s * SLOPE_A));
+  const rug = mesh(new THREE.CircleGeometry(2.3, 40), new THREE.MeshStandardMaterial({ map: rugTexture(), roughness: 0.95 }), 0.2, 0.015, 0.2, -Math.PI / 2);
+  rug.castShadow = false;
+  g.add(rug);
+  return g;
+}
+
+function buildSkylight() {                        // moonlit window set into the left slope
+  const g = new THREE.Group();
+  const W = 2.3, H = 1.7;
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(W, H), new THREE.MeshBasicMaterial({ map: moonSkyTexture(), side: THREE.DoubleSide }));
+  glass.rotation.x = -Math.PI / 2;
+  g.add(glass);
+  for (const s of [-1, 1]) {
+    g.add(mesh(new THREE.BoxGeometry(W + 0.24, 0.14, 0.14), M.woodDark, 0, -0.03, s * H / 2));
+    g.add(mesh(new THREE.BoxGeometry(0.14, 0.14, H + 0.24), M.woodDark, s * W / 2, -0.03, 0));
+  }
+  g.add(mesh(new THREE.BoxGeometry(0.06, 0.1, H), M.iron, 0, -0.02, 0)); // muntin bars
+  g.add(mesh(new THREE.BoxGeometry(W, 0.1, 0.06), M.iron, 0, -0.02, 0));
+  g.position.set(-3.57, roofYAt(-3.6) - 0.07, -1.5);
+  g.rotation.z = SLOPE_A;
+  return g;
+}
+
+function buildMoonbeam() {                        // soft volumetric shaft + drifting dust motes
+  const g = new THREE.Group();
+  const top = new THREE.Vector3(-3.4, 5.35, -1.5), bot = new THREE.Vector3(0.4, 0.05, 0.1);
+  const dir = bot.clone().sub(top), len = dir.length();
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(1.75, 0.85, len, 18, 1, true),
+    new THREE.MeshBasicMaterial({ color: 0x92aef0, transparent: true, opacity: 0.05, blending: THREE.AdditiveBlending, side: THREE.DoubleSide, depthWrite: false }));
+  beam.position.copy(top).addScaledVector(dir, 0.5);
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  g.add(beam);
+  const N = 90, pos = new Float32Array(N * 3), u0 = [], ox = [], oz = [];
+  for (let i = 0; i < N; i++) {
+    u0.push(rand());
+    const a = rr(0, Math.PI * 2), r = Math.sqrt(rand());
+    ox.push(Math.cos(a) * r); oz.push(Math.sin(a) * r);
+  }
+  const dGeo = new THREE.BufferGeometry();
+  dGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.add(new THREE.Points(dGeo, new THREE.PointsMaterial({ color: 0xcfdcff, size: 0.045, transparent: true, opacity: 0.6, blending: THREE.AdditiveBlending, depthWrite: false })));
+  anims.push((t) => {
+    for (let i = 0; i < N; i++) {
+      const u = (u0[i] + t * 0.028) % 1, rad = 0.75 + u * 0.9;
+      pos[i * 3] = top.x + dir.x * u + ox[i] * rad + Math.sin(t * 0.7 + i) * 0.05;
+      pos[i * 3 + 1] = top.y + dir.y * u;
+      pos[i * 3 + 2] = top.z + dir.z * u + oz[i] * rad;
+    }
+    dGeo.attributes.position.needsUpdate = true;
+  });
+  return g;
+}
+
+// ================================================================
+// 7. BUILDERS — focal machines & furniture
+// ================================================================
+function buildDraftingTable() {
+  const g = new THREE.Group();
+  for (const sx of [-1, 1]) {                     // A-frame trestle legs
+    for (const sz of [-1, 1]) g.add(mesh(new THREE.BoxGeometry(0.09, 1.5, 0.12), M.woodMid, sx * 0.95, 0.72, sz * 0.34, 0, 0, -sx * 0.2));
+    g.add(mesh(new THREE.BoxGeometry(0.09, 0.09, 0.7), M.woodMid, sx * 0.82, 0.62, 0));
+  }
+  g.add(mesh(new THREE.BoxGeometry(2.3, 0.08, 1.45), M.woodMid, 0, 1.42, 0, -0.42));      // tilted top
+  g.add(mesh(new THREE.PlaneGeometry(1.9, 1.15), M.blueprint, 0, 1.47, 0.015, -Math.PI / 2 - 0.42));
+  g.add(mesh(new THREE.BoxGeometry(1.6, 0.025, 0.07), M.paper, 0.1, 1.49, -0.02, -0.42, 0.35)); // T-square
+  for (let i = 0; i < 3; i++)                     // rolled spare blueprints on the floor
+    g.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, rr(1.0, 1.3), 10), M.paper, -1.35 + i * 0.12, 0.06 + i * 0.04, 0.55 - i * 0.1, 0, rr(-0.3, 0.3), Math.PI / 2));
+  const arm = new THREE.Group();                  // articulated desk lamp clamped to the top
+  arm.add(mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.06, 12), M.iron, 0, 0.03, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.55, 8), M.iron, -0.09, 0.28, 0, 0, 0, 0.35));
+  arm.add(mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8), M.iron, -0.08, 0.62, 0, 0, 0, -0.7));
+  arm.add(mesh(new THREE.ConeGeometry(0.14, 0.18, 14, 1, true), new THREE.MeshStandardMaterial({ color: PAL.copper, metalness: 0.85, roughness: 0.38, side: THREE.DoubleSide }), 0.08, 0.78, 0, 0, 0, 0.9));
+  arm.add(mesh(new THREE.SphereGeometry(0.05, 10, 8), M.bulb, 0.13, 0.73, 0));
+  arm.position.set(1.0, 1.66, -0.42); arm.rotation.x = -0.42;
+  g.add(arm);
+  g.add(mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.09, 14), M.leather, 0.5, 0.62, 1.15)); // stool
+  g.add(mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.6, 10), M.iron, 0.5, 0.31, 1.15));
+  anims.push((t) => { M.blueprint.emissiveIntensity = 0.78 + 0.2 * Math.sin(t * 1.6); });
+  return g;
+}
+
+function buildOrrery() {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.CylinderGeometry(0.5, 0.62, 0.1, 20), M.woodDark, 0, 0.05, 0));   // pedestal
+  g.add(mesh(new THREE.CylinderGeometry(0.09, 0.13, 0.85, 12), M.woodMid, 0, 0.55, 0));
+  g.add(mesh(new THREE.CylinderGeometry(0.42, 0.46, 0.07, 20), M.woodDark, 0, 1.0, 0));
+  g.add(mesh(new THREE.CylinderGeometry(0.3, 0.36, 0.08, 24), M.brassDark, 0, 1.08, 0)); // machine base
+  g.add(mesh(new THREE.TorusGeometry(0.42, 0.02, 8, 40), M.brass, 0, 1.1, 0, Math.PI / 2));
+  g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.55, 10), M.brass, 0, 1.36, 0));  // central shaft
+  const sun = mesh(new THREE.SphereGeometry(0.12, 16, 12), new THREE.MeshStandardMaterial({ color: 0xffd35c, emissive: 0xffb92e, emissiveIntensity: 1.6 }), 0, 1.66, 0);
+  g.add(sun);
+  const planetCols = [0xc9743a, 0x7fa3c9, 0xb8503c, 0xcfa85a];
+  for (let i = 0; i < 4; i++) {                   // planet arms rotate at nested speeds
+    const pivot = new THREE.Group();
+    pivot.position.y = 1.6 - i * 0.09;
+    const r = 0.42 + i * 0.28;
+    pivot.add(mesh(new THREE.BoxGeometry(r, 0.018, 0.035), M.brass, r / 2, 0, 0));
+    pivot.add(mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.1, 8), M.brass, r, 0.05, 0));
+    pivot.add(mesh(new THREE.SphereGeometry(0.05 + i * 0.014, 12, 10), new THREE.MeshStandardMaterial({ color: planetCols[i], metalness: 0.4, roughness: 0.5 }), r, 0.12, 0));
+    if (i === 2) pivot.add(mesh(new THREE.TorusGeometry(0.1, 0.008, 6, 24), M.brass, r, 0.12, 0, Math.PI / 2 - 0.35));
+    g.add(pivot);
+    const speed = 0.85 / (1 + i * 0.85), phase = rr(0, Math.PI * 2);
+    anims.push((t) => { pivot.rotation.y = phase + t * speed; });
+  }
+  anims.push((t) => { sun.material.emissiveIntensity = 1.6 + 0.25 * Math.sin(t * 2.2); });
+  return g;
+}
+
+function buildTeslaCoil() {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.BoxGeometry(0.95, 0.6, 0.95), M.woodMid, 0, 0.3, 0));             // crate stand
+  for (const s of [-1, 1]) g.add(mesh(new THREE.BoxGeometry(1.0, 0.09, 0.09), M.woodDark, 0, 0.3 + s * 0.24, 0.49));
+  g.add(mesh(new THREE.CylinderGeometry(0.4, 0.46, 0.12, 20), M.iron, 0, 0.66, 0));
+  for (let i = 0; i < 3; i++)                     // primary winding
+    g.add(mesh(new THREE.TorusGeometry(0.34 - i * 0.035, 0.028, 8, 28), M.copper, 0, 0.78 + i * 0.075, 0, Math.PI / 2));
+  g.add(mesh(new THREE.CylinderGeometry(0.13, 0.16, 0.95, 16), M.copper, 0, 1.28, 0));   // secondary column
+  for (let i = 0; i < 6; i++)
+    g.add(mesh(new THREE.TorusGeometry(0.145, 0.008, 6, 20), M.brassDark, 0, 0.92 + i * 0.15, 0, Math.PI / 2));
+  g.add(mesh(new THREE.TorusGeometry(0.24, 0.085, 12, 28), M.steel, 0, 1.86, 0, Math.PI / 2)); // toroid
+  g.add(mesh(new THREE.SphereGeometry(0.06, 12, 10), M.steel, 0, 1.95, 0));
+  const arcMat = new THREE.LineBasicMaterial({ color: PAL.arc, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending });
+  const arcs = [];
+  for (let i = 0; i < 3; i++) {
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(9 * 3), 3));
+    const line = new THREE.Line(geo, arcMat);
+    line.visible = false; g.add(line); arcs.push(line);
+  }
+  const zap = new THREE.PointLight(0x9fd8ff, 0, 7, 2);
+  zap.position.set(0, 1.9, 0); g.add(zap);
+  anims.push((t) => {                             // periodic crackling bursts
+    const burst = (t % 3.4) < 0.55;
+    zap.intensity = burst ? 9 * (0.55 + 0.45 * Math.sin(t * 47)) : 0;
+    for (const line of arcs) {
+      line.visible = burst;
+      if (!burst) continue;
+      const a = rand() * Math.PI * 2, L = rr(0.8, 1.25);
+      const ex = Math.cos(a) * L, ez = Math.sin(a) * L, ey = 1.86 - rr(0.5, 1.2);
+      const p = line.geometry.attributes.position.array;
+      for (let k = 0; k < 9; k++) {
+        const u = k / 8, j = (k > 0 && k < 8) ? 0.11 : 0;
+        p[k * 3] = ex * u + rr(-j, j);
+        p[k * 3 + 1] = 1.86 + (ey - 1.86) * u + rr(-j, j);
+        p[k * 3 + 2] = ez * u + rr(-j, j);
+      }
+      line.geometry.attributes.position.needsUpdate = true;
+    }
+  });
+  return g;
+}
+
+function buildWorkbenchAutomaton() {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.BoxGeometry(3.4, 0.14, 1.35), M.woodMid, 0, 1.0, 0));             // bench top
+  for (const sx of [-1, 1]) for (const sz of [-1, 1])
+    g.add(mesh(new THREE.BoxGeometry(0.13, 0.95, 0.13), M.woodDark, sx * 1.55, 0.48, sz * 0.55));
+  g.add(mesh(new THREE.BoxGeometry(3.2, 0.06, 1.1), M.woodDark, 0, 0.32, 0));            // lower shelf
+  g.add(mesh(new THREE.BoxGeometry(0.4, 0.22, 0.3), M.iron, -1.35, 1.18, 0.42));         // bench vise
+  g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.5, 8), M.steel, -1.35, 1.3, 0.42, 0, 0, Math.PI / 2));
+  const bot = new THREE.Group();                  // half-built automaton torso in a clamp
+  bot.position.set(0.45, 1.07, 0);
+  bot.add(mesh(new THREE.CylinderGeometry(0.2, 0.26, 0.16, 16), M.iron, 0, 0.08, 0));
+  bot.add(mesh(new THREE.CylinderGeometry(0.3, 0.22, 0.6, 18), M.brassDark, 0, 0.55, 0)); // chest
+  bot.add(mesh(new THREE.BoxGeometry(0.34, 0.4, 0.05), M.brass, 0, 0.55, 0.24));          // chest plate
+  const cg1 = mesh(makeGearGeometry(0.13, 11, 0.035), M.brass, -0.06, 0.62, 0.27);        // exposed clockwork
+  const cg2 = mesh(makeGearGeometry(0.09, 9, 0.03), M.copper, 0.1, 0.48, 0.27);
+  bot.add(cg1, cg2);
+  anims.push((t) => { cg1.rotation.z = t * 0.8; cg2.rotation.z = -t * 1.15; });
+  for (const s of [-1, 1]) bot.add(mesh(new THREE.SphereGeometry(0.09, 12, 10), M.iron, s * 0.32, 0.78, 0));
+  const arm = new THREE.Group();                  // one attached arm, one bare socket
+  arm.add(mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.4, 10), M.steel, 0, -0.2, 0));
+  arm.add(mesh(new THREE.SphereGeometry(0.06, 10, 8), M.brass, 0, -0.42, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.04, 0.05, 0.36, 10), M.steel, 0.1, -0.56, 0, 0, 0, -0.6));
+  for (const s of [-1, 1]) arm.add(mesh(new THREE.BoxGeometry(0.03, 0.14, 0.03), M.iron, 0.24 + s * 0.03, -0.72, 0, 0, 0, -0.5 + s * 0.25));
+  arm.position.set(-0.38, 0.78, 0); arm.rotation.z = 0.35;
+  bot.add(arm);
+  bot.add(mesh(new THREE.TorusGeometry(0.07, 0.018, 8, 18), M.copper, 0.38, 0.78, 0, 0, Math.PI / 2)); // empty socket
+  bot.add(mesh(new THREE.SphereGeometry(0.17, 16, 14), M.brass, 0, 1.0, 0));              // head
+  bot.add(mesh(new THREE.BoxGeometry(0.16, 0.07, 0.1), M.iron, 0, 0.9, 0.1));             // jaw
+  for (const s of [-1, 1]) bot.add(mesh(new THREE.SphereGeometry(0.028, 8, 6), M.eye, s * 0.06, 1.03, 0.15));
+  bot.add(mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.16, 6), M.copper, 0, 1.22, 0)); // antenna
+  bot.add(mesh(new THREE.SphereGeometry(0.02, 8, 6), M.copper, 0, 1.3, 0));
+  const wirePts = [new THREE.Vector3(0.2, 0.35, 0.2), new THREE.Vector3(0.55, 0.1, 0.45), new THREE.Vector3(0.9, 0.02, 0.35)];
+  bot.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(wirePts), 16, 0.012, 6), M.copper));
+  g.add(bot);
+  for (let i = 0; i < 6; i++)                     // scattered bolts on the bench
+    g.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 6), M.steel, rr(-1.4, -0.4), 1.1, rr(-0.45, 0.45)));
+  g.add(mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.16, 12), M.copper, 1.35, 1.16, -0.3));  // oil can
+  g.add(mesh(new THREE.CylinderGeometry(0.015, 0.03, 0.18, 8), M.copper, 1.42, 1.3, -0.24, 0, 0, -0.7));
+  anims.push((t) => { M.eye.emissiveIntensity = 1.5 + 0.6 * Math.sin(t * 3.1); });
+  return g;
+}
+
+function buildStove() {
+  const g = new THREE.Group();
+  const prof = [[0.02, 0], [0.3, 0], [0.36, 0.05], [0.46, 0.3], [0.48, 0.55], [0.42, 0.82], [0.3, 1.0], [0.3, 1.12], [0.36, 1.14], [0.36, 1.22], [0.2, 1.24]];
+  g.add(mesh(new THREE.LatheGeometry(prof.map(p => new THREE.Vector2(p[0], p[1])), 24), M.iron, 0, 0.22, 0));
+  for (let i = 0; i < 3; i++) {
+    const a = i / 3 * Math.PI * 2;
+    g.add(mesh(new THREE.BoxGeometry(0.09, 0.26, 0.09), M.iron, Math.cos(a) * 0.3, 0.12, Math.sin(a) * 0.3, 0, -a));
+  }
+  g.add(mesh(new THREE.CircleGeometry(0.2, 20), M.stoveGlow, 0, 0.72, 0.443, -0.12));    // glowing fire door
+  for (const s of [-1, 1]) g.add(mesh(new THREE.BoxGeometry(0.3, 0.03, 0.02), M.iron, 0, 0.72 + s * 0.09, 0.47));
+  g.add(mesh(new THREE.TorusGeometry(0.21, 0.022, 8, 24), M.iron, 0, 0.72, 0.45));       // door ring
+  const pipeTop = roofYAt(-6.9) - 0.15;
+  g.add(mesh(new THREE.CylinderGeometry(0.11, 0.13, pipeTop - 1.45, 12), M.iron, 0, (pipeTop + 1.45) / 2, 0));
+  g.add(mesh(new THREE.TorusGeometry(0.13, 0.025, 8, 16), M.iron, 0, 1.62, 0, Math.PI / 2));
+  g.add(mesh(new THREE.CylinderGeometry(0.16, 0.16, 0.05, 12), M.iron, 0, pipeTop - 0.4, 0)); // damper collar
+  g.add(mesh(new THREE.BoxGeometry(0.7, 0.05, 0.5), M.iron, 0, 0.03, 0.55));             // ash plate
+  const kettle = mesh(new THREE.SphereGeometry(0.14, 12, 10), M.copper, 0.02, 1.55, 0.28);
+  kettle.scale.y = 0.8; g.add(kettle);
+  g.add(mesh(new THREE.CylinderGeometry(0.02, 0.035, 0.16, 8), M.copper, 0.14, 1.63, 0.35, 0, 0, -0.8));
+  const fire = new THREE.PointLight(PAL.fire, 6, 9, 2);
+  fire.position.set(0, 0.8, 0.7); g.add(fire);
+  anims.push((t) => {                             // ember flicker
+    const f = 0.72 + 0.18 * Math.sin(t * 7.3) + 0.1 * Math.sin(t * 11.7);
+    fire.intensity = 6 * f; M.stoveGlow.emissiveIntensity = 2.6 * f;
+  });
+  return g;
+}
+
+// ================================================================
+// 8. BUILDERS — gears, springs, tools, airships, clutter
+// ================================================================
+function makeGearGeometry(r, teeth, depth) {
+  const s = new THREE.Shape(), rIn = r * 0.78;
+  for (let i = 0; i < teeth; i++) {
+    const a0 = i / teeth * Math.PI * 2, a1 = (i + 0.42) / teeth * Math.PI * 2;
+    const a2 = (i + 0.5) / teeth * Math.PI * 2, a3 = (i + 0.92) / teeth * Math.PI * 2;
+    if (i === 0) s.moveTo(Math.cos(a0) * r, Math.sin(a0) * r); else s.lineTo(Math.cos(a0) * r, Math.sin(a0) * r);
+    s.lineTo(Math.cos(a1) * r, Math.sin(a1) * r);
+    s.lineTo(Math.cos(a2) * rIn, Math.sin(a2) * rIn);
+    s.lineTo(Math.cos(a3) * rIn, Math.sin(a3) * rIn);
+  }
+  s.closePath();
+  const hole = new THREE.Path(); hole.absarc(0, 0, r * 0.24, 0, Math.PI * 2, true);
+  s.holes.push(hole);
+  const geo = new THREE.ExtrudeGeometry(s, { depth, bevelEnabled: false });
+  geo.center();
+  return geo;
+}
+function makeSpringGeometry(rad, coils, height) {
+  const pts = [], n = coils * 14;
+  for (let i = 0; i <= n; i++) {
+    const a = i / n * coils * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * rad, i / n * height, Math.sin(a) * rad));
+  }
+  return new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), n, rad * 0.22, 6, false);
+}
+const springGeo = makeSpringGeometry(0.06, 6, 0.22);
+
+function buildPartsTray(kind) {                   // gear piles / spring trays (instanced gears)
+  const g = new THREE.Group();
+  const W = 1.0, D = 0.7;
+  g.add(mesh(new THREE.BoxGeometry(W, 0.05, D), M.woodDark, 0, 0.025, 0));
+  for (const s of [-1, 1]) {
+    g.add(mesh(new THREE.BoxGeometry(W, 0.1, 0.05), M.woodDark, 0, 0.08, s * (D / 2 - 0.025)));
+    g.add(mesh(new THREE.BoxGeometry(0.05, 0.1, D), M.woodDark, s * (W / 2 - 0.025), 0.08, 0));
+  }
+  if (kind === 'gears') {
+    const dummy = new THREE.Object3D();
+    [[0.1, 9], [0.15, 11], [0.2, 13]].forEach(([r, teeth], si) => {
+      const n = 6 - si;
+      const inst = new THREE.InstancedMesh(makeGearGeometry(r, teeth, r * 0.28), si === 1 ? M.copper : M.brass, n);
+      inst.castShadow = true; inst.receiveShadow = true;
+      for (let i = 0; i < n; i++) {
+        dummy.position.set(rr(-W / 2 + r, W / 2 - r), 0.07 + i * 0.045, rr(-D / 2 + r, D / 2 - r));
+        dummy.rotation.set(Math.PI / 2 + rr(-0.25, 0.25), rr(0, Math.PI * 2), rr(-0.2, 0.2));
+        dummy.updateMatrix();
+        inst.setMatrixAt(i, dummy.matrix);
+      }
+      g.add(inst);
+    });
+  } else {
+    for (let i = 0; i < 6; i++) {                 // loose coil springs
+      const spring = new THREE.Mesh(springGeo, M.steel);
+      spring.castShadow = true;
+      spring.position.set(rr(-0.35, 0.35), 0.06, rr(-0.2, 0.2));
+      if (rand() < 0.5) { spring.rotation.set(Math.PI / 2, 0, rr(0, Math.PI)); spring.position.y = 0.1; }
+      g.add(spring);
+    }
+  }
+  return g;
+}
+
+function buildToolWall() {                        // pegboard of hand tools + jar shelf
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.BoxGeometry(4.6, 2.0, 0.08), M.woodMid, 0, 0, 0));
+  const hang = (tool, x, y) => { tool.position.set(x, y, 0.1); g.add(tool); };
+  function wrench() {
+    const t = new THREE.Group();
+    t.add(mesh(new THREE.BoxGeometry(0.07, 0.44, 0.03), M.steel), mesh(new THREE.TorusGeometry(0.07, 0.024, 8, 14, Math.PI * 1.5), M.steel, 0, 0.26, 0));
+    return t;
+  }
+  function hammer() {
+    const t = new THREE.Group();
+    t.add(mesh(new THREE.CylinderGeometry(0.025, 0.03, 0.45, 8), M.woodMid), mesh(new THREE.BoxGeometry(0.24, 0.09, 0.09), M.iron, 0, 0.24, 0));
+    return t;
+  }
+  function screwdriver(col) {
+    const t = new THREE.Group();
+    t.add(mesh(new THREE.CylinderGeometry(0.012, 0.012, 0.3, 6), M.steel, 0, -0.08, 0));
+    t.add(mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.16, 10), new THREE.MeshStandardMaterial({ color: col, roughness: 0.6 }), 0, 0.14, 0));
+    return t;
+  }
+  function saw() {
+    const t = new THREE.Group();
+    t.add(mesh(new THREE.BoxGeometry(0.62, 0.16, 0.015), M.steel, 0, -0.1, 0, 0, 0, -0.12));
+    t.add(mesh(new THREE.BoxGeometry(0.16, 0.2, 0.045), M.woodDark, 0.34, 0.05, 0));
+    return t;
+  }
+  function pliers() {
+    const t = new THREE.Group();
+    for (const s of [-1, 1]) t.add(mesh(new THREE.BoxGeometry(0.035, 0.34, 0.025), M.iron, s * 0.035, 0, 0, 0, 0, s * 0.22));
+    t.add(mesh(new THREE.SphereGeometry(0.03, 8, 6), M.steel, 0, 0.08, 0));
+    return t;
+  }
+  function calipers() {
+    const t = new THREE.Group();
+    for (const s of [-1, 1]) t.add(mesh(new THREE.BoxGeometry(0.03, 0.4, 0.02), M.brass, s * 0.07, -0.05, 0, 0, 0, s * 0.3));
+    t.add(mesh(new THREE.CylinderGeometry(0.04, 0.04, 0.03, 10), M.brassDark, 0, 0.13, 0, Math.PI / 2));
+    return t;
+  }
+  hang(wrench(), -1.85, 0.35); hang(wrench(), -1.55, -0.4);
+  hang(hammer(), -0.95, 0.3); hang(saw(), 0.1, 0.55);
+  hang(screwdriver(0x8f2f24), -0.35, -0.35); hang(screwdriver(0x2c5a35), -0.1, -0.4);
+  hang(pliers(), 0.55, -0.35); hang(calipers(), 1.1, 0.3);
+  hang(hammer(), 1.65, -0.3); hang(wrench(), 2.0, 0.4);
+  for (let i = 0; i < 12; i++)                    // spare pegs
+    g.add(mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.1, 6), M.woodDark, rr(-2.1, 2.1), rr(-0.8, 0.8), 0.06, Math.PI / 2));
+  g.add(mesh(new THREE.BoxGeometry(4.6, 0.06, 0.32), M.woodDark, 0, -1.12, 0.14));       // jar shelf
+  for (let i = 0; i < 5; i++) {
+    const h = rr(0.18, 0.26);
+    g.add(mesh(new THREE.CylinderGeometry(0.09, 0.09, h, 10), M.glass, -1.8 + i * 0.55, -1.09 + h / 2, 0.14));
+    g.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.1, 10), i % 2 ? M.copper : M.steel, -1.8 + i * 0.55, -1.04, 0.14));
+  }
+  return g;
+}
+
+function buildAirship(hullCol, lineLen) {         // hanging model zeppelin on a wire
+  const g = new THREE.Group();
+  const line = mesh(new THREE.CylinderGeometry(0.006, 0.006, lineLen, 4), M.iron, 0, -lineLen / 2, 0);
+  line.castShadow = false; g.add(line);
+  const ship = new THREE.Group(); ship.position.y = -(lineLen + 0.15);
+  const hull = mesh(new THREE.SphereGeometry(0.5, 18, 12), new THREE.MeshStandardMaterial({ color: hullCol, roughness: 0.55, metalness: 0.15 }));
+  hull.scale.set(1.75, 0.62, 0.62); ship.add(hull);
+  for (let i = 0; i < 4; i++)                     // tail fins
+    ship.add(mesh(new THREE.BoxGeometry(0.3, 0.02, 0.16), M.leather, -0.8, 0, 0, i * Math.PI / 2 + Math.PI / 4));
+  ship.add(mesh(new THREE.BoxGeometry(0.34, 0.11, 0.12), M.woodDark, 0.05, -0.36, 0));   // gondola
+  for (const s of [-1, 1]) ship.add(mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.14, 4), M.iron, 0.05 + s * 0.12, -0.28, 0));
+  const prop = new THREE.Group(); prop.position.set(-0.92, 0, 0);
+  for (const a of [0, Math.PI / 2]) prop.add(mesh(new THREE.BoxGeometry(0.02, 0.2, 0.03), M.brass, 0, 0, 0, a));
+  ship.add(prop);
+  ship.add(mesh(new THREE.TorusGeometry(0.09, 0.01, 6, 16), M.brass, 0.88, 0, 0, 0, Math.PI / 2)); // nose ring
+  g.add(ship);
+  const phase = rr(0, Math.PI * 2);
+  anims.push((t) => {                             // gentle pendulum sway + idle prop
+    g.rotation.z = Math.sin(t * 0.45 + phase) * 0.06;
+    g.rotation.x = Math.cos(t * 0.38 + phase) * 0.045;
+    ship.rotation.y = Math.sin(t * 0.2 + phase) * 0.3;
+    prop.rotation.x = t * 7 + phase;
+  });
+  return g;
+}
+
+function buildClutter() {                         // crates, barrel, books, big gear, pipes, lantern
+  const g = new THREE.Group();
+  function crate(sz, x, z, ry) {
+    const c = new THREE.Group();
+    c.add(mesh(new THREE.BoxGeometry(sz, sz, sz), M.woodMid, 0, sz / 2, 0));
+    for (const s of [-1, 1]) c.add(mesh(new THREE.BoxGeometry(sz + 0.04, 0.07, 0.07), M.woodDark, 0, sz / 2 + s * sz * 0.38, sz / 2));
+    c.position.set(x, 0, z); c.rotation.y = ry;
+    return c;
+  }
+  g.add(crate(0.85, 7.6, -2.6, 0.2), crate(0.6, 7.5, -1.75, -0.25), crate(0.75, -7.9, -3.4, -0.35), crate(0.7, 6.9, 1.1, 0.7));
+  const c3 = crate(0.6, 7.55, -2.5, 0.5); c3.position.y = 0.85; g.add(c3);   // stacked crate
+  g.add(mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.85, 16), M.woodDark, -7.7, 0.43, -1.4)); // barrel
+  for (const y of [0.15, 0.7]) g.add(mesh(new THREE.TorusGeometry(0.35, 0.02, 6, 20), M.iron, -7.7, y, -1.4, Math.PI / 2));
+  const bookCols = [0x6e2f26, 0x2c4a5e, 0x4a5e2c, 0x5e4a2c, 0x3c2c5e];
+  let by = 0;
+  for (let i = 0; i < 5; i++) {                   // tower of manuals
+    const h = rr(0.07, 0.12);
+    g.add(mesh(new THREE.BoxGeometry(rr(0.42, 0.55), h, rr(0.3, 0.4)), new THREE.MeshStandardMaterial({ color: bookCols[i], roughness: 0.85 }), -5.9, by + h / 2, -0.7, 0, rr(-0.35, 0.35)));
+    by += h;
+  }
+  g.add(mesh(makeGearGeometry(0.85, 16, 0.12), M.iron, -8.6, 0.88, 1.2, 0.1, Math.PI / 2 - 0.18)); // big spare gear
+  g.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 9.5, 10), M.copper, 8.95, 2.2, -1.2, Math.PI / 2)); // wall steam pipe
+  g.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.9, 10), M.copper, 8.95, 1.2, 3.55));
+  g.add(mesh(new THREE.TorusGeometry(0.1, 0.02, 6, 16), M.copper, 8.95, 2.2, 3.55, Math.PI / 2));
+  g.add(mesh(new THREE.TorusGeometry(0.11, 0.02, 6, 16), M.brass, 8.8, 2.2, 1.6, 0, 0, Math.PI / 2)); // valve wheel
+  const lantern = new THREE.Group();              // lantern hung from a collar beam
+  lantern.position.set(2.2, 4.7, 1.8);
+  lantern.add(mesh(new THREE.CylinderGeometry(0.008, 0.008, 0.5, 4), M.iron, 0, -0.25, 0));
+  lantern.add(mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.06, 10), M.iron, 0, -0.55, 0));
+  lantern.add(mesh(new THREE.CylinderGeometry(0.08, 0.08, 0.2, 8), M.glass, 0, -0.68, 0));
+  lantern.add(mesh(new THREE.SphereGeometry(0.04, 8, 6), M.bulb, 0, -0.68, 0));
+  lantern.add(mesh(new THREE.CylinderGeometry(0.1, 0.07, 0.05, 10), M.iron, 0, -0.8, 0));
+  const lamLight = new THREE.PointLight(0xffb45e, 2.2, 6, 2);
+  lamLight.position.set(0, -0.68, 0); lantern.add(lamLight);
+  anims.push((t) => { lamLight.intensity = 2.2 + 0.35 * Math.sin(t * 5.1) * Math.sin(t * 3.3); });
+  g.add(lantern);
+  g.add(mesh(new THREE.CylinderGeometry(0.28, 0.22, 0.5, 12, 1, true), new THREE.MeshStandardMaterial({ color: PAL.leather, roughness: 0.8, side: THREE.DoubleSide }), -3.4, 0.25, -4.9));
+  for (let i = 0; i < 4; i++)                     // rolled plans in the basket
+    g.add(mesh(new THREE.CylinderGeometry(0.045, 0.045, rr(0.85, 1.1), 8), M.paper, -3.4 + rr(-0.1, 0.1), 0.6, -4.9 + rr(-0.1, 0.1), rr(-0.16, 0.16), 0, rr(-0.16, 0.16)));
+  return g;
+}
+
+// ================================================================
+// 9. ASSEMBLY & LAYOUT
+// ================================================================
+scene.add(buildRoom(), buildSkylight(), buildMoonbeam(), buildClutter());
+const drafting = buildDraftingTable(); drafting.position.set(-4.7, 0, -3.5); drafting.rotation.y = 0.55; scene.add(drafting);
+const orrery = buildOrrery(); orrery.position.set(-1.3, 0, 3.1); scene.add(orrery);
+const tesla = buildTeslaCoil(); tesla.position.set(4.9, 0, 2.7); tesla.rotation.y = -0.4; scene.add(tesla);
+const bench = buildWorkbenchAutomaton(); bench.position.set(3.4, 0, -5.1); bench.rotation.y = -0.12; scene.add(bench);
+const stove = buildStove(); stove.position.set(-6.9, 0, 3.7); stove.rotation.y = 2.4; scene.add(stove);
+const toolWall = buildToolWall(); toolWall.position.set(-1.6, 1.7, -7.2); scene.add(toolWall);
+const toolWall2 = buildToolWall(); toolWall2.position.set(2.2, 1.8, 7.2); toolWall2.rotation.y = Math.PI; scene.add(toolWall2);
+const shipA = buildAirship(0xa8433a, 1.0); shipA.position.set(-1.7, roofYAt(-1.7) - 0.05, 0.7); scene.add(shipA);
+const shipB = buildAirship(0x9a8a5a, 1.0); shipB.position.set(2.4, roofYAt(2.4) - 0.05, -0.9); shipB.rotation.y = 1.9; scene.add(shipB);
+const shipC = buildAirship(0x5a7a8a, 1.4); shipC.position.set(0.6, roofYAt(0.6) - 0.05, 2.5); shipC.rotation.y = -1.1; scene.add(shipC);
+const trayGears = buildPartsTray('gears'); trayGears.position.set(1.1, 0.02, -1.4); trayGears.rotation.y = 0.35; scene.add(trayGears);
+const trayGears2 = buildPartsTray('gears'); trayGears2.position.set(2.6, 0.35, -5.0); trayGears2.rotation.y = -0.5; scene.add(trayGears2);
+const traySprings = buildPartsTray('springs'); traySprings.position.set(2.25, 0.02, -1.15); traySprings.rotation.y = -0.2; scene.add(traySprings);
+
+// ================================================================
+// 10. LIGHTING RIG
+// ================================================================
+scene.add(new THREE.HemisphereLight(0x37456b, 0x2a1c10, 0.55));
+const moon = new THREE.DirectionalLight(PAL.moonBlue, 2.6);   // key: moonlight via skylight
+moon.position.set(-3.3, 6.7, -1.5);
+moon.target.position.set(1.4, 0, 0.4);
+moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.near = 0.5; moon.shadow.camera.far = 22;
+moon.shadow.camera.left = -9; moon.shadow.camera.right = 9;
+moon.shadow.camera.top = 9; moon.shadow.camera.bottom = -9;
+moon.shadow.bias = -0.0005; moon.shadow.normalBias = 0.02;
+scene.add(moon, moon.target);
+const deskLight = new THREE.PointLight(PAL.lampWarm, 3.2, 6, 2);   // drafting lamp glow
+deskLight.position.set(-4.2, 2.35, -3.15);
+scene.add(deskLight);
+const emberBounce = new THREE.PointLight(0xff9a4a, 1.1, 7, 2);     // warm bounce by the stove
+emberBounce.position.set(-5.6, 1.6, 2.9);
+scene.add(emberBounce);
+
+// ================================================================
+// 11. ANIMATION LOOP & RESIZE
+// ================================================================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  for (const fn of anims) fn(t);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

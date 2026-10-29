@@ -1,0 +1,543 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Vintage Tin Wind-Up Robot</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e1013; }
+  #app { position: fixed; inset: 0; }
+  .credit {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(230,235,240,0.45); letter-spacing: 0.04em;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="credit">TIN-BOT MK.I &mdash; wind-up · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const MAXA = renderer.capabilities.getMaxAnisotropy();
+
+/* ------------------------------------------------------------------ *
+ *  Scene / Camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+
+function makeBackground() {
+  const S = 1024;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+  const g = x.createRadialGradient(S * 0.5, S * 0.42, S * 0.04, S * 0.5, S * 0.5, S * 0.78);
+  g.addColorStop(0.0, '#2c313a');
+  g.addColorStop(0.55, '#191c21');
+  g.addColorStop(1.0, '#0c0e11');
+  x.fillStyle = g; x.fillRect(0, 0, S, S);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+scene.background = makeBackground();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(2.7, 1.95, 3.6);
+
+// Studio reflections for the metal bits
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: key + fill + rim + hemisphere
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xdfe8f2, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.5);
+key.position.set(4.2, 6.5, 4.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 25;
+key.shadow.camera.left = -3.5;
+key.shadow.camera.right = 3.5;
+key.shadow.camera.top = 4.5;
+key.shadow.camera.bottom = -1.0;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fbce0, 0.7);
+fill.position.set(-5.0, 2.4, 3.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.5);
+rim.position.set(-2.5, 4.0, -5.5);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane — receives shadows only
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Litho-printed tin texture generator
+ * ------------------------------------------------------------------ */
+function makeTinTexture({ base = '#356fb0', hi = '#6b9ed4', lo = '#22497c', dots = true } = {}) {
+  const S = 512;
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const x = c.getContext('2d');
+
+  x.fillStyle = base; x.fillRect(0, 0, S, S);
+
+  // uneven paint / faded blotches
+  for (let i = 0; i < 46; i++) {
+    const r = 40 + Math.random() * 130;
+    const gx = Math.random() * S, gy = Math.random() * S;
+    const g = x.createRadialGradient(gx, gy, 0, gx, gy, r);
+    const col = Math.random() > 0.5 ? hi : lo;
+    g.addColorStop(0, col + '22');
+    g.addColorStop(1, col + '00');
+    x.fillStyle = g;
+    x.beginPath(); x.arc(gx, gy, r, 0, 7); x.fill();
+  }
+
+  // halftone print dots (lithography feel)
+  if (dots) {
+    x.globalAlpha = 0.06;
+    for (let gy = 5; gy < S; gy += 9) {
+      for (let gx = 5; gx < S; gx += 9) {
+        x.fillStyle = (gx + gy) % 18 === 0 ? hi : lo;
+        x.beginPath(); x.arc(gx, gy, 1.1, 0, 7); x.fill();
+      }
+    }
+    x.globalAlpha = 1;
+  }
+
+  // worn scratches revealing bright metal
+  for (let i = 0; i < 80; i++) {
+    x.strokeStyle = 'rgba(232,238,244,' + (0.05 + Math.random() * 0.13).toFixed(3) + ')';
+    x.lineWidth = Math.random() * 1.3 + 0.3;
+    const sx = Math.random() * S, sy = Math.random() * S;
+    const len = 8 + Math.random() * 70, a = Math.random() * Math.PI * 2;
+    x.beginPath();
+    x.moveTo(sx, sy);
+    x.lineTo(sx + Math.cos(a) * len, sy + Math.sin(a) * len);
+    x.stroke();
+  }
+  // chipped paint spots
+  for (let i = 0; i < 30; i++) {
+    x.fillStyle = 'rgba(205,210,216,' + (0.05 + Math.random() * 0.1).toFixed(3) + ')';
+    x.beginPath();
+    x.arc(Math.random() * S, Math.random() * S, 1.5 + Math.random() * 7, 0, 7);
+    x.fill();
+  }
+  // grime near edges
+  const edge = x.createLinearGradient(0, 0, 0, S);
+  edge.addColorStop(0, 'rgba(0,0,0,0.16)');
+  edge.addColorStop(0.15, 'rgba(0,0,0,0.0)');
+  edge.addColorStop(0.85, 'rgba(0,0,0,0.0)');
+  edge.addColorStop(1, 'rgba(0,0,0,0.18)');
+  x.fillStyle = edge; x.fillRect(0, 0, S, S);
+
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.anisotropy = MAXA;
+  return t;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Materials
+ * ------------------------------------------------------------------ */
+const bodyMat = new THREE.MeshStandardMaterial({
+  map: makeTinTexture({ base: '#2e6cae', hi: '#67a0d8', lo: '#1e4a80' }),
+  metalness: 0.4, roughness: 0.44, envMapIntensity: 0.75
+});
+const redMat = new THREE.MeshStandardMaterial({
+  map: makeTinTexture({ base: '#c0392b', hi: '#e8654f', lo: '#84231a' }),
+  metalness: 0.4, roughness: 0.46, envMapIntensity: 0.7
+});
+const yellowMat = new THREE.MeshStandardMaterial({
+  map: makeTinTexture({ base: '#f2c14e', hi: '#ffe08a', lo: '#c48f27', dots: false }),
+  metalness: 0.35, roughness: 0.5, envMapIntensity: 0.6
+});
+const creamMat = new THREE.MeshStandardMaterial({
+  map: makeTinTexture({ base: '#e7ddc4', hi: '#fff7e6', lo: '#b8ac8c', dots: false }),
+  metalness: 0.3, roughness: 0.55, envMapIntensity: 0.6
+});
+const chromeMat = new THREE.MeshStandardMaterial({
+  color: 0xd4dae1, metalness: 1.0, roughness: 0.22, envMapIntensity: 1.0
+});
+const darkMat = new THREE.MeshStandardMaterial({
+  color: 0x20252b, metalness: 0.65, roughness: 0.5, envMapIntensity: 0.7
+});
+const rivetMat = new THREE.MeshStandardMaterial({
+  color: 0xb9c0c7, metalness: 1.0, roughness: 0.3, envMapIntensity: 1.0
+});
+const eyeMat = new THREE.MeshStandardMaterial({
+  color: 0x5a2b00, emissive: 0xffb43a, emissiveIntensity: 1.4,
+  metalness: 0.2, roughness: 0.35
+});
+const greenLightMat = new THREE.MeshStandardMaterial({
+  color: 0x113311, emissive: 0x36e05a, emissiveIntensity: 1.1, roughness: 0.4
+});
+const redLightMat = new THREE.MeshStandardMaterial({
+  color: 0x330a0a, emissive: 0xff4632, emissiveIntensity: 1.1, roughness: 0.4
+});
+
+/* ------------------------------------------------------------------ *
+ *  Helpers
+ * ------------------------------------------------------------------ */
+function mesh(geo, mat, cast = true, rec = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = cast; m.receiveShadow = rec;
+  return m;
+}
+
+function addRivets(parent, positions, r = 0.028) {
+  const geo = new THREE.SphereGeometry(r, 10, 10);
+  for (const p of positions) {
+    const m = new THREE.Mesh(geo, rivetMat);
+    m.castShadow = true;
+    m.position.set(p[0], p[1], p[2]);
+    parent.add(m);
+  }
+}
+
+// Accordion / ribbed tube (retro tin arm)
+function ribbedTube(radius, length, ribs, coreMat, ribMat) {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.CylinderGeometry(radius * 0.72, radius * 0.72, length, 16), coreMat));
+  for (let i = 0; i < ribs; i++) {
+    const t = mesh(new THREE.TorusGeometry(radius * 0.82, radius * 0.3, 8, 18), ribMat);
+    t.rotation.x = Math.PI / 2;
+    t.position.y = -length / 2 + (i + 0.5) * (length / ribs);
+    g.add(t);
+  }
+  return g;
+}
+
+// Two-finger pincer claw
+function makeClaw() {
+  const g = new THREE.Group();
+  g.add(mesh(new THREE.CylinderGeometry(0.085, 0.1, 0.12, 16), chromeMat));
+  for (const s of [-1, 1]) {
+    const seg1 = mesh(new THREE.BoxGeometry(0.05, 0.18, 0.08), chromeMat);
+    seg1.position.set(s * 0.06, -0.13, 0);
+    seg1.rotation.z = s * 0.5;
+    g.add(seg1);
+    const seg2 = mesh(new THREE.BoxGeometry(0.05, 0.14, 0.07), chromeMat);
+    seg2.position.set(s * 0.135, -0.25, 0);
+    seg2.rotation.z = -s * 0.65;
+    g.add(seg2);
+  }
+  return g;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Build the robot  (feet rest on y = 0)
+ * ------------------------------------------------------------------ */
+const robot = new THREE.Group();
+scene.add(robot);
+
+/* ---- Torso ---- */
+const torso = mesh(new THREE.BoxGeometry(1.15, 0.95, 0.72), bodyMat);
+torso.position.y = 1.45;
+robot.add(torso);
+
+// recessed red chest panel
+const chestPanel = mesh(new THREE.BoxGeometry(0.74, 0.66, 0.06), redMat);
+chestPanel.position.set(0, 1.52, 0.36);
+robot.add(chestPanel);
+
+// waistband
+const waist = mesh(new THREE.BoxGeometry(1.18, 0.14, 0.74), redMat);
+waist.position.y = 1.02;
+robot.add(waist);
+
+// collar
+const collar = mesh(new THREE.BoxGeometry(0.9, 0.1, 0.6), chromeMat);
+collar.position.y = 1.95;
+robot.add(collar);
+
+/* ---- Chest dial / gauge ---- */
+const dialFace = mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.05, 40), yellowMat);
+dialFace.rotation.x = Math.PI / 2;
+dialFace.position.set(0, 1.55, 0.4);
+robot.add(dialFace);
+
+const dialRing = mesh(new THREE.TorusGeometry(0.21, 0.035, 14, 44), chromeMat);
+dialRing.position.set(0, 1.55, 0.41);
+robot.add(dialRing);
+
+for (let i = 0; i < 12; i++) {
+  const a = i / 12 * Math.PI * 2;
+  const tick = mesh(new THREE.BoxGeometry(0.014, 0.035, 0.02), darkMat);
+  tick.position.set(Math.cos(a) * 0.15, 1.55 + Math.sin(a) * 0.15, 0.425);
+  tick.rotation.z = a;
+  robot.add(tick);
+}
+
+// swinging needle
+const needle = new THREE.Group();
+needle.position.set(0, 1.55, 0.44);
+const needleBar = mesh(new THREE.BoxGeometry(0.022, 0.17, 0.02), redMat);
+needleBar.position.y = 0.065;
+needle.add(needleBar);
+const needleHub = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.05, 14), chromeMat);
+needleHub.rotation.x = Math.PI / 2;
+needle.add(needleHub);
+robot.add(needle);
+
+// indicator lamps + knobs
+const lampGeo = new THREE.SphereGeometry(0.045, 14, 14);
+const lampG = mesh(lampGeo, greenLightMat, false, false); lampG.position.set(-0.22, 1.2, 0.4); robot.add(lampG);
+const lampR = mesh(lampGeo, redLightMat, false, false); lampR.position.set(0.22, 1.2, 0.4); robot.add(lampR);
+for (const sx of [-0.36, 0.36]) {
+  const knob = mesh(new THREE.CylinderGeometry(0.05, 0.06, 0.06, 16), chromeMat);
+  knob.rotation.x = Math.PI / 2; knob.position.set(sx, 1.78, 0.4);
+  robot.add(knob);
+}
+
+// torso rivets
+const torsoRivets = [];
+for (let y = 1.08; y <= 1.86; y += 0.155) {
+  torsoRivets.push([-0.53, y, 0.365]);
+  torsoRivets.push([0.53, y, 0.365]);
+}
+for (let x = -0.42; x <= 0.42; x += 0.21) {
+  torsoRivets.push([x, 1.885, 0.365]);
+  torsoRivets.push([x, 1.02, 0.365]);
+}
+addRivets(robot, torsoRivets);
+
+/* ---- Neck + Head ---- */
+const neck = mesh(new THREE.CylinderGeometry(0.16, 0.18, 0.16, 20), chromeMat);
+neck.position.y = 2.02;
+robot.add(neck);
+
+const head = mesh(new THREE.BoxGeometry(0.72, 0.6, 0.58), bodyMat);
+head.position.y = 2.32;
+robot.add(head);
+
+// face plate
+const facePlate = mesh(new THREE.BoxGeometry(0.6, 0.48, 0.05), creamMat);
+facePlate.position.set(0, 2.33, 0.29);
+robot.add(facePlate);
+
+// eyes (glowing) with chrome bezels
+for (const sx of [-0.15, 0.15]) {
+  const bezel = mesh(new THREE.TorusGeometry(0.075, 0.02, 12, 24), chromeMat);
+  bezel.position.set(sx, 2.4, 0.315);
+  robot.add(bezel);
+  const eye = mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.04, 22), eyeMat, false, false);
+  eye.rotation.x = Math.PI / 2;
+  eye.position.set(sx, 2.4, 0.315);
+  robot.add(eye);
+}
+
+// mouth grille
+const mouth = mesh(new THREE.BoxGeometry(0.36, 0.13, 0.04), darkMat);
+mouth.position.set(0, 2.16, 0.31);
+robot.add(mouth);
+for (let i = 0; i < 4; i++) {
+  const bar = mesh(new THREE.BoxGeometry(0.34, 0.014, 0.02), chromeMat);
+  bar.position.set(0, 2.115 + i * 0.032, 0.325);
+  robot.add(bar);
+}
+
+// side "ear" dials
+for (const sx of [-0.37, 0.37]) {
+  const ear = mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.09, 20), chromeMat);
+  ear.rotation.z = Math.PI / 2;
+  ear.position.set(sx, 2.32, 0);
+  robot.add(ear);
+  const earCap = mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.1, 16), redMat);
+  earCap.rotation.z = Math.PI / 2;
+  earCap.position.set(sx * 1.06, 2.32, 0);
+  robot.add(earCap);
+}
+
+// head rivets
+addRivets(robot, [
+  [-0.31, 2.53, 0.29], [0.31, 2.53, 0.29],
+  [-0.31, 2.11, 0.29], [0.31, 2.11, 0.29]
+], 0.024);
+
+/* ---- Antenna ---- */
+const antMount = mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.07, 16), chromeMat);
+antMount.position.y = 2.64;
+robot.add(antMount);
+const antRod = mesh(new THREE.CylinderGeometry(0.018, 0.018, 0.4, 12), chromeMat);
+antRod.position.y = 2.86;
+robot.add(antRod);
+for (let i = 0; i < 3; i++) {
+  const coil = mesh(new THREE.TorusGeometry(0.045, 0.011, 8, 18), chromeMat);
+  coil.rotation.x = Math.PI / 2;
+  coil.position.y = 2.72 + i * 0.05;
+  robot.add(coil);
+}
+const antBall = mesh(new THREE.SphereGeometry(0.06, 20, 20), redMat);
+antBall.position.y = 3.09;
+robot.add(antBall);
+
+/* ---- Arms (ribbed) + claws ---- */
+const armGroups = [];
+for (const s of [-1, 1]) {
+  const shoulder = new THREE.Group();
+  shoulder.position.set(s * 0.66, 1.78, 0);
+
+  const ball = mesh(new THREE.SphereGeometry(0.17, 22, 22), chromeMat);
+  shoulder.add(ball);
+
+  const armLen = 0.66;
+  const arm = ribbedTube(0.12, armLen, 6, darkMat, chromeMat);
+  arm.position.y = -armLen / 2 - 0.06;
+  shoulder.add(arm);
+
+  const claw = makeClaw();
+  claw.position.y = -armLen - 0.12;
+  shoulder.add(claw);
+
+  shoulder.rotation.z = -s * 0.14;
+  robot.add(shoulder);
+  armGroups.push(shoulder);
+}
+
+/* ---- Legs + boots ---- */
+for (const s of [-1, 1]) {
+  const leg = mesh(new THREE.BoxGeometry(0.34, 0.76, 0.42), bodyMat);
+  leg.position.set(s * 0.3, 0.66, 0);
+  robot.add(leg);
+
+  const knee = mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.38, 18), chromeMat);
+  knee.rotation.z = Math.PI / 2;
+  knee.position.set(s * 0.3, 0.62, 0);
+  robot.add(knee);
+
+  const foot = mesh(new THREE.BoxGeometry(0.42, 0.22, 0.62), redMat);
+  foot.position.set(s * 0.3, 0.12, 0.1);
+  robot.add(foot);
+
+  const toe = mesh(new THREE.BoxGeometry(0.44, 0.12, 0.16), chromeMat);
+  toe.position.set(s * 0.3, 0.08, 0.42);
+  robot.add(toe);
+
+  addRivets(robot, [
+    [s * 0.3 - 0.17, 0.14, 0.4], [s * 0.3 + 0.17, 0.14, 0.4]
+  ], 0.024);
+}
+
+// pelvis block
+const pelvis = mesh(new THREE.BoxGeometry(0.86, 0.28, 0.5), darkMat);
+pelvis.position.y = 0.92;
+robot.add(pelvis);
+
+/* ---- Wind-up key (on back) ---- */
+const keyGroup = new THREE.Group();
+keyGroup.position.set(0, 1.55, -0.37);
+const keyBase = mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.08, 18), chromeMat);
+keyBase.rotation.x = Math.PI / 2;
+keyBase.position.z = -0.04;
+keyGroup.add(keyBase);
+const keyShaft = mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.34, 16), chromeMat);
+keyShaft.rotation.x = Math.PI / 2;
+keyShaft.position.z = -0.24;
+keyGroup.add(keyShaft);
+// butterfly handle ring
+const keyRing = mesh(new THREE.TorusGeometry(0.17, 0.03, 14, 40), chromeMat);
+keyRing.scale.set(1, 0.62, 1);
+keyRing.position.z = -0.42;
+keyGroup.add(keyRing);
+const keyBar = mesh(new THREE.BoxGeometry(0.3, 0.04, 0.03), chromeMat);
+keyBar.position.z = -0.42;
+keyGroup.add(keyBar);
+robot.add(keyGroup);
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 1.35, 0);
+controls.minDistance = 2.4;
+controls.maxDistance = 9;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ------------------------------------------------------------------ *
+ *  Animate — subtle mechanical life
+ * ------------------------------------------------------------------ */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // gauge needle twitch
+  needle.rotation.z = Math.sin(t * 1.6) * 0.55 + Math.sin(t * 5.3) * 0.05;
+  // wind-up key slow turn
+  keyGroup.rotation.z = t * 0.7;
+  // antenna sway
+  antBall.position.x = Math.sin(t * 1.3) * 0.02;
+  // eye glow flicker
+  eyeMat.emissiveIntensity = 1.25 + Math.sin(t * 3.0) * 0.25;
+  // faint arm bob
+  armGroups[0].rotation.z = -( -1 * 0.14 ) - 0.14 + Math.sin(t * 1.1) * 0.02;
+  armGroups[1].rotation.z = -( 1 * 0.14 ) + Math.sin(t * 1.1 + Math.PI) * 0.02;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

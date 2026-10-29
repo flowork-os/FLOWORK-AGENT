@@ -1,0 +1,695 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Desert Oasis Camp</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#241a2e}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   DESERT OASIS CAMP — golden-hour stylized realism. The low sun sits behind the
+   camera's right shoulder, so the camp is warmly front-lit while the sky it
+   faces has gone indigo and the first stars are out. All geometry procedural.
+   ========================================================================== */
+
+/* ------------------------------------------------- 1. CONFIG & PALETTE */
+const SEED  = 20250816;
+const POOL  = { x: -5.0, z: -7.5, rx: 13.0, rz: 10.0, y: -0.5, depth: 2.5 };
+const OASIS = { x: -1.5, z: -1.0 };                  // centre of the flat oasis floor
+const SUNP  = new THREE.Vector3(48, 13, -15);        // key light: low and camera-right
+const PAL = {
+  sandLit: 0xffe4b8, sandMid: 0xc2915d, sandCool: 0x8d6a55, sandWet: 0x77563f,
+  water: 0x2fb9b0, waterDeep: 0x0e5f6d, foam: 0xbdf0e6, bark: 0x9a7148,
+  frond: 0x5c8a3c, frondDark: 0x2f5230, reed: 0x7d9a45, date: 0x8c4a22,
+  cream: 0xe9d6ae, rust: 0xa8452f, char: 0x3b322d, ochre: 0xc2883a,
+  rugRed: 0x8e2f2b, rugBlue: 0x2b3a63, rugGold: 0xd9a441, clay: 0xa9633f,
+  clayDark: 0x6d3c25, wood: 0x7a5330, rope: 0xbba272, stone: 0x8c8073,
+  brass: 0xc09a45, camel: 0xa4784c, camelDark: 0x6e4d2f,
+  fire: 0xff8a2a, ember: 0xff4d14, lamp: 0xffc776
+};
+
+/* -------------------------------------------- 2. PRNG & MESH HELPERS */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rnd = mulberry32(SEED);
+const rr = (a, b) => a + (b - a) * rnd(), ri = (a, b) => Math.floor(rr(a, b + 0.999));
+const pick = (a) => a[Math.floor(rnd() * a.length)], hex = (n) => '#' + ('000000' + n.toString(16)).slice(-6);
+const clamp01 = (v) => v < 0 ? 0 : v > 1 ? 1 : v;
+const smoothstep = (a, b, x) => { const t = clamp01((x - a) / (b - a)); return t * t * (3 - 2 * t); };
+const dummy = new THREE.Object3D();
+/* Mesh factories — everything casts and receives shadows unless told otherwise. */
+function meshOf(geo, mat, x = 0, y = 0, z = 0) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.castShadow = m.receiveShadow = true; return m;
+}
+const box = (w, h, d, mat, x, y, z) => meshOf(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, mat, s = 12, x = 0, y = 0, z = 0) => meshOf(new THREE.CylinderGeometry(rt, rb, h, s), mat, x, y, z);
+const sph = (r, mat, s = 14, x = 0, y = 0, z = 0) => meshOf(new THREE.SphereGeometry(r, s, Math.round(s * 0.7)), mat, x, y, z);
+const cone = (r, h, mat, s = 8, x = 0, y = 0, z = 0) => meshOf(new THREE.ConeGeometry(r, h, s), mat, x, y, z);
+const ring = (r, t, mat, s, ts, arc, x = 0, y = 0, z = 0) => meshOf(new THREE.TorusGeometry(r, t, s, ts, arc), mat, x, y, z);
+/* Chainable rotate / scale so a prop can be built and placed in one expression. */
+const rot = (o, x, y, z) => { o.rotation.set(x, y, z); return o; };
+const scl = (o, x, y, z) => { o.scale.set(x, y, z); return o; };
+
+/* ------------------------------------------------ 3. CANVAS TEXTURES */
+const ctx2d = (w, h) => { const c = document.createElement('canvas'); c.width = w; c.height = h; return c.getContext('2d'); };
+function toTex(g, rx, ry, wrap = true) {
+  const t = new THREE.CanvasTexture(g.canvas);
+  if (wrap) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx || 1, ry || 1); }
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+function blob(g, cx, cy, r, stops) {                 // radial gradient patch, stops = [[offset, css]...]
+  const rg = g.createRadialGradient(cx, cy, 0, cx, cy, r);
+  for (const s of stops) rg.addColorStop(s[0], s[1]);
+  g.fillStyle = rg; g.fillRect(cx - r, cy - r, r * 2, r * 2);
+}
+function wave(g, w, y0, amp, freq, ph) {             // long sine stroke: sand ripples + caustics
+  g.beginPath();
+  for (let x = 0; x <= w; x += 8) g.lineTo(x, y0 + Math.sin(x * freq + ph) * amp);
+  g.stroke();
+}
+function speck(g, s, n, light, dark, a, b, fh) {     // two-tone pixel grain over an s x s canvas
+  for (let i = 0; i < n; i++) {
+    g.fillStyle = rnd() > 0.5 ? light : dark;
+    const w = rr(a, b); g.fillRect(rnd() * s, rnd() * s, w, fh || w);
+  }
+}
+function sandTexture() {                             // fine grain crossed by wind-carved ripples
+  const g = ctx2d(512, 512);
+  g.fillStyle = hex(PAL.sandMid); g.fillRect(0, 0, 512, 512);
+  speck(g, 512, 2600, 'rgba(255,228,182,0.30)', 'rgba(96,66,44,0.22)', 1, 2.6);
+  for (let i = 0; i < 46; i++) {                     // each ripple gets a crest and a cast shadow
+    const y0 = rnd() * 512, amp = rr(4, 17), ph = rr(0, 6.28), lw = rr(1.5, 5);
+    g.lineWidth = lw; g.strokeStyle = 'rgba(255,224,175,0.16)'; wave(g, 512, y0, amp, 0.021, ph);
+    g.lineWidth = lw * 0.7; g.strokeStyle = 'rgba(88,60,40,0.16)'; wave(g, 512, y0 + 5, amp, 0.021, ph);
+  }
+  return toTex(g, 30, 30);
+}
+function skyCanvas(sunU, sunV) {                     // dusk bands + a warm glow at the sun azimuth
+  const W = 1024, H = 512, g = ctx2d(W, H), grd = g.createLinearGradient(0, 0, 0, H);
+  for (const s of [[0, '#0b1230'], [0.2, '#182046'], [0.34, '#33305f'], [0.43, '#6b4468'],
+    [0.485, '#b06a4f'], [0.5, '#d98a55'], [0.53, '#7d5236'], [1, '#3a2a22']]) grd.addColorStop(s[0], s[1]);
+  g.fillStyle = grd; g.fillRect(0, 0, W, H);
+  for (const off of [-1, 0, 1]) {                    // glows drawn wrapped across the seam
+    const cx = (sunU + off) * W, cy = sunV * H;
+    blob(g, cx, cy, 330, [[0, 'rgba(255,215,150,0.9)'], [0.35, 'rgba(255,158,84,0.44)'], [1, 'rgba(255,140,70,0)']]);
+    blob(g, cx, cy, 74, [[0, 'rgba(255,248,226,0.96)'], [1, 'rgba(255,214,150,0)']]);
+    blob(g, (sunU + 0.5 + off) * W, cy - 70, 380, [[0, 'rgba(12,18,52,0.55)'], [1, 'rgba(12,18,52,0)']]);
+  }
+  for (let i = 0; i < 34; i++) {                     // thin dusk clouds along the horizon
+    g.fillStyle = `rgba(${ri(210, 255)},${ri(140, 190)},${ri(120, 170)},${rr(0.06, 0.2).toFixed(2)})`;
+    g.beginPath(); g.ellipse(rnd() * W, H * rr(0.4, 0.495), rr(40, 190), rr(3, 11), 0, 0, 6.283); g.fill();
+  }
+  return g;
+}
+function waterTexture() {                            // pale rim, deep centre, caustic ribbons
+  const g = ctx2d(512, 512);
+  blob(g, 256, 256, 256, [[0, hex(PAL.waterDeep)], [0.55, hex(PAL.water)], [0.86, '#79dccd'], [1, hex(PAL.foam)]]);
+  for (let i = 0; i < 90; i++) {
+    g.strokeStyle = `rgba(220,255,248,${rr(0.05, 0.19).toFixed(2)})`; g.lineWidth = rr(1.5, 6);
+    wave(g, 512, rnd() * 512, rr(5, 22), 0.035, rr(0, 6.28));
+  }
+  return toTex(g, 1, 1, false);
+}
+function frondTexture() {                            // pinnate leaflets on a transparent, alpha-tested sheet
+  const g = ctx2d(512, 256);
+  g.strokeStyle = hex(PAL.frondDark); g.lineWidth = 7;
+  g.beginPath(); g.moveTo(4, 128); g.lineTo(500, 128); g.stroke();
+  for (let i = 0; i < 74; i++) {
+    const t = i / 73, x = 12 + t * 480, lean = 34 + t * 66;
+    const len = 108 * Math.pow(Math.sin(Math.PI * Math.min(1, t * 1.04)), 0.7) + 6;
+    g.lineWidth = rr(3.4, 5.6);
+    for (const s of [-1, 1]) {
+      g.strokeStyle = pick([hex(PAL.frond), '#4a7a35', '#79a851']);
+      g.beginPath(); g.moveTo(x, 128 + s * 3);
+      g.quadraticCurveTo(x + lean * 0.5, 128 + s * len * 0.55, x + lean, 128 + s * len); g.stroke();
+    }
+  }
+  const t = new THREE.CanvasTexture(g.canvas);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+function stripeTexture() {                           // woven nomad cloth: broad stripes, visible weft
+  const g = ctx2d(256, 256);
+  const bands = [PAL.cream, PAL.rust, PAL.cream, PAL.char, PAL.ochre, PAL.char, PAL.cream, PAL.rust];
+  for (let i = 0, y = 0; y < 256; i++) {
+    const h = [26, 13, 8, 20, 11, 8, 30, 15][i % 8];
+    g.fillStyle = hex(bands[i % 8]); g.fillRect(0, y, 256, h); y += h;
+  }
+  speck(g, 256, 1500, 'rgba(255,255,255,0.10)', 'rgba(0,0,0,0.12)', 2, 9, 1.3);
+  return toTex(g, 2, 2);
+}
+function rugTexture(base, motif) {                   // kilim: gold-bordered field of stacked diamonds
+  const g = ctx2d(256, 256);
+  g.fillStyle = hex(base); g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = hex(PAL.rugGold); g.lineWidth = 6; g.strokeRect(16, 16, 224, 224);
+  g.lineWidth = 2; g.strokeRect(30, 30, 196, 196);
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) {
+    const cx = 50 + c * 52, cy = 50 + r * 52, s = 20;
+    g.fillStyle = (r + c) % 2 ? hex(motif) : hex(PAL.rugGold);
+    g.beginPath(); g.moveTo(cx, cy - s); g.lineTo(cx + s, cy); g.lineTo(cx, cy + s); g.lineTo(cx - s, cy);
+    g.closePath(); g.fill();
+    g.fillStyle = 'rgba(240,228,196,0.7)'; g.beginPath(); g.arc(cx, cy, 4.5, 0, 6.283); g.fill();
+  }
+  speck(g, 256, 900, 'rgba(255,255,255,0.07)', 'rgba(0,0,0,0.09)', 2, 2, 1.4);
+  return toTex(g, 1, 1);
+}
+function dotTexture() {                              // soft round sprite: stars, sparks, dust, ember glow
+  const g = ctx2d(64, 64);
+  blob(g, 32, 32, 32, [[0, 'rgba(255,255,255,1)'], [0.35, 'rgba(255,255,255,0.55)'], [1, 'rgba(255,255,255,0)']]);
+  return toTex(g, 1, 1, false);
+}
+function clayTexture(base, dark) {                   // rough clay / stone speckle with throwing rings
+  const g = ctx2d(256, 256);
+  g.fillStyle = hex(base); g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 1400; i++) {
+    g.fillStyle = rnd() > 0.45 ? `rgba(0,0,0,${rr(0.04, 0.16).toFixed(2)})` : 'rgba(255,232,196,0.16)';
+    g.beginPath(); g.arc(rnd() * 256, rnd() * 256, rr(1, 4.5), 0, 6.283); g.fill();
+  }
+  for (let i = 0; i < 24; i++) {
+    g.strokeStyle = hex(dark); g.globalAlpha = rr(0.06, 0.18); g.lineWidth = rr(1, 3);
+    g.beginPath(); g.arc(rr(-40, 296), rr(-40, 296), rr(30, 130), 0, rr(1, 4)); g.stroke();
+  }
+  g.globalAlpha = 1; return toTex(g, 2, 2);
+}
+const sunAz = Math.atan2(SUNP.z, SUNP.x), sunEl = Math.atan2(SUNP.y, Math.hypot(SUNP.x, SUNP.z));
+const skyG = skyCanvas(((Math.PI - sunAz) / (2 * Math.PI) + 1) % 1, 0.5 - sunEl / Math.PI);
+const TEX = {
+  sand: sandTexture(), water: waterTexture(), frond: frondTexture(), stripe: stripeTexture(),
+  rugA: rugTexture(PAL.rugRed, PAL.rugBlue), rugB: rugTexture(PAL.rugBlue, PAL.rugRed),
+  dot: dotTexture(), clay: clayTexture(PAL.clay, PAL.clayDark), stone: clayTexture(PAL.stone, 0x4c463e),
+  sky: toTex(skyG, 1, 1, false), env: toTex(skyG, 1, 1, false)
+};
+TEX.env.mapping = THREE.EquirectangularReflectionMapping;
+
+/* ---------------------------------------------------- 4. MATERIALS */
+const std = (o) => new THREE.MeshStandardMaterial(Object.assign({ envMapIntensity: 0.55 }, o));
+const glowMat = (o) => new THREE.MeshBasicMaterial(Object.assign({ transparent: true,
+  blending: THREE.AdditiveBlending, depthWrite: false, fog: false }, o));
+const MAT = {
+  ground: std({ map: TEX.sand, color: 0xffffff, roughness: 0.97, vertexColors: true }),
+  water: std({ map: TEX.water, color: 0x9ff0e2, roughness: 0.09, metalness: 0.3,
+    transparent: true, opacity: 0.88, envMapIntensity: 0.9 }),
+  bark: std({ map: TEX.clay, color: PAL.bark, roughness: 0.9 }),
+  frond: std({ map: TEX.frond, roughness: 0.72, side: THREE.DoubleSide, alphaTest: 0.42, envMapIntensity: 0.5 }),
+  reed: std({ color: PAL.reed, roughness: 0.85, side: THREE.DoubleSide }),
+  grass: std({ color: 0xa89152, roughness: 1.0, side: THREE.DoubleSide }),
+  date: std({ color: PAL.date, roughness: 0.6, flatShading: true }),
+  cloth: std({ map: TEX.stripe, roughness: 0.94, side: THREE.DoubleSide }),
+  wood: std({ map: TEX.clay, color: PAL.wood, roughness: 0.88 }),
+  rope: std({ color: PAL.rope, roughness: 1.0 }),
+  stone: std({ map: TEX.stone, color: 0xffffff, roughness: 0.95, flatShading: true }),
+  clay: std({ map: TEX.clay, color: 0xffffff, roughness: 0.72 }),
+  brass: std({ color: PAL.brass, roughness: 0.31, metalness: 0.85, envMapIntensity: 1.2 }),
+  rugA: std({ map: TEX.rugA, roughness: 0.95 }), rugB: std({ map: TEX.rugB, roughness: 0.95 }),
+  cushion: std({ color: PAL.rugRed, roughness: 0.96 }), cushionB: std({ color: PAL.ochre, roughness: 0.96 }),
+  camel: std({ color: PAL.camel, roughness: 0.93 }), camelDark: std({ color: PAL.camelDark, roughness: 0.95 }),
+  charcoal: std({ color: 0x2a221d, roughness: 1.0 }),
+  glass: std({ color: PAL.lamp, roughness: 0.15, transparent: true, opacity: 0.55, emissive: PAL.lamp, emissiveIntensity: 1.6 }),
+  flame: glowMat({ color: PAL.fire, opacity: 0.7, side: THREE.DoubleSide }),
+  flameCore: glowMat({ color: 0xffe08a, opacity: 0.85, side: THREE.DoubleSide }),
+  glow: glowMat({ map: TEX.dot, color: PAL.ember, opacity: 0.55 })
+};
+
+/* ------------------------------------ 5. RENDERER / SCENE / CAMERA */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2)); renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.14;
+document.body.appendChild(renderer.domElement);
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(0xb0805f, 0.0095); scene.environment = TEX.env;
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.2, 900);
+camera.position.set(32.4, 15.3, 34.0);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.05; controls.target.set(0, 3.2, -2);
+controls.minDistance = 30; controls.maxDistance = 92;
+controls.minPolarAngle = 0.5; controls.maxPolarAngle = 1.42;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.75; controls.update();
+
+/* ----------------------------------------------- 6. TERRAIN FIELD */
+/* The pool outline is an ellipse with a low-frequency wobble on its radius. */
+const shoreWob = (a) => 1 + 0.085 * Math.sin(a * 3 + 0.7) + 0.055 * Math.sin(a * 5 - 1.4);
+const shorePoint = (a, k) => [POOL.x + Math.cos(a) * k * shoreWob(a) * POOL.rx,
+  POOL.z + Math.sin(a) * k * shoreWob(a) * POOL.rz];
+function poolDist(x, z) {                            // normalised distance to pool centre; 1 = basin rim
+  const dx = (x - POOL.x) / POOL.rx, dz = (z - POOL.z) / POOL.rz;
+  return Math.hypot(dx, dz) / shoreWob(Math.atan2(dz, dx));
+}
+/* Sand height: flat camp floor, rolling dunes further out, a ridge on the horizon. */
+function duneHeight(x, z) {
+  const d = Math.hypot((x - OASIS.x) * 0.92, z - OASIS.z);
+  const open = smoothstep(19, 46, d), far = smoothstep(54, 98, d);
+  let h = 2.9 * Math.sin(x * 0.052 + Math.sin(z * 0.031) * 2.4)
+        + 1.9 * Math.sin(z * 0.064 - Math.cos(x * 0.037) * 1.7)
+        + 0.9 * Math.sin(x * 0.13 - z * 0.09 + 1.1);
+  h = (h + 5.7) * 0.42;
+  let y = h * open + far * (5.0 + 2.6 * Math.sin(x * 0.028 + z * 0.021));
+  y += 0.14 * Math.sin(x * 0.9 + Math.sin(z * 0.4) * 2.0) * (0.22 + 0.78 * open);
+  return y - POOL.depth * Math.pow(Math.max(0, 1 - Math.min(1, poolDist(x, z))), 1.5);
+}
+function buildTerrain() {                            // dunes, vertex-coloured lit crest to wet shore
+  const g = new THREE.PlaneGeometry(200, 200, 184, 184); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position, col = [], c = new THREE.Color();
+  const lit = new THREE.Color(PAL.sandLit), cool = new THREE.Color(PAL.sandCool), wet = new THREE.Color(PAL.sandWet);
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), z = p.getZ(i), y = duneHeight(x, z); p.setY(i, y);
+    c.copy(cool).lerp(lit, clamp01(0.55 + y * 0.075 + Math.sin(x * 0.06 + z * 0.05) * 0.14));
+    const pd = poolDist(x, z); if (pd < 1.2) c.lerp(wet, smoothstep(1.2, 0.62, pd) * 0.8);
+    col.push(c.r, c.g, c.b);
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3)); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, MAT.ground); m.receiveShadow = true; return m;
+}
+function buildWater() {                              // turquoise lagoon plane, rippled in the loop
+  const g = new THREE.PlaneGeometry(26.4, 20.4, 52, 40); g.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(g, MAT.water);
+  m.position.set(POOL.x, POOL.y, POOL.z); m.receiveShadow = true;
+  m.userData.base = Float32Array.from(g.attributes.position.array);
+  return m;
+}
+
+/* ----------------------------------------- 7. BUILDER FUNCTIONS */
+function buildSky() {                                // gradient dome + two twinkling star layers
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(420, 48, 28),
+    new THREE.MeshBasicMaterial({ map: TEX.sky, side: THREE.BackSide, fog: false })));
+  for (let layer = 0; layer < 2; layer++) {
+    const n = layer ? 170 : 260, pos = [], colr = [], sg = new THREE.BufferGeometry();
+    for (let i = 0; i < n; i++) {
+      const a = rr(0, 6.283), e = Math.pow(rnd(), 1.5) * 1.15 + 0.045, b = rr(0.45, 1);
+      pos.push(Math.cos(a) * Math.cos(e) * 400, Math.sin(e) * 400, Math.sin(a) * Math.cos(e) * 400);
+      colr.push(b, b * rr(0.93, 1), b * rr(0.9, 1));
+    }
+    sg.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    sg.setAttribute('color', new THREE.Float32BufferAttribute(colr, 3));
+    const stars = new THREE.Points(sg, new THREE.PointsMaterial({ size: layer ? 5.4 : 3.4, map: TEX.dot,
+      transparent: true, opacity: 1, depthWrite: false, sizeAttenuation: false, vertexColors: true, fog: false }));
+    stars.userData.phase = layer * 1.7; g.add(stars);
+  }
+  return g;
+}
+function buildPalm(height, thick) {                  // lathed leaning trunk, drooping fronds, date clusters
+  const g = new THREE.Group(), pts = [], big = height > 6;
+  for (let i = 0; i <= 26; i++) {
+    const t = i / 26;
+    pts.push(new THREE.Vector2(thick * (1 - 0.42 * t) * (1 + 0.16 * Math.sin(t * 34)) + 0.02, t * height));
+  }
+  const tg = new THREE.LatheGeometry(pts, 14), p = tg.attributes.position;
+  const lean = rr(0.7, 1.7), dir = rr(0, 6.283), lx = Math.cos(dir) * lean, lz = Math.sin(dir) * lean;
+  for (let i = 0; i < p.count; i++) {                // bend the whole trunk into the lean
+    const t = Math.pow(p.getY(i) / height, 2);
+    p.setX(i, p.getX(i) + lx * t); p.setZ(i, p.getZ(i) + lz * t);
+  }
+  tg.computeVertexNormals();
+  const trunk = new THREE.Mesh(tg, MAT.bark); trunk.castShadow = trunk.receiveShadow = true;
+  const crown = new THREE.Group(), n = big ? 10 : 7;
+  crown.position.set(lx, height - 0.12, lz);
+  crown.rotation.set(-Math.sin(dir) * lean * 0.11, 0, Math.cos(dir) * lean * 0.11);
+  for (let i = 0; i < n; i++) {
+    const f = new THREE.Mesh(FROND_GEO, MAT.frond), tilt = rr(0.05, 0.62) - (i / n) * 0.34;
+    f.rotation.set(rr(-0.14, 0.14), (i / n) * 6.283 + rr(-0.2, 0.2), tilt);
+    f.scale.setScalar(rr(0.78, 1.12) * (big ? 1 : 0.72)); f.castShadow = true;
+    f.userData = { tilt, yaw: f.rotation.y, ph: rr(0, 6.283), sp: rr(0.5, 0.85) };
+    crown.add(f);
+  }
+  crown.add(scl(sph(thick * 1.5, MAT.bark, 10), 1, 0.6, 1));
+  if (big) for (let i = 0; i < 3; i++) {             // hanging clusters of dates
+    const a = rr(0, 6.283), r = rr(0.7, 1.1), d = sph(rr(0.34, 0.5), MAT.date, 8);
+    scl(d, 1, 1.5, 1).position.set(Math.cos(a) * r, -rr(0.5, 0.95), Math.sin(a) * r);
+    crown.add(d);
+  }
+  g.add(trunk, crown); g.userData.crown = crown; return g;
+}
+function buildReeds(count) {                         // instanced reed blades hugging the waterline
+  const bg = new THREE.PlaneGeometry(0.13, 1.75, 1, 5), data = [];
+  bg.translate(0, 0.875, 0);
+  const p = bg.attributes.position;
+  for (let i = 0; i < p.count; i++) {                // taper and curl each blade
+    const t = p.getY(i) / 1.75;
+    p.setX(i, p.getX(i) * (1 - t * 0.88)); p.setZ(i, p.getZ(i) + t * t * 0.5);
+  }
+  bg.computeVertexNormals();
+  const im = new THREE.InstancedMesh(bg, MAT.reed, count); im.castShadow = im.receiveShadow = true;
+  for (let i = 0; i < count; i++) {
+    const [x, z] = shorePoint(rr(0, 6.283), rr(0.62, 0.94));
+    data.push({ x, z, y: duneHeight(x, z) - 0.08, s: rr(0.6, 1.5), yaw: rr(0, 6.283), ph: rr(0, 6.283), sw: rr(0.1, 0.22) });
+  }
+  im.userData.data = data; return im;
+}
+/* Sagging tent profile: two ridge bumps over the poles, dropping at the eaves. */
+const tentY = (nx, nz, h) => h * (0.55 + 0.45 * Math.exp(-Math.pow((Math.abs(nx) - 0.55) / 0.42, 2))
+  - 0.36 * nz * nz - 0.14 * nx * nx);
+function buildTent(w, d, h) {                        // striped canopy, back wall, poles, guy ropes, stakes
+  const g = new THREE.Group();
+  const cg = new THREE.PlaneGeometry(w, d, 16, 12); cg.rotateX(-Math.PI / 2);
+  const p = cg.attributes.position;
+  for (let i = 0; i < p.count; i++) p.setY(i, tentY(p.getX(i) / (w / 2), p.getZ(i) / (d / 2), h));
+  cg.computeVertexNormals();
+  const canopy = new THREE.Mesh(cg, MAT.cloth); canopy.castShadow = canopy.receiveShadow = true;
+  const bg = new THREE.PlaneGeometry(w, 1, 16, 4), bp = bg.attributes.position;
+  for (let i = 0; i < bp.count; i++) {               // back wall hangs off the rear edge
+    const nx = bp.getX(i) / (w / 2);
+    bp.setY(i, (bp.getY(i) + 0.5) * tentY(nx, -1, h)); bp.setZ(i, 0.12 * Math.sin(nx * 4));
+  }
+  bg.computeVertexNormals();
+  const back = new THREE.Mesh(bg, MAT.cloth);
+  back.position.z = -d / 2; back.castShadow = back.receiveShadow = true; g.add(canopy, back);
+  for (const sx of [-1, 1]) {
+    const ph = tentY(sx * 0.55, 0, h);
+    g.add(cyl(0.075, 0.1, ph, MAT.wood, 8, sx * 0.55 * (w / 2), ph / 2, 0));
+    for (const sz of [-1, 1]) {
+      const cx = sx * (w / 2) * 0.94, cz = sz * (d / 2) * 0.96, cy = tentY(sx * 0.94, sz * 0.96, h);
+      const ex = cx + sx * 1.5, ez = cz + sz * 1.35;
+      const rope = cyl(0.026, 0.026, Math.hypot(ex - cx, cy, ez - cz), MAT.rope, 5, (cx + ex) / 2, cy / 2, (cz + ez) / 2);
+      rope.lookAt(ex, 0, ez); rope.rotateX(Math.PI / 2);
+      g.add(rope, rot(cyl(0.045, 0.03, 0.5, MAT.wood, 6, ex, 0.12, ez), sz * 0.3, 0, 0),
+        cyl(0.055, 0.07, cy, MAT.wood, 6, cx, cy / 2, cz));
+    }
+  }
+  g.add(rot(cyl(0.19, 0.19, d * 0.5, MAT.cloth, 8, w / 2 - 0.35, tentY(0.86, 0, h) - 0.28, d * 0.18), Math.PI / 2, 0, 0));
+  g.userData.canopy = canopy; return g;
+}
+function buildCampfire() {                           // stone ring, criss-crossed logs, flame cones, ember glow
+  const g = new THREE.Group(), flames = new THREE.Group();
+  for (let i = 0; i < 11; i++) {                     // ring of hearth stones
+    const a = (i / 11) * 6.283 + rr(-0.1, 0.1), r = rr(1.05, 1.2);
+    const s = meshOf(new THREE.DodecahedronGeometry(rr(0.2, 0.34), 0), MAT.stone, Math.cos(a) * r, rr(0.06, 0.16), Math.sin(a) * r);
+    rot(s, rr(0, 3), rr(0, 3), rr(0, 3)).scale.y = rr(0.6, 0.95); g.add(s);
+  }
+  const ash = meshOf(new THREE.CircleGeometry(1.05, 20), MAT.charcoal, 0, 0.03, 0);
+  ash.rotation.x = -Math.PI / 2; ash.castShadow = false; g.add(ash);
+  for (let i = 0; i < 6; i++) {                      // criss-crossed burning logs
+    const a = (i / 6) * 3.14 + rr(-0.2, 0.2);
+    g.add(rot(cyl(rr(0.08, 0.13), rr(0.09, 0.14), rr(1.1, 1.7), MAT.wood, 7,
+      Math.cos(a) * 0.24, 0.14 + i * 0.055, Math.sin(a) * 0.24), Math.PI / 2 - rr(0.1, 0.4), a, 0));
+  }
+  flames.position.y = 0.22;
+  for (let i = 0; i < 7; i++) {                      // outer tongues plus a hot inner core
+    const inner = i > 4, hgt = rr(0.75, 1.5), a = rr(0, 6.283), r = inner ? rr(0, 0.1) : rr(0.05, 0.3);
+    const f = new THREE.Mesh(new THREE.ConeGeometry(rr(0.16, 0.3), hgt, 7, 3, true), inner ? MAT.flameCore : MAT.flame);
+    f.position.set(Math.cos(a) * r, hgt * 0.5, Math.sin(a) * r);
+    f.userData = { y0: hgt * 0.5, ph: rr(0, 6.283), sp: rr(3.2, 6.4), s: rr(0.85, 1.2) };
+    f.scale.setScalar(f.userData.s); flames.add(f);
+  }
+  const glow = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 4.4), MAT.glow);
+  glow.rotation.x = -Math.PI / 2; glow.position.y = 0.05;
+  g.add(flames, glow); g.userData.flames = flames; return g;
+}
+function buildRug(w, d, mat, cushions) {             // woven rug with fringe and tasselled cushions
+  const g = new THREE.Group();
+  g.add(box(w, 0.05, d, mat, 0, 0.03, 0));
+  for (const s of [-1, 1]) g.add(box(w, 0.03, 0.22, MAT.rope, 0, 0.03, s * (d / 2 + 0.09)));
+  for (let i = 0; i < cushions; i++) {
+    const c = scl(sph(rr(0.3, 0.44), i % 2 ? MAT.cushionB : MAT.cushion, 12), 1.35, 0.52, 1);
+    c.rotation.y = rr(0, 3.14);
+    c.position.set(rr(-w / 2 + 0.5, w / 2 - 0.5), 0.18, rr(-d / 2 + 0.45, d / 2 - 0.45));
+    g.add(c, sph(0.07, MAT.rugB, 6, c.position.x, 0.3, c.position.z));
+  }
+  return g;
+}
+function buildJar(h) {                               // bulbous clay jar: rolled lip, rope collar, two handles
+  const g = new THREE.Group(), pts = [];
+  for (let i = 0; i <= 18; i++) {
+    const t = i / 18, r = 0.14 + 0.42 * Math.sin(Math.PI * Math.pow(t, 0.78)) * (1 - 0.45 * t) + 0.05 * (1 - t);
+    pts.push(new THREE.Vector2(Math.max(0.06, r) * h, t * h));
+  }
+  const lip = ring(0.14 * h, 0.035 * h, MAT.clay, 6, 14, 6.283, 0, h * 0.99, 0);
+  const collar = ring(0.2 * h, 0.02 * h, MAT.rope, 5, 12, 6.283, 0, h * 0.6, 0);
+  lip.rotation.x = collar.rotation.x = Math.PI / 2;
+  g.add(meshOf(new THREE.LatheGeometry(pts, 18), MAT.clay), lip, collar);
+  for (const s of [-1, 1]) g.add(rot(ring(0.12 * h, 0.025 * h, MAT.clay, 6, 12, Math.PI, s * 0.26 * h, h * 0.74, 0),
+    Math.PI / 2, 0, s * Math.PI / 2));
+  return g;
+}
+function buildCamel() {                              // couched camel with a saddle blanket over the hump
+  const g = new THREE.Group();
+  const body = scl(sph(1.0, MAT.camel, 16), 1.9, 0.92, 1.05); body.position.y = 1.0;
+  const hump = scl(sph(0.72, MAT.camel, 14), 1.15, 1, 0.95); hump.position.set(-0.05, 1.72, 0);
+  g.add(body, hump, rot(box(1.15, 0.12, 1.35, MAT.rugA, -0.05, 1.98, 0), 0.04, 0, 0));
+  for (let i = 0; i < 5; i++) {                      // neck built from tapering links
+    const t = i / 4;
+    g.add(rot(cyl(0.3 - t * 0.11, 0.34 - t * 0.11, 0.45, MAT.camel, 9, 1.45 + t * 0.72, 1.32 + t * 1.12, 0), 0, 0, -0.55 - t * 0.12));
+  }
+  const head = scl(sph(0.34, MAT.camel, 12), 1.5, 0.95, 0.9);
+  head.position.set(2.55, 2.72, 0); head.rotation.z = 0.2;
+  const muzzle = scl(sph(0.2, MAT.camelDark, 10), 1.4, 0.85, 0.85); muzzle.position.set(3.02, 2.6, 0);
+  g.add(head, muzzle, rot(cyl(0.05, 0.08, 1.0, MAT.camel, 6, -1.95, 0.95, 0), 0, 0, 1.0), sph(0.13, MAT.camelDark, 8, -2.4, 0.6, 0));
+  for (const s of [-1, 1]) {                         // ears and folded legs, both sides
+    g.add(rot(cone(0.09, 0.24, MAT.camelDark, 6, 2.34, 3.0, s * 0.17), s * 0.4, 0, -0.3),
+      rot(box(0.34, 0.3, 0.34, MAT.camel, 1.15, 0.62, s * 0.72), 0, 0, 0.25),
+      rot(cyl(0.19, 0.17, 0.9, MAT.camelDark, 8, 1.62, 0.28, s * 0.7), 0, 0, Math.PI / 2),
+      rot(box(0.5, 0.42, 0.42, MAT.camel, -1.2, 0.5, s * 0.68), 0, 0, -0.12),
+      rot(cyl(0.17, 0.15, 0.75, MAT.camelDark, 8, -0.85, 0.22, s * 0.66), 0, 0, Math.PI / 2));
+  }
+  g.userData.body = body; return g;
+}
+function buildLanternPost() {                        // oil lantern swinging from a leaning wooden post
+  const g = new THREE.Group(), swing = new THREE.Group();
+  swing.position.set(0.85, 2.98, 0);
+  g.add(rot(cyl(0.07, 0.1, 3.2, MAT.wood, 8, 0, 1.6, 0), 0, 0, 0.07),
+    rot(cyl(0.05, 0.05, 1.0, MAT.wood, 6, 0.4, 3.05, 0), 0, 0, Math.PI / 2 - 0.16),
+    rot(cyl(0.04, 0.04, 0.72, MAT.wood, 5, 0.26, 2.7, 0), 0, 0, -Math.PI / 4), swing);
+  const bodyL = cyl(0.19, 0.21, 0.4, MAT.glass, 8, 0, -0.58, 0); bodyL.castShadow = false;
+  swing.add(cyl(0.018, 0.018, 0.3, MAT.brass, 5, 0, -0.15, 0), bodyL,
+    cone(0.24, 0.2, MAT.brass, 8, 0, -0.32, 0), cyl(0.2, 0.15, 0.12, MAT.brass, 8, 0, -0.83, 0));
+  for (let i = 0; i < 4; i++) {                      // corner ribs of the lantern cage
+    const a = (i / 4) * 6.283;
+    swing.add(cyl(0.014, 0.014, 0.44, MAT.brass, 4, Math.cos(a) * 0.19, -0.58, Math.sin(a) * 0.19));
+  }
+  g.userData.swing = swing; g.userData.lampPos = new THREE.Vector3(0.85, 2.4, 0); return g;
+}
+function buildFirewood() {                           // tapering stack of split logs with a hand axe
+  const g = new THREE.Group();
+  for (let row = 0; row < 3; row++) for (let i = 0, n = 4 - row; i < n; i++) {
+    g.add(rot(cyl(rr(0.11, 0.15), rr(0.1, 0.14), rr(1.5, 2.1), MAT.wood, 7,
+      (i - (n - 1) / 2) * 0.33 + rr(-0.04, 0.04), 0.14 + row * 0.27, rr(-0.1, 0.1)), 0, rr(-0.14, 0.14), Math.PI / 2));
+  }
+  g.add(rot(cyl(0.045, 0.045, 1.1, MAT.wood, 6, 0.95, 0.5, 0.6), 0, 0, -0.5),
+    rot(box(0.09, 0.3, 0.24, MAT.brass, 1.22, 0.98, 0.6), 0, 0, -0.5));
+  return g;
+}
+function buildTeaSet() {                             // low brass tray, teapot and clay cups
+  const g = new THREE.Group();
+  g.add(cyl(0.62, 0.58, 0.07, MAT.brass, 18, 0, 0.12, 0));
+  for (let i = 0; i < 3; i++) {                      // three legs, three cups
+    const a = (i / 3) * 6.283;
+    g.add(cyl(0.035, 0.035, 0.12, MAT.wood, 5, Math.cos(a) * 0.42, 0.05, Math.sin(a) * 0.42),
+      cyl(0.075, 0.055, 0.11, MAT.clay, 9, rr(0.15, 0.4), 0.21, rr(-0.35, 0.35)));
+  }
+  const pot = sph(0.23, MAT.brass, 12, -0.12, 0.32, 0); pot.scale.y = 0.85;
+  g.add(pot, rot(cyl(0.03, 0.05, 0.34, MAT.brass, 6, 0.1, 0.42, 0), 0, 0, -0.75),
+    rot(ring(0.13, 0.02, MAT.brass, 5, 10, Math.PI, -0.35, 0.36, 0), Math.PI / 2, 0, -Math.PI / 2),
+    cyl(0.07, 0.1, 0.16, MAT.brass, 8, -0.12, 0.5, 0), cone(0.11, 0.11, MAT.brass, 8, -0.12, 0.62, 0));
+  return g;
+}
+function buildSaddleStack() {                        // saddle, folded blanket, coiled rope, travel bags
+  const g = new THREE.Group();
+  const saddle = scl(sph(0.55, MAT.camelDark, 12), 1.25, 0.6, 0.9); saddle.position.y = 0.42;
+  g.add(box(1.5, 0.16, 1.1, MAT.rugB, 0, 0.09, 0), saddle,
+    rot(ring(0.28, 0.05, MAT.rope, 6, 14, 6.283, -0.9, 0.07, 0.8), Math.PI / 2, 0, 0));
+  for (const s of [-1, 1]) g.add(rot(cone(0.11, 0.34, MAT.wood, 7, s * 0.5, 0.66, 0), 0, 0, s * 0.25),
+    rot(box(0.62, 0.5, 0.42, MAT.rugA, s * 0.95, 0.26, -0.75), 0, s * 0.3, 0));
+  return g;
+}
+function buildScatter() {                            // instanced shore pebbles and dry grass tufts
+  const g = new THREE.Group();
+  const pebbles = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.18, 0), MAT.stone, 150);
+  pebbles.castShadow = pebbles.receiveShadow = true;
+  for (let i = 0; i < 150; i++) {
+    const [x, z] = shorePoint(rr(0, 6.283), rr(0.68, 1.5));
+    dummy.position.set(x, duneHeight(x, z) + 0.03, z);
+    dummy.rotation.set(rr(0, 3), rr(0, 3), rr(0, 3)); dummy.scale.set(rr(0.4, 1.5), rr(0.3, 0.8), rr(0.4, 1.5));
+    dummy.updateMatrix(); pebbles.setMatrixAt(i, dummy.matrix);
+  }
+  const bladeG = new THREE.ConeGeometry(0.1, 0.75, 4, 1, true); bladeG.translate(0, 0.375, 0);
+  const tufts = new THREE.InstancedMesh(bladeG, MAT.grass, 190); tufts.castShadow = true;
+  for (let i = 0; i < 190; i++) {
+    const a = rr(0, 6.283), r = rr(14, 52);
+    const x = OASIS.x + Math.cos(a) * r, z = OASIS.z + Math.sin(a) * r * 0.85;
+    dummy.position.set(x, duneHeight(x, z) - 0.06, z);
+    dummy.rotation.set(rr(-0.2, 0.2), rr(0, 6.28), rr(-0.2, 0.2)); dummy.scale.set(rr(0.6, 1.4), rr(0.5, 1.5), rr(0.6, 1.4));
+    dummy.updateMatrix(); tufts.setMatrixAt(i, dummy.matrix);
+  }
+  g.add(pebbles, tufts); return g;
+}
+function buildPoints(n, mat, spawn) {                // shared particle rig: sparks and dust haze
+  const pos = new Float32Array(n * 3), data = [], g = new THREE.BufferGeometry();
+  for (let i = 0; i < n; i++) {
+    const d = spawn(); data.push(d); pos[i * 3] = d.x; pos[i * 3 + 1] = d.y; pos[i * 3 + 2] = d.z;
+  }
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const p = new THREE.Points(g, mat); p.userData.data = data; p.frustumCulled = false; return p;
+}
+
+/* -------------------------------------------- 8. ASSEMBLY / LAYOUT */
+const FROND_GEO = (() => {                           // one drooping frond blade, shared by every palm
+  const g = new THREE.PlaneGeometry(3.4, 1.5, 14, 1);
+  g.translate(1.7, 0, 0); g.rotateX(-Math.PI / 2);
+  const p = g.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const t = clamp01(p.getX(i) / 3.4);              // clamped: float32 rounding can dip below 0
+    p.setZ(i, p.getZ(i) * (0.25 + 0.95 * Math.pow(Math.max(0, Math.sin(Math.PI * Math.min(1, t * 1.03))), 0.7)));
+    p.setY(i, p.getY(i) - 2.15 * t * t * t + 0.35 * t);
+  }
+  g.computeVertexNormals(); return g;
+})();
+/* Drop a prop onto the sand at (x,z) with an optional yaw and vertical nudge. */
+function place(obj, x, z, ry = 0, dy = 0) {
+  obj.position.set(x, duneHeight(x, z) + dy, z); obj.rotation.y = ry; scene.add(obj); return obj;
+}
+const sky = buildSky(), water = buildWater();
+scene.add(sky, buildTerrain(), water, buildScatter());
+
+const palms = [];
+for (const [x, z, h] of [[-13.5, -13.5, 10.5], [-7.5, -16.5, 9.2], [-0.5, -16.0, 11.2], [5.5, -13.0, 8.6],
+  [8.5, -8.5, 9.8], [-16.0, -6.0, 10.2], [-13.0, 1.5, 8.2], [2.5, -1.5, 7.6],
+  [-9.5, -2.5, 3.4], [6.5, -3.5, 3.0], [-17.5, -12.5, 8.8]]) {
+  const p = place(buildPalm(h, h > 5 ? rr(0.3, 0.4) : 0.2), x, z, rr(0, 6.283), -0.15);
+  p.userData.ph = rr(0, 6.283); palms.push(p);
+}
+const reeds = buildReeds(210); scene.add(reeds);
+const tentA = place(buildTent(6.4, 5.4, 3.3), 10.8, 4.2, -1.15);
+const tentB = place(buildTent(5.6, 4.8, 3.0), 12.2, -4.6, -2.0);
+const fire = place(buildCampfire(), 2.4, 4.6, 0, 0.02);
+const camel = place(buildCamel(), -7.0, 5.4, -0.55);
+const lantern = place(buildLanternPost(), 6.6, 8.6, 0);
+place(buildRug(4.6, 3.2, MAT.rugA, 4), -0.6, 7.2, 0.34);
+place(buildRug(3.4, 2.6, MAT.rugB, 3), 6.2, 6.4, -0.7);
+place(buildTeaSet(), -0.4, 6.9, 0, 0.02);
+place(buildFirewood(), 4.6, 8.9, 0.5, 0.05);
+place(buildSaddleStack(), -4.1, 8.2, 0.8, 0.02);
+for (const [x, z, h] of [[-2.6, 0.9, 1.5], [-1.35, 1.6, 1.25], [-0.2, 1.75, 1.1],
+  [8.2, 2.0, 2.3], [9.4, 1.2, 3.1]]) place(buildJar(h), x, z, rr(0, 3.14));
+
+const sparks = buildPoints(150, new THREE.PointsMaterial({ size: 0.17, map: TEX.dot, color: 0xffb060,
+  transparent: true, opacity: 0.95, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }),
+  () => ({ x: fire.position.x + rr(-0.4, 0.4), y: rr(0.3, 5.5), z: fire.position.z + rr(-0.4, 0.4),
+    vy: rr(0.7, 2.0), ph: rr(0, 6.283), sw: rr(0.4, 1.1) }));
+const dust = buildPoints(120, new THREE.PointsMaterial({ size: 1.9, map: TEX.dot, color: 0xe9c79b,
+  transparent: true, opacity: 0.13, depthWrite: false }),
+  () => ({ x: rr(-40, 40), y: rr(0.5, 9), z: rr(-38, 34), vy: rr(0.02, 0.1), ph: rr(0, 6.283), sw: rr(0.3, 0.8) }));
+scene.add(sparks, dust);
+
+/* --------------------------------------------------- 9. LIGHTING */
+const sun = new THREE.DirectionalLight(0xffb06a, 3.1);
+sun.position.copy(SUNP); sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0009; sun.shadow.normalBias = 0.05;
+Object.assign(sun.shadow.camera, { left: -40, right: 40, top: 36, bottom: -30, near: 10, far: 140 });
+sun.shadow.camera.updateProjectionMatrix();
+const bounce = new THREE.DirectionalLight(0xffd2a0, 0.5); bounce.position.set(-16, 3, 24); // warm sand bounce
+scene.add(sun, sun.target, bounce, new THREE.HemisphereLight(0x5c6bb4, 0xc08850, 0.85),
+  new THREE.AmbientLight(0x6a5f86, 0.35));
+const fireLight = new THREE.PointLight(PAL.fire, 34, 22, 2); fireLight.position.set(fire.position.x, 1.0, fire.position.z);
+const fireBounce = new THREE.PointLight(PAL.ember, 9, 9, 2); fireBounce.position.set(fire.position.x, 0.25, fire.position.z);
+const lampLight = new THREE.PointLight(PAL.lamp, 9, 12, 2);
+lampLight.position.copy(lantern.position).add(lantern.userData.lampPos);
+const poolGlow = new THREE.PointLight(0x53d7cc, 5, 20, 2);  // faint turquoise lift off the water
+poolGlow.position.set(POOL.x, 0.6, POOL.z);
+scene.add(fireLight, fireBounce, lampLight, poolGlow);
+
+/* -------------------------------------------- 10. ANIMATION LOOP */
+const clock = new THREE.Clock();
+const starLayers = sky.children.filter((o) => o.isPoints);
+const waterPos = water.geometry.attributes.position, waterBase = water.userData.base;
+function driftPoints(pts, t, topY, baseY) {          // rise, wander sideways, respawn at the bottom
+  const arr = pts.geometry.attributes.position.array;
+  pts.userData.data.forEach((d, i) => {
+    d.y += d.vy * 0.016;
+    if (d.y > topY) { d.y = baseY; d.ph = (d.ph + 1.7) % 6.283; }
+    arr[i * 3] = d.x + Math.sin(t * d.sw + d.ph) * 0.6; arr[i * 3 + 1] = d.y;
+    arr[i * 3 + 2] = d.z + Math.cos(t * d.sw * 0.8 + d.ph) * 0.6;
+  });
+  pts.geometry.attributes.position.needsUpdate = true;
+}
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // 1. campfire: tongues stretch and lean while the warm lights flicker
+  for (const f of fire.userData.flames.children) {
+    const u = f.userData, w = Math.sin(t * u.sp + u.ph);
+    f.scale.set(u.s * (0.86 + 0.15 * w), u.s * (0.72 + 0.4 * Math.sin(t * u.sp * 1.3 + u.ph)), u.s);
+    f.position.y = u.y0 + 0.06 * w; f.rotation.z = 0.14 * Math.sin(t * u.sp * 0.6 + u.ph);
+  }
+  const flick = 0.8 + 0.13 * Math.sin(t * 8.7) + 0.07 * Math.sin(t * 16.9 + 1.1) + 0.06 * Math.sin(t * 3.3);
+  fireLight.intensity = 34 * flick; fireBounce.intensity = 9 * flick;
+  MAT.flame.opacity = 0.6 + 0.22 * flick; MAT.glow.opacity = 0.4 + 0.28 * flick;
+
+  // 2. sparks climb out of the fire while dust drifts across the dunes
+  driftPoints(sparks, t, 6.5, 0.35); driftPoints(dust, t, 11, 0.4);
+
+  // 3. the pool ripples and its caustics slide
+  for (let i = 0; i < waterPos.count; i++) {
+    const x = waterBase[i * 3], z = waterBase[i * 3 + 2];
+    waterPos.setY(i, Math.sin(x * 0.55 + t * 1.15) * 0.045
+      + Math.sin(z * 0.78 - t * 0.9) * 0.035 + Math.sin((x + z) * 0.31 + t * 0.5) * 0.03);
+  }
+  waterPos.needsUpdate = true; water.geometry.computeVertexNormals();
+
+  // 4. palms and reeds bend in the evening breeze
+  const gust = 0.55 + 0.45 * Math.sin(t * 0.27);
+  for (const p of palms) {
+    p.rotation.z = 0.016 * gust * Math.sin(t * 0.5 + p.userData.ph);
+    for (const f of p.userData.crown.children) {
+      const u = f.userData;
+      if (u.sp === undefined) continue;
+      f.rotation.z = u.tilt + 0.075 * gust * Math.sin(t * u.sp + u.ph);
+      f.rotation.y = u.yaw + 0.05 * Math.sin(t * u.sp * 0.7 + u.ph);
+    }
+  }
+  reeds.userData.data.forEach((d, i) => {
+    dummy.position.set(d.x, d.y, d.z);
+    dummy.rotation.set(d.sw * gust * Math.sin(t * 1.15 + d.ph), d.yaw, d.sw * gust * Math.cos(t * 0.95 + d.ph * 1.3));
+    dummy.scale.set(1, d.s, 1); dummy.updateMatrix(); reeds.setMatrixAt(i, dummy.matrix);
+  });
+  reeds.instanceMatrix.needsUpdate = true;
+
+  // 5. lantern sways, stars twinkle in, the camel breathes, the tents luff
+  lantern.userData.swing.rotation.z = 0.05 * Math.sin(t * 0.9);
+  lampLight.intensity = 9 * (0.88 + 0.09 * Math.sin(t * 5.1) + 0.05 * Math.sin(t * 11.7));
+  MAT.glass.emissiveIntensity = 1.5 + 0.28 * Math.sin(t * 4.4);
+  starLayers.forEach((s, li) => {
+    const c = s.geometry.attributes.color;
+    for (let i = 0; i < c.count; i++) {
+      const b = 0.62 + 0.38 * Math.sin(t * (0.9 + li * 0.5) + i * 2.399 + s.userData.phase);
+      c.setXYZ(i, b, b * 0.97, b * 0.93);
+    }
+    c.needsUpdate = true; s.material.opacity = 0.78 + 0.22 * Math.sin(t * 0.2 + li);
+  });
+  camel.userData.body.scale.y = 0.92 + 0.012 * Math.sin(t * 1.4);
+  tentA.userData.canopy.rotation.z = 0.008 * Math.sin(t * 0.8);
+  tentB.userData.canopy.rotation.z = 0.007 * Math.sin(t * 0.65 + 1.4);
+  poolGlow.intensity = 5 * (0.9 + 0.12 * Math.sin(t * 0.7));
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------------------------------------------------- 11. RESIZE */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

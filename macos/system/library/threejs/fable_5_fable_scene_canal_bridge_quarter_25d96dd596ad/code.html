@@ -1,0 +1,682 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Canal Bridge Quarter</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#1b2233}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================== CONFIG & PALETTE ============================== */
+const SEED       = 20260815;
+const QUAY_TOP   = 1.1;              // height of the quay walkways above the water
+const CANAL_HALF = 4;                // canal spans z in [-CANAL_HALF, CANAL_HALF]
+const PAL = {
+  fog:        0x3d4066,
+  waterDeep:  '#1e463c',
+  waterLight: '#2c5a4c',
+  duskKey:    0xff9d5f,
+  duskFill:   0x6a7fc0,
+  lampGlow:   0xffb45a,
+  iron:       0x262b33,
+  stone:      '#a89f92',
+  stoneMortar:'#7a7266',
+  cobbleBase: '#6e6a66',
+  mortarWarm: '#c9bfae',
+  mortarDark: '#5a4c42',
+  walls:      ['#b25a40','#9a4a38','#c47a52','#7a4a50'],
+  plasters:   [0xd9c9a8, 0xc4a97e, 0x9aa08a, 0xb98d63],
+  doors:      [0x2e4a3a, 0x5a2b26, 0x24304a],
+  windowLit:  ['#ffd9a3','#ffc887','#ffe7bd','#ffbe74'],
+  cloth:      [0xf2ede2, 0xd8938a, 0x8fa3c4, 0xe8d9a8, 0xc4d4c0],
+  flowers:    [0xd8474b, 0xe887a8, 0xf2c14e, 0xf2ede2]
+};
+
+/* ============================== SEEDED PRNG & HELPERS ============================== */
+function mulberry32(seed){ let a = seed >>> 0; return function(){
+  a |= 0; a = (a + 0x6D2B79F5) | 0;
+  let t = Math.imul(a ^ (a >>> 15), 1 | a);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const rand = mulberry32(SEED);
+const rr   = (a, b) => a + rand() * (b - a);
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+function shade(hex, d){ const c = new THREE.Color(hex);
+  const f = v => Math.max(0, Math.min(255, Math.round(v * 255 + d)));
+  return `rgb(${f(c.r)},${f(c.g)},${f(c.b)})`; }
+
+/* ============================== RENDERER / SCENE / CAMERA ============================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.35;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0105);
+
+const camera = new THREE.PerspectiveCamera(46, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(26.8, 13, 2.3);    // start due east: auto-rotate sweeps down the canal axis
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 10;
+controls.maxDistance = 44;
+controls.maxPolarAngle = 1.38;
+
+/* ============================== CANVAS TEXTURES ============================== */
+function makeTexture(w, h, draw){
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  draw(cv.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+function brickTexture(base, mortar, rows, cols){
+  return makeTexture(256, 256, (g, w, h) => {
+    g.fillStyle = mortar; g.fillRect(0, 0, w, h);
+    const bh = h / rows, bw = w / cols;
+    for (let r = 0; r < rows; r++){
+      const off = (r % 2) * bw * 0.5;
+      for (let c = -1; c < cols; c++){
+        g.fillStyle = shade(base, rr(-16, 16));
+        g.fillRect(c * bw + off + 1, r * bh + 1, bw - 2, bh - 2);
+      }
+    }
+  });
+}
+function plasterTexture(){
+  return makeTexture(128, 128, (g, w, h) => {
+    g.fillStyle = '#efe9de'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 500; i++){
+      g.fillStyle = `rgba(60,52,44,${rr(0.02, 0.09)})`;
+      g.fillRect(rr(0, w), rr(0, h), rr(1, 4), rr(1, 4));
+    }
+  });
+}
+function cobbleTexture(){
+  return makeTexture(512, 256, (g, w, h) => {
+    g.fillStyle = '#4a4640'; g.fillRect(0, 0, w, h);
+    const rws = 8, cls = 16, cw = w / cls, ch = h / rws;
+    for (let r = 0; r < rws; r++) for (let c = -1; c < cls; c++){
+      const off = (r % 2) * cw * 0.5;
+      g.fillStyle = shade(PAL.cobbleBase, rr(-14, 18));
+      g.beginPath();
+      g.ellipse(c * cw + off + cw / 2, r * ch + ch / 2, cw * 0.42, ch * 0.4, 0, 0, Math.PI * 2);
+      g.fill();
+    }
+  });
+}
+function waterTexture(){
+  return makeTexture(512, 256, (g, w, h) => {
+    g.fillStyle = PAL.waterDeep; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 90; i++){
+      const y = rr(0, h), len = rr(30, 130);
+      g.strokeStyle = `rgba(120,190,165,${rr(0.04, 0.16)})`;
+      g.lineWidth = rr(1, 2.6);
+      g.beginPath(); g.moveTo(rr(0, w), y);
+      g.quadraticCurveTo(rr(0, w), y + rr(-6, 6), rr(0, w) + len, y + rr(-4, 4));
+      g.stroke();
+    }
+  });
+}
+function woodTexture(base){
+  return makeTexture(256, 256, (g, w, h) => {
+    const planks = 6, pw = w / planks;
+    for (let p = 0; p < planks; p++){
+      g.fillStyle = shade(base, rr(-14, 14));
+      g.fillRect(p * pw, 0, pw - 1.5, h);
+      g.strokeStyle = 'rgba(30,18,10,0.35)'; g.lineWidth = 1;
+      for (let s = 0; s < 4; s++){
+        g.beginPath(); g.moveTo(p * pw + rr(2, pw - 4), 0);
+        g.lineTo(p * pw + rr(2, pw - 4), h); g.stroke();
+      }
+    }
+  });
+}
+function roofTexture(){
+  return makeTexture(256, 256, (g, w, h) => {
+    g.fillStyle = '#5c352a'; g.fillRect(0, 0, w, h);
+    const rws = 8, cls = 8, cw = w / cls, ch = h / rws;
+    for (let r = 0; r < rws; r++) for (let c = -1; c <= cls; c++){
+      const off = (r % 2) * cw * 0.5;
+      g.fillStyle = shade('#8f4d38', rr(-18, 14));
+      g.beginPath(); g.arc(c * cw + off + cw / 2, r * ch, cw * 0.52, 0, Math.PI);
+      g.fill();
+    }
+  });
+}
+function windowTexture(lit){
+  return makeTexture(64, 96, (g, w, h) => {
+    g.fillStyle = '#efe9dd'; g.fillRect(0, 0, w, h);          // painted frame
+    const pane = lit ? '#ffdfa8' : '#232d3d';
+    g.fillStyle = pane; g.fillRect(6, 6, w - 12, h - 12);
+    if (lit){
+      const gr = g.createRadialGradient(w / 2, h / 2, 4, w / 2, h / 2, w * 0.7);
+      gr.addColorStop(0, 'rgba(255,255,230,0.95)'); gr.addColorStop(1, 'rgba(255,190,110,0)');
+      g.fillStyle = gr; g.fillRect(6, 6, w - 12, h - 12);
+    } else {
+      g.fillStyle = 'rgba(140,170,210,0.18)'; g.fillRect(8, 8, w - 16, 26);
+    }
+    g.fillStyle = '#efe9dd';
+    g.fillRect(w / 2 - 2, 6, 4, h - 12); g.fillRect(6, h / 2 - 2, w - 12, 4);
+  });
+}
+function skyTexture(){
+  return makeTexture(16, 512, (g, w, h) => {
+    const gr = g.createLinearGradient(0, 0, 0, h);   // canvas top = below horizon
+    gr.addColorStop(0.0, '#d97a4a'); gr.addColorStop(0.30, '#c86a4c');
+    gr.addColorStop(0.44, '#7a4a63'); gr.addColorStop(0.62, '#3a3f6b');
+    gr.addColorStop(1.0, '#10162e');
+    g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  });
+}
+
+/* ============================== MATERIALS ============================== */
+const cobbleTop = cobbleTexture();  cobbleTop.repeat.set(7, 1.6);
+const deckTex   = cobbleTexture();  deckTex.repeat.set(1.4, 0.3);
+const brickQuayTex = brickTexture('#5c4c46', PAL.mortarDark, 10, 12); brickQuayTex.repeat.set(9, 0.9);
+const bridgeTex = brickTexture(PAL.stone, PAL.stoneMortar, 7, 4); bridgeTex.repeat.set(0.34, 0.34);
+const waterTex  = waterTexture();   waterTex.repeat.set(3.2, 1);
+const roofTex   = roofTexture();
+const boatWoodTex = woodTexture('#6e4830');
+const plasterTex  = plasterTexture();
+const gableBrickTexes = PAL.walls.map(cw => { const t = brickTexture(cw, PAL.mortarWarm, 8, 5); t.repeat.set(0.42, 0.42); return t; });
+
+const M = {
+  water:  new THREE.MeshStandardMaterial({ color: 0x3f7a68, map: waterTex, roughness: 0.16, metalness: 0.08 }),
+  cobble: new THREE.MeshStandardMaterial({ map: cobbleTop, roughness: 0.95 }),
+  deck:   new THREE.MeshStandardMaterial({ map: deckTex, roughness: 0.95 }),
+  quaySide: new THREE.MeshStandardMaterial({ map: brickQuayTex, roughness: 0.9 }),
+  bridge: new THREE.MeshStandardMaterial({ map: bridgeTex, roughness: 0.85 }),
+  kerb:   new THREE.MeshStandardMaterial({ color: 0xbdb4a2, roughness: 0.8 }),
+  iron:   new THREE.MeshStandardMaterial({ color: PAL.iron, roughness: 0.55, metalness: 0.65 }),
+  lampGlass: new THREE.MeshStandardMaterial({ color: 0x3a2a12, emissive: PAL.lampGlow, emissiveIntensity: 2.6 }),
+  roof:   new THREE.MeshStandardMaterial({ map: roofTex, roughness: 0.9 }),
+  trim:   new THREE.MeshStandardMaterial({ color: 0xefe9dd, roughness: 0.7 }),
+  boatWood: new THREE.MeshStandardMaterial({ map: boatWoodTex, roughness: 0.8 }),
+  boatDark: new THREE.MeshStandardMaterial({ color: 0x2c1d12, roughness: 0.85 }),
+  leaf:   new THREE.MeshStandardMaterial({ color: 0x3f6b35, roughness: 0.9 }),
+  duckWhite: new THREE.MeshStandardMaterial({ color: 0xe8e2d2, roughness: 0.85 }),
+  duckBrown: new THREE.MeshStandardMaterial({ color: 0x6b4a2e, roughness: 0.9 }),
+  beak:   new THREE.MeshStandardMaterial({ color: 0xd8842e, roughness: 0.7 }),
+  rope:   new THREE.MeshStandardMaterial({ color: 0x9a8a6a, roughness: 1 }),
+  ground: new THREE.MeshStandardMaterial({ color: 0x2a2f3e, roughness: 1 }),
+  brickWalls: gableBrickTexes.map((t, i) => new THREE.MeshStandardMaterial({ map: brickTexture(PAL.walls[i], PAL.mortarWarm, 16, 7), roughness: 0.92 })),
+  brickGables: gableBrickTexes.map(t => new THREE.MeshStandardMaterial({ map: t, roughness: 0.92 })),
+  plasters: PAL.plasters.map(c => new THREE.MeshStandardMaterial({ color: c, map: plasterTex, roughness: 0.92 })),
+  doors: PAL.doors.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.75 }))
+};
+
+/* ============================== SKY, WATER & QUAYS ============================== */
+const sky = new THREE.Mesh(new THREE.SphereGeometry(78, 32, 24),
+  new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false }));
+scene.add(sky);
+
+const moon = new THREE.Mesh(new THREE.CircleGeometry(2.3, 28),
+  new THREE.MeshBasicMaterial({ color: 0xf5ecd8, fog: false }));
+moon.position.set(-26, 34, -58); moon.lookAt(0, 4, 0);
+scene.add(moon);
+
+const starGeo = new THREE.BufferGeometry();
+{ const pts = [];
+  for (let i = 0; i < 110; i++){
+    const a = rr(0, Math.PI * 2), ph = rr(0.12, 1.15), r = 70;
+    pts.push(r * Math.sin(ph) * Math.cos(a), r * Math.cos(ph), r * Math.sin(ph) * Math.sin(a));
+  }
+  starGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3)); }
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xcfd8ff, size: 0.5, transparent: true, opacity: 0.75, fog: false })));
+
+const groundDisc = new THREE.Mesh(new THREE.CircleGeometry(75, 40), M.ground);
+groundDisc.rotation.x = -Math.PI / 2; groundDisc.position.y = -0.3;
+scene.add(groundDisc);
+
+const water = new THREE.Mesh(new THREE.PlaneGeometry(52, CANAL_HALF * 2 + 0.6), M.water);
+water.rotation.x = -Math.PI / 2; water.receiveShadow = true;
+scene.add(water);
+
+for (const s of [1, -1]){
+  const quay = new THREE.Mesh(new THREE.BoxGeometry(52, QUAY_TOP + 0.35, 8.2),
+    [M.quaySide, M.quaySide, M.cobble, M.quaySide, M.quaySide, M.quaySide]);
+  quay.position.set(0, (QUAY_TOP + 0.35) / 2 - 0.35, s * (CANAL_HALF + 4.1));
+  quay.receiveShadow = true; scene.add(quay);
+  const kerb = new THREE.Mesh(new THREE.BoxGeometry(52, 0.14, 0.34), M.kerb);
+  kerb.position.set(0, QUAY_TOP + 0.05, s * (CANAL_HALF - 0.05));
+  kerb.receiveShadow = true; scene.add(kerb);
+}
+
+/* ============================== GABLED CANAL HOUSES ============================== */
+const litWinMats = [], darkWinMats = [], litWinColors = [];
+const winDummy = new THREE.Object3D();
+const chimneySpots = [];
+
+function gableShape(type, w, gh){
+  const s = new THREE.Shape(); const hw = w / 2;
+  s.moveTo(-hw, 0);
+  if (type === 0){                                   // stepped gable
+    const steps = 3, sw = (hw - 0.4) / steps, sh = gh / (steps + 1);
+    for (let i = 0; i < steps; i++){ s.lineTo(-hw + i * sw, (i + 1) * sh); s.lineTo(-hw + (i + 1) * sw, (i + 1) * sh); }
+    s.lineTo(-0.4, gh); s.lineTo(0.4, gh);
+    for (let i = steps - 1; i >= 0; i--){ s.lineTo(hw - (i + 1) * sw, (i + 1) * sh); s.lineTo(hw - i * sw, (i + 1) * sh); }
+  } else if (type === 1){                            // bell gable
+    s.quadraticCurveTo(-hw * 0.92, gh * 0.4, -w * 0.16, gh * 0.62);
+    s.quadraticCurveTo(-w * 0.13, gh * 0.9, -w * 0.13, gh);
+    s.lineTo(w * 0.13, gh);
+    s.quadraticCurveTo(w * 0.13, gh * 0.9, w * 0.16, gh * 0.62);
+    s.quadraticCurveTo(hw * 0.92, gh * 0.4, hw, 0);
+  } else {                                           // spout gable
+    s.lineTo(-hw, gh * 0.3); s.lineTo(-0.3, gh); s.lineTo(0.3, gh); s.lineTo(hw, gh * 0.3);
+  }
+  s.lineTo(hw, 0); s.closePath(); return s;
+}
+
+function buildHouse(hx, w, rowSign){
+  const g = new THREE.Group();
+  const h = rr(6.2, 9.2), d = rr(3.6, 4.2), gh = rr(1.6, 2.4);
+  const frontZ = rowSign * 7.4, centerZ = rowSign * (7.4 + d / 2);
+  const matIdx = Math.floor(rr(0, 4));
+  const plastered = rand() < 0.35;
+  const wallMat = plastered ? M.plasters[matIdx] : M.brickWalls[matIdx];
+  const gableMat = plastered ? M.plasters[matIdx] : M.brickGables[matIdx];
+
+  const body = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), wallMat);
+  body.position.set(hx, QUAY_TOP + h / 2, centerZ);
+  body.castShadow = body.receiveShadow = true; g.add(body);
+
+  const type = Math.floor(rr(0, 3));
+  const gable = new THREE.Mesh(new THREE.ExtrudeGeometry(gableShape(type, w, gh), { depth: 0.34, bevelEnabled: false }), gableMat);
+  gable.position.set(hx, QUAY_TOP + h, rowSign > 0 ? frontZ : frontZ - 0.34);
+  gable.castShadow = true; g.add(gable);
+
+  const roofShape = new THREE.Shape();
+  roofShape.moveTo(-w / 2 + 0.06, 0); roofShape.lineTo(w / 2 - 0.06, 0); roofShape.lineTo(0, gh * 0.74); roofShape.closePath();
+  const roof = new THREE.Mesh(new THREE.ExtrudeGeometry(roofShape, { depth: d - 0.7, bevelEnabled: false }), M.roof);
+  roof.position.set(hx, QUAY_TOP + h, rowSign > 0 ? frontZ + 0.36 : frontZ - 0.36 - (d - 0.7));
+  roof.castShadow = true; g.add(roof);
+
+  const cornice = new THREE.Mesh(new THREE.BoxGeometry(w + 0.14, 0.16, 0.16), M.trim);
+  cornice.position.set(hx, QUAY_TOP + h - 0.02, frontZ - rowSign * 0.05); g.add(cornice);
+
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.09, 0.7), M.iron);   // hoist beam
+  beam.position.set(hx, QUAY_TOP + h + gh * 0.55, frontZ - rowSign * 0.28); g.add(beam);
+
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.95, 2.05, 0.1), pick(M.doors));
+  const doorX = w > 2.9 ? hx - w * 0.22 : hx;
+  door.position.set(doorX, QUAY_TOP + 1.03, frontZ - rowSign * 0.06); g.add(door);
+  const step = new THREE.Mesh(new THREE.BoxGeometry(1.15, 0.14, 0.5), M.kerb);
+  step.position.set(doorX, QUAY_TOP + 0.07, frontZ - rowSign * 0.3); g.add(step);
+
+  // windows -> gathered into two InstancedMeshes after layout
+  const cols = w > 2.9 ? 2 : 1;
+  const xs = cols === 2 ? [hx - w * 0.24, hx + w * 0.24] : [hx];
+  winDummy.rotation.set(0, rowSign > 0 ? Math.PI : 0, 0); winDummy.scale.setScalar(1);
+  for (let y = QUAY_TOP + 2.35; y < QUAY_TOP + h - 0.85; y += 1.5)
+    for (const wx of xs) placeWindow(wx, y, frontZ - rowSign * 0.03);
+  if (cols === 2) placeWindow(hx + w * 0.24, QUAY_TOP + 1.35, frontZ - rowSign * 0.03, 0.92);
+  placeWindow(hx, QUAY_TOP + h + gh * 0.3, frontZ - rowSign * 0.04, 0.68);   // attic
+
+  if (rand() < 0.4){
+    const ch = new THREE.Mesh(new THREE.BoxGeometry(0.36, 0.95, 0.36), gableMat);
+    ch.position.set(hx + w * 0.2, QUAY_TOP + h + gh * 0.62, centerZ);
+    ch.castShadow = true; g.add(ch);
+    chimneySpots.push(new THREE.Vector3(hx + w * 0.2, QUAY_TOP + h + gh * 0.62 + 0.5, centerZ));
+  }
+  scene.add(g);
+}
+function placeWindow(x, y, z, s = 1){
+  winDummy.position.set(x, y, z); winDummy.scale.setScalar(s); winDummy.updateMatrix();
+  if (rand() < 0.68){ litWinMats.push(winDummy.matrix.clone()); litWinColors.push(new THREE.Color(pick(PAL.windowLit))); }
+  else darkWinMats.push(winDummy.matrix.clone());
+}
+function fillRow(rowSign){
+  let x = -17.8;
+  while (x < 17.2){
+    const w = rr(2.5, 3.5);
+    if (x < 2.15 && x + w > -2.15){ x = 2.15; continue; }
+    if (x + w > 17.9) break;
+    buildHouse(x + w / 2, w, rowSign);
+    x += w + rr(0.05, 0.2);
+  }
+}
+fillRow(1); fillRow(-1);
+
+const winGeo = new THREE.PlaneGeometry(0.72, 0.98);
+const litWins = new THREE.InstancedMesh(winGeo, new THREE.MeshBasicMaterial({ map: windowTexture(true) }), litWinMats.length);
+litWinMats.forEach((m, i) => { litWins.setMatrixAt(i, m); litWins.setColorAt(i, litWinColors[i]); });
+scene.add(litWins);
+const darkWins = new THREE.InstancedMesh(winGeo, new THREE.MeshStandardMaterial({ map: windowTexture(false), roughness: 0.4 }), darkWinMats.length);
+darkWinMats.forEach((m, i) => darkWins.setMatrixAt(i, m));
+scene.add(darkWins);
+
+/* ============================== ARCHED STONE BRIDGE ============================== */
+function buildBridge(){
+  const g = new THREE.Group();
+  const wallShape = new THREE.Shape();
+  wallShape.moveTo(-4.9, -0.5); wallShape.lineTo(4.9, -0.5); wallShape.lineTo(4.9, 1.7);
+  wallShape.quadraticCurveTo(2.3, 2.9, 0, 2.9);
+  wallShape.quadraticCurveTo(-2.3, 2.9, -4.9, 1.7);
+  wallShape.closePath();
+  const arch = new THREE.Path();
+  arch.absellipse(0, -0.1, 3.35, 1.9, 0, Math.PI, false, 0);
+  arch.closePath();
+  wallShape.holes.push(arch);
+  const wallGeo = new THREE.ExtrudeGeometry(wallShape, { depth: 0.45, bevelEnabled: false });
+  for (const s of [1, -1]){
+    const wall = new THREE.Mesh(wallGeo, M.bridge);
+    wall.rotation.y = Math.PI / 2;
+    wall.position.x = s > 0 ? 1.35 : -1.8;
+    wall.castShadow = wall.receiveShadow = true; g.add(wall);
+  }
+  const deckY = z => 2.18 - 0.9 * (z / 4.9) * (z / 4.9);
+  for (let i = 0; i < 13; i++){
+    const z = -4.55 + i * 0.76;
+    const seg = new THREE.Mesh(new THREE.BoxGeometry(3.18, 0.16, 0.82), M.deck);
+    seg.position.set(0, deckY(z), z);
+    seg.rotation.x = -Math.atan(-1.8 * z / (4.9 * 4.9));
+    seg.receiveShadow = true; g.add(seg);
+  }
+  for (const sx of [1, -1]) for (const sz of [1, -1]){     // corner posts
+    const post = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.15, 0.55), M.bridge);
+    post.position.set(sx * 1.6, 1.75, sz * 4.75); post.castShadow = true; g.add(post);
+    const cap = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.14, 0.66), M.kerb);
+    cap.position.set(sx * 1.6, 2.38, sz * 4.75); g.add(cap);
+  }
+  scene.add(g);
+}
+buildBridge();
+
+/* ============================== CAST-IRON LAMPS & REFLECTIONS ============================== */
+const lampSpots = [
+  [-9.5, QUAY_TOP, 3.3], [9.5, QUAY_TOP, 3.3], [-9.5, QUAY_TOP, -3.3], [9.5, QUAY_TOP, -3.3],
+  [1.575, 2.92, 0], [-1.575, 2.92, 0]
+];
+const streakMats = [];
+function buildLamp(x, y, z, withLight){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.17, 0.22, 0.16, 10), M.iron);
+  base.position.y = 0.08; g.add(base);
+  const post = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.07, 2.0, 8), M.iron);
+  post.position.y = 1.1; g.add(post);
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.06, 8), M.iron);
+  collar.position.y = 2.06; g.add(collar);
+  const glass = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.3, 0.24), M.lampGlass);
+  glass.position.y = 2.28; g.add(glass);
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(0.24, 0.2, 4), M.iron);
+  cap.position.y = 2.55; cap.rotation.y = Math.PI / 4; g.add(cap);
+  const fin = new THREE.Mesh(new THREE.SphereGeometry(0.045, 6, 6), M.iron);
+  fin.position.y = 2.7; g.add(fin);
+  g.position.set(x, y, z);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  if (withLight){
+    const pl = new THREE.PointLight(PAL.lampGlow, 15, 13, 2);
+    pl.position.set(x, y + 2.3, z); scene.add(pl);
+  }
+  // stylised reflection streak on the water below
+  const sx = Math.abs(z) > 1 ? x : Math.sign(x) * 2.7;
+  const sz = Math.abs(z) > 1 ? Math.sign(z) * 2.4 : 0;
+  const sm = new THREE.MeshBasicMaterial({ color: PAL.lampGlow, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false });
+  const streak = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 2.6), sm);
+  streak.rotation.x = -Math.PI / 2; streak.position.set(sx, 0.03, sz);
+  streakMats.push(sm); scene.add(streak);
+  scene.add(g);
+}
+lampSpots.forEach(p => buildLamp(p[0], p[1], p[2], true));
+
+/* ============================== QUAY RAILINGS & BOLLARDS ============================== */
+function buildRailings(){
+  const postGeo = new THREE.CylinderGeometry(0.035, 0.035, 0.85, 6);
+  const posts = [];
+  for (const s of [1, -1]) for (let x = -17.6; x <= 17.6; x += 1.72)
+    if (Math.abs(x) > 2.3) posts.push([x, s * 3.78]);
+  const inst = new THREE.InstancedMesh(postGeo, M.iron, posts.length);
+  const dm = new THREE.Object3D();
+  posts.forEach((p, i) => { dm.position.set(p[0], QUAY_TOP + 0.42, p[1]); dm.updateMatrix(); inst.setMatrixAt(i, dm.matrix); });
+  inst.castShadow = true; scene.add(inst);
+  for (const s of [1, -1]) for (const seg of [[-17.6, -2.3], [2.3, 17.6]]) for (const ry of [0.85, 0.5]){
+    const len = seg[1] - seg[0];
+    const rail = new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, len, 6), M.iron);
+    rail.rotation.z = Math.PI / 2;
+    rail.position.set((seg[0] + seg[1]) / 2, QUAY_TOP + ry, s * 3.78);
+    scene.add(rail);
+  }
+  const bolGeo = new THREE.CylinderGeometry(0.1, 0.12, 0.42, 8);
+  const capGeo = new THREE.SphereGeometry(0.11, 8, 6);
+  const spots = [];
+  for (const s of [1, -1]) for (let x = -16; x <= 16; x += 4.6) if (Math.abs(x) > 2.6) spots.push([x + s * 0.4, s * 3.5]);
+  const bi = new THREE.InstancedMesh(bolGeo, M.iron, spots.length);
+  const ci = new THREE.InstancedMesh(capGeo, M.iron, spots.length);
+  spots.forEach((p, i) => {
+    dm.position.set(p[0], QUAY_TOP + 0.21, p[1]); dm.updateMatrix(); bi.setMatrixAt(i, dm.matrix);
+    dm.position.y = QUAY_TOP + 0.44; dm.updateMatrix(); ci.setMatrixAt(i, dm.matrix);
+  });
+  bi.castShadow = true; scene.add(bi); scene.add(ci);
+}
+buildRailings();
+
+/* ============================== BICYCLES ============================== */
+function buildBicycle(color){
+  const g = new THREE.Group();
+  const frameMat = new THREE.MeshStandardMaterial({ color, roughness: 0.5, metalness: 0.4 });
+  const wheelGeo = new THREE.TorusGeometry(0.31, 0.026, 8, 20);
+  for (const s of [1, -1]){
+    const wheel = new THREE.Mesh(wheelGeo, M.iron);
+    wheel.rotation.y = Math.PI / 2; wheel.position.set(s * 0.44, 0.31, 0); g.add(wheel);
+  }
+  const tube = (a, b, r = 0.021) => {
+    const v = new THREE.Vector3().subVectors(b, a);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, v.length(), 6), frameMat);
+    m.position.copy(a).add(b).multiplyScalar(0.5);
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), v.clone().normalize());
+    g.add(m);
+  };
+  const P = (x, y) => new THREE.Vector3(x, y, 0);
+  tube(P(-0.44, 0.31), P(-0.1, 0.78));         // seat tube
+  tube(P(-0.1, 0.78), P(0.34, 0.72));          // top tube
+  tube(P(0.34, 0.72), P(0.44, 0.31));          // fork
+  tube(P(-0.44, 0.31), P(0.05, 0.34));         // chain stay
+  tube(P(0.05, 0.34), P(0.34, 0.72));          // down tube
+  tube(P(0.34, 0.72), P(0.3, 0.95), 0.018);    // stem
+  const bars = new THREE.Mesh(new THREE.CylinderGeometry(0.016, 0.016, 0.34, 6), M.iron);
+  bars.rotation.x = Math.PI / 2; bars.position.set(0.3, 0.96, 0); g.add(bars);
+  const saddle = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.09), M.boatDark);
+  saddle.position.set(-0.12, 0.84, 0); g.add(saddle);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.add(g); return g;
+}
+const bikeSpecs = [[-5.6, 1, 0x8a2f2a], [12.6, 1, 0x24304a], [4.3, -1, 0x2b2b2b]];
+for (const [bx, bs, bc] of bikeSpecs){
+  const bike = buildBicycle(bc);
+  bike.position.set(bx, QUAY_TOP, bs * 3.55);
+  bike.rotation.x = bs * 0.15;
+}
+
+/* ============================== MOORED FLOWER BOAT ============================== */
+const boat = new THREE.Group();
+{
+  const hullShape = new THREE.Shape();
+  hullShape.moveTo(-2.1, -0.58); hullShape.lineTo(0.5, -0.58);
+  hullShape.quadraticCurveTo(1.7, -0.5, 2.1, 0);
+  hullShape.quadraticCurveTo(1.7, 0.5, 0.5, 0.58);
+  hullShape.lineTo(-2.1, 0.58); hullShape.closePath();
+  const hull = new THREE.Mesh(new THREE.ExtrudeGeometry(hullShape, { depth: 0.55, bevelEnabled: false }), M.boatWood);
+  hull.rotation.x = -Math.PI / 2; hull.castShadow = true; boat.add(hull);
+  const floor = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.06, 0.9), M.boatDark);
+  floor.position.y = 0.16; floor.position.x = -0.2; boat.add(floor);
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.08, 1.0), M.boatWood);
+  bench.position.set(-1.5, 0.38, 0); boat.add(bench);
+  const tiller = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.7, 6), M.boatDark);
+  tiller.rotation.z = 1.1; tiller.position.set(-1.95, 0.6, 0); boat.add(tiller);
+  const planterGeo = new THREE.BoxGeometry(0.62, 0.3, 0.5);
+  const flowerGeo = new THREE.SphereGeometry(0.065, 6, 5);
+  const fDummy = new THREE.Object3D(); const fMats = [], fCols = [];
+  for (let p = 0; p < 3; p++){
+    const planter = new THREE.Mesh(planterGeo, M.boatDark);
+    planter.position.set(-0.9 + p * 0.85, 0.36, 0); planter.castShadow = true; boat.add(planter);
+    for (let f = 0; f < 9; f++){
+      fDummy.position.set(-0.9 + p * 0.85 + rr(-0.25, 0.25), 0.54 + rr(0, 0.1), rr(-0.18, 0.18));
+      fDummy.scale.setScalar(rr(0.8, 1.3)); fDummy.updateMatrix();
+      fMats.push(fDummy.matrix.clone());
+      fCols.push(new THREE.Color(rand() < 0.3 ? 0x3f6b35 : pick(PAL.flowers)));
+    }
+  }
+  const flowers = new THREE.InstancedMesh(flowerGeo, new THREE.MeshStandardMaterial({ roughness: 0.85 }), fMats.length);
+  fMats.forEach((m, i) => { flowers.setMatrixAt(i, m); flowers.setColorAt(i, fCols[i]); });
+  boat.add(flowers);
+  boat.position.set(6.2, -0.14, 2.75);
+  scene.add(boat);
+  const ropeCurve = new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(8.25, 0.35, 2.75), new THREE.Vector3(8.6, 0.5, 3.2), new THREE.Vector3(8.84, QUAY_TOP + 0.35, 3.5));
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(ropeCurve, 12, 0.024, 5), M.rope));
+}
+
+/* ============================== DUCKS ============================== */
+const ducks = [];
+function buildDuck(mat, offset){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.SphereGeometry(1, 10, 8), mat);
+  body.scale.set(0.3, 0.2, 0.18); body.position.y = 0.12; g.add(body);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 7), mat);
+  head.position.set(0.24, 0.33, 0); g.add(head);
+  const beak = new THREE.Mesh(new THREE.ConeGeometry(0.04, 0.13, 6), M.beak);
+  beak.rotation.z = -Math.PI / 2; beak.position.set(0.38, 0.31, 0); g.add(beak);
+  const tail = new THREE.Mesh(new THREE.ConeGeometry(0.05, 0.16, 6), mat);
+  tail.rotation.z = 0.9; tail.position.set(-0.3, 0.2, 0); g.add(tail);
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  scene.add(g);
+  ducks.push({ g, offset, wobble: rr(0, Math.PI * 2) });
+}
+buildDuck(M.duckWhite, 0); buildDuck(M.duckBrown, 0.09); buildDuck(M.duckBrown, 0.17);
+
+/* ============================== LAUNDRY LINE ============================== */
+const cloths = [];
+{
+  const a = new THREE.Vector3(-7.2, 6.3, 7.3), b = new THREE.Vector3(-7.2, 6.6, -7.3);
+  const lineCurve = new THREE.QuadraticBezierCurve3(a, new THREE.Vector3(-7.2, 5.2, 0), b);
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(lineCurve, 24, 0.02, 5), M.rope));
+  for (let i = 0; i < 5; i++){
+    const t = 0.18 + i * 0.16;
+    const p = lineCurve.getPoint(t);
+    const pivot = new THREE.Group(); pivot.position.copy(p);
+    const clothGeo = new THREE.PlaneGeometry(0.6, rr(0.6, 0.9));
+    clothGeo.translate(0, -clothGeo.parameters.height / 2, 0);
+    const cloth = new THREE.Mesh(clothGeo, new THREE.MeshStandardMaterial({ color: pick(PAL.cloth), roughness: 1, side: THREE.DoubleSide }));
+    cloth.rotation.y = Math.PI / 2; cloth.castShadow = true;
+    pivot.add(cloth); scene.add(pivot);
+    cloths.push({ pivot, phase: rr(0, Math.PI * 2) });
+  }
+}
+
+/* ============================== CRATES, BARRELS & CHIMNEY SMOKE ============================== */
+{
+  const crateMat = new THREE.MeshStandardMaterial({ map: woodTexture('#7a5a34'), roughness: 0.9 });
+  for (const [cx, cz, cs] of [[-11.8, 3.1, 0.55], [-11.2, 3.3, 0.42], [14.8, -3.15, 0.5]]){
+    const crate = new THREE.Mesh(new THREE.BoxGeometry(cs, cs, cs), crateMat);
+    crate.position.set(cx, QUAY_TOP + cs / 2, cz);
+    crate.rotation.y = rr(0, 0.6); crate.castShadow = true; scene.add(crate);
+  }
+  for (const [bx, bz] of [[-12.5, 3.0], [15.4, -3.0]]){
+    const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.62, 10), M.boatWood);
+    barrel.position.set(bx, QUAY_TOP + 0.31, bz); barrel.castShadow = true; scene.add(barrel);
+  }
+}
+const smokePuffs = [];
+const smokeAnchor = chimneySpots.length ? chimneySpots[0] : new THREE.Vector3(-5, 10, 9.3);
+for (let i = 0; i < 8; i++){
+  const m = new THREE.MeshBasicMaterial({ color: 0x8a8ea0, transparent: true, opacity: 0, depthWrite: false, fog: false });
+  const puff = new THREE.Mesh(new THREE.SphereGeometry(0.22, 7, 6), m);
+  scene.add(puff);
+  smokePuffs.push({ puff, m, off: i / 8 });
+}
+
+/* ============================== LIGHTING RIG ============================== */
+const sun = new THREE.DirectionalLight(PAL.duskKey, 2.7);   // low warm dusk key from the east
+sun.position.set(26, 20, 10);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -26; sun.shadow.camera.right = 26;
+sun.shadow.camera.top = 26; sun.shadow.camera.bottom = -26;
+sun.shadow.camera.near = 2; sun.shadow.camera.far = 70;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(PAL.duskFill, 1.05); // cool mauve bounce for the shadowed facades
+fill.position.set(-14, 12, -24); scene.add(fill);
+scene.add(new THREE.HemisphereLight(0x7080c0, 0x584437, 1.5));
+scene.add(new THREE.AmbientLight(0x475070, 0.85));
+// warm interior spill from clusters of lit windows onto quays and facades
+for (const [wx, wz] of [[-6, 6.4], [8.5, 6.4], [-10, -6.4], [4, -6.4], [13.5, -6.4]]){
+  const wl = new THREE.PointLight(0xffc98e, 6, 9, 2);
+  wl.position.set(wx, 4.2, wz); scene.add(wl);
+}
+
+/* ============================== ANIMATION LOOP ============================== */
+const clock = new THREE.Clock();
+function animate(){
+  const t = clock.getElapsedTime();
+
+  // canal drift
+  waterTex.offset.x = (t * 0.01) % 1;
+  waterTex.offset.y = 0.015 * Math.sin(t * 0.4);
+
+  // ducks glide on an ellipse that passes under the bridge arch
+  for (const d of ducks){
+    const a = t * 0.09 * Math.PI * 2 + d.offset * Math.PI * 2;
+    d.g.position.set(11 * Math.cos(a), 0.02 + 0.03 * Math.sin(t * 2 + d.wobble), 2 * Math.sin(a));
+    d.g.rotation.y = Math.atan2(-2 * Math.cos(a), -11 * Math.sin(a));
+    d.g.rotation.z = 0.06 * Math.sin(t * 3 + d.wobble);
+  }
+
+  // boat rocking at its mooring
+  boat.rotation.z = 0.028 * Math.sin(t * 0.9);
+  boat.rotation.x = 0.02 * Math.sin(t * 0.7 + 1.3);
+  boat.position.y = -0.14 + 0.045 * Math.sin(t * 0.8);
+
+  // laundry sway
+  for (let i = 0; i < cloths.length; i++)
+    cloths[i].pivot.rotation.z = 0.16 * Math.sin(t * 1.25 + cloths[i].phase) + 0.04 * Math.sin(t * 3.1 + i);
+
+  // lamp flicker + water reflections
+  M.lampGlass.emissiveIntensity = 2.6 + 0.24 * Math.sin(t * 6.3) + 0.13 * Math.sin(t * 9.7);
+  streakMats.forEach((sm, i) => { sm.opacity = 0.38 + 0.1 * Math.sin(t * 5.1 + i * 1.7); });
+
+  // chimney smoke drifting up
+  for (const s of smokePuffs){
+    const c = (t * 0.16 + s.off) % 1;
+    s.puff.position.set(
+      smokeAnchor.x + 0.55 * c * Math.sin(t * 0.5 + s.off * 9),
+      smokeAnchor.y + c * 2.6,
+      smokeAnchor.z + 0.3 * c);
+    s.puff.scale.setScalar(0.4 + c * 1.6);
+    s.m.opacity = 0.3 * Math.min(1, c * 5) * (1 - c);
+  }
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+/* ============================== RESIZE ============================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

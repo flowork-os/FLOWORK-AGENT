@@ -1,0 +1,730 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Taco Truck Corner</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a1c33}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+/* ============================================================================
+   TACO TRUCK CORNER  —  vibrant stylized, golden hour
+   A teal-and-marigold food truck parked at a street corner with its serving
+   hatch propped open, a chalkboard menu, string lights running to the corner
+   lamppost, bar stools along a plywood counter, a palm tree, crates of limes,
+   a drinks cooler, papel picado fluttering and a cone guarding the curb.
+   Everything is procedural: geometry plus canvas textures, no external assets.
+   ========================================================================== */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* --------------------------- 1. CONFIG & PALETTE -------------------------- */
+const CFG = {
+  seed: 91733,
+  walkTop: 0.36,        // sidewalk surface height above the asphalt
+  curbZ: 2.0,           // curb line of the near sidewalk (runs along x)
+  curbX: 8.4,           // curb line where the block turns the corner
+  facadeZ: -9.0,        // shopfronts across the street
+  truck: { x: -0.6, z: -0.75 }
+};
+const PAL = {
+  asphalt: 0x39353f, walk: 0x9a9186, curb: 0xb9ae9d, line: 0xf2d98a,
+  teal: 0x1fb6a6, tealDark: 0x14887d, marigold: 0xf5a11f, cream: 0xfff2d6,
+  signRed: 0xe2384a, chrome: 0xc9ccd4, tyre: 0x1b1a20, glassWarm: 0xffca7a,
+  ply: 0xd9a760, plyDark: 0xb0783c, crate: 0xc08a4a, lime: 0x9fd23c,
+  cone: 0xff6b2b, palmTrunk: 0x8a6b4a, frond: 0x3f8f4a, hydrant: 0xd1352f,
+  stucco: [0xe8b06a, 0xd97a5a, 0xf0d9a8, 0xc9856b, 0xe6c489],
+  papel: [0xff3d7f, 0xff8a1f, 0xffd23d, 0x2fd6c3, 0x8b5cf0, 0x7ede4a],
+  fog: 0x8a5a63
+};
+
+/* ----------------------- 2. PRNG & GEOMETRY HELPERS ----------------------- */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rng = (a, b) => a + (b - a) * rand();
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const std = (o) => new THREE.MeshStandardMaterial(o);
+
+/** Mesh factory that also sets the shadow flags nearly every prop wants. */
+function mesh(geo, mat, x = 0, y = 0, z = 0, cast = true) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = cast; m.receiveShadow = true; return m;
+}
+const box = (w, h, d, mat, x, y, z) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, mat, x, y, z, s = 12) => mesh(new THREE.CylinderGeometry(rt, rb, h, s), mat, x, y, z);
+const sph = (r, mat, x, y, z, s = 10) => mesh(new THREE.SphereGeometry(r, s, s - 2), mat, x, y, z);
+
+/** Thin cylinder stretched between two points — cables, struts, rails. */
+function strut(a, b, radius, mat, seg = 6) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const m = mesh(new THREE.CylinderGeometry(radius, radius, Math.max(dir.length(), 1e-4), seg), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(V(0, 1, 0), dir.clone().normalize()); return m;
+}
+/** Sagging catenary sample between two anchors, for cables and bunting. */
+const sagPt = (a, b, t, sag) => V(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t - sag * Math.sin(Math.PI * t),
+  a.z + (b.z - a.z) * t);
+
+/* --------------------------- 3. CANVAS TEXTURES --------------------------- */
+function canvas2d(w = 256, h = w) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')];
+}
+function finish(c, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry); t.anisotropy = 4; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+/** Golden-hour gradient with a low sun flare and a few stylised cloud bars. */
+function skyTexture() {
+  const [c, g] = canvas2d(512), gr = g.createLinearGradient(0, 0, 0, 512), r = mulberry32(5);
+  for (const [o, col] of [[0, '#221a53'], [0.22, '#4b2f77'], [0.38, '#a04a76'], [0.47, '#f0743f'],
+    [0.51, '#ffc24a'], [0.55, '#f59a4e'], [0.62, '#7d4a63'], [1, '#2b1b33']]) gr.addColorStop(o, col);
+  g.fillStyle = gr; g.fillRect(0, 0, 512, 512);
+  const flare = g.createRadialGradient(320, 258, 4, 320, 258, 150);
+  flare.addColorStop(0, 'rgba(255,246,206,0.95)'); flare.addColorStop(1, 'rgba(255,200,110,0)');
+  g.fillStyle = flare; g.fillRect(150, 110, 350, 300);
+  for (let i = 0; i < 26; i++) {                                   // flat stylised cloud bars
+    const y = 90 + r() * 150, w = 50 + r() * 190;
+    g.fillStyle = `rgba(${255 - r() * 90 | 0},${150 + r() * 60 | 0},${140 + r() * 60 | 0},${0.16 + r() * 0.22})`;
+    g.beginPath(); g.ellipse(r() * 512, y, w, 5 + r() * 9, 0, 0, 6.283); g.fill();
+  }
+  return finish(c);
+}
+/** Soft round falloff reused for bulb halos, steam and dust motes. */
+function glowTexture() {
+  const [c, g] = canvas2d(128), gr = g.createRadialGradient(64, 64, 1, 64, 64, 64);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.34, 'rgba(255,232,190,0.5)');
+  gr.addColorStop(1, 'rgba(255,200,140,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 128, 128); return finish(c);
+}
+/** Speckled asphalt with hairline cracks and patched repairs. */
+function asphaltTexture() {
+  const [c, g] = canvas2d(256), r = mulberry32(17);
+  g.fillStyle = '#39353f'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {
+    const k = 0.5 + r() * 0.9;
+    g.fillStyle = `rgba(${120 * k | 0},${112 * k | 0},${126 * k | 0},${0.1 + r() * 0.3})`;
+    g.fillRect(r() * 256, r() * 256, 1 + r() * 2, 1 + r() * 2);
+  }
+  g.strokeStyle = 'rgba(20,18,24,0.55)'; g.lineWidth = 1.4;
+  for (let i = 0; i < 14; i++) {
+    let x = r() * 256, y = r() * 256; g.beginPath(); g.moveTo(x, y);
+    for (let j = 0; j < 5; j++) { x += r() * 44 - 22; y += r() * 44 - 22; g.lineTo(x, y); }
+    g.stroke();
+  }
+  return finish(c, 10, 10);
+}
+/** Cast concrete paving slabs with chipped joints. */
+function walkTexture() {
+  const [c, g] = canvas2d(256), r = mulberry32(23);
+  g.fillStyle = '#6d675e'; g.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 4; row++) for (let i = 0; i < 4; i++) {
+    const k = 0.86 + r() * 0.3;
+    g.fillStyle = `rgb(${154 * k | 0},${145 * k | 0},${134 * k | 0})`;
+    g.fillRect(i * 64 + 2.5, row * 64 + 2.5, 59, 59);
+    for (let j = 0; j < 26; j++) {
+      g.fillStyle = `rgba(60,54,48,${r() * 0.14})`;
+      g.fillRect(i * 64 + 4 + r() * 54, row * 64 + 4 + r() * 54, 1 + r() * 4, 1 + r() * 4);
+    }
+  }
+  return finish(c, 9, 4);
+}
+/** Warm plywood with visible grain and knots, for the counter and crates. */
+function plyTexture(hex, seedN) {
+  const [c, g] = canvas2d(256), r = mulberry32(seedN), col = new THREE.Color(hex);
+  g.fillStyle = '#' + col.getHexString(); g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 140; i++) {
+    const y = r() * 256, k = r() > 0.5 ? 1.16 : 0.8;
+    g.strokeStyle = `rgba(${col.r * 255 * k | 0},${col.g * 255 * k | 0},${col.b * 255 * k | 0},0.65)`;
+    g.lineWidth = 0.7 + r() * 2.4;
+    g.beginPath(); g.moveTo(0, y);
+    g.bezierCurveTo(80, y + r() * 14 - 7, 170, y + r() * 14 - 7, 256, y + r() * 8 - 4); g.stroke();
+  }
+  for (let i = 0; i < 5; i++) {
+    g.strokeStyle = 'rgba(96,62,26,0.5)'; g.lineWidth = 2;
+    g.beginPath(); g.ellipse(r() * 256, r() * 256, 4 + r() * 5, 3 + r() * 4, r(), 0, 6.283); g.stroke();
+  }
+  return finish(c);
+}
+/** Painted truck flank: teal panel, marigold skirt, cream band and lettering. */
+function truckSideTexture() {
+  const [c, g] = canvas2d(512, 192), r = mulberry32(77);
+  g.fillStyle = '#1fb6a6'; g.fillRect(0, 0, 512, 192);             // teal above, hatch sits here
+  g.fillStyle = '#fff2d6'; g.fillRect(0, 98, 512, 50);             // name band
+  g.fillStyle = '#f5a11f'; g.fillRect(0, 158, 512, 34);            // marigold skirt
+  for (let i = 0; i < 10; i++) {                                   // zigzag serape band
+    g.fillStyle = PAL.papel.map(h => '#' + new THREE.Color(h).getHexString())[i % 6];
+    g.beginPath(); g.moveTo(i * 52, 158); g.lineTo(i * 52 + 26, 144); g.lineTo(i * 52 + 52, 158); g.fill();
+  }
+  g.fillStyle = '#14887d'; g.font = 'bold 44px sans-serif'; g.textAlign = 'center';
+  g.fillText('TAQUERIA  EL  SOL', 256, 137);
+  for (let i = 0; i < 60; i++) {                                   // road grime along the skirt
+    g.fillStyle = `rgba(40,30,20,${r() * 0.16})`;
+    g.fillRect(r() * 512, 150 + r() * 42, 6 + r() * 26, 3 + r() * 8);
+  }
+  return finish(c);
+}
+/** Chalk menu on slate, reused by the A-frame and the awning underside. */
+function chalkTexture(lines) {
+  const [c, g] = canvas2d(256, 320), r = mulberry32(41);
+  g.fillStyle = '#22292a'; g.fillRect(0, 0, 256, 320);
+  for (let i = 0; i < 300; i++) {
+    g.fillStyle = `rgba(200,220,215,${r() * 0.05})`; g.fillRect(r() * 256, r() * 320, 2 + r() * 8, 1.5);
+  }
+  g.strokeStyle = '#f6f1e0'; g.lineWidth = 3; g.strokeRect(10, 10, 236, 300);
+  g.fillStyle = '#ffe08a'; g.font = 'bold 40px sans-serif'; g.textAlign = 'center';
+  g.fillText('MENU', 128, 62);
+  g.font = '25px sans-serif';
+  lines.forEach((ln, i) => {
+    g.fillStyle = i % 2 ? '#bfeadb' : '#f6f1e0';
+    g.textAlign = 'left'; g.fillText(ln[0], 26, 112 + i * 40);
+    g.textAlign = 'right'; g.fillText(ln[1], 230, 112 + i * 40);
+  });
+  return finish(c);
+}
+/** Flat painted sign board with big display lettering. */
+function boardTexture(text, bg, fg) {
+  const [c, g] = canvas2d(256, 128);
+  g.fillStyle = bg; g.fillRect(0, 0, 256, 128);
+  g.fillStyle = fg; g.fillRect(9, 9, 238, 110);
+  g.fillStyle = bg; g.font = 'bold 68px sans-serif'; g.textAlign = 'center';
+  g.fillText(text, 128, 90);
+  return finish(c);
+}
+/** Papel picado sheet: flat colour punched through with a folk pattern. */
+function papelTexture(hex) {
+  const [c, g] = canvas2d(128, 160), r = mulberry32((hex % 6151) + 9);
+  g.fillStyle = '#' + new THREE.Color(hex).getHexString(); g.fillRect(0, 0, 128, 160);
+  g.globalCompositeOperation = 'destination-out';
+  for (let row = 0; row < 4; row++) for (let i = 0; i < 4; i++) {
+    const x = 16 + i * 32, y = 26 + row * 34;
+    g.beginPath(); g.ellipse(x, y, 7 + r() * 4, 9 + r() * 4, 0, 0, 6.283); g.fill();
+    g.fillRect(x - 2, y - 20, 4, 10);
+  }
+  g.beginPath(); g.moveTo(0, 160); g.lineTo(128, 160); g.lineTo(128, 142);
+  for (let i = 0; i < 8; i++) g.lineTo(120 - i * 16, i % 2 ? 160 : 142);
+  g.closePath(); g.fill();
+  g.globalCompositeOperation = 'source-over';
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+/** Palm frond blade with an alpha-cut leaflet silhouette. */
+function frondTexture() {
+  const [c, g] = canvas2d(128, 256);
+  g.clearRect(0, 0, 128, 256);
+  g.fillStyle = '#3f8f4a';
+  g.fillRect(60, 6, 8, 244);
+  for (let i = 0; i < 22; i++) {
+    const y = 14 + i * 10.6, len = 54 * Math.sin(Math.PI * (i + 1.6) / 25);
+    g.fillStyle = i % 2 ? '#4aa855' : '#357f42';
+    for (const s of [-1, 1]) {
+      g.beginPath(); g.moveTo(64, y); g.quadraticCurveTo(64 + s * len * 0.7, y + 2, 64 + s * len, y + 15);
+      g.quadraticCurveTo(64 + s * len * 0.5, y + 9, 64, y + 7); g.closePath(); g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+/** Shopfront stucco with tiled panels and glowing windows baked in. */
+function facadeTexture(hex, seedN) {
+  const [c, g] = canvas2d(256, 256), [ec, eg] = canvas2d(256, 256);
+  const r = mulberry32(seedN), col = new THREE.Color(hex);
+  g.fillStyle = '#' + col.getHexString(); g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 900; i++) {
+    g.fillStyle = r() > 0.5 ? `rgba(255,246,225,${r() * 0.13})` : `rgba(70,44,40,${r() * 0.13})`;
+    g.fillRect(r() * 256, r() * 256, 2 + r() * 7, 2 + r() * 7);
+  }
+  eg.fillStyle = '#000'; eg.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 2; row++) for (let i = 0; i < 3; i++) {
+    const x = 26 + i * 78, y = 34 + row * 108, w = 50, h = 66, lit = r() < 0.75;
+    g.fillStyle = '#f6ecd8'; g.fillRect(x - 6, y - 6, w + 12, h + 12);
+    g.fillStyle = lit ? '#ffce78' : '#2b3340'; g.fillRect(x, y, w, h);
+    g.strokeStyle = '#f6ecd8'; g.lineWidth = 4;
+    g.beginPath(); g.moveTo(x + w / 2, y); g.lineTo(x + w / 2, y + h); g.stroke();
+    if (!lit) continue;
+    eg.fillStyle = '#ffcd82'; eg.fillRect(x, y, w, h);
+  }
+  return { map: finish(c), emis: finish(ec) };
+}
+
+/* ------------------------------ 4. MATERIALS ------------------------------ */
+const TEX = { glow: glowTexture(), frond: frondTexture() };
+const MAT = {
+  asphalt: std({ map: asphaltTexture(), roughness: 0.96 }),
+  walk: std({ map: walkTexture(), roughness: 0.94 }),
+  curb: std({ color: PAL.curb, roughness: 0.9 }),
+  paint: std({ color: PAL.line, roughness: 0.85, emissive: PAL.line, emissiveIntensity: 0.1 }),
+  teal: std({ color: PAL.teal, roughness: 0.42, metalness: 0.24 }),
+  tealDark: std({ color: PAL.tealDark, roughness: 0.5, metalness: 0.2 }),
+  side: std({ map: truckSideTexture(), roughness: 0.4, metalness: 0.22 }),
+  marigold: std({ color: PAL.marigold, roughness: 0.5, metalness: 0.15 }),
+  cream: std({ color: PAL.cream, roughness: 0.7 }),
+  signRed: std({ color: PAL.signRed, roughness: 0.55 }),
+  chrome: std({ color: PAL.chrome, roughness: 0.24, metalness: 0.88 }),
+  tyre: std({ color: PAL.tyre, roughness: 0.95 }),
+  glass: std({ color: 0x2b4a55, roughness: 0.12, metalness: 0.5 }),
+  hatchGlow: std({ color: 0x5a2f0e, emissive: 0xff8f2e, emissiveIntensity: 1.15, roughness: 0.7 }),
+  bulb: std({ color: 0xfff0c8, emissive: 0xffd489, emissiveIntensity: 2.6, roughness: 0.3 }),
+  ply: std({ map: plyTexture(PAL.ply, 61), roughness: 0.8 }),
+  plyDark: std({ map: plyTexture(PAL.plyDark, 83), roughness: 0.85 }),
+  crate: std({ map: plyTexture(PAL.crate, 95), roughness: 0.88 }),
+  lime: std({ color: PAL.lime, roughness: 0.55 }),
+  steel: std({ color: 0x6f7480, roughness: 0.4, metalness: 0.7 }),
+  cone: std({ color: PAL.cone, roughness: 0.6 }),
+  palmTrunk: std({ color: PAL.palmTrunk, roughness: 0.95, flatShading: true }),
+  frond: std({ map: TEX.frond, transparent: true, alphaTest: 0.45, side: THREE.DoubleSide, roughness: 0.85 }),
+  coolerBody: std({ color: 0xe8ecef, roughness: 0.6 }),
+  coolerLid: std({ color: 0xd1352f, roughness: 0.55 }),
+  hydrant: std({ color: PAL.hydrant, roughness: 0.6 }),
+  halo: new THREE.SpriteMaterial({ map: TEX.glow, color: 0xffd08a, transparent: true,
+    blending: THREE.AdditiveBlending, depthWrite: false, opacity: 0.6 })
+};
+const PAPEL_MATS = PAL.papel.map(h => new THREE.MeshStandardMaterial({ map: papelTexture(h),
+  transparent: true, alphaTest: 0.4, side: THREE.DoubleSide, roughness: 0.85 }));
+const MENU_A = chalkTexture([['AL PASTOR', '$3'], ['CARNITAS', '$3'], ['BIRRIA', '$4'],
+  ['NOPALES', '$3'], ['HORCHATA', '$2'], ['AGUA FRESCA', '$2']]);
+const MENU_B = chalkTexture([['TACOS', '3 / $8'], ['QUESADILLA', '$6'], ['ELOTE', '$4'],
+  ['CHURROS', '$3'], ['JARRITOS', '$2'], ['SALSA BAR', 'FREE']]);
+
+/* ------------------- 5. SCENE, CAMERA, RENDERER, CONTROLS ----------------- */
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0125);
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.4, 400);
+camera.position.set(9.0, 10.9, 24.3);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.02;
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.target.set(0.2, 3.0, 0.0);
+controls.minDistance = 18; controls.maxDistance = 56;
+controls.minPolarAngle = 0.5; controls.maxPolarAngle = 1.37;
+
+/* ------------------- 6. BUILDERS — sky, street, buildings ----------------- */
+function buildSkyDome() {
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(180, 40, 24),
+    new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false })));
+  return g;
+}
+function buildStreet() {
+  const g = new THREE.Group();
+  const road = mesh(new THREE.PlaneGeometry(200, 200), MAT.asphalt, 0, 0, -6, false);
+  road.rotation.x = -Math.PI / 2; g.add(road);
+  // near sidewalk block and the cross-street block, meeting at the corner
+  for (const [bx, bz, bw, bd] of [[-9, 15.5, 35, 27], [22.5, 15.5, 22, 27], [-9, -18, 38, 18]]) {
+    g.add(box(bw, CFG.walkTop, bd, MAT.walk, bx, CFG.walkTop / 2, bz));
+  }
+  g.add(box(38, CFG.walkTop + 0.06, 0.34, MAT.curb, -9, (CFG.walkTop + 0.06) / 2, CFG.curbZ - 0.17),
+    box(0.34, CFG.walkTop + 0.06, 27, MAT.curb, CFG.curbX + 0.17, (CFG.walkTop + 0.06) / 2, 15.5),
+    box(38, CFG.walkTop + 0.06, 0.34, MAT.curb, -9, (CFG.walkTop + 0.06) / 2, -9.17));
+  for (let i = 0; i < 9; i++)                                       // crosswalk down the cross street
+    g.add(box(1.5, 0.02, 0.55, MAT.cream, 10.2 + (i % 3) * 2.1, 0.012, 1.0 - Math.floor(i / 3) * 3.6));
+  for (let i = 0; i < 7; i++)                                       // centre line along the near street
+    g.add(box(1.7, 0.02, 0.16, MAT.paint, -20 + i * 4.4, 0.012, -4.6));
+  const drain = box(0.7, 0.1, 0.5, MAT.steel, 6.0, 0.05, 1.6); g.add(drain);
+  return g;
+}
+function buildBlockFacade(x, w, h, hex, seedN) {
+  const g = new THREE.Group(), { map, emis } = facadeTexture(hex, seedN);
+  map.repeat.set(w / 6, h / 6); emis.repeat.set(w / 6, h / 6);
+  const wall = std({ map, emissive: 0xffffff, emissiveMap: emis, emissiveIntensity: 1.15, roughness: 0.94 });
+  g.add(box(w, h, 7, wall, x, h / 2, CFG.facadeZ - 3.5),
+    box(w + 0.5, 0.7, 7.6, MAT.cream, x, h + 0.3, CFG.facadeZ - 3.5));        // parapet cornice
+  for (let i = 0; i < Math.floor(w / 5); i++) {                                // striped shop awnings
+    const aw = mesh(new THREE.BoxGeometry(3.4, 0.16, 1.7), i % 2 ? MAT.signRed : MAT.teal,
+      x - w / 2 + 2.8 + i * 5, 3.5, CFG.facadeZ + 0.7);
+    aw.rotation.x = 0.3; g.add(aw);
+    g.add(box(0.16, 1.5, 0.16, MAT.steel, x - w / 2 + 2.8 + i * 5, 2.6, CFG.facadeZ + 1.4));
+  }
+  g.add(box(1.2, 1.6, 0.9, MAT.steel, x + w / 2 - 2.4, h + 1.4, CFG.facadeZ - 3.5));   // roof plant
+  return g;
+}
+
+/* ---------------------- 7. BUILDERS — the taco truck ---------------------- */
+function buildTacoTruck() {
+  const g = new THREE.Group();
+  g.add(box(8.4, 0.36, 3.0, MAT.tealDark, 0, 0.86, 0));                        // chassis rails
+  const body = new THREE.Mesh(new THREE.BoxGeometry(7.4, 2.4, 2.9),
+    [MAT.teal, MAT.teal, MAT.cream, MAT.tealDark, MAT.side, MAT.side]);
+  body.position.set(-0.5, 2.24, 0); body.castShadow = true; body.receiveShadow = true; g.add(body);
+  g.add(box(7.5, 0.16, 3.05, MAT.cream, -0.5, 3.5, 0),                          // roof cap and skirt
+    box(7.4, 0.34, 2.95, MAT.marigold, -0.5, 1.06, 0));
+  const cab = box(2.0, 1.9, 2.7, MAT.teal, 4.2, 2.0, 0); g.add(cab);
+  const wind = box(0.14, 1.05, 2.4, MAT.glass, 5.16, 2.42, 0); wind.rotation.z = -0.22; g.add(wind);
+  g.add(box(0.5, 0.9, 2.5, MAT.teal, 5.35, 1.35, 0), box(2.2, 0.3, 2.9, MAT.chrome, 4.9, 0.72, 0));
+  for (const s of [-1, 1]) {
+    g.add(sph(0.24, MAT.cream, 5.42, 1.45, s * 1.0, 8));                        // headlamps
+    g.add(box(0.5, 0.34, 0.1, MAT.chrome, 4.6, 2.5, s * 1.55));                 // wing mirrors
+    g.add(strut(V(4.6, 2.5, s * 1.5), V(4.4, 2.2, s * 1.35), 0.045, MAT.steel, 5));
+  }
+  for (const wx of [3.0, -2.6]) for (const wz of [-1.5, 1.5]) {                 // wheels and hubs
+    const w = cyl(0.62, 0.62, 0.44, MAT.tyre, wx, 0.62, wz, 16);
+    w.rotation.x = Math.PI / 2; g.add(w);
+    const hub = cyl(0.3, 0.3, 0.47, MAT.chrome, wx, 0.62, wz, 10);
+    hub.rotation.x = Math.PI / 2; g.add(hub);
+    g.add(box(1.7, 0.2, 0.16, MAT.tealDark, wx, 1.24, wz > 0 ? 1.48 : -1.48));
+  }
+  // --- serving hatch: recessed opening, glowing interior, shelf and awning ---
+  const glow = mesh(new THREE.PlaneGeometry(3.9, 0.98), MAT.hatchGlow, -0.5, 2.82, 1.47); g.add(glow);
+  g.add(box(3.9, 0.28, 0.06, MAT.tyre, -0.5, 3.2, 1.49),                        // extractor hood
+    box(3.9, 0.2, 0.06, MAT.tyre, -0.5, 2.4, 1.49),                             // back counter line
+    box(1.05, 0.34, 0.06, MAT.tyre, -1.75, 2.62, 1.49),                         // griddle
+    box(0.5, 0.34, 0.06, MAT.tyre, 1.1, 2.62, 1.49),                            // stock pot
+    box(0.58, 0.78, 0.06, MAT.tyre, -0.2, 2.78, 1.5),                           // taquero silhouette
+    sph(0.19, MAT.tyre, -0.2, 3.16, 1.5, 8));
+  for (const [fh, fy] of [[0.16, 3.38], [0.15, 2.26]])                          // opening frame
+    g.add(box(4.4, fh, 0.22, MAT.tealDark, -0.5, fy, 1.49));
+  for (const s of [-1, 1]) g.add(box(0.18, 1.28, 0.22, MAT.tealDark, -0.5 + s * 2.11, 2.82, 1.49));
+  const hatchLight = new THREE.PointLight(PAL.glassWarm, 6, 7, 2);
+  hatchLight.position.set(-0.5, 2.8, 2.7); g.add(hatchLight);
+  g.add(box(4.5, 0.14, 0.8, MAT.ply, -0.5, 1.9, 1.68),                          // serving shelf
+    strut(V(-2.4, 1.55, 1.9), V(-2.4, 1.9, 1.5), 0.05, MAT.steel, 5),
+    strut(V(1.4, 1.55, 1.9), V(1.4, 1.9, 1.5), 0.05, MAT.steel, 5));
+  const awning = new THREE.Group();
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(4.5, 0.12, 1.8),
+    [MAT.teal, MAT.teal, MAT.teal, std({ map: MENU_B, roughness: 0.9 }), MAT.teal, MAT.teal]);
+  panel.position.set(0, 0, 0.9); panel.castShadow = true; awning.add(panel);
+  awning.position.set(-0.5, 3.42, 1.5); awning.rotation.x = -1.42; g.add(awning);
+  for (const s of [-1, 1]) g.add(strut(V(-0.5 + s * 2.1, 5.0, 1.68), V(-0.5 + s * 2.1, 3.4, 2.5), 0.04, MAT.steel, 5));
+  // --- roof furniture: sign board, extractor stack, spinning turbine vent ---
+  const signMat = std({ map: boardTexture('TACOS', '#e2384a', '#ffd23d'), roughness: 0.85,
+    emissive: 0xffd23d, emissiveIntensity: 0.22 });
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.25, 0.16),
+    [MAT.signRed, MAT.signRed, MAT.signRed, MAT.signRed, signMat, MAT.signRed]);
+  sign.position.set(2.9, 4.32, 0.4); sign.castShadow = true; g.add(sign);
+  g.add(box(2.9, 0.18, 0.4, MAT.marigold, 2.9, 5.03, 0.4));
+  for (const s of [-1, 1]) g.add(strut(V(2.9 + s * 1.05, 3.58, 0.4), V(2.9 + s * 1.05, 4.32, 0.4), 0.07, MAT.steel, 5));
+  const stack = cyl(0.34, 0.4, 0.9, MAT.chrome, -2.9, 4.05, -0.5, 10); g.add(stack);
+  const turbine = new THREE.Group();
+  for (let i = 0; i < 8; i++) {
+    const bl = box(0.5, 0.02, 0.16, MAT.chrome, Math.cos(i * 0.785) * 0.3, 0, Math.sin(i * 0.785) * 0.3);
+    bl.rotation.y = -i * 0.785; bl.rotation.z = 0.5; turbine.add(bl);
+  }
+  turbine.position.set(-2.9, 4.55, -0.5); g.add(turbine);
+  g.add(box(0.9, 0.16, 0.5, MAT.marigold, -3.9, 2.1, 0), box(0.14, 1.9, 0.14, MAT.steel, -3.85, 2.9, 0.9));
+  g.userData = { turbine, glow, hatchLight, body }; return g;
+}
+
+/* ------------------- 8. BUILDERS — counter, props, plants ----------------- */
+function buildCounter(len) {
+  const g = new THREE.Group();
+  g.add(box(len, 0.16, 0.78, MAT.ply, 0, 1.02, 0), box(len - 0.3, 0.62, 0.1, MAT.plyDark, 0, 0.63, 0.3));
+  for (let i = 0; i < 4; i++) {
+    const lx = -len / 2 + 0.5 + i * (len - 1) / 3;
+    g.add(box(0.14, 0.94, 0.6, MAT.plyDark, lx, 0.47, 0));
+  }
+  g.add(box(len - 0.6, 0.08, 0.14, MAT.steel, 0, 0.28, -0.28));                 // footrail
+  for (let i = 0; i < 5; i++) {                                                  // salsa and napkins
+    const px = -len / 2 + 0.9 + i * (len - 1.8) / 4;
+    g.add(cyl(0.07, 0.09, 0.26, i % 2 ? MAT.signRed : MAT.lime, px, 1.23, 0.06, 8));
+  }
+  g.add(box(0.3, 0.22, 0.24, MAT.cream, len / 2 - 0.7, 1.21, -0.1),
+    cyl(0.22, 0.22, 0.16, MAT.crate, -len / 2 + 0.6, 1.18, -0.12, 12));
+  return g;
+}
+function buildStool() {
+  const g = new THREE.Group();
+  g.add(cyl(0.3, 0.3, 0.12, MAT.signRed, 0, 0.86, 0, 14), cyl(0.09, 0.12, 0.82, MAT.steel, 0, 0.41, 0, 10));
+  const ring = mesh(new THREE.TorusGeometry(0.24, 0.028, 6, 14), MAT.steel, 0, 0.26, 0);
+  ring.rotation.x = Math.PI / 2;
+  g.add(ring, cyl(0.32, 0.34, 0.06, MAT.steel, 0, 0.03, 0, 12));
+  return g;
+}
+function buildLamppost() {
+  const g = new THREE.Group();
+  g.add(cyl(0.28, 0.38, 0.34, MAT.steel, 0, 0.17, 0, 10), cyl(0.11, 0.16, 5.9, MAT.steel, 0, 3.1, 0, 10));
+  const armA = V(0, 5.95, 0), armB = V(0, 6.55, -1.35);
+  g.add(strut(armA, armB, 0.09, MAT.steel), strut(V(0, 5.5, 0), V(0, 6.3, -0.85), 0.055, MAT.steel, 5));
+  const head = cyl(0.16, 0.46, 0.5, MAT.steel, 0, 6.42, -1.35, 10);
+  const lens = cyl(0.4, 0.16, 0.2, MAT.bulb, 0, 6.12, -1.35, 10);
+  const halo = new THREE.Sprite(MAT.halo.clone()); halo.scale.setScalar(3.2); halo.position.set(0, 6.1, -1.35);
+  const light = new THREE.PointLight(0xffd08a, 11, 15, 2); light.position.set(0, 6.0, -1.35);
+  g.add(head, lens, halo, light, box(0.5, 0.7, 0.06, MAT.signRed, 0.3, 2.6, 0));
+  g.userData = { lens, halo, light }; return g;
+}
+function buildPalmTree() {
+  const g = new THREE.Group(), crown = new THREE.Group();
+  let y = 0, lean = 0;
+  for (let i = 0; i < 7; i++) {                                                  // stacked leaning trunk
+    const h = 0.95, r0 = 0.34 - i * 0.022;
+    const seg = cyl(r0 - 0.018, r0, h, MAT.palmTrunk, lean, y + h / 2, 0, 8);
+    seg.rotation.z = -0.05; g.add(seg); y += h * 0.98; lean += 0.1;
+  }
+  g.add(cyl(0.2, 0.26, 0.35, MAT.palmTrunk, lean, y + 0.1, 0, 8));
+  for (let i = 0; i < 11; i++) {
+    const a = i * (6.283 / 11) + 0.2;
+    const blade = mesh(new THREE.PlaneGeometry(2.2, 3.8), MAT.frond, 0, 1.6, 0, true);
+    const arm = new THREE.Group();
+    arm.add(blade); arm.rotation.set(-1.18 - rng(0, 0.45), a, 0);
+    arm.position.set(lean, y + 0.2, 0); crown.add(arm);
+  }
+  for (let i = 0; i < 5; i++) crown.add(sph(0.16, MAT.crate, lean + Math.cos(i * 1.25) * 0.3,
+    y + 0.05, Math.sin(i * 1.25) * 0.3, 8));
+  g.add(crown); g.userData = { crown, phase: rng(0, 6.28) }; return g;
+}
+function buildLimeCrates(n) {
+  const g = new THREE.Group(), dm = new THREE.Object3D();
+  for (let i = 0; i < n; i++) {
+    const c = new THREE.Group(), yy = i * 0.46;
+    c.add(box(0.94, 0.44, 0.7, MAT.crate, 0, yy + 0.22, 0));
+    for (const s of [-1, 1]) c.add(box(0.98, 0.1, 0.74, MAT.plyDark, 0, yy + 0.22 + s * 0.16, 0));
+    const inst = new THREE.InstancedMesh(new THREE.SphereGeometry(0.1, 7, 6), MAT.lime, 14);
+    for (let j = 0; j < 14; j++) {
+      dm.position.set(rng(-0.36, 0.36), yy + 0.48, rng(-0.24, 0.24));
+      dm.scale.set(1, 0.85, 1); dm.rotation.set(rng(0, 3), rng(0, 3), 0); dm.updateMatrix();
+      inst.setMatrixAt(j, dm.matrix);
+    }
+    inst.castShadow = true; inst.receiveShadow = true; c.add(inst);
+    c.rotation.y = rng(-0.22, 0.22); g.add(c);
+  }
+  return g;
+}
+function buildCooler() {
+  const g = new THREE.Group(), dm = new THREE.Object3D();
+  g.add(box(1.3, 0.72, 0.78, MAT.coolerBody, 0, 0.36, 0), box(1.34, 0.12, 0.82, MAT.coolerLid, 0, 0.78, 0));
+  const lid = box(1.34, 0.1, 0.82, MAT.coolerLid, 0, 0.98, -0.42); lid.rotation.x = -1.15; g.add(lid);
+  g.add(box(1.36, 0.09, 0.8, MAT.steel, 0, 0.5, 0));
+  const bottles = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.075, 0.085, 0.34, 8), MAT.signRed, 9);
+  for (let i = 0; i < 9; i++) {
+    dm.position.set(-0.48 + (i % 5) * 0.24, 0.86, -0.16 + Math.floor(i / 5) * 0.28);
+    dm.rotation.set(rng(-0.2, 0.2), 0, rng(-0.2, 0.2)); dm.updateMatrix();
+    bottles.setMatrixAt(i, dm.matrix);
+  }
+  bottles.castShadow = true; g.add(bottles, box(1.1, 0.16, 0.6, MAT.cream, 0, 0.76, 0));
+  return g;
+}
+function buildTrafficCone() {
+  const g = new THREE.Group();
+  g.add(box(0.62, 0.07, 0.62, MAT.cone, 0, 0.035, 0), cyl(0.06, 0.26, 0.78, MAT.cone, 0, 0.46, 0, 12));
+  g.add(cyl(0.155, 0.185, 0.14, MAT.cream, 0, 0.55, 0, 12), cyl(0.11, 0.13, 0.1, MAT.cream, 0, 0.71, 0, 12));
+  return g;
+}
+function buildChalkboard() {
+  const g = new THREE.Group(), face = std({ map: MENU_A, roughness: 0.9 });
+  for (const s of [-1, 1]) {
+    const leaf = new THREE.Mesh(new THREE.BoxGeometry(1.05, 1.5, 0.08),
+      [MAT.plyDark, MAT.plyDark, MAT.plyDark, MAT.plyDark, s > 0 ? face : MAT.plyDark, MAT.plyDark]);
+    leaf.position.set(0, 0.78, s * 0.18); leaf.rotation.x = -s * 0.16;
+    leaf.castShadow = true; g.add(leaf);
+  }
+  g.add(box(1.1, 0.08, 0.5, MAT.plyDark, 0, 0.06, 0));
+  return g;
+}
+function buildBunting(a, b, n, sag) {
+  const g = new THREE.Group(), flags = [];
+  for (let i = 0; i < 18; i++) g.add(strut(sagPt(a, b, i / 18, sag), sagPt(a, b, (i + 1) / 18, sag), 0.018, MAT.steel, 4));
+  for (let i = 0; i < n; i++) {
+    const p = sagPt(a, b, (i + 0.5) / n, sag);
+    const flag = mesh(new THREE.PlaneGeometry(0.66, 0.82), PAPEL_MATS[i % PAPEL_MATS.length],
+      p.x, p.y - 0.44, p.z);
+    flag.castShadow = false;
+    const holder = new THREE.Group(); holder.position.copy(p);
+    flag.position.set(0, -0.44, 0); holder.add(flag); g.add(holder);
+    flags.push({ holder, phase: rng(0, 6.28) });
+  }
+  g.userData.flags = flags; return g;
+}
+function buildStringLights(a, b, n, sag) {
+  const g = new THREE.Group(), bulbs = [];
+  for (let i = 0; i < 24; i++) g.add(strut(sagPt(a, b, i / 24, sag), sagPt(a, b, (i + 1) / 24, sag), 0.016, MAT.steel, 4));
+  for (let i = 0; i < n; i++) {
+    const p = sagPt(a, b, (i + 0.5) / n, sag);
+    const bulb = sph(0.11, MAT.bulb.clone(), p.x, p.y - 0.17, p.z, 8);
+    bulb.castShadow = false;
+    const halo = new THREE.Sprite(MAT.halo.clone());
+    halo.scale.setScalar(0.9); halo.position.set(p.x, p.y - 0.17, p.z);
+    g.add(bulb, halo, cyl(0.035, 0.035, 0.1, MAT.steel, p.x, p.y - 0.06, p.z, 6));
+    bulbs.push({ bulb, halo, phase: rng(0, 6.28) });
+  }
+  g.userData.bulbs = bulbs; return g;
+}
+
+/* ---------------------------- 9. SCENE ASSEMBLY --------------------------- */
+scene.add(buildSkyDome(), buildStreet());
+scene.add(buildBlockFacade(-8, 26, 7.5, PAL.stucco[0], 101),
+  buildBlockFacade(22, 16, 9.5, PAL.stucco[1], 137));
+for (let i = 0; i < 6; i++) {                                        // distant skyline down the street
+  const h = rng(7, 15), w = rng(6, 11);
+  const b = box(w, h, 7, std({ color: pick(PAL.stucco), roughness: 0.95 }),
+    rng(-26, 30), h / 2, CFG.facadeZ - 16 - rng(0, 16));
+  scene.add(b);
+}
+const truck = buildTacoTruck();
+truck.position.set(CFG.truck.x, 0, CFG.truck.z); truck.rotation.y = 0.03; scene.add(truck);
+
+const counter = buildCounter(6.2);
+counter.position.set(-1.4, CFG.walkTop, 3.5); scene.add(counter);
+const stools = [];
+for (let i = 0; i < 4; i++) {
+  const s = buildStool();
+  s.position.set(-3.7 + i * 1.55, CFG.walkTop, 4.55); s.rotation.y = rng(-0.3, 0.3);
+  scene.add(s); stools.push(s);
+}
+const lamppost = buildLamppost();
+lamppost.position.set(7.4, CFG.walkTop, 2.9); lamppost.rotation.y = 1.15; scene.add(lamppost);
+const palm = buildPalmTree();
+palm.position.set(-8.4, CFG.walkTop, 7.2); palm.scale.setScalar(1.0); scene.add(palm);
+const palm2 = buildPalmTree();
+palm2.position.set(7.8, CFG.walkTop, 5.0); palm2.rotation.y = 3.3; palm2.scale.setScalar(0.86); scene.add(palm2);
+
+const crates = buildLimeCrates(3);
+crates.position.set(3.6, CFG.walkTop, 3.1); crates.rotation.y = -0.35; scene.add(crates);
+const crates2 = buildLimeCrates(2);
+crates2.position.set(4.5, CFG.walkTop, 4.3); crates2.rotation.y = 0.5; scene.add(crates2);
+const cooler = buildCooler();
+cooler.position.set(-5.6, CFG.walkTop, 3.2); cooler.rotation.y = 0.22; scene.add(cooler);
+const chalk = buildChalkboard();
+chalk.position.set(2.0, CFG.walkTop, 5.4); chalk.rotation.y = -0.55; scene.add(chalk);
+for (const [cx, cz, cr] of [[5.0, 1.1, 0.3], [-6.6, 1.2, -0.4], [6.2, 3.9, 0.8]]) {
+  const cone = buildTrafficCone(); cone.position.set(cx, cz < 2 ? 0.01 : CFG.walkTop, cz);
+  cone.rotation.y = cr; scene.add(cone);
+}
+// hydrant, bin, planted cactus and a stray crate finish the corner off
+scene.add(cyl(0.24, 0.28, 0.8, MAT.hydrant, 6.9, CFG.walkTop + 0.4, 5.9, 10),
+  sph(0.26, MAT.hydrant, 6.9, CFG.walkTop + 0.86, 5.9, 10),
+  cyl(0.44, 0.4, 1.0, MAT.steel, -7.6, CFG.walkTop + 0.5, 3.4, 12),
+  cyl(0.46, 0.46, 0.1, MAT.tealDark, -7.6, CFG.walkTop + 1.05, 3.4, 12));
+for (const [px, pz] of [[-8.6, 5.2], [5.6, 10.8]]) {                 // cactus planters on the walk
+  scene.add(cyl(0.62, 0.5, 0.7, MAT.crate, px, CFG.walkTop + 0.35, pz, 12),
+    cyl(0.2, 0.26, 1.5, MAT.lime, px, CFG.walkTop + 1.35, pz, 8),
+    cyl(0.12, 0.14, 0.7, MAT.lime, px + 0.35, CFG.walkTop + 1.5, pz, 8));
+}
+
+for (const bx of [-6.2, 1.8]) {                                      // sidewalk benches facing the truck
+  scene.add(box(2.4, 0.14, 0.62, MAT.ply, bx, CFG.walkTop + 0.52, 9.2),
+    box(2.4, 0.52, 0.12, MAT.ply, bx, CFG.walkTop + 0.82, 9.5),
+    box(0.16, 0.52, 0.62, MAT.steel, bx - 1.0, CFG.walkTop + 0.26, 9.2),
+    box(0.16, 0.52, 0.62, MAT.steel, bx + 1.0, CFG.walkTop + 0.26, 9.2));
+}
+// papel picado across the sidewalk and string lights out to the lamppost
+const bunting = buildBunting(V(-9.8, 7.0, 5.8), V(7.5, 6.8, 3.2), 15, 0.6);
+const bunting2 = buildBunting(V(-9.0, 7.6, -8.4), V(7.5, 6.9, 3.0), 13, 0.9);
+scene.add(bunting, bunting2);
+const lights = buildStringLights(V(-4.35, 5.3, 0.4), V(7.1, 6.2, 2.9), 13, 0.85);
+const lights2 = buildStringLights(V(3.35, 5.3, 0.4), V(7.2, 6.05, 3.1), 6, 0.4);
+scene.add(lights, lights2);
+
+// griddle steam curling out of the extractor stack
+const STEAM = 110, steamPos = new Float32Array(STEAM * 3);
+const steamSeed = [];
+for (let i = 0; i < STEAM; i++) {
+  steamSeed.push({ t: rand(), sx: rng(-0.3, 0.3), sz: rng(-0.3, 0.3), sp: rng(0.5, 1.1) });
+  steamPos[i * 3] = CFG.truck.x - 2.9; steamPos[i * 3 + 1] = 4.6; steamPos[i * 3 + 2] = CFG.truck.z - 0.5;
+}
+const steamGeo = new THREE.BufferGeometry();
+steamGeo.setAttribute('position', new THREE.BufferAttribute(steamPos, 3));
+const steam = new THREE.Points(steamGeo, new THREE.PointsMaterial({ map: TEX.glow, color: 0xf0e6d8,
+  size: 0.75, transparent: true, opacity: 0.24, depthWrite: false }));
+scene.add(steam);
+// warm dust hanging in the low sun
+const MOTES = 220, motePos = new Float32Array(MOTES * 3);
+for (let i = 0; i < MOTES; i++) {
+  motePos[i * 3] = rng(-18, 18); motePos[i * 3 + 1] = rng(0.4, 8); motePos[i * 3 + 2] = rng(-10, 12);
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ map: TEX.glow, color: 0xffd7a0,
+  size: 0.16, transparent: true, opacity: 0.4, depthWrite: false, blending: THREE.AdditiveBlending }));
+scene.add(motes);
+
+/* ----------------------------- 10. LIGHTING RIG --------------------------- */
+scene.add(new THREE.HemisphereLight(0x86a6ff, 0x5a3a2e, 0.75), new THREE.AmbientLight(0x6b4f66, 0.45));
+const key = new THREE.DirectionalLight(0xffb774, 2.4);        // low sun raking in from screen left
+key.position.set(-24, 13, 22); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -24; key.shadow.camera.right = 24;
+key.shadow.camera.top = 22; key.shadow.camera.bottom = -16;
+key.shadow.camera.near = 1; key.shadow.camera.far = 110;
+key.shadow.bias = -0.0007; key.shadow.normalBias = 0.028;
+key.shadow.camera.updateProjectionMatrix();
+key.target.position.set(0, 2, 0); scene.add(key, key.target);
+const rim = new THREE.DirectionalLight(0xff6f52, 1.5);        // hot sunset rim from behind the block
+rim.position.set(16, 6, -24); scene.add(rim);
+const bounce = new THREE.DirectionalLight(0x9fb8ff, 0.5);     // cool sky bounce onto the shaded sides
+bounce.position.set(6, 9, 26); scene.add(bounce);
+const counterGlow = new THREE.PointLight(0xffc27a, 7, 12, 2);
+counterGlow.position.set(-1.0, 3.0, 2.4); scene.add(counterGlow);
+
+/* ---------------------------- 11. ANIMATION LOOP -------------------------- */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // 1. string lights twinkle, each bulb drifting on its own phase
+  for (const set of [lights, lights2]) for (const b of set.userData.bulbs) {
+    const f = 0.72 + 0.28 * Math.sin(t * 1.9 + b.phase) + 0.08 * Math.sin(t * 7.3 + b.phase * 2.1);
+    b.bulb.material.emissiveIntensity = 2.2 * f;
+    b.halo.material.opacity = 0.32 + 0.34 * f; b.halo.scale.setScalar(0.75 + 0.35 * f);
+  }
+  // 2. papel picado flutters in the evening breeze
+  for (const set of [bunting, bunting2]) for (const f of set.userData.flags) {
+    f.holder.rotation.x = Math.sin(t * 2.1 + f.phase) * 0.34;
+    f.holder.rotation.z = Math.sin(t * 1.4 + f.phase * 1.6) * 0.16;
+    f.holder.rotation.y = Math.sin(t * 0.9 + f.phase) * 0.12;
+  }
+  // 3. griddle steam rises out of the stack, thinning as it climbs
+  const sp = steam.geometry.attributes.position;
+  for (let i = 0; i < STEAM; i++) {
+    const s = steamSeed[i];
+    s.t += 0.0042 * s.sp; if (s.t > 1) s.t -= 1;
+    sp.setXYZ(i, CFG.truck.x - 2.9 + s.sx * (1 + s.t * 3.4) + Math.sin(t * 0.8 + i) * 0.16 * s.t,
+      4.6 + s.t * 3.4, CFG.truck.z - 0.5 + s.sz * (1 + s.t * 3) - s.t * 0.7);
+  }
+  sp.needsUpdate = true; steam.material.opacity = 0.2 + Math.sin(t * 0.9) * 0.05;
+  // 4. extractor turbine spins and the hatch light pulses with the griddle
+  truck.userData.turbine.rotation.y = t * 1.9;
+  const pulse = 0.9 + Math.sin(t * 3.1) * 0.08 + Math.sin(t * 9.7) * 0.04;
+  truck.userData.glow.material.emissiveIntensity = 1.15 * pulse;
+  truck.userData.hatchLight.intensity = 6 * pulse;
+  truck.position.y = Math.sin(t * 0.9) * 0.012;
+  truck.userData.body.rotation.z = Math.sin(t * 0.7) * 0.0022;
+  // 5. palm crowns sway, stools rock a touch, the street lamp warms up
+  for (const p of [palm, palm2]) {
+    p.userData.crown.rotation.z = Math.sin(t * 0.62 + p.userData.phase) * 0.055;
+    p.userData.crown.rotation.x = Math.sin(t * 0.45 + p.userData.phase) * 0.04;
+  }
+  stools.forEach((s, i) => { s.rotation.y += Math.sin(t * 0.6 + i * 1.9) * 0.0016; });
+  const lf = 0.9 + Math.sin(t * 2.6) * 0.07;
+  lamppost.userData.lens.material.emissiveIntensity = 2.6 * lf;
+  lamppost.userData.halo.material.opacity = 0.4 + lf * 0.22;
+  lamppost.userData.light.intensity = 11 * lf;
+  counterGlow.intensity = 7 * pulse;
+  // 6. dust drifts across the low sun
+  const mp = motes.geometry.attributes.position;
+  for (let i = 0; i < MOTES; i++) {
+    let x = mp.getX(i) + 0.009 + Math.sin(t * 0.4 + i) * 0.003;
+    if (x > 19) x = -19;
+    mp.setX(i, x); mp.setY(i, mp.getY(i) + Math.sin(t * 0.8 + i * 0.7) * 0.0024);
+  }
+  mp.needsUpdate = true; motes.material.opacity = 0.32 + Math.sin(t * 0.7) * 0.1;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* -------------------------------- 12. RESIZE ------------------------------ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

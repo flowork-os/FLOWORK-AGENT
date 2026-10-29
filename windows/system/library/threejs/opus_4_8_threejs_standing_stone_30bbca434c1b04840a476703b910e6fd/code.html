@@ -1,0 +1,351 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Standing Stone Monument</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15171a; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 12px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(230,232,235,0.55); letter-spacing: 0.02em; user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Procedural noise helpers (no external assets)
+// ---------------------------------------------------------------------------
+function hash3(x, y, z) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function valueNoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = fade(xf), v = fade(yf), w = fade(zf);
+  const c000 = hash3(xi, yi, zi),         c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi),     c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1),     c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  const x00 = lerp(c000, c100, u), x10 = lerp(c010, c110, u);
+  const x01 = lerp(c001, c101, u), x11 = lerp(c011, c111, u);
+  const y0 = lerp(x00, x10, v), y1 = lerp(x01, x11, v);
+  return lerp(y0, y1, w);
+}
+function fbm(x, y, z) {
+  let amp = 0.5, freq = 1.0, sum = 0.0, norm = 0.0;
+  for (let i = 0; i < 4; i++) {
+    sum += amp * valueNoise(x * freq, y * freq, z * freq);
+    norm += amp;
+    amp *= 0.5;
+    freq *= 2.0;
+  }
+  return sum / norm;
+}
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+// ---------------------------------------------------------------------------
+// Renderer / scene / camera
+// ---------------------------------------------------------------------------
+const app = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181b);
+scene.fog = new THREE.Fog(0x16181b, 16, 46);
+
+const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(5.4, 3.1, 6.4);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + directional key, plus fill and rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcd0e6, 0x38302a, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1dc, 2.4);
+key.position.set(6.5, 9.5, 4.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 42;
+key.shadow.camera.left = -9;
+key.shadow.camera.right = 9;
+key.shadow.camera.top = 9;
+key.shadow.camera.bottom = -9;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.025;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6d0, 0.55);
+fill.position.set(-6.5, 4.0, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbfd4ff, 0.9);
+rim.position.set(-4.0, 6.5, -6.5);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// The standing stone (menhir) — procedural, rough-hewn, lichen-mottled
+// ---------------------------------------------------------------------------
+function buildMenhir() {
+  const H = 4.2;                 // ~4.2 m tall, believable menhir scale
+  const half = H / 2;
+  const geo = new THREE.CylinderGeometry(0.40, 0.60, H, 9, 46, false);
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const colors = new Float32Array(count * 3);
+
+  const darkStone = new THREE.Color(0x4a4842);
+  const lightStone = new THREE.Color(0x817f75);
+  const lichenGreen = new THREE.Color(0x67793f);
+  const lichenYellow = new THREE.Color(0xa7ac6e);
+  const stone = new THREE.Color();
+  const lichen = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
+
+    const t = (y + half) / H;                 // 0 at base, 1 at top
+    const r = Math.sqrt(x * x + z * z);
+    let nx = 0, nz = 0;
+    if (r > 1e-6) { nx = x / r; nz = z / r; }
+
+    // Layered displacement: big bulges, medium facets, fine grit
+    const lump  = (fbm(x * 0.9 + 10, (y + half) * 0.6, z * 0.9 - 7) - 0.5) * 0.60;
+    const facet = (fbm(x * 2.4 - 3,  (y + half) * 2.0, z * 2.4 + 5) - 0.5) * 0.18;
+    const fine  = (fbm(x * 6.0,      (y + half) * 6.0, z * 6.0)     - 0.5) * 0.05;
+    const disp = lump + facet + fine;
+
+    const newR = Math.max(0.12, r + disp);
+    x = nx * newR;
+    z = nz * newR;
+
+    // Break the flat caps / add vertical weathering
+    y += (fbm(x * 1.5 + 2, (y + half) * 1.5, z * 1.5 - 2) - 0.5) * 0.18;
+
+    // Slab-like cross-section (menhirs are often flattened)
+    z *= 0.72;
+
+    pos.setXYZ(i, x, y, z);
+
+    // ---- vertex colour: mottled granite + lichen patches ----
+    const m = fbm(x * 2.0 + 1, (y + half) * 2.0, z * 2.0 + 1);
+    stone.copy(darkStone).lerp(lightStone, m);
+
+    // fake occlusion in crevices (concave = darker)
+    const ao = THREE.MathUtils.clamp(0.72 + disp * 0.9, 0.45, 1.12);
+    stone.multiplyScalar(ao);
+
+    // lichen mask: patchy, speckled, favouring upper faces
+    let patch = smoothstep(0.55, 0.75, fbm(x * 1.6 + 3.1, (y + half) * 0.9 - 2.2, z * 1.6 + 7.7));
+    patch *= (0.55 + 0.45 * fbm(x * 5.0 + 9, (y + half) * 5.0, z * 5.0 - 4));
+    patch *= (0.35 + 0.65 * t);
+    patch = Math.min(patch, 0.85);
+
+    lichen.copy(lichenGreen).lerp(lichenYellow, fbm(x * 3.0 + 2, (y + half) * 3.0, z * 3.0 + 2));
+    stone.lerp(lichen, patch);
+
+    colors[i * 3 + 0] = stone.r;
+    colors[i * 3 + 1] = stone.g;
+    colors[i * 3 + 2] = stone.b;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.translate(0, half, 0);          // base sits at y = 0
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.94,
+    metalness: 0.0,
+    flatShading: true
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+
+  // Subtle lean, pivoting at the buried base
+  mesh.rotation.z = THREE.MathUtils.degToRad(6);
+  mesh.rotation.x = THREE.MathUtils.degToRad(-3);
+  mesh.position.y = -0.25;            // sink the base into the mound
+  return mesh;
+}
+
+const menhir = buildMenhir();
+scene.add(menhir);
+
+// ---------------------------------------------------------------------------
+// Grassy ground mound (the "low grassy base")
+// ---------------------------------------------------------------------------
+function buildMound() {
+  const geo = new THREE.CylinderGeometry(2.6, 3.0, 0.5, 56, 6, false);
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const colors = new Float32Array(count * 3);
+
+  const g1 = new THREE.Color(0x39562a);
+  const g2 = new THREE.Color(0x5c7d3f);
+  const brown = new THREE.Color(0x6a5a37);
+  const c = new THREE.Color();
+
+  for (let i = 0; i < count; i++) {
+    let x = pos.getX(i);
+    let y = pos.getY(i);
+    let z = pos.getZ(i);
+
+    // gently uneven top surface
+    if (y > 0.2) {
+      y += (fbm(x * 0.8 + 20, 0.0, z * 0.8 + 20) - 0.5) * 0.14;
+      pos.setXYZ(i, x, y, z);
+    }
+
+    const g = fbm(x * 1.2 + 40, y * 1.2, z * 1.2 + 40);
+    c.copy(g1).lerp(g2, g);
+    const dirt = smoothstep(0.72, 0.9, fbm(x * 2.4 - 5, y, z * 2.4 - 5));
+    c.lerp(brown, dirt * 0.5);
+
+    colors[i * 3 + 0] = c.r;
+    colors[i * 3 + 1] = c.g;
+    colors[i * 3 + 2] = c.b;
+  }
+
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  geo.computeVertexNormals();
+
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 1.0,
+    metalness: 0.0
+  });
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.position.y = -0.15;            // top of mound near y = 0.1
+  mesh.receiveShadow = true;
+  mesh.castShadow = true;
+  return mesh;
+}
+
+const mound = buildMound();
+scene.add(mound);
+
+// ---------------------------------------------------------------------------
+// Scattered grass blades around the base
+// ---------------------------------------------------------------------------
+function buildGrass() {
+  const bladeGeo = new THREE.ConeGeometry(0.018, 0.24, 4, 1, false);
+  bladeGeo.translate(0, 0.12, 0);    // base at origin
+  const bladeMat = new THREE.MeshStandardMaterial({
+    color: 0x4d6b30,
+    roughness: 1.0,
+    metalness: 0.0
+  });
+
+  const total = 520;
+  const grass = new THREE.InstancedMesh(bladeGeo, bladeMat, total);
+  const dummy = new THREE.Object3D();
+
+  for (let i = 0; i < total; i++) {
+    const ang = Math.random() * Math.PI * 2;
+    const rad = 0.85 + Math.random() * 1.55;   // ring, avoids the stone
+    const px = Math.cos(ang) * rad;
+    const pz = Math.sin(ang) * rad;
+    const py = 0.09 - (rad / 2.6) * 0.02;
+
+    dummy.position.set(px, py, pz);
+    dummy.rotation.set((Math.random() - 0.5) * 0.4, Math.random() * Math.PI * 2, (Math.random() - 0.5) * 0.5);
+    const s = 0.55 + Math.random() * 0.95;
+    dummy.scale.set(s, s + Math.random() * 0.4, s);
+    dummy.updateMatrix();
+    grass.setMatrixAt(i, dummy.matrix);
+  }
+  grass.castShadow = true;
+  grass.receiveShadow = true;
+  return grass;
+}
+
+scene.add(buildGrass());
+
+// ---------------------------------------------------------------------------
+// Shadow-only ground plane (subtle, only receives shadows)
+// ---------------------------------------------------------------------------
+const shadowPlane = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+shadowPlane.rotation.x = -Math.PI / 2;
+shadowPlane.position.y = 0.0;
+shadowPlane.receiveShadow = true;
+scene.add(shadowPlane);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, 2.0, 0);
+controls.minDistance = 3.5;
+controls.maxDistance = 18;
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', function () {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

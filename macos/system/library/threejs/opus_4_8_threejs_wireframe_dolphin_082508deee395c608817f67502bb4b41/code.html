@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Neon Wireframe Dolphin — Hologram</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #05080b; overflow: hidden; }
+  #info {
+    position: fixed; left: 0; right: 0; bottom: 14px; text-align: center;
+    font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    font-size: 12px; letter-spacing: 2px; text-transform: uppercase;
+    color: #3fdcff; opacity: 0.5; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="info">Holographic Dolphin · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & Camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06090d);
+scene.fog = new THREE.FogExp2(0x06090d, 0.018);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.4, 1.35, 4.4);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + key + fill + rim, key casts soft shadows
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x224a5a, 0x000305, 0.45);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xbfefff, 1.15);
+key.position.set(5, 8, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -3.5;
+key.shadow.camera.right = 3.5;
+key.shadow.camera.top = 3.5;
+key.shadow.camera.bottom = -3.5;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.PointLight(0x0aa6ff, 22, 40, 2);
+fill.position.set(-4.5, 2.0, 3.0);
+scene.add(fill);
+
+const rim = new THREE.PointLight(0xff2fae, 16, 40, 2);
+rim.position.set(0.5, 3.2, -5.0);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const faceMat = new THREE.MeshStandardMaterial({
+  color: 0x04222a,
+  emissive: 0x00b7d6,
+  emissiveIntensity: 0.14,
+  metalness: 0.15,
+  roughness: 0.4,
+  transparent: true,
+  opacity: 0.16,
+  side: THREE.DoubleSide,
+  depthWrite: false
+});
+
+const lineMat = new THREE.LineBasicMaterial({
+  color: 0x54f4ff,
+  transparent: true,
+  opacity: 0.95,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const pointMat = new THREE.PointsMaterial({
+  color: 0x8bfaff,
+  size: 0.024,
+  sizeAttenuation: true,
+  transparent: true,
+  opacity: 0.55,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+// ---------------------------------------------------------------------------
+// Dolphin definition — arced (leaping) spine + lofted cross sections
+// ---------------------------------------------------------------------------
+const L = 2.6;                 // body length (arc length, ~meters)
+const phiMid = Math.PI / 2;    // apex of the leap arc
+const phiSpan = 1.5;           // total sweep of the arc
+const R = L / phiSpan;         // radius so arc length == L
+
+// profile control points: [t, backRadius, bellyRadius, halfWidth]
+const CP = [
+  [0.00, 0.004, 0.004, 0.004],
+  [0.03, 0.020, 0.022, 0.020],
+  [0.07, 0.035, 0.040, 0.034],
+  [0.12, 0.075, 0.060, 0.070],  // melon (forehead) begins
+  [0.17, 0.110, 0.090, 0.100],
+  [0.24, 0.140, 0.120, 0.130],
+  [0.32, 0.160, 0.140, 0.150],  // maximum girth
+  [0.42, 0.150, 0.130, 0.140],
+  [0.52, 0.130, 0.110, 0.120],
+  [0.62, 0.105, 0.088, 0.098],
+  [0.72, 0.078, 0.064, 0.072],
+  [0.82, 0.052, 0.043, 0.048],
+  [0.90, 0.035, 0.030, 0.032],
+  [0.96, 0.026, 0.023, 0.024],
+  [1.00, 0.018, 0.016, 0.016]
+];
+
+function prof(t) {
+  t = Math.max(0, Math.min(1, t));
+  for (let k = 0; k < CP.length - 1; k++) {
+    const a = CP[k], b = CP[k + 1];
+    if (t >= a[0] && t <= b[0]) {
+      const f = (t - a[0]) / (b[0] - a[0]);
+      return {
+        top: a[1] + (b[1] - a[1]) * f,
+        bot: a[2] + (b[2] - a[2]) * f,
+        wid: a[3] + (b[3] - a[3]) * f
+      };
+    }
+  }
+  const last = CP[CP.length - 1];
+  return { top: last[1], bot: last[2], wid: last[3] };
+}
+
+// orthonormal frame along the leap arc at parameter t (0 = nose, 1 = tail)
+function frame(t) {
+  const phi = phiMid + (0.5 - t) * phiSpan;
+  const c = Math.cos(phi), s = Math.sin(phi);
+  return {
+    P:  new THREE.Vector3(R * c, R * s, 0),  // spine point
+    Nn: new THREE.Vector3(c, s, 0),          // dorsal (up / outward)
+    T:  new THREE.Vector3(s, -c, 0),         // tangent (nose -> tail)
+    B:  new THREE.Vector3(0, 0, 1)           // lateral (width)
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Build lofted body grid
+// ---------------------------------------------------------------------------
+const N = 40;   // stations along the body
+const M = 16;   // points around each cross section
+
+const grid = [];
+for (let i = 0; i < N; i++) {
+  const t = i / (N - 1);
+  const f = frame(t);
+  const p = prof(t);
+  const ring = [];
+  for (let j = 0; j < M; j++) {
+    const th = (j / M) * Math.PI * 2;
+    const st = Math.sin(th), ct = Math.cos(th);
+    const yp = (st >= 0 ? p.top : p.bot) * st;
+    const zp = p.wid * ct;
+    const v = f.P.clone().addScaledVector(f.Nn, yp).addScaledVector(f.B, zp);
+    ring.push(v);
+  }
+  grid.push(ring);
+}
+
+const group = new THREE.Group();
+
+// --- body faces (translucent hull) ---
+const facePos = [];
+for (let i = 0; i < N; i++)
+  for (let j = 0; j < M; j++)
+    facePos.push(grid[i][j].x, grid[i][j].y, grid[i][j].z);
+
+const faceIdx = [];
+for (let i = 0; i < N - 1; i++) {
+  for (let j = 0; j < M; j++) {
+    const a = i * M + j;
+    const b = i * M + ((j + 1) % M);
+    const c = (i + 1) * M + j;
+    const d = (i + 1) * M + ((j + 1) % M);
+    faceIdx.push(a, c, d, a, d, b);
+  }
+}
+const bodyGeo = new THREE.BufferGeometry();
+bodyGeo.setAttribute('position', new THREE.Float32BufferAttribute(facePos, 3));
+bodyGeo.setIndex(faceIdx);
+bodyGeo.computeVertexNormals();
+
+const bodyMesh = new THREE.Mesh(bodyGeo, faceMat);
+bodyMesh.castShadow = true;
+bodyMesh.renderOrder = 0;
+group.add(bodyMesh);
+
+// --- body wire grid (neon edges) ---
+const linePos = [];
+for (let i = 0; i < N; i++) {          // circumferential rings
+  for (let j = 0; j < M; j++) {
+    const a = grid[i][j], b = grid[i][(j + 1) % M];
+    linePos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+}
+for (let j = 0; j < M; j++) {          // longitudinal lines
+  for (let i = 0; i < N - 1; i++) {
+    const a = grid[i][j], b = grid[i + 1][j];
+    linePos.push(a.x, a.y, a.z, b.x, b.y, b.z);
+  }
+}
+const wireGeo = new THREE.BufferGeometry();
+wireGeo.setAttribute('position', new THREE.Float32BufferAttribute(linePos, 3));
+const bodyWire = new THREE.LineSegments(wireGeo, lineMat);
+bodyWire.renderOrder = 1;
+group.add(bodyWire);
+
+// --- glowing vertex nodes ---
+const nodeGeo = new THREE.BufferGeometry();
+nodeGeo.setAttribute('position', new THREE.Float32BufferAttribute(facePos, 3));
+const nodes = new THREE.Points(nodeGeo, pointMat);
+nodes.renderOrder = 2;
+group.add(nodes);
+
+// ---------------------------------------------------------------------------
+// Flat fins: shape -> place into a 3D basis -> face + neon outline
+// ---------------------------------------------------------------------------
+function addFin(pts, origin, aAraw, aBraw) {
+  const aA = aAraw.clone().normalize();
+  let aB = aBraw.clone();
+  aB.addScaledVector(aA, -aA.dot(aB)).normalize();   // orthonormalize
+  const nrm = new THREE.Vector3().crossVectors(aA, aB).normalize();
+
+  const shape = new THREE.Shape();
+  shape.moveTo(pts[0][0], pts[0][1]);
+  for (let k = 1; k < pts.length; k++) shape.lineTo(pts[k][0], pts[k][1]);
+  shape.closePath();
+
+  const geo = new THREE.ShapeGeometry(shape);
+  const m = new THREE.Matrix4().makeBasis(aA, aB, nrm).setPosition(origin);
+  geo.applyMatrix4(m);
+  geo.computeVertexNormals();
+
+  const mesh = new THREE.Mesh(geo, faceMat);
+  mesh.castShadow = true;
+  mesh.renderOrder = 0;
+  group.add(mesh);
+
+  const edges = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 1), lineMat);
+  edges.renderOrder = 1;
+  group.add(edges);
+}
+
+// Dorsal fin (falcate, swept back)
+{
+  const t = 0.46, f = frame(t), p = prof(t);
+  const origin = f.P.clone().addScaledVector(f.Nn, p.top * 0.95);
+  addFin(
+    [[0.00, 0.00], [0.14, 0.30], [0.26, 0.03], [0.04, 0.00]],
+    origin, f.T.clone(), f.Nn.clone()
+  );
+}
+
+// Pectoral fins (both sides, pointed, swept back & down)
+{
+  const t = 0.28, f = frame(t), p = prof(t);
+  const pecPts = [[0.00, 0.00], [0.18, 0.26], [0.24, 0.20], [0.05, 0.00]];
+  // right
+  addFin(
+    pecPts,
+    f.P.clone().addScaledVector(f.Nn, -p.bot * 0.4).addScaledVector(f.B, p.wid * 0.85),
+    f.T.clone().addScaledVector(f.Nn, -0.15),
+    f.B.clone().multiplyScalar(0.9).addScaledVector(f.Nn, -0.55)
+  );
+  // left
+  addFin(
+    pecPts,
+    f.P.clone().addScaledVector(f.Nn, -p.bot * 0.4).addScaledVector(f.B, -p.wid * 0.85),
+    f.T.clone().addScaledVector(f.Nn, -0.15),
+    f.B.clone().multiplyScalar(-0.9).addScaledVector(f.Nn, -0.55)
+  );
+}
+
+// Tail fluke (horizontal, two notched lobes)
+{
+  const f = frame(1.0);
+  const origin = f.P.clone().addScaledVector(f.T, 0.01);
+  addFin(
+    [
+      [0.00, 0.00],
+      [0.20, 0.30], [0.30, 0.06], [0.20, 0.00],
+      [0.30, -0.06], [0.20, -0.30]
+    ],
+    origin, f.T.clone(), f.B.clone()
+  );
+}
+
+// Eyes (bright glowing dots)
+{
+  const eyeMat = new THREE.MeshBasicMaterial({ color: 0xa9fbff });
+  const t = 0.19, f = frame(t), p = prof(t);
+  for (const side of [1, -1]) {
+    const e = new THREE.Mesh(new THREE.SphereGeometry(0.018, 12, 12), eyeMat);
+    e.position.copy(
+      f.P.clone()
+        .addScaledVector(f.Nn, p.top * 0.2)
+        .addScaledVector(f.B, side * p.wid * 0.82)
+        .addScaledVector(f.T, -0.02)
+    );
+    e.renderOrder = 2;
+    group.add(e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Center the object at the origin
+// ---------------------------------------------------------------------------
+group.rotation.x = -0.12;
+scene.add(group);
+
+let box = new THREE.Box3().setFromObject(group);
+const center = box.getCenter(new THREE.Vector3());
+group.position.sub(center);
+box = new THREE.Box3().setFromObject(group);
+const groundY = box.min.y;
+
+// ---------------------------------------------------------------------------
+// Ground plane (receives shadow only)
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.35 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY - 0.05;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 2.2;
+controls.maxDistance = 12;
+controls.target.set(0, 0, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Post-processing (bloom for the neon glow)
+// ---------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  1.15, 0.6, 0.15
+);
+composer.addPass(bloom);
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  bloom.setSize(w, h);
+});
+
+// ---------------------------------------------------------------------------
+// Animate
+// ---------------------------------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

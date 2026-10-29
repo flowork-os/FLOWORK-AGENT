@@ -1,0 +1,1091 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Carved Wood Chimera — Walnut Figurine</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #14100d; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(232, 214, 190, 0.45); letter-spacing: 0.08em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Carved Walnut Chimera &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x151210);
+scene.fog = new THREE.Fog(0x151210, 3.2, 9.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(1.35, 0.85, 1.95);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 0.42, 0);
+controls.minDistance = 1.0;
+controls.maxDistance = 5.0;
+controls.maxPolarAngle = Math.PI * 0.52;
+
+/* ============================================================
+   PROCEDURAL WALNUT GRAIN TEXTURES (canvas based, no URLs)
+   ============================================================ */
+
+// Small deterministic value-noise helpers -------------------------------
+function hash2(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return s - Math.floor(s);
+}
+function smooth(t) { return t * t * (3 - 2 * t); }
+function valueNoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = smooth(xf), v = smooth(yf);
+  const a = hash2(xi, yi);
+  const b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1);
+  const d = hash2(xi + 1, yi + 1);
+  return (a * (1 - u) + b * u) * (1 - v) + (c * (1 - u) + d * u) * v;
+}
+function fbm(x, y, oct) {
+  let sum = 0, amp = 0.5, f = 1.0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * valueNoise(x * f, y * f);
+    norm += amp;
+    amp *= 0.5;
+    f *= 2.03;
+  }
+  return sum / norm;
+}
+
+// Walnut colour ramp: deep chocolate in recesses -> warm amber highlights
+function walnutRamp(t) {
+  // t in [0,1]
+  const stops = [
+    [0.00, 46, 27, 16],
+    [0.28, 74, 45, 26],
+    [0.55, 103, 64, 37],
+    [0.78, 132, 88, 52],
+    [1.00, 163, 116, 70]
+  ];
+  let i = 0;
+  while (i < stops.length - 2 && t > stops[i + 1][0]) i++;
+  const s0 = stops[i], s1 = stops[i + 1];
+  const k = Math.min(1, Math.max(0, (t - s0[0]) / (s1[0] - s0[0])));
+  return [
+    Math.round(s0[1] + (s1[1] - s0[1]) * k),
+    Math.round(s0[2] + (s1[2] - s0[2]) * k),
+    Math.round(s0[3] + (s1[3] - s0[3]) * k)
+  ];
+}
+
+/**
+ * Wood grain map. Grain lines run along the texture's V axis, which for
+ * our lathe / tube geometry corresponds to the length of each limb and
+ * the spine of the body — so the grain "flows along the spine".
+ */
+function makeWoodCanvas(size, opts) {
+  const o = Object.assign({
+    ringScale: 5.5,   // number of ring bands across U
+    warp: 0.55,       // how wavy the rings are
+    fineGrain: 0.35,  // fine longitudinal fibre strength
+    chatter: 0.22,    // chisel facet mottling
+    darken: 0.0
+  }, opts || {});
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+
+      // Warp the ring coordinate with low-frequency noise so growth rings meander
+      const w1 = fbm(u * 3.0, v * 1.1, 4) - 0.5;
+      const w2 = fbm(u * 1.3 + 21.7, v * 0.55 + 8.2, 3) - 0.5;
+      const ringCoord = u * o.ringScale + w1 * o.warp * 2.2 + w2 * o.warp * 3.4 + v * 0.35;
+
+      // Sharp-ish growth rings
+      let ring = Math.abs(Math.sin(ringCoord * Math.PI));
+      ring = Math.pow(ring, 0.62);
+
+      // Fine longitudinal fibres (stretched heavily along V => along the spine)
+      const fibre = fbm(u * 90.0, v * 5.0 + 40.0, 3);
+
+      // Chisel chatter: broad faceted mottling
+      const facet = fbm(u * 14.0 + 60.0, v * 14.0 + 3.0, 2);
+
+      let t = 0.30 + ring * 0.44 + (fibre - 0.5) * o.fineGrain + (facet - 0.5) * o.chatter;
+      t = Math.min(1, Math.max(0, t - o.darken));
+
+      const rgb = walnutRamp(t);
+      const idx = (y * size + x) * 4;
+      d[idx] = rgb[0];
+      d[idx + 1] = rgb[1];
+      d[idx + 2] = rgb[2];
+      d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+/** Roughness map derived from grain: dark late-wood is rougher, buffed edges satin. */
+function makeRoughCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      const w1 = fbm(u * 3.0, v * 1.1, 4) - 0.5;
+      const ringCoord = u * 5.5 + w1 * 1.2 + v * 0.35;
+      let ring = Math.abs(Math.sin(ringCoord * Math.PI));
+      const facet = fbm(u * 18.0 + 11.0, v * 18.0 + 77.0, 3);
+      // satin: 0.35 (buffed) -> 0.72 (open pore)
+      let r = 0.36 + (1.0 - ring) * 0.22 + (facet - 0.5) * 0.16;
+      r = Math.min(0.85, Math.max(0.22, r));
+      const g = Math.round(r * 255);
+      const idx = (y * size + x) * 4;
+      d[idx] = g; d[idx + 1] = g; d[idx + 2] = g; d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+/** Chisel-stroke bump/normal source: directional gouge marks. */
+function makeChiselBumpCanvas(size) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const img = ctx.createImageData(size, size);
+  const d = img.data;
+  for (let y = 0; y < size; y++) {
+    const v = y / size;
+    for (let x = 0; x < size; x++) {
+      const u = x / size;
+      // rows of scooped gouges, slightly jittered
+      const jitter = (fbm(u * 6.0, v * 6.0, 2) - 0.5) * 0.9;
+      const a = Math.sin((u * 46.0 + jitter * 3.0) * Math.PI * 0.5);
+      const b = Math.sin((v * 30.0 + jitter * 4.0) * Math.PI * 0.5);
+      const gouge = Math.pow(Math.abs(a), 0.7) * 0.55 + Math.pow(Math.abs(b), 0.9) * 0.28;
+      const grain = fbm(u * 120.0, v * 8.0, 2) * 0.25;
+      let h = 0.35 + gouge * 0.5 + grain;
+      h = Math.min(1, Math.max(0, h));
+      const g = Math.round(h * 255);
+      const idx = (y * size + x) * 4;
+      d[idx] = g; d[idx + 1] = g; d[idx + 2] = g; d[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+  return c;
+}
+
+function texFromCanvas(canvas, srgb, repX, repY) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.wrapS = THREE.RepeatWrapping;
+  t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX === undefined ? 1 : repX, repY === undefined ? 1 : repY);
+  t.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const TEX_SIZE = 1024;
+const woodCanvas = makeWoodCanvas(TEX_SIZE, {});
+const woodDarkCanvas = makeWoodCanvas(512, { ringScale: 8.0, warp: 0.8, chatter: 0.3, darken: 0.12 });
+const roughCanvas = makeRoughCanvas(512);
+const bumpCanvas = makeChiselBumpCanvas(512);
+
+const mapWood = texFromCanvas(woodCanvas, true, 1, 1);
+const mapWoodDark = texFromCanvas(woodDarkCanvas, true, 1, 1);
+const mapRough = texFromCanvas(roughCanvas, false, 1, 1);
+const mapBump = texFromCanvas(bumpCanvas, false, 1, 1);
+
+/* ============================================================
+   MATERIALS
+   ============================================================ */
+const matWalnut = new THREE.MeshStandardMaterial({
+  map: mapWood,
+  roughnessMap: mapRough,
+  bumpMap: mapBump,
+  bumpScale: 0.006,
+  color: 0xffffff,
+  roughness: 1.0,
+  metalness: 0.0,
+  flatShading: false
+});
+
+// Faceted variant for carved mane tufts / scales — reads as chisel planes.
+const matWalnutFacet = new THREE.MeshStandardMaterial({
+  map: mapWoodDark,
+  roughnessMap: mapRough,
+  bumpMap: mapBump,
+  bumpScale: 0.004,
+  roughness: 1.0,
+  metalness: 0.0,
+  flatShading: true
+});
+
+// Darker heartwood for horns, claws, teeth accents
+const matHeartwood = new THREE.MeshStandardMaterial({
+  map: mapWoodDark,
+  roughnessMap: mapRough,
+  bumpMap: mapBump,
+  bumpScale: 0.005,
+  color: 0x9a7a5c,
+  roughness: 0.95,
+  metalness: 0.0,
+  flatShading: true
+});
+
+// Buffed satin edges / polished highlights (eyes, nose, buffed crest)
+const matPolished = new THREE.MeshStandardMaterial({
+  color: 0x3a2415,
+  roughness: 0.22,
+  metalness: 0.05
+});
+
+// Base plinth: quartersawn, darker
+const matPlinth = new THREE.MeshStandardMaterial({
+  map: texFromCanvas(makeWoodCanvas(512, { ringScale: 3.0, warp: 1.1, fineGrain: 0.5, chatter: 0.1, darken: 0.16 }), true, 2, 2),
+  roughnessMap: texFromCanvas(makeRoughCanvas(512), false, 2, 2),
+  bumpMap: mapBump,
+  bumpScale: 0.004,
+  roughness: 1.0,
+  metalness: 0.0
+});
+
+/* ============================================================
+   GEOMETRY UTILITIES
+   ============================================================ */
+
+/** Apply a per-vertex "chisel facet" displacement to give hand-carved irregularity. */
+function chiselize(geo, amount, freq) {
+  geo = geo.toNonIndexed ? geo : geo;
+  const pos = geo.attributes.position;
+  const nrm = geo.attributes.normal;
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    n.fromBufferAttribute(nrm, i);
+    const f = fbm(v.x * freq + 13.3, v.y * freq * 0.8 + v.z * freq * 0.6 + 7.1, 3) - 0.5;
+    const g = fbm(v.z * freq * 1.7 + 4.2, v.y * freq * 1.3 + 19.5, 2) - 0.5;
+    const d = (f * 0.7 + g * 0.3) * amount;
+    pos.setXYZ(i, v.x + n.x * d, v.y + n.y * d, v.z + n.z * d);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** Make a lathe profile from an array of [radius, y] pairs. */
+function latheGeo(profile, segments, phi) {
+  const pts = profile.map(p => new THREE.Vector2(Math.max(0.0006, p[0]), p[1]));
+  return new THREE.LatheGeometry(pts, segments === undefined ? 24 : segments, 0, phi === undefined ? Math.PI * 2 : phi);
+}
+
+/** Tapered tube along a CatmullRom curve with a radius function. */
+function taperedTube(points, radiusFn, tubularSegments, radialSegments, closed) {
+  const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(p[0], p[1], p[2])), !!closed, 'catmullrom', 0.5);
+  const geo = new THREE.TubeGeometry(curve, tubularSegments, 1, radialSegments, !!closed);
+  // Re-scale radially according to radiusFn(t)
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const rows = tubularSegments + 1;
+  const cols = radialSegments + 1;
+  const tmp = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  for (let i = 0; i < rows; i++) {
+    const t = i / tubularSegments;
+    const r = Math.max(0.0008, radiusFn(t));
+    curve.getPointAt(Math.min(0.999999, t), center);
+    for (let j = 0; j < cols; j++) {
+      const idx = i * cols + j;
+      if (idx >= count) continue;
+      tmp.fromBufferAttribute(pos, idx);
+      tmp.sub(center).multiplyScalar(r).add(center);
+      pos.setXYZ(idx, tmp.x, tmp.y, tmp.z);
+    }
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/** A carved tuft: a squashed, twisted, faceted cone — used for mane / fur. */
+function tuftGeo(len, w, twist, seg) {
+  const g = new THREE.ConeGeometry(w, len, seg === undefined ? 5 : seg, 3, false);
+  g.translate(0, len * 0.5, 0);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const t = THREE.MathUtils.clamp(v.y / len, 0, 1);
+    // curl the tip
+    const bend = Math.pow(t, 1.9) * twist;
+    const c = Math.cos(bend), s = Math.sin(bend);
+    const y = v.y, z = v.z;
+    v.y = y * c - z * s;
+    v.z = y * s + z * c;
+    // flatten slightly (chisel planes)
+    v.x *= 0.72;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  return g;
+}
+
+/** Carved scale: a low, pointed shield shape (half-lens). */
+function scaleGeo(w, h, d) {
+  const g = new THREE.SphereGeometry(1, 7, 5, 0, Math.PI * 2, 0, Math.PI * 0.5);
+  g.scale(w, d, h);
+  const pos = g.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    // pull to a point along +Z
+    const k = THREE.MathUtils.clamp((v.z / h + 1) * 0.5, 0, 1);
+    v.x *= (1.0 - Math.pow(k, 2.2) * 0.85);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  g.computeVertexNormals();
+  return g;
+}
+
+function addMesh(parent, geo, mat, pos, rot, scl) {
+  const m = new THREE.Mesh(geo, mat);
+  if (pos) m.position.set(pos[0], pos[1], pos[2]);
+  if (rot) m.rotation.set(rot[0], rot[1], rot[2]);
+  if (scl) { if (typeof scl === 'number') m.scale.setScalar(scl); else m.scale.set(scl[0], scl[1], scl[2]); }
+  m.castShadow = true;
+  m.receiveShadow = true;
+  parent.add(m);
+  return m;
+}
+
+/* ============================================================
+   THE CHIMERA
+   Overall height ~0.62 m incl. plinth — a table figurine.
+   Facing +Z (lion head forward). Body length along Z.
+   ============================================================ */
+const chimera = new THREE.Group();
+scene.add(chimera);
+
+/* ---------- PLINTH ---------- */
+const plinth = new THREE.Group();
+chimera.add(plinth);
+{
+  const baseGeo = chiselize(new THREE.CylinderGeometry(0.30, 0.335, 0.055, 40, 2), 0.0035, 12);
+  const base = addMesh(plinth, baseGeo, matPlinth, [0, 0.0275, 0]);
+  base.receiveShadow = true;
+
+  // Chamfered top rim (buffed satin edge)
+  const rim = addMesh(plinth, new THREE.TorusGeometry(0.298, 0.013, 8, 44), matPlinth, [0, 0.053, 0], [Math.PI / 2, 0, 0]);
+  rim.material = matPlinth;
+
+  // Carved bead detail around the plinth edge
+  for (let i = 0; i < 30; i++) {
+    const a = (i / 30) * Math.PI * 2;
+    const r = 0.318;
+    addMesh(plinth,
+      new THREE.SphereGeometry(0.0115, 7, 6),
+      matWalnutFacet,
+      [Math.cos(a) * r, 0.028, Math.sin(a) * r],
+      [0, -a, 0],
+      [1, 0.85, 0.6]);
+  }
+}
+
+const BODY_Y = 0.055; // top of plinth
+const body = new THREE.Group();
+body.position.y = BODY_Y;
+chimera.add(body);
+
+/* ---------- LION TORSO ----------
+   A stocky, muscular carved barrel. Grain (texture V axis) runs
+   along the length of the lathe => flows nose-to-tail along the spine. */
+const torsoGroup = new THREE.Group();
+body.add(torsoGroup);
+{
+  // Profile: from rump (z-) to chest (z+). Built along Y then rotated.
+  const prof = [
+    [0.005, -0.30],  // rump end cap
+    [0.075, -0.295],
+    [0.115, -0.27],
+    [0.137, -0.22],
+    [0.146, -0.15],
+    [0.145, -0.07],
+    [0.140, 0.00],
+    [0.142, 0.07],
+    [0.152, 0.145],
+    [0.158, 0.205],
+    [0.150, 0.255],
+    [0.120, 0.295],
+    [0.070, 0.320],
+    [0.005, 0.330]
+  ];
+  let torsoGeo = latheGeo(prof, 30);
+  // Squash to an oval cross-section (lion chests are deeper than wide)
+  torsoGeo.scale(0.86, 1.0, 1.0);
+  torsoGeo.rotateX(Math.PI / 2);      // length now along Z, +Z = chest
+  torsoGeo = chiselize(torsoGeo, 0.006, 9);
+  const torso = addMesh(torsoGroup, torsoGeo, matWalnut, [0, 0.30, 0.02]);
+  torso.rotation.x = -0.045;
+
+  // Carved shoulder & haunch muscle masses (buffed raised forms)
+  const musc = new THREE.SphereGeometry(1, 16, 12);
+  addMesh(torsoGroup, chiselize(musc.clone(), 0.05, 7), matWalnut, [0.108, 0.345, 0.175], [0, 0, 0.2], [0.075, 0.095, 0.105]);
+  addMesh(torsoGroup, chiselize(musc.clone(), 0.05, 7), matWalnut, [-0.108, 0.345, 0.175], [0, 0, -0.2], [0.075, 0.095, 0.105]);
+  addMesh(torsoGroup, chiselize(musc.clone(), 0.05, 7), matWalnut, [0.105, 0.315, -0.185], [0, 0, 0.1], [0.085, 0.100, 0.110]);
+  addMesh(torsoGroup, chiselize(musc.clone(), 0.05, 7), matWalnut, [-0.105, 0.315, -0.185], [0, 0, -0.1], [0.085, 0.100, 0.110]);
+
+  // Chest plate / brisket
+  addMesh(torsoGroup, chiselize(new THREE.SphereGeometry(1, 16, 12), 0.05, 8), matWalnut,
+    [0, 0.255, 0.245], [0.25, 0, 0], [0.105, 0.090, 0.095]);
+
+  // Belly
+  addMesh(torsoGroup, chiselize(new THREE.SphereGeometry(1, 14, 10), 0.04, 8), matWalnut,
+    [0, 0.215, -0.02], [0, 0, 0], [0.115, 0.070, 0.185]);
+}
+
+/* ---------- SPINE RIDGE (grain flow accent) ----------
+   A raised carved ridge of small facets running nose->tail. */
+{
+  const spineGroup = new THREE.Group();
+  body.add(spineGroup);
+  const N = 22;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const z = 0.29 - t * 0.62;
+    const y = 0.452 - Math.pow(Math.abs(t - 0.34) * 1.6, 2.0) * 0.075 - t * 0.030;
+    const s = 0.016 + Math.sin(t * Math.PI) * 0.010;
+    addMesh(spineGroup, new THREE.OctahedronGeometry(s, 0), matWalnutFacet,
+      [0, y, z], [0.5, 0, 0], [0.55, 1.0, 1.5]);
+  }
+}
+
+/* ---------- RIB / FLANK CHISEL STROKES ---------- */
+{
+  const flank = new THREE.Group();
+  body.add(flank);
+  for (let side = -1; side <= 1; side += 2) {
+    for (let i = 0; i < 7; i++) {
+      const t = i / 6;
+      const z = 0.16 - t * 0.20;
+      const y = 0.30 - t * 0.012;
+      const len = 0.115 - t * 0.02;
+      const g = new THREE.CapsuleGeometry(0.0075, len, 3, 6);
+      addMesh(flank, g, matWalnutFacet,
+        [side * (0.118 - t * 0.006), y, z],
+        [0.28, side * 0.25, side * (0.55 + t * 0.12)],
+        [1, 1, 0.55]);
+    }
+  }
+}
+
+/* ---------- LEGS ---------- */
+function buildLeg(parent, side, front) {
+  const g = new THREE.Group();
+  parent.add(g);
+
+  const zHip = front ? 0.175 : -0.185;
+  const xHip = side * 0.098;
+  const yHip = front ? 0.315 : 0.305;
+
+  // Upper leg (thigh / humerus) — thick carved mass
+  const upperPts = front
+    ? [[xHip, yHip, zHip], [xHip * 1.02, yHip - 0.055, zHip + 0.012], [xHip * 1.0, yHip - 0.105, zHip + 0.004]]
+    : [[xHip, yHip, zHip], [xHip * 1.03, yHip - 0.050, zHip - 0.030], [xHip * 1.0, yHip - 0.100, zHip - 0.012]];
+  const upperGeo = taperedTube(upperPts, t => 0.062 - t * 0.020, 14, 12);
+  addMesh(g, chiselize(upperGeo, 0.004, 12), matWalnut);
+
+  // Lower leg (cannon) — slimmer, straight, carved facets
+  const yKnee = yHip - 0.100;
+  const zKnee = front ? zHip + 0.004 : zHip - 0.012;
+  const lowerPts = front
+    ? [[xHip, yKnee, zKnee], [xHip * 0.98, yKnee - 0.055, zKnee + 0.008], [xHip * 0.96, yKnee - 0.100, zKnee + 0.014]]
+    : [[xHip, yKnee, zKnee], [xHip * 0.98, yKnee - 0.055, zKnee + 0.012], [xHip * 0.96, yKnee - 0.100, zKnee + 0.020]];
+  const lowerGeo = taperedTube(lowerPts, t => 0.040 - t * 0.008, 12, 10);
+  addMesh(g, chiselize(lowerGeo, 0.003, 14), matWalnut);
+
+  // Paw
+  const yPaw = yKnee - 0.100;
+  const zPaw = front ? zKnee + 0.014 : zKnee + 0.020;
+  const xPaw = xHip * 0.96;
+  const pawGeo = chiselize(new THREE.SphereGeometry(1, 14, 10), 0.05, 9);
+  addMesh(g, pawGeo, matWalnut, [xPaw, yPaw - 0.008, zPaw + 0.020], [0, 0, 0], [0.055, 0.035, 0.070]);
+
+  // Toes + claws
+  for (let k = -1; k <= 1; k++) {
+    const tx = xPaw + k * 0.028;
+    addMesh(g, new THREE.SphereGeometry(0.022, 8, 6), matWalnut,
+      [tx, yPaw - 0.012, zPaw + 0.058], null, [1, 0.72, 1.15]);
+    // claw
+    const claw = new THREE.ConeGeometry(0.0085, 0.030, 6);
+    addMesh(g, claw, matHeartwood,
+      [tx, yPaw - 0.018, zPaw + 0.082], [Math.PI * 0.62, 0, 0]);
+  }
+
+  // Knee/elbow buffed knob
+  addMesh(g, new THREE.SphereGeometry(0.042, 10, 8), matWalnutFacet,
+    [xHip * 1.0, yKnee + 0.006, zKnee], null, [0.85, 0.9, 0.9]);
+
+  // Fur tufts down the back of the upper leg
+  for (let i = 0; i < 4; i++) {
+    const t = i / 3;
+    addMesh(g, tuftGeo(0.052 + t * 0.010, 0.017, 0.5, 5), matWalnutFacet,
+      [xHip * (1.02 + 0.02 * side * 0), yHip - 0.015 - t * 0.055, zHip - (front ? 0.052 : 0.058) - t * 0.004],
+      [Math.PI * 0.78, side * 0.3, side * 0.25],
+      1.0);
+  }
+  return g;
+}
+buildLeg(body, 1, true);
+buildLeg(body, -1, true);
+buildLeg(body, 1, false);
+buildLeg(body, -1, false);
+
+/* ---------- NECK ---------- */
+const neckGroup = new THREE.Group();
+body.add(neckGroup);
+{
+  const neckPts = [
+    [0, 0.395, 0.245],
+    [0, 0.443, 0.300],
+    [0, 0.478, 0.352],
+    [0, 0.492, 0.400]
+  ];
+  const neckGeo = taperedTube(neckPts, t => 0.088 - t * 0.020, 16, 16);
+  addMesh(neckGroup, chiselize(neckGeo, 0.004, 11), matWalnut);
+}
+
+/* ---------- LION HEAD ---------- */
+const lionHead = new THREE.Group();
+lionHead.position.set(0, 0.500, 0.400);
+lionHead.rotation.x = -0.10;
+body.add(lionHead);
+{
+  // Skull
+  const skull = chiselize(new THREE.SphereGeometry(1, 20, 16), 0.05, 10);
+  addMesh(lionHead, skull, matWalnut, [0, 0.012, 0.010], [0, 0, 0], [0.083, 0.080, 0.088]);
+
+  // Brow ridge
+  addMesh(lionHead, chiselize(new THREE.SphereGeometry(1, 14, 10), 0.05, 12), matWalnut,
+    [0, 0.038, 0.048], [0.30, 0, 0], [0.072, 0.030, 0.048]);
+
+  // Muzzle
+  const muzzleProf = [
+    [0.006, 0.0],
+    [0.040, 0.006],
+    [0.052, 0.020],
+    [0.056, 0.042],
+    [0.052, 0.062],
+    [0.040, 0.074],
+    [0.006, 0.080]
+  ];
+  let muzzle = latheGeo(muzzleProf, 20);
+  muzzle.scale(1.15, 1.0, 1.0);
+  muzzle.rotateX(Math.PI / 2);
+  muzzle = chiselize(muzzle, 0.003, 16);
+  addMesh(lionHead, muzzle, matWalnut, [0, -0.020, 0.038], [-0.10, 0, 0]);
+
+  // Nose leather (buffed satin)
+  addMesh(lionHead, chiselize(new THREE.SphereGeometry(0.020, 10, 8), 0.05, 20), matPolished,
+    [0, -0.006, 0.116], [0, 0, 0], [1.15, 0.85, 0.75]);
+
+  // Lower jaw
+  addMesh(lionHead, chiselize(new THREE.SphereGeometry(1, 12, 9), 0.05, 14), matWalnut,
+    [0, -0.048, 0.055], [0.12, 0, 0], [0.046, 0.026, 0.056]);
+
+  // Open mouth cavity (dark recess)
+  const mouth = new THREE.Mesh(
+    new THREE.SphereGeometry(0.034, 12, 10),
+    new THREE.MeshStandardMaterial({ color: 0x1d1109, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide })
+  );
+  mouth.position.set(0, -0.030, 0.070);
+  mouth.scale.set(1.0, 0.42, 1.0);
+  lionHead.add(mouth);
+
+  // Fangs
+  for (let s = -1; s <= 1; s += 2) {
+    addMesh(lionHead, new THREE.ConeGeometry(0.0068, 0.024, 6), matPolished,
+      [s * 0.024, -0.024, 0.086], [Math.PI * 0.96, 0, s * 0.10]);
+    addMesh(lionHead, new THREE.ConeGeometry(0.0058, 0.019, 6), matPolished,
+      [s * 0.021, -0.046, 0.084], [-0.06, 0, -s * 0.10]);
+  }
+
+  // Eyes: carved sockets + polished pupils
+  for (let s = -1; s <= 1; s += 2) {
+    addMesh(lionHead, new THREE.SphereGeometry(0.0165, 12, 10), matPolished,
+      [s * 0.044, 0.017, 0.070], null, [1, 0.82, 0.8]);
+    // Carved lid ridge above the eye
+    addMesh(lionHead, new THREE.TorusGeometry(0.019, 0.0045, 6, 12, Math.PI * 1.15), matWalnutFacet,
+      [s * 0.044, 0.019, 0.070], [0.35, 0, 0.15 * s]);
+  }
+
+  // Ears
+  for (let s = -1; s <= 1; s += 2) {
+    const ear = new THREE.Group();
+    ear.position.set(s * 0.062, 0.062, -0.012);
+    ear.rotation.set(-0.25, s * 0.5, s * -0.30);
+    lionHead.add(ear);
+    addMesh(ear, chiselize(new THREE.SphereGeometry(0.030, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.62), 0.004, 22),
+      matWalnut, [0, 0.008, 0], [0.2, 0, 0], [1.0, 1.15, 0.55]);
+    addMesh(ear, new THREE.TorusGeometry(0.024, 0.0055, 6, 14, Math.PI * 1.25), matWalnutFacet,
+      [0, 0.010, 0.004], [Math.PI * 0.5 + 0.2, 0, 0]);
+  }
+
+  // Muzzle whisker-pad chisel dots
+  for (let s = -1; s <= 1; s += 2) {
+    for (let r = 0; r < 3; r++) {
+      for (let c2 = 0; c2 < 3; c2++) {
+        addMesh(lionHead, new THREE.SphereGeometry(0.0035, 5, 4), matWalnutFacet,
+          [s * (0.020 + c2 * 0.012), -0.006 - r * 0.010, 0.100 - r * 0.006 - c2 * 0.008]);
+      }
+    }
+  }
+}
+
+/* ---------- MANE ----------
+   Layered rings of carved, curling tufts around the lion's head. */
+{
+  const mane = new THREE.Group();
+  lionHead.add(mane);
+
+  const rings = [
+    { r: 0.098, count: 16, len: 0.085, w: 0.026, tilt: 0.30, y: 0.010, z: -0.016, twist: 0.75 },
+    { r: 0.122, count: 18, len: 0.105, w: 0.030, tilt: 0.62, y: -0.004, z: -0.046, twist: 0.95 },
+    { r: 0.140, count: 20, len: 0.118, w: 0.033, tilt: 0.95, y: -0.020, z: -0.080, twist: 1.15 },
+    { r: 0.138, count: 16, len: 0.100, w: 0.030, tilt: 1.30, y: -0.040, z: -0.112, twist: 1.35 }
+  ];
+
+  rings.forEach((ring, ri) => {
+    for (let i = 0; i < ring.count; i++) {
+      const a = (i / ring.count) * Math.PI * 2 + (ri % 2) * (Math.PI / ring.count);
+      // Skip tufts that would cover the face (front-bottom arc)
+      const facing = Math.sin(a); // +1 = top, -1 = bottom
+      const x = Math.cos(a) * ring.r;
+      const y = ring.y + facing * ring.r * 0.92;
+      if (y < -0.055 && Math.abs(x) < 0.055) continue; // keep chin clear
+
+      const t = tuftGeo(ring.len * (0.85 + 0.30 * fbm(i * 3.1 + ri * 7.7, ri * 2.3, 2)), ring.w, ring.twist + (fbm(i * 1.7, ri * 5.5, 2) - 0.5) * 0.5, 5);
+      const m = addMesh(mane, t, matWalnutFacet, [x, y, ring.z]);
+      // Orient each tuft outward from the head centre, splayed back
+      const dir = new THREE.Vector3(x, y - ring.y * 0.2, ring.z * 0.35 - 0.10).normalize();
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+      m.quaternion.copy(q);
+      m.rotateY((fbm(i * 4.4, ri * 9.1, 2) - 0.5) * 0.8);
+      m.rotateX(ring.tilt * 0.25);
+    }
+  });
+
+  // Mane running back over the shoulders (connects to the goat head area)
+  const backMane = new THREE.Group();
+  body.add(backMane);
+  for (let i = 0; i < 20; i++) {
+    const t = i / 19;
+    const side = (i % 2 === 0) ? 1 : -1;
+    const z = 0.300 - t * 0.190;
+    const y = 0.470 - t * 0.020 + Math.sin(t * 3.0) * 0.008;
+    const x = side * (0.055 + t * 0.045);
+    const g = tuftGeo(0.075 + (fbm(i * 2.2, 3.3, 2) - 0.5) * 0.030, 0.024, 1.0, 5);
+    const m = addMesh(backMane, g, matWalnutFacet, [x, y, z]);
+    const dir = new THREE.Vector3(side * 0.85, 0.42, -0.35).normalize();
+    m.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir));
+    m.rotateY((fbm(i * 5.1, 8.8, 2) - 0.5) * 0.9);
+  }
+}
+
+/* ---------- GOAT HEAD AT THE SHOULDER ----------
+   Rises from the right shoulder on a short arched neck. */
+const goat = new THREE.Group();
+body.add(goat);
+{
+  // Goat neck emerging from the shoulder blade
+  const gPts = [
+    [0.105, 0.395, 0.100],
+    [0.150, 0.455, 0.085],
+    [0.185, 0.520, 0.098],
+    [0.198, 0.572, 0.132]
+  ];
+  const gNeck = taperedTube(gPts, t => 0.058 - t * 0.020, 16, 14);
+  addMesh(goat, chiselize(gNeck, 0.004, 12), matWalnut);
+
+  // Collar of carved tufts where the neck erupts from the lion's shoulder
+  for (let i = 0; i < 11; i++) {
+    const a = (i / 11) * Math.PI * 2;
+    const rr = 0.062;
+    const px = 0.108 + Math.cos(a) * rr * 0.85;
+    const pz = 0.100 + Math.sin(a) * rr;
+    const g = tuftGeo(0.055, 0.020, 0.85, 5);
+    const m = addMesh(goat, g, matWalnutFacet, [px, 0.402 + Math.sin(a) * 0.008, pz]);
+    const dir = new THREE.Vector3(Math.cos(a) * 0.8 + 0.25, -0.35, Math.sin(a) * 0.8).normalize();
+    m.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir));
+  }
+
+  const gHead = new THREE.Group();
+  gHead.position.set(0.200, 0.580, 0.140);
+  gHead.rotation.set(-0.15, 0.55, -0.22);
+  goat.add(gHead);
+
+  // Goat skull — narrower, longer than the lion's
+  addMesh(gHead, chiselize(new THREE.SphereGeometry(1, 16, 12), 0.05, 14), matWalnut,
+    [0, 0.004, 0.004], [0, 0, 0], [0.046, 0.050, 0.056]);
+
+  // Long goat muzzle
+  const gMuzProf = [
+    [0.004, 0.0],
+    [0.026, 0.006],
+    [0.032, 0.024],
+    [0.031, 0.050],
+    [0.027, 0.072],
+    [0.020, 0.086],
+    [0.004, 0.092]
+  ];
+  let gMuz = latheGeo(gMuzProf, 16);
+  gMuz.scale(0.92, 1.0, 1.0);
+  gMuz.rotateX(Math.PI / 2);
+  gMuz = chiselize(gMuz, 0.0025, 20);
+  addMesh(gHead, gMuz, matWalnut, [0, -0.018, 0.030], [-0.16, 0, 0]);
+
+  // Nose + nostrils
+  addMesh(gHead, new THREE.SphereGeometry(0.013, 10, 8), matPolished,
+    [0, -0.010, 0.116], null, [1.1, 0.85, 0.7]);
+  for (let s = -1; s <= 1; s += 2) {
+    addMesh(gHead, new THREE.SphereGeometry(0.0042, 6, 5), matPolished,
+      [s * 0.009, -0.008, 0.122]);
+  }
+
+  // Horizontal goat eyes (buffed)
+  for (let s = -1; s <= 1; s += 2) {
+    addMesh(gHead, new THREE.SphereGeometry(0.0115, 10, 8), matPolished,
+      [s * 0.038, 0.014, 0.032], [0, s * 0.35, 0], [1.0, 0.62, 0.85]);
+    addMesh(gHead, new THREE.TorusGeometry(0.0135, 0.0035, 6, 12), matWalnutFacet,
+      [s * 0.038, 0.014, 0.032], [0.1, Math.PI * 0.5 + s * 0.35, 0]);
+  }
+
+  // Ears (drooping, leaf-like)
+  for (let s = -1; s <= 1; s += 2) {
+    const ear = new THREE.Group();
+    ear.position.set(s * 0.045, 0.036, -0.014);
+    ear.rotation.set(0.25, s * 0.55, s * -1.15);
+    gHead.add(ear);
+    const eg = new THREE.SphereGeometry(0.034, 10, 8, 0, Math.PI * 2, 0, Math.PI * 0.55);
+    eg.scale(0.42, 1.0, 0.85);
+    addMesh(ear, chiselize(eg, 0.0025, 26), matWalnutFacet, [0, 0.010, 0], [0.4, 0, 0]);
+  }
+
+  // Curling ribbed horns — the signature carved detail
+  for (let s = -1; s <= 1; s += 2) {
+    const hornPts = [];
+    const turns = 1.35;
+    const steps = 26;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const ang = t * Math.PI * 2 * turns;
+      const rad = 0.030 + t * 0.048;
+      hornPts.push([
+        s * (0.026 + Math.sin(ang) * rad * 0.42 + t * 0.030),
+        0.052 + t * 0.052 + Math.sin(ang * 0.5) * 0.012,
+        -0.010 - rad * (1 - Math.cos(ang)) * 0.62 - t * 0.020
+      ]);
+    }
+    const hornGeo = taperedTube(hornPts, t => 0.019 * (1 - t * 0.80) + 0.0025, 40, 10);
+    addMesh(gHead, chiselize(hornGeo, 0.0018, 30), matHeartwood);
+
+    // Horn ribs (carved rings)
+    for (let i = 1; i < steps; i += 2) {
+      const t = i / steps;
+      const p = hornPts[i];
+      const pn = hornPts[Math.min(steps, i + 1)];
+      const r = 0.019 * (1 - t * 0.80) + 0.0045;
+      const ring = new THREE.TorusGeometry(r, 0.0028, 5, 10);
+      const m = addMesh(gHead, ring, matHeartwood, [p[0], p[1], p[2]]);
+      const dir = new THREE.Vector3(pn[0] - p[0], pn[1] - p[1], pn[2] - p[2]);
+      if (dir.lengthSq() > 1e-10) {
+        dir.normalize();
+        m.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir));
+      }
+    }
+  }
+
+  // Chin beard — three carved locks
+  for (let i = 0; i < 3; i++) {
+    const g = tuftGeo(0.055 + i * 0.010, 0.014, 0.75, 5);
+    const m = addMesh(gHead, g, matWalnutFacet, [(i - 1) * 0.012, -0.044, 0.052 + i * 0.004]);
+    const dir = new THREE.Vector3((i - 1) * 0.25, -1.0, 0.22).normalize();
+    m.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir));
+  }
+}
+
+/* ---------- SERPENT TAIL ----------
+   Rises from the rump and curls upward in a spiral, scaled, ending
+   in a small snake head. */
+const serpent = new THREE.Group();
+body.add(serpent);
+const tailPts = [];
+const tailSteps = 44;
+{
+  for (let i = 0; i <= tailSteps; i++) {
+    const t = i / tailSteps;
+    // Spiral radius shrinks as it climbs
+    const ang = -0.35 + t * Math.PI * 2.35;
+    const rad = 0.155 * (1 - t * 0.62);
+    const x = Math.sin(ang) * rad * 0.85;
+    const y = 0.335 + t * 0.300 - Math.pow(t, 2.4) * 0.045;
+    const z = -0.300 - 0.055 * Math.sin(t * Math.PI * 0.9) - rad * 0.45 * (1 - Math.cos(ang));
+    tailPts.push([x, y, z]);
+  }
+  const tailRadius = t => 0.052 * (1 - t) + 0.014 + Math.sin(t * Math.PI) * 0.006;
+  const tailGeo = taperedTube(tailPts, tailRadius, 120, 14);
+  addMesh(serpent, chiselize(tailGeo, 0.0022, 24), matWalnut);
+
+  // Carved overlapping scales along the serpent body
+  const up = new THREE.Vector3(0, 1, 0);
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  for (let i = 2; i < tailSteps - 1; i++) {
+    const t = i / tailSteps;
+    const p = new THREE.Vector3(tailPts[i][0], tailPts[i][1], tailPts[i][2]);
+    const pn = new THREE.Vector3(tailPts[i + 1][0], tailPts[i + 1][1], tailPts[i + 1][2]);
+    const tangent = pn.clone().sub(p);
+    if (tangent.lengthSq() < 1e-10) continue;
+    tangent.normalize();
+
+    const r = tailRadius(t);
+    // ring of scales around the tube
+    const ringCount = 7;
+    for (let j = 0; j < ringCount; j++) {
+      const a = (j / ringCount) * Math.PI * 2 + (i % 2) * (Math.PI / ringCount);
+      // basis perpendicular to tangent
+      let ref = Math.abs(tangent.y) > 0.9 ? zAxis : up;
+      const n1 = new THREE.Vector3().crossVectors(tangent, ref).normalize();
+      const n2 = new THREE.Vector3().crossVectors(tangent, n1).normalize();
+      const off = n1.clone().multiplyScalar(Math.cos(a)).add(n2.clone().multiplyScalar(Math.sin(a)));
+      const sw = 0.020 * (1 - t * 0.5) + 0.006;
+      const sh = 0.024 * (1 - t * 0.5) + 0.007;
+      const geo = scaleGeo(sw, sh, 0.0055);
+      const m = new THREE.Mesh(geo, matWalnutFacet);
+      m.position.copy(p).addScaledVector(off, r * 0.90);
+      // orient: local +Y = outward normal, local +Z = along tangent (points backward)
+      const mtx = new THREE.Matrix4();
+      const xAxisL = new THREE.Vector3().crossVectors(off, tangent).normalize();
+      mtx.makeBasis(xAxisL, off.clone().normalize(), tangent.clone().negate());
+      m.quaternion.setFromRotationMatrix(mtx);
+      m.castShadow = true;
+      m.receiveShadow = true;
+      serpent.add(m);
+    }
+  }
+
+  // Dorsal crest along the serpent
+  for (let i = 4; i < tailSteps - 4; i += 2) {
+    const t = i / tailSteps;
+    const p = new THREE.Vector3(tailPts[i][0], tailPts[i][1], tailPts[i][2]);
+    const pn = new THREE.Vector3(tailPts[i + 1][0], tailPts[i + 1][1], tailPts[i + 1][2]);
+    const tangent = pn.clone().sub(p);
+    if (tangent.lengthSq() < 1e-10) continue;
+    tangent.normalize();
+    const outward = new THREE.Vector3(p.x, 0, p.z + 0.30);
+    if (outward.lengthSq() < 1e-8) outward.set(1, 0, 0);
+    outward.normalize().multiplyScalar(0.35).add(new THREE.Vector3(0, 1, 0)).normalize();
+    const r = tailRadius(t);
+    const fin = new THREE.ConeGeometry(0.011 * (1 - t * 0.5) + 0.003, 0.028 * (1 - t * 0.55) + 0.008, 4);
+    const m = new THREE.Mesh(fin, matHeartwood);
+    m.position.copy(p).addScaledVector(outward, r * 0.95);
+    m.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), outward));
+    m.scale.set(0.55, 1, 1.4);
+    m.castShadow = true;
+    m.receiveShadow = true;
+    serpent.add(m);
+  }
+
+  /* Serpent head at the tip */
+  const tip = tailPts[tailSteps];
+  const prev = tailPts[tailSteps - 2];
+  const sHead = new THREE.Group();
+  sHead.position.set(tip[0], tip[1], tip[2]);
+  const dir = new THREE.Vector3(tip[0] - prev[0], tip[1] - prev[1], tip[2] - prev[2]).normalize();
+  sHead.quaternion.copy(new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), dir));
+  serpent.add(sHead);
+  {
+    // Wedge skull
+    const skull = chiselize(new THREE.SphereGeometry(1, 14, 10), 0.05, 22);
+    addMesh(sHead, skull, matWalnut, [0, 0.002, 0.020], [0, 0, 0], [0.026, 0.021, 0.040]);
+    // Snout
+    addMesh(sHead, chiselize(new THREE.SphereGeometry(1, 12, 9), 0.05, 26), matWalnut,
+      [0, -0.002, 0.052], [0, 0, 0], [0.017, 0.014, 0.026]);
+    // Brow ridges
+    for (let s = -1; s <= 1; s += 2) {
+      addMesh(sHead, new THREE.SphereGeometry(0.010, 8, 6), matWalnutFacet,
+        [s * 0.016, 0.014, 0.020], null, [1.1, 0.6, 1.6]);
+      // Eye
+      addMesh(sHead, new THREE.SphereGeometry(0.0068, 8, 6), matPolished,
+        [s * 0.019, 0.008, 0.030]);
+    }
+    // Forked tongue
+    const tongueMat = new THREE.MeshStandardMaterial({ color: 0x4a2a18, roughness: 0.45, metalness: 0.0 });
+    for (let s = -1; s <= 1; s += 2) {
+      const tg = new THREE.CylinderGeometry(0.0022, 0.0008, 0.030, 5);
+      addMesh(sHead, tg, tongueMat, [s * 0.005, -0.008, 0.082], [Math.PI * 0.5 - 0.15, 0, s * 0.30]);
+    }
+    // Jaw line
+    addMesh(sHead, chiselize(new THREE.SphereGeometry(1, 10, 8), 0.05, 26), matWalnut,
+      [0, -0.014, 0.040], null, [0.019, 0.010, 0.030]);
+  }
+}
+
+/* ---------- CARVER'S SIGNATURE: chisel-cut border on the plinth top ---------- */
+{
+  const ring = new THREE.Group();
+  plinth.add(ring);
+  for (let i = 0; i < 56; i++) {
+    const a = (i / 56) * Math.PI * 2;
+    const r = 0.272;
+    addMesh(ring, new THREE.ConeGeometry(0.009, 0.014, 4), matWalnutFacet,
+      [Math.cos(a) * r, 0.055, Math.sin(a) * r],
+      [0, -a + Math.PI / 4, 0]);
+  }
+}
+
+/* ============================================================
+   CENTER THE OBJECT
+   ============================================================ */
+{
+  const box = new THREE.Box3().setFromObject(chimera);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  // Recenter horizontally; keep the plinth sitting on y = 0
+  chimera.position.x -= center.x;
+  chimera.position.z -= center.z;
+  chimera.position.y -= box.min.y;
+
+  const size = new THREE.Vector3();
+  box.getSize(size);
+  controls.target.set(0, size.y * 0.5, 0);
+  controls.update();
+}
+
+/* ============================================================
+   LIGHTING — warm gallery / workshop studio
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xffe6c8, 0x1a120c, 0.42);
+scene.add(hemi);
+
+const ambient = new THREE.AmbientLight(0xffd9b0, 0.10);
+scene.add(ambient);
+
+// Key: warm, high, in front-left
+const key = new THREE.DirectionalLight(0xffe2ba, 2.5);
+key.position.set(1.55, 2.25, 1.75);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.4;
+key.shadow.camera.far = 8;
+key.shadow.camera.left = -1.1;
+key.shadow.camera.right = 1.1;
+key.shadow.camera.top = 1.1;
+key.shadow.camera.bottom = -1.1;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 3;
+scene.add(key);
+
+// Fill: cool, soft, from the right-front, no shadow
+const fill = new THREE.DirectionalLight(0xa8c0e0, 0.55);
+fill.position.set(-1.9, 0.95, 1.15);
+scene.add(fill);
+
+// Rim: strong warm backlight to catch the buffed satin edges
+const rim = new THREE.DirectionalLight(0xffbb77, 1.55);
+rim.position.set(-0.85, 1.35, -2.15);
+scene.add(rim);
+
+// Small warm bounce from below-front to open the recesses
+const bounce = new THREE.PointLight(0xc98b4e, 0.55, 4.0, 2.0);
+bounce.position.set(0.35, 0.20, 0.95);
+scene.add(bounce);
+
+/* Ground plane — receives shadows only */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 14),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Subtle darkened vignette disc under the piece for grounding
+const contact = new THREE.Mesh(
+  new THREE.CircleGeometry(0.55, 48),
+  new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.22 })
+);
+contact.rotation.x = -Math.PI / 2;
+contact.position.y = 0.001;
+scene.add(contact);
+
+/* ============================================================
+   RESIZE + RENDER LOOP
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

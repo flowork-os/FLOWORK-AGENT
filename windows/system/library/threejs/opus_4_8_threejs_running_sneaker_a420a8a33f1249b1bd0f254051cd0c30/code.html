@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Running Sneaker — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0e11; }
+  #c { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ----------------------------------------------------------------------------
+   Renderer / Scene / Camera
+---------------------------------------------------------------------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0e11);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(23, 16, 33);
+
+/* ----------------------------------------------------------------------------
+   Lighting: hemisphere fill + directional key (shadow) + fill + rim
+---------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0x93a6c9, 0x1a1712, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.5);
+key.position.set(20, 32, 18);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 140;
+key.shadow.camera.left = -24;
+key.shadow.camera.right = 24;
+key.shadow.camera.top = 24;
+key.shadow.camera.bottom = -24;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.03;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.65);
+fill.position.set(-22, 14, -4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.25);
+rim.position.set(-12, 18, -26);
+scene.add(rim);
+
+/* ----------------------------------------------------------------------------
+   Ground plane — only receives shadows
+---------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(90, 72),
+  new THREE.ShadowMaterial({ color: 0x000000, opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ----------------------------------------------------------------------------
+   Controls
+---------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 22;
+controls.maxDistance = 100;
+controls.maxPolarAngle = Math.PI * 0.5 + 0.16;
+
+/* ----------------------------------------------------------------------------
+   Helpers
+---------------------------------------------------------------------------- */
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+// Catmull-Rom over 1D control points [[t,v],...]
+function S(pts) {
+  return function (t) {
+    if (t <= pts[0][0]) return pts[0][1];
+    if (t >= pts[pts.length - 1][0]) return pts[pts.length - 1][1];
+    let i = 0;
+    while (i < pts.length - 1 && pts[i + 1][0] < t) i++;
+    const p0 = pts[Math.max(0, i - 1)], p1 = pts[i], p2 = pts[i + 1], p3 = pts[Math.min(pts.length - 1, i + 2)];
+    const u = (t - p1[0]) / (p2[0] - p1[0]);
+    const v0 = p0[1], v1 = p1[1], v2 = p2[1], v3 = p3[1];
+    const a = 2 * v1, b = -v0 + v2, c = 2 * v0 - 5 * v1 + 4 * v2 - v3, d = -v0 + 3 * v1 - 3 * v2 + v3;
+    return 0.5 * (a + b * u + c * u * u + d * u * u * u);
+  };
+}
+
+// fabric-mesh bump texture
+function meshTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const x = c.getContext('2d');
+  x.fillStyle = '#7f7f7f';
+  x.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 128; i += 8) {
+    for (let j = 0; j < 128; j += 8) {
+      const on = ((i / 8 + j / 8) % 2) === 0;
+      x.fillStyle = on ? '#565656' : '#a6a6a6';
+      x.beginPath();
+      x.arc(i + 4, j + 4, 2.1, 0, Math.PI * 2);
+      x.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(7, 3);
+  return t;
+}
+const fabricBump = meshTexture();
+
+// Build a solid closed loft from an array of closed rings (each same length)
+function loftClosed(rings, capA, capB) {
+  const N = rings.length, M = rings[0].length;
+  const pos = [], idx = [];
+  for (let i = 0; i < N; i++) for (let k = 0; k < M; k++) { const v = rings[i][k]; pos.push(v.x, v.y, v.z); }
+  for (let i = 0; i < N - 1; i++) for (let k = 0; k < M; k++) {
+    const a = i * M + k, b = i * M + (k + 1) % M, c = (i + 1) * M + k, d = (i + 1) * M + (k + 1) % M;
+    idx.push(a, c, b, b, c, d);
+  }
+  let vc = N * M;
+  if (capA) {
+    let cx = 0, cy = 0, cz = 0; for (const v of rings[0]) { cx += v.x; cy += v.y; cz += v.z; }
+    pos.push(cx / M, cy / M, cz / M); const ci = vc++;
+    for (let k = 0; k < M; k++) idx.push(ci, (k + 1) % M, k);
+  }
+  if (capB) {
+    const r = rings[N - 1]; let cx = 0, cy = 0, cz = 0; for (const v of r) { cx += v.x; cy += v.y; cz += v.z; }
+    pos.push(cx / M, cy / M, cz / M); const ci = vc++; const base = (N - 1) * M;
+    for (let k = 0; k < M; k++) idx.push(ci, base + k, base + (k + 1) % M);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Build an open surface strip from rows (each row is an equal-length polyline)
+function loftStrip(rows) {
+  const N = rows.length, K = rows[0].length;
+  const pos = [], uv = [], idx = [];
+  for (let i = 0; i < N; i++) for (let k = 0; k < K; k++) {
+    const v = rows[i][k]; pos.push(v.x, v.y, v.z); uv.push(i / (N - 1), k / (K - 1));
+  }
+  for (let i = 0; i < N - 1; i++) for (let k = 0; k < K - 1; k++) {
+    const a = i * K + k, b = i * K + k + 1, c = (i + 1) * K + k, d = (i + 1) * K + k + 1;
+    idx.push(a, c, b, b, c, d);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+
+/* ----------------------------------------------------------------------------
+   Shoe last (all dimensions in centimetres). +X = toe, -X = heel, +Y up,
+   +Z = lateral (outer) side, -Z = medial (arch) side  →  a LEFT shoe.
+---------------------------------------------------------------------------- */
+const L0 = -12.5, L1 = 12.5;                 // heel .. toe
+const xOf = (p) => L0 + (L1 - L0) * p;
+const pHeel = 0.04;
+
+const hwSoleF   = S([[0,3.0],[0.05,3.5],[0.12,3.85],[0.22,3.75],[0.33,3.45],[0.45,3.55],[0.6,4.05],[0.7,4.35],[0.8,4.15],[0.88,3.7],[0.94,2.9],[0.98,1.9],[1,0.9]]);
+const soleArch  = S([[0,0],[0.24,0],[0.32,0.32],[0.38,0.42],[0.48,0.22],[0.6,0.03],[1,0]]);
+const upArch    = S([[0,0],[0.22,0],[0.3,0.45],[0.37,0.6],[0.46,0.38],[0.58,0.12],[0.7,0],[1,0]]);
+const outThk    = S([[0,1.0],[0.1,0.85],[0.5,0.7],[0.75,0.8],[0.9,0.7],[1,0.55]]);
+const midLowThk = S([[0,1.6],[0.15,1.35],[0.35,1.0],[0.55,0.8],[0.7,0.75],[0.85,0.8],[1,0.7]]);
+const midUpThk  = S([[0,1.9],[0.12,1.75],[0.3,1.3],[0.5,0.95],[0.68,0.75],[0.82,0.7],[1,0.6]]);
+const Hfn       = S([[0.04,6.8],[0.1,7.0],[0.18,7.0],[0.28,6.9],[0.38,6.4],[0.48,5.8],[0.55,5.3],[0.62,4.8],[0.72,4.1],[0.82,3.2],[0.9,2.4],[0.96,1.7],[1,1.2]]);
+const rimZfn    = S([[0.04,1.6],[0.1,2.35],[0.17,2.5],[0.24,2.45],[0.31,2.2],[0.38,1.9],[0.44,1.55],[0.48,0.95],[0.5,0.35],[0.515,0.0],[1,0.0]]);
+
+function yGround(p) {
+  const toe = p > 0.82 ? Math.pow((p - 0.82) / 0.18, 2) * 1.9 : 0;
+  const heel = p < 0.05 ? Math.pow((0.05 - p) / 0.05, 1.6) * 0.55 : 0;
+  return toe + heel;
+}
+const outTopF    = (p) => yGround(p) + outThk(p);
+const midLowTopF = (p) => outTopF(p) + midLowThk(p);
+const foamTopF   = (p) => midLowTopF(p) + midUpThk(p);
+const baseY      = (p) => foamTopF(p) - 0.15;
+const upperHW    = (p, side) => Math.max(0.15, hwSoleF(p) - 0.35 - (side < 0 ? upArch(p) : 0));
+
+// A point on the upper's outer surface. side +1 lateral, -1 medial. t 0=sole, 1=rim
+function archPoint(p, side, t, hwScale, yOff) {
+  const hw = upperHW(p, side) * hwScale;
+  const rz = Math.min(rimZfn(p), hw * 0.95);
+  const phia = Math.acos(rz / hw);
+  const phi = side > 0 ? t * phia : Math.PI - t * phia;
+  const z = hw * Math.cos(phi);
+  const y = baseY(p) + (Hfn(p) + yOff) * Math.pow(Math.sin(phi), 0.82);
+  return new THREE.Vector3(xOf(p), y, z);
+}
+
+/* ----------------------------------------------------------------------------
+   Materials
+---------------------------------------------------------------------------- */
+const matOutsole = new THREE.MeshStandardMaterial({ color: 0x14171c, roughness: 0.55, metalness: 0.0, envMapIntensity: 0.5, side: THREE.DoubleSide });
+const matFoamLow = new THREE.MeshStandardMaterial({ color: 0x2f5f9c, roughness: 0.78, metalness: 0.0, envMapIntensity: 0.4, side: THREE.DoubleSide });
+const matFoamUp  = new THREE.MeshStandardMaterial({ color: 0xece9df, roughness: 0.82, metalness: 0.0, envMapIntensity: 0.35, side: THREE.DoubleSide });
+const matUpper   = new THREE.MeshStandardMaterial({ color: 0x7c8794, roughness: 0.94, metalness: 0.0, bumpMap: fabricBump, bumpScale: 0.03, envMapIntensity: 0.5, side: THREE.DoubleSide });
+const matHeel    = new THREE.MeshStandardMaterial({ color: 0x22304d, roughness: 0.42, metalness: 0.15, envMapIntensity: 0.7, side: THREE.DoubleSide });
+const matToe     = new THREE.MeshStandardMaterial({ color: 0x16191f, roughness: 0.5, metalness: 0.0, envMapIntensity: 0.5, side: THREE.DoubleSide });
+const matInsole  = new THREE.MeshStandardMaterial({ color: 0x2a2c30, roughness: 0.95, metalness: 0.0, envMapIntensity: 0.25, side: THREE.DoubleSide });
+const matAccent  = new THREE.MeshStandardMaterial({ color: 0x18b6a3, roughness: 0.55, metalness: 0.05, envMapIntensity: 0.6 });
+const matTongue  = new THREE.MeshStandardMaterial({ color: 0x6b7480, roughness: 0.9, metalness: 0.0, bumpMap: fabricBump, bumpScale: 0.03, envMapIntensity: 0.4 });
+const matLace    = new THREE.MeshStandardMaterial({ color: 0xd9d6c8, roughness: 0.72, metalness: 0.0, envMapIntensity: 0.4 });
+const matEyelet  = new THREE.MeshStandardMaterial({ color: 0x8b9099, roughness: 0.35, metalness: 0.75, envMapIntensity: 1.0 });
+
+const shoe = new THREE.Group();
+
+/* ----------------------------------------------------------------------------
+   1) Sole: rubber outsole + layered foam midsole (superellipse cross-sections)
+---------------------------------------------------------------------------- */
+const NS = 120, M = 42, EXPO = 0.5;
+function slabRing(p, yLo, yHi, hwLat, hwMed) {
+  const yc = (yLo + yHi) / 2, hy = (yHi - yLo) / 2, x = xOf(p), r = [];
+  for (let k = 0; k < M; k++) {
+    const th = (k / M) * Math.PI * 2, cz = Math.cos(th), cy = Math.sin(th);
+    const hw = cz >= 0 ? hwLat : hwMed;
+    const z = hw * Math.sign(cz) * Math.pow(Math.abs(cz), EXPO);
+    const y = yc + hy * Math.sign(cy) * Math.pow(Math.abs(cy), EXPO);
+    r.push(new THREE.Vector3(x, y, z));
+  }
+  return r;
+}
+function buildSlab(yLoFn, yHiFn, wScale, mat) {
+  const rings = [];
+  for (let i = 0; i < NS; i++) {
+    const p = i / (NS - 1);
+    rings.push(slabRing(p, yLoFn(p), yHiFn(p), hwSoleF(p) * wScale, (hwSoleF(p) - soleArch(p)) * wScale));
+  }
+  return new THREE.Mesh(loftClosed(rings, true, true), mat);
+}
+shoe.add(buildSlab(yGround, outTopF, 0.97, matOutsole));      // rubber outsole
+shoe.add(buildSlab(outTopF, midLowTopF, 1.0, matFoamLow));    // lower foam layer
+shoe.add(buildSlab(midLowTopF, foamTopF, 0.96, matFoamUp));   // upper foam layer
+
+/* ----------------------------------------------------------------------------
+   2) Upper (fabric mesh) — two side panels leaving the throat/collar opening
+---------------------------------------------------------------------------- */
+const NUP = 72, K = 20;
+const upStations = [];
+for (let i = 0; i < NUP; i++) upStations.push(pHeel + (1 - pHeel) * i / (NUP - 1));
+const latRows = upStations.map(p => { const r = []; for (let k = 0; k < K; k++) r.push(archPoint(p, 1, k / (K - 1), 1, 0)); return r; });
+const medRows = upStations.map(p => { const r = []; for (let k = 0; k < K; k++) r.push(archPoint(p, -1, k / (K - 1), 1, 0)); return r; });
+shoe.add(new THREE.Mesh(loftStrip(latRows), matUpper));
+shoe.add(new THREE.Mesh(loftStrip(medRows), matUpper));
+shoe.add(new THREE.Mesh(loftStrip([latRows[0], medRows[0]]), matUpper)); // heel back wall
+
+// toe nose cap (closes the very front of the toe box)
+(function () {
+  const fl = latRows[NUP - 1], fm = medRows[NUP - 1];
+  const boundary = [];
+  for (let k = 0; k < K; k++) boundary.push(fl[k]);
+  for (let k = K - 1; k >= 0; k--) boundary.push(fm[k]);
+  const center = new THREE.Vector3(xOf(1) + 0.25, baseY(1) + Hfn(1) * 0.45, 0);
+  const pos = [center.x, center.y, center.z], idx = [];
+  boundary.forEach(v => pos.push(v.x, v.y, v.z));
+  for (let i = 0; i < boundary.length - 1; i++) idx.push(0, i + 1, i + 2);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx); g.computeVertexNormals();
+  shoe.add(new THREE.Mesh(g, matUpper));
+})();
+
+/* ----------------------------------------------------------------------------
+   3) Interior footbed (visible through the opening → gives depth)
+---------------------------------------------------------------------------- */
+(function () {
+  const rows = [], N = 42;
+  for (let i = 0; i < N; i++) {
+    const p = pHeel + (0.53 - pHeel) * i / (N - 1);
+    const zi = Math.min(upperHW(p, 1), upperHW(p, -1)) * 0.8;
+    const r = [];
+    for (let k = 0; k < K; k++) {
+      const f = k / (K - 1), z = zi - 2 * zi * f;
+      const y = foamTopF(p) + 0.25 - 0.35 * (1 - (z / zi) * (z / zi));
+      r.push(new THREE.Vector3(xOf(p), y, z));
+    }
+    rows.push(r);
+  }
+  shoe.add(new THREE.Mesh(loftStrip(rows), matInsole));
+})();
+
+/* ----------------------------------------------------------------------------
+   4) Overlay panels: heel counter, rubber toe bumper, side stripes
+---------------------------------------------------------------------------- */
+function partialUpper(p0, p1, tMax, hwScale, mat, nst, backWall) {
+  const stn = [];
+  for (let i = 0; i < nst; i++) stn.push(p0 + (p1 - p0) * i / (nst - 1));
+  const lat = stn.map(p => { const r = []; for (let k = 0; k < K; k++) r.push(archPoint(p, 1, (k / (K - 1)) * tMax, hwScale, 0)); return r; });
+  const med = stn.map(p => { const r = []; for (let k = 0; k < K; k++) r.push(archPoint(p, -1, (k / (K - 1)) * tMax, hwScale, 0)); return r; });
+  shoe.add(new THREE.Mesh(loftStrip(lat), mat));
+  shoe.add(new THREE.Mesh(loftStrip(med), mat));
+  if (backWall) shoe.add(new THREE.Mesh(loftStrip([lat[0], med[0]]), mat));
+}
+partialUpper(pHeel, 0.27, 0.55, 1.04, matHeel, 26, true);  // heel counter cup
+partialUpper(0.86, 1.0, 0.42, 1.03, matToe, 16, false);    // rubber toe bumper
+
+function sideStripe(side) {
+  const pts = [];
+  for (let p = 0.30; p <= 0.70; p += 0.035) pts.push(archPoint(p, side, 0.42, 1.02, 0));
+  const curve = new THREE.CatmullRomCurve3(pts);
+  shoe.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.22, 8, false), matAccent));
+}
+sideStripe(1); sideStripe(-1);
+
+/* ----------------------------------------------------------------------------
+   5) Tongue (padded)
+---------------------------------------------------------------------------- */
+(function () {
+  const apex = (p) => new THREE.Vector3(xOf(p), baseY(p) + Hfn(p) * 0.96, 0);
+  const A = apex(0.30), B = apex(0.515);
+  const c = A.clone().lerp(B, 0.5); c.y -= 0.5;
+  const dir = B.clone().sub(A);
+  const g = new THREE.SphereGeometry(1, 28, 18);
+  g.scale(dir.length() * 0.52, 0.6, 1.5);
+  const t = new THREE.Mesh(g, matTongue);
+  t.position.copy(c);
+  t.rotation.z = Math.atan2(dir.y, dir.x);
+  shoe.add(t);
+})();
+
+/* ----------------------------------------------------------------------------
+   6) Eyelets (lace loops) + laces
+---------------------------------------------------------------------------- */
+const eyeP = [0.485, 0.445, 0.40, 0.355, 0.315];
+const latEye = [], medEye = [];
+eyeP.forEach(p => {
+  const pl = archPoint(p, 1, 0.88, 1.0, 0), pm = archPoint(p, -1, 0.88, 1.0, 0);
+  latEye.push(pl); medEye.push(pm);
+  [[pl, p], [pm, p]].forEach(([pt]) => {
+    const m = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.09, 8, 18), matEyelet);
+    m.position.copy(pt);
+    const nrm = pt.clone().sub(new THREE.Vector3(pt.x, baseY(p), 0)).normalize();
+    m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), nrm);
+    shoe.add(m);
+  });
+});
+
+function lace(a, b, lift) {
+  const mid = a.clone().lerp(b, 0.5); mid.y += lift; mid.z *= 0.3;
+  const curve = new THREE.CatmullRomCurve3([a, mid, b]);
+  shoe.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 22, 0.2, 8, false), matLace));
+}
+for (let i = 0; i < eyeP.length - 1; i++) {
+  lace(latEye[i], medEye[i + 1], 1.1);
+  lace(medEye[i], latEye[i + 1], 1.1);
+}
+lace(latEye[0], medEye[0], 0.35); // bar across the vamp end
+
+// simple bow near the ankle-side pair
+(function () {
+  const last = eyeP.length - 1;
+  const bc = latEye[last].clone().lerp(medEye[last], 0.5); bc.y += 1.35; bc.z = 0;
+  [1, -1].forEach(s => {
+    const loop = new THREE.Mesh(new THREE.TorusGeometry(0.8, 0.16, 8, 22), matLace);
+    loop.position.copy(bc).add(new THREE.Vector3(-0.35, 0.1, s * 0.85));
+    loop.rotation.set(0, s * 0.5, 0.5);
+    shoe.add(loop);
+    const a = bc.clone(), b = bc.clone().add(new THREE.Vector3(1.5, -1.7, s * 0.7));
+    const mid = a.clone().lerp(b, 0.5); mid.x += 0.25;
+    shoe.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3([a, mid, b]), 16, 0.17, 8, false), matLace));
+  });
+  const knot = new THREE.Mesh(new THREE.SphereGeometry(0.36, 14, 12), matLace);
+  knot.position.copy(bc);
+  shoe.add(knot);
+})();
+
+/* ----------------------------------------------------------------------------
+   Finalize: shadows + centre the object on the ground
+---------------------------------------------------------------------------- */
+shoe.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+scene.add(shoe);
+
+const box = new THREE.Box3().setFromObject(shoe);
+const ctr = box.getCenter(new THREE.Vector3());
+const size = box.getSize(new THREE.Vector3());
+shoe.position.set(-ctr.x, -box.min.y, -ctr.z);
+controls.target.set(0, size.y * 0.45, 0);
+controls.update();
+
+/* ----------------------------------------------------------------------------
+   Resize + render loop
+---------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

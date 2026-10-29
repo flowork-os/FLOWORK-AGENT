@@ -1,0 +1,414 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Barrel Cactus</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0e0f11; overflow: hidden; }
+  #c { display: block; width: 100%; height: 100%; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px; margin: 0;
+    font: 12px/1.4 system-ui, sans-serif; color: rgba(230,230,235,0.55);
+    letter-spacing: .3px; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<p id="hint">Barrel cactus · drag to orbit · scroll to zoom</p>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ---------------------------------------------------------------------------
+   Scene + camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = makeBackground();
+scene.fog = new THREE.Fog(0x14161a, 11, 26);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.7, 2.7, 4.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 3.2;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 1.55, 0);
+
+/* studio vignette backdrop */
+function makeBackground() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(512, 430, 60, 512, 540, 760);
+  g.addColorStop(0.0, '#34383f');
+  g.addColorStop(0.5, '#1f2226');
+  g.addColorStop(1.0, '#0d0e10');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 1024, 1024);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key / fill / rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xa6c0e0, 0x2a2018, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.5);
+key.position.set(5, 8.5, 4.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd0e6, 0.55);
+fill.position.set(-6, 3, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xcfe0ff, 1.35);
+rim.position.set(-3.5, 5, -6);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Ground plane (receives shadow only)
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ===========================================================================
+   BARREL CACTUS  (one centered procedural object)
+=========================================================================== */
+const plant = new THREE.Group();
+scene.add(plant);
+
+/* --- cactus body parameters --- */
+const NUM_RIBS  = 18;
+const RIB_DEPTH = 0.17;
+const BODY_R    = 1.25;
+const BODY_H    = 1.75;
+const BODY_Y    = 0.85;   // group lift so base sits buried in the soil
+
+const TAU = Math.PI * 2;
+const up  = new THREE.Vector3(0, 1, 0);
+
+function bodyProfileRadius(v) {
+  v = Math.min(Math.max(v, 0), 1);
+  return Math.pow(Math.sin(Math.PI * v), 0.5);   // full, rounded, squat barrel
+}
+
+function surfacePoint(u, v, target) {
+  const theta = u * TAU;
+  const prof  = bodyProfileRadius(v);
+  const g     = 0.5 - 0.5 * Math.cos(NUM_RIBS * theta); // 0 ridge, 1 groove
+  const groove = Math.pow(g, 1.3);
+  const r = BODY_R * prof * (1 - RIB_DEPTH * groove);
+  target.set(Math.cos(theta) * r, v * BODY_H, Math.sin(theta) * r);
+  return target;
+}
+
+const _n0 = new THREE.Vector3(), _n1 = new THREE.Vector3(), _n2 = new THREE.Vector3(), _rad = new THREE.Vector3();
+function surfaceNormal(u, v, out) {
+  const du = 1e-3, dv = 1e-3;
+  const p = surfacePoint(u, v, _n0);
+  const pu = surfacePoint(u + du, v, _n1).sub(p);
+  const pv = surfacePoint(u, Math.min(v + dv, 1), _n2).sub(p);
+  out.crossVectors(pv, pu).normalize();
+  _rad.set(Math.cos(u * TAU), 0, Math.sin(u * TAU));
+  if (out.dot(_rad) < 0) out.negate();
+  return out;
+}
+
+/* --- build the ribbed body geometry (seamless closed tube) --- */
+function buildBodyGeometry() {
+  const RS = 216, HS = 148;
+  const positions = [], colors = [], indices = [];
+  const p = new THREE.Vector3();
+  const grooveCol = new THREE.Color(0x3d5622);
+  const ridgeCol  = new THREE.Color(0x6f9641);
+  const crownCol  = new THREE.Color(0x93aa50);
+  const col = new THREE.Color();
+
+  for (let j = 0; j <= HS; j++) {
+    const v = j / HS;
+    for (let i = 0; i < RS; i++) {
+      const u = i / RS;
+      surfacePoint(u, v, p);
+      positions.push(p.x, p.y, p.z);
+
+      const theta = u * TAU;
+      const g = 0.5 - 0.5 * Math.cos(NUM_RIBS * theta);
+      const ridge = 1 - Math.pow(g, 1.3);
+      col.copy(grooveCol).lerp(ridgeCol, ridge);
+      const cf = Math.min(Math.max((v - 0.72) / 0.28, 0), 1) * 0.45;
+      col.lerp(crownCol, cf);
+      colors.push(col.r, col.g, col.b);
+    }
+  }
+  for (let j = 0; j < HS; j++) {
+    for (let i = 0; i < RS; i++) {
+      const next = (i + 1) % RS;
+      const a = j * RS + i;
+      const b = j * RS + next;
+      const c = (j + 1) * RS + i;
+      const d = (j + 1) * RS + next;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const bodyMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.62,
+  metalness: 0.0,
+});
+const bodyMesh = new THREE.Mesh(buildBodyGeometry(), bodyMat);
+bodyMesh.castShadow = true;
+bodyMesh.receiveShadow = true;
+bodyMesh.position.y = BODY_Y;
+plant.add(bodyMesh);
+
+/* ---------------------------------------------------------------------------
+   Spine clusters (areoles) along the ribs
+--------------------------------------------------------------------------- */
+const ROWS = 9;
+const V_BOTTOM = 0.24, V_TOP = 0.90, STAGGER = 0.035;
+const RADIAL_PER = 7, CENTRAL_PER = 4;
+
+const clusters = [];
+for (let ri = 0; ri < NUM_RIBS; ri++) {
+  const u = ri / NUM_RIBS;                      // exactly on a rib ridge
+  for (let r = 0; r < ROWS; r++) {
+    let v = V_BOTTOM + (V_TOP - V_BOTTOM) * (r / (ROWS - 1));
+    v += (ri % 2) * STAGGER;
+    if (v > 0.94) continue;
+    clusters.push({ u, v, row: r });
+  }
+}
+
+/* one unit cone, base at origin, apex at +Y=1; coloured base->tip */
+function makeSpineGeometry(baseHex, tipHex) {
+  const geo = new THREE.ConeGeometry(1, 1, 6, 1);
+  geo.translate(0, 0.5, 0);
+  const pos = geo.attributes.position;
+  const n = pos.count;
+  const arr = new Float32Array(n * 3);
+  const cb = new THREE.Color(baseHex), ct = new THREE.Color(tipHex), tmp = new THREE.Color();
+  for (let i = 0; i < n; i++) {
+    const t = pos.getY(i);
+    tmp.copy(cb).lerp(ct, t * t);
+    arr[i * 3] = tmp.r; arr[i * 3 + 1] = tmp.g; arr[i * 3 + 2] = tmp.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(arr, 3));
+  return geo;
+}
+
+const spineMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.55, metalness: 0.0 });
+const radialGeo  = makeSpineGeometry(0xf3ead0, 0xa6884c);
+const centralGeo = makeSpineGeometry(0xd8b483, 0x5c3418);
+
+const radialMesh  = new THREE.InstancedMesh(radialGeo,  spineMat, clusters.length * RADIAL_PER);
+const centralMesh = new THREE.InstancedMesh(centralGeo, spineMat, clusters.length * CENTRAL_PER);
+radialMesh.castShadow = centralMesh.castShadow = true;
+radialMesh.frustumCulled = centralMesh.frustumCulled = false;
+
+/* small pale "wool" pad at each areole */
+const areoleMesh = new THREE.InstancedMesh(
+  new THREE.SphereGeometry(1, 8, 6),
+  new THREE.MeshStandardMaterial({ color: 0xdccfae, roughness: 1.0 }),
+  clusters.length
+);
+areoleMesh.frustumCulled = false;
+
+/* frame + fill */
+const dummy = new THREE.Object3D();
+const pos = new THREE.Vector3(), nrm = new THREE.Vector3();
+const T = new THREE.Vector3(), B = new THREE.Vector3(), ref = new THREE.Vector3();
+const dir = new THREE.Vector3(), base = new THREE.Vector3();
+
+function makeFrame(N) {
+  if (Math.abs(N.y) < 0.95) ref.set(0, 1, 0); else ref.set(1, 0, 0);
+  T.crossVectors(ref, N).normalize();
+  B.crossVectors(N, T).normalize();
+}
+function setSpine(mesh, idx, thick, len) {
+  base.copy(pos).addScaledVector(nrm, -0.03);
+  dummy.position.copy(base);
+  dummy.quaternion.setFromUnitVectors(up, dir);
+  dummy.scale.set(thick, len, thick);
+  dummy.updateMatrix();
+  mesh.setMatrixAt(idx, dummy.matrix);
+}
+
+let ri_ = 0, ci_ = 0, ai_ = 0;
+clusters.forEach((cl) => {
+  surfacePoint(cl.u, cl.v, pos);
+  surfaceNormal(cl.u, cl.v, nrm);
+  makeFrame(nrm);
+  const prof = bodyProfileRadius(cl.v);
+  const lenF = 0.7 + 0.6 * prof;
+  const jitter = cl.v * 5.0 + cl.row;
+
+  /* areole wool pad */
+  dummy.position.copy(pos).addScaledVector(nrm, -0.01);
+  dummy.quaternion.setFromUnitVectors(up, nrm);
+  dummy.scale.set(0.075, 0.03, 0.075);
+  dummy.updateMatrix();
+  areoleMesh.setMatrixAt(ai_++, dummy.matrix);
+
+  /* radial spines — splayed star */
+  const tilt = 1.02;
+  for (let k = 0; k < RADIAL_PER; k++) {
+    const phi = (k / RADIAL_PER) * TAU + jitter;
+    dir.copy(nrm).multiplyScalar(Math.cos(tilt))
+       .addScaledVector(T, Math.sin(tilt) * Math.cos(phi))
+       .addScaledVector(B, Math.sin(tilt) * Math.sin(phi))
+       .normalize();
+    setSpine(radialMesh, ri_++, 0.019, 0.30 * lenF);
+  }
+
+  /* central spines — 1 long straight + 3 shorter angled */
+  for (let k = 0; k < CENTRAL_PER; k++) {
+    let ct, cphi, len, thick;
+    if (k === 0) { ct = 0.08; cphi = jitter; len = 0.62 * lenF; thick = 0.030; }
+    else { ct = 0.42; cphi = jitter + (k / 3) * TAU; len = 0.40 * lenF; thick = 0.026; }
+    dir.copy(nrm).multiplyScalar(Math.cos(ct))
+       .addScaledVector(T, Math.sin(ct) * Math.cos(cphi))
+       .addScaledVector(B, Math.sin(ct) * Math.sin(cphi))
+       .normalize();
+    setSpine(centralMesh, ci_++, thick, len);
+  }
+});
+radialMesh.instanceMatrix.needsUpdate = true;
+centralMesh.instanceMatrix.needsUpdate = true;
+areoleMesh.instanceMatrix.needsUpdate = true;
+
+bodyMesh.add(radialMesh, centralMesh, areoleMesh);
+
+/* ---------------------------------------------------------------------------
+   Pot (terracotta) via LatheGeometry + soil + pebbles
+--------------------------------------------------------------------------- */
+const potProfile = [
+  [0.00, 0.02], [0.55, 0.00], [0.95, 0.06], [1.02, 0.50],
+  [1.12, 1.15], [1.15, 1.28], [1.22, 1.32], [1.22, 1.40],
+  [1.05, 1.40], [1.04, 1.30], [0.98, 0.45], [0.90, 0.16], [0.00, 0.14],
+].map(p => new THREE.Vector2(p[0], p[1]));
+
+const potGeo = new THREE.LatheGeometry(potProfile, 96);
+potGeo.computeVertexNormals();
+const potMat = new THREE.MeshStandardMaterial({
+  color: 0xb0603a, roughness: 0.85, metalness: 0.0, side: THREE.DoubleSide,
+});
+const pot = new THREE.Mesh(potGeo, potMat);
+pot.castShadow = true;
+pot.receiveShadow = true;
+plant.add(pot);
+
+/* soil */
+const soil = new THREE.Mesh(
+  new THREE.CylinderGeometry(1.0, 0.95, 0.18, 48),
+  new THREE.MeshStandardMaterial({ color: 0x3a2c22, roughness: 1.0 })
+);
+soil.position.y = 1.12;
+soil.receiveShadow = true;
+plant.add(soil);
+
+/* scattered pebbles on the soil */
+let seed = 20260706;
+function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+const pebbleCount = 54;
+const pebbles = new THREE.InstancedMesh(
+  new THREE.IcosahedronGeometry(1, 0),
+  new THREE.MeshStandardMaterial({ roughness: 0.9, metalness: 0.0 }),
+  pebbleCount
+);
+pebbles.castShadow = true;
+const pebColors = [0x6b6258, 0x847a6c, 0x4f463c, 0x8a6b4a];
+const pc = new THREE.Color();
+for (let i = 0; i < pebbleCount; i++) {
+  const r = Math.sqrt(rnd()) * 0.9;
+  const a = rnd() * TAU;
+  const s = 0.03 + rnd() * 0.045;
+  dummy.position.set(Math.cos(a) * r, 1.20 + s * 0.4, Math.sin(a) * r);
+  dummy.rotation.set(rnd() * TAU, rnd() * TAU, rnd() * TAU);
+  dummy.scale.set(s, s * (0.6 + rnd() * 0.4), s);
+  dummy.updateMatrix();
+  pebbles.setMatrixAt(i, dummy.matrix);
+  pc.set(pebColors[(rnd() * pebColors.length) | 0]);
+  pebbles.setColorAt(i, pc);
+}
+pebbles.instanceMatrix.needsUpdate = true;
+if (pebbles.instanceColor) pebbles.instanceColor.needsUpdate = true;
+plant.add(pebbles);
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Geodesic Glass Terrarium</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #141518; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ---------- Renderer ---------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ---------- Scene & Camera ---------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17181b);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.4, 2.0, 4.3);
+
+/* ---------- Environment (for glass & brass reflections) ---------- */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------- Lighting: hemisphere + key + fill + rim ---------- */
+const hemiLight = new THREE.HemisphereLight(0xdfe8ff, 0x35291d, 0.55);
+scene.add(hemiLight);
+
+const keyLight = new THREE.DirectionalLight(0xfff1dc, 2.5);
+keyLight.position.set(4.5, 6.5, 3.5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 0.5;
+keyLight.shadow.camera.far = 22;
+keyLight.shadow.camera.left = -3.5;
+keyLight.shadow.camera.right = 3.5;
+keyLight.shadow.camera.top = 3.5;
+keyLight.shadow.camera.bottom = -3.5;
+keyLight.shadow.bias = -0.0005;
+keyLight.shadow.normalBias = 0.02;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xb9ccff, 0.65);
+fillLight.position.set(-5.0, 2.2, 2.5);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xffffff, 1.35);
+rimLight.position.set(-2.5, 3.4, -5.5);
+scene.add(rimLight);
+
+/* ---------- Ground plane (receives shadow only) ---------- */
+const groundY = -1.58;
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ================================================================
+   THE SINGLE CENTERED OBJECT: geodesic glass terrarium diorama
+   ================================================================ */
+const terrarium = new THREE.Group();
+scene.add(terrarium);
+
+const R = 1.5;                 // terrarium radius
+const soilTop = -0.72;         // soil surface height
+
+/* ---- Shared materials ---- */
+const brassMat = new THREE.MeshStandardMaterial({
+  color: 0xc79a3b, metalness: 1.0, roughness: 0.32, envMapIntensity: 1.15
+});
+
+/* ---- Glass shell (faceted geodesic panels) ---- */
+const glassGeo = new THREE.IcosahedronGeometry(R, 1);
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.04,
+  transmission: 1.0,
+  thickness: 0.6,
+  ior: 1.48,
+  attenuationColor: new THREE.Color(0xdff0e8),
+  attenuationDistance: 3.0,
+  envMapIntensity: 1.0,
+  transparent: true,
+  side: THREE.DoubleSide,
+  flatShading: true,
+  clearcoat: 0.15,
+  clearcoatRoughness: 0.12
+});
+const glass = new THREE.Mesh(glassGeo, glassMat);
+glass.castShadow = false;      // avoid a solid dark disc under clear glass
+glass.receiveShadow = false;
+terrarium.add(glass);
+
+/* ---- Brass edge framing built from geometry edges + joints ---- */
+function makeEdge(a, b, r) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(r, r, len, 6, 1, false);
+  const q = new THREE.Quaternion().setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0), dir.clone().normalize()
+  );
+  const m = new THREE.Matrix4().compose(
+    new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5),
+    q, new THREE.Vector3(1, 1, 1)
+  );
+  geo.applyMatrix4(m);
+  return geo;
+}
+
+const brassParts = [];
+
+// edges
+const edges = new THREE.EdgesGeometry(glassGeo, 1);
+const ep = edges.attributes.position;
+const eA = new THREE.Vector3(), eB = new THREE.Vector3();
+for (let i = 0; i < ep.count; i += 2) {
+  eA.fromBufferAttribute(ep, i);
+  eB.fromBufferAttribute(ep, i + 1);
+  brassParts.push(makeEdge(eA, eB, 0.016));
+}
+
+// joints at unique vertices
+const vp = glassGeo.attributes.position;
+const seen = new Set();
+const vv = new THREE.Vector3();
+for (let i = 0; i < vp.count; i++) {
+  vv.fromBufferAttribute(vp, i);
+  const key = vv.x.toFixed(3) + ',' + vv.y.toFixed(3) + ',' + vv.z.toFixed(3);
+  if (seen.has(key)) continue;
+  seen.add(key);
+  const s = new THREE.SphereGeometry(0.03, 12, 12);
+  s.translate(vv.x, vv.y, vv.z);
+  brassParts.push(s);
+}
+
+// brass base ring stand
+const ringGeo = new THREE.TorusGeometry(0.5, 0.05, 14, 52);
+ringGeo.rotateX(Math.PI / 2);
+ringGeo.translate(0, -1.44, 0);
+brassParts.push(ringGeo);
+
+// three little feet from ring to ground
+for (let k = 0; k < 3; k++) {
+  const ang = (k / 3) * Math.PI * 2 + 0.4;
+  const foot = new THREE.CylinderGeometry(0.036, 0.05, 0.16, 10);
+  foot.translate(0.5 * Math.cos(ang), -1.5, 0.5 * Math.sin(ang));
+  brassParts.push(foot);
+}
+
+const brassMesh = new THREE.Mesh(mergeGeometries(brassParts), brassMat);
+brassMesh.castShadow = true;
+brassMesh.receiveShadow = true;
+terrarium.add(brassMesh);
+
+/* ---- Soil bed ---- */
+const soilMat = new THREE.MeshStandardMaterial({
+  color: 0x3a2a1b, roughness: 1.0, metalness: 0.0
+});
+const soilGeo = new THREE.CylinderGeometry(1.12, 0.9, 0.55, 56, 1);
+// gently roughen the top surface for a natural mound
+const sp = soilGeo.attributes.position;
+const topY = 0.275;
+for (let i = 0; i < sp.count; i++) {
+  if (Math.abs(sp.getY(i) - topY) < 1e-3) {
+    sp.setY(i, sp.getY(i) - Math.random() * 0.04);
+  }
+}
+soilGeo.computeVertexNormals();
+const soil = new THREE.Mesh(soilGeo, soilMat);
+soil.position.y = soilTop - 0.275;
+soil.castShadow = true;
+soil.receiveShadow = true;
+terrarium.add(soil);
+
+// thin darker top-dressing so the surface reads cleanly
+const dressing = new THREE.Mesh(
+  new THREE.CircleGeometry(1.1, 56),
+  new THREE.MeshStandardMaterial({ color: 0x2c2114, roughness: 1.0 })
+);
+dressing.rotation.x = -Math.PI / 2;
+dressing.position.y = soilTop + 0.002;
+dressing.receiveShadow = true;
+terrarium.add(dressing);
+
+/* ---- Pebbles ---- */
+const pebbleColors = [0x9a938a, 0x847c72, 0xb3ada3, 0x6f665c, 0xa79c8e];
+const pebbles = new THREE.Group();
+for (let i = 0; i < 18; i++) {
+  const c = pebbleColors[Math.floor(Math.random() * pebbleColors.length)];
+  const mat = new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, metalness: 0.0 });
+  const geo = Math.random() > 0.5
+    ? new THREE.DodecahedronGeometry(1, 0)
+    : new THREE.IcosahedronGeometry(1, 0);
+  const p = new THREE.Mesh(geo, mat);
+  const s = 0.05 + Math.random() * 0.06;
+  p.scale.set(s * (0.8 + Math.random() * 0.5), s * 0.65, s * (0.8 + Math.random() * 0.5));
+  const ang = Math.random() * Math.PI * 2;
+  const rad = 0.32 + Math.random() * 0.72;
+  p.position.set(Math.cos(ang) * rad, soilTop + s * 0.35, Math.sin(ang) * rad);
+  p.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+  p.castShadow = true;
+  p.receiveShadow = true;
+  pebbles.add(p);
+}
+terrarium.add(pebbles);
+
+/* ---- Tiny succulent (rosette of plump leaves) ---- */
+function buildSucculent() {
+  // leaf profile -> lathe (radius, height)
+  const profile = [
+    new THREE.Vector2(0.015, 0.00),
+    new THREE.Vector2(0.070, 0.06),
+    new THREE.Vector2(0.110, 0.15),
+    new THREE.Vector2(0.115, 0.28),
+    new THREE.Vector2(0.085, 0.40),
+    new THREE.Vector2(0.040, 0.48),
+    new THREE.Vector2(0.000, 0.50)
+  ];
+  const leafGeo = new THREE.LatheGeometry(profile, 16);
+
+  // vertical gradient vertex colors: green base -> pale-green tip
+  const colBase = new THREE.Color(0x4f7a30);
+  const colTip = new THREE.Color(0xaecb70);
+  const lp = leafGeo.attributes.position;
+  const colors = new Float32Array(lp.count * 3);
+  const tmpC = new THREE.Color();
+  for (let i = 0; i < lp.count; i++) {
+    const t = Math.min(1, Math.max(0, lp.getY(i) / 0.5));
+    tmpC.copy(colBase).lerp(colTip, Math.pow(t, 0.8));
+    colors[i * 3] = tmpC.r;
+    colors[i * 3 + 1] = tmpC.g;
+    colors[i * 3 + 2] = tmpC.b;
+  }
+  leafGeo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+
+  const leafMat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.5, metalness: 0.0
+  });
+
+  const plant = new THREE.Group();
+  const rings = [
+    { count: 9, tilt: 1.12, scale: 1.00 },
+    { count: 8, tilt: 0.92, scale: 0.82 },
+    { count: 6, tilt: 0.66, scale: 0.62 },
+    { count: 5, tilt: 0.40, scale: 0.44 },
+    { count: 3, tilt: 0.16, scale: 0.28 }
+  ];
+  rings.forEach((ring, ri) => {
+    for (let j = 0; j < ring.count; j++) {
+      const pivot = new THREE.Object3D();
+      pivot.rotation.y = (j / ring.count) * Math.PI * 2 + ri * 0.42 + (Math.random() - 0.5) * 0.1;
+      const leaf = new THREE.Mesh(leafGeo, leafMat);
+      leaf.rotation.x = ring.tilt + (Math.random() - 0.5) * 0.08;
+      const s = ring.scale * (0.94 + Math.random() * 0.12);
+      leaf.scale.set(s, s, s);
+      leaf.castShadow = true;
+      pivot.add(leaf);
+      plant.add(pivot);
+    }
+  });
+  return plant;
+}
+const succulent = buildSucculent();
+succulent.position.set(0, soilTop - 0.02, 0);
+terrarium.add(succulent);
+
+/* ---------- Controls ---------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, -0.12, 0);
+controls.minDistance = 3.0;
+controls.maxDistance = 10.0;
+controls.minPolarAngle = 0.2;
+controls.maxPolarAngle = Math.PI * 0.54;
+controls.update();
+
+/* ---------- Resize ---------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ---------- Render loop ---------- */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

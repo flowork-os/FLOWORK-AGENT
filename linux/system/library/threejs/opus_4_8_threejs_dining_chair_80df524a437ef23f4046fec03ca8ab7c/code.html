@@ -1,0 +1,362 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Dining Chair — Procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d9d6; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #555; user-select: none;
+  }
+</style>
+
+<!-- Load three.js + OrbitControls via importmap from jsDelivr CDN -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="info">Dining chair — drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------ *
+ *  Scene & Camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd9d9d6); // neutral studio grey
+
+const camera = new THREE.PerspectiveCamera(
+  40, window.innerWidth / window.innerHeight, 0.05, 100
+);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural wood texture (CanvasTexture)
+ * ------------------------------------------------------------------ */
+function makeWoodTexture(base = '#a9743f', dark = '#7c4f24') {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d');
+
+  // base fill
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // longitudinal grain lines
+  for (let i = 0; i < 220; i++) {
+    const y = Math.random() * 512;
+    const w = 0.4 + Math.random() * 1.6;
+    ctx.strokeStyle = `rgba(70,42,18,${0.04 + Math.random() * 0.10})`;
+    ctx.lineWidth = w;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    // gently wavering grain
+    for (let x = 0; x <= 512; x += 32) {
+      ctx.lineTo(x, y + Math.sin((x + i * 13) * 0.02) * 4);
+    }
+    ctx.stroke();
+  }
+
+  // a few darker streaks for character
+  for (let i = 0; i < 14; i++) {
+    const y = Math.random() * 512;
+    ctx.strokeStyle = `rgba(60,34,12,0.22)`;
+    ctx.lineWidth = 1.5 + Math.random() * 3;
+    ctx.beginPath();
+    ctx.moveTo(0, y);
+    for (let x = 0; x <= 512; x += 24) {
+      ctx.lineTo(x, y + Math.sin((x + i * 40) * 0.015) * 6);
+    }
+    ctx.stroke();
+  }
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+const woodTex = makeWoodTexture();
+
+// Shared wood material (each mesh clones with its own grain repeat)
+function woodMaterial(repeatX = 1, repeatY = 1) {
+  const t = woodTex.clone();
+  t.needsUpdate = true;
+  t.repeat.set(repeatX, repeatY);
+  return new THREE.MeshStandardMaterial({
+    map: t,
+    color: 0xb98a55,
+    roughness: 0.62,
+    metalness: 0.0,
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ *  Dining chair — real-world scale (metres)
+ * ------------------------------------------------------------------ */
+const chair = new THREE.Group();
+chair.name = 'DiningChair';
+
+// key dimensions
+const SEAT_W   = 0.44;   // seat width  (x)
+const SEAT_D   = 0.42;   // seat depth  (z)
+const SEAT_T   = 0.045;  // seat thickness
+const SEAT_H   = 0.46;   // seat top height above floor
+const LEG      = 0.045;  // leg cross-section (square)
+const BACK_H   = 0.46;   // backrest height above seat
+const SLAT_T   = 0.018;  // backrest slat thickness (z)
+
+const legTopY  = SEAT_H - SEAT_T;           // where legs meet underside of seat
+const halfW    = SEAT_W / 2 - LEG / 2;      // leg x offset
+const halfD    = SEAT_D / 2 - LEG / 2;      // leg z offset
+
+// helper to make a box mesh with shadows + a name
+function part(w, h, d, mat, name) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  m.name = name;
+  return m;
+}
+
+/* ---- Seat ---- */
+const seat = part(SEAT_W, SEAT_T, SEAT_D, woodMaterial(2, 2), 'Seat');
+seat.position.set(0, SEAT_H - SEAT_T / 2, 0);
+// slight rounded feel: bevel via scale is unnecessary; keep flat as described
+chair.add(seat);
+
+/* ---- Four straight legs ---- */
+const legPositions = [
+  [ halfW, -halfD, 'Leg_FrontRight'],
+  [-halfW, -halfD, 'Leg_FrontLeft' ],
+  [ halfW,  halfD, 'Leg_BackRight' ],
+  [-halfW,  halfD, 'Leg_BackLeft'  ],
+];
+
+for (const [x, z, name] of legPositions) {
+  const leg = part(LEG, legTopY, LEG, woodMaterial(1, 4), name);
+  leg.position.set(x, legTopY / 2, z);
+  chair.add(leg);
+}
+
+/* ---- Stretchers joining the legs (near the floor) ---- */
+const stretchY = 0.12;          // height of stretcher centre
+const stretchT = 0.028;         // stretcher thickness
+const sideLen  = SEAT_D - LEG;  // spans between front/back legs
+const crossLen = SEAT_W - LEG;  // spans between left/right legs
+
+// left & right side stretchers (run along z)
+for (const sx of [ halfW, -halfW ]) {
+  const s = part(stretchT, stretchT, sideLen, woodMaterial(1, 3),
+                 'Stretcher_Side');
+  s.position.set(sx, stretchY, 0);
+  chair.add(s);
+}
+// front & back stretchers (run along x) — front set slightly higher (H-box look)
+const frontBack = [
+  [ -halfD, stretchY + 0.05, 'Stretcher_Back'  ],
+  [  halfD, stretchY - 0.02, 'Stretcher_Front' ],
+];
+for (const [sz, sy, nm] of frontBack) {
+  const s = part(crossLen, stretchT, stretchT, woodMaterial(3, 1), nm);
+  s.position.set(0, sy, sz);
+  chair.add(s);
+}
+
+/* ---- Backrest: two uprights + top rail + vertical slats ---- */
+const back = new THREE.Group();
+back.name = 'Backrest';
+
+const backZ    = halfD;               // sits over the back legs
+const upW      = LEG;                 // upright width
+const upTopY   = SEAT_H + BACK_H;     // top of backrest above floor
+
+// two vertical uprights continuing up from the back legs
+for (const ux of [ halfW, -halfW ]) {
+  const up = part(upW, BACK_H + SEAT_T, upW, woodMaterial(1, 4), 'Back_Upright');
+  up.position.set(ux, SEAT_H - SEAT_T / 2 + (BACK_H + SEAT_T) / 2, backZ);
+  back.add(up);
+}
+
+// top rail connecting the uprights
+const railH = 0.07;
+const topRail = part(SEAT_W, railH, upW * 1.05, woodMaterial(3, 1), 'Back_TopRail');
+topRail.position.set(0, upTopY - railH / 2, backZ);
+back.add(topRail);
+
+// lower rail (bottom of the slat band, above the seat)
+const lowRailY = SEAT_H + 0.09;
+const lowRail = part(SEAT_W - upW, 0.05, upW * 0.9, woodMaterial(3, 1), 'Back_LowerRail');
+lowRail.position.set(0, lowRailY, backZ);
+back.add(lowRail);
+
+// vertical slats between lower rail and top rail
+const slatBottom = lowRailY + 0.025;
+const slatTop    = upTopY - railH;
+const slatH      = slatTop - slatBottom;
+const slatW      = 0.05;
+const nSlats     = 5;
+const spanW      = SEAT_W - 2 * upW - 0.03;      // usable inner width
+const gap        = (spanW - nSlats * slatW) / (nSlats + 1);
+
+for (let i = 0; i < nSlats; i++) {
+  const x = -spanW / 2 + gap + slatW / 2 + i * (slatW + gap);
+  const slat = part(slatW, slatH, SLAT_T, woodMaterial(1, 5), `Back_Slat_${i}`);
+  slat.position.set(x, slatBottom + slatH / 2, backZ);
+  back.add(slat);
+}
+
+chair.add(back);
+
+scene.add(chair);
+
+/* ------------------------------------------------------------------ *
+ *  Center chair at origin & rest it on the ground (y = 0)
+ * ------------------------------------------------------------------ */
+const box = new THREE.Box3().setFromObject(chair);
+const center = box.getCenter(new THREE.Vector3());
+const size = box.getSize(new THREE.Vector3());
+// shift so it's centered in x/z and its base sits at y = 0
+chair.position.x -= center.x;
+chair.position.z -= center.z;
+chair.position.y -= box.min.y;
+
+/* ------------------------------------------------------------------ *
+ *  Ground / contact plane
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(3, 64),
+  new THREE.MeshStandardMaterial({ color: 0xcfcfca, roughness: 0.95, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// soft radial contact shadow beneath the chair
+const shadowTex = (() => {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 128);
+  g.addColorStop(0, 'rgba(0,0,0,0.38)');
+  g.addColorStop(0.6, 'rgba(0,0,0,0.12)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+})();
+const contact = new THREE.Mesh(
+  new THREE.PlaneGeometry(SEAT_W * 1.9, SEAT_D * 1.9),
+  new THREE.MeshBasicMaterial({ map: shadowTex, transparent: true, depthWrite: false })
+);
+contact.rotation.x = -Math.PI / 2;
+contact.position.y = 0.002;
+scene.add(contact);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting
+ * ------------------------------------------------------------------ */
+// sky/ground hemisphere fill
+const hemi = new THREE.HemisphereLight(0xffffff, 0x9a9488, 0.55);
+scene.add(hemi);
+
+// directional key light (casts shadows)
+const key = new THREE.DirectionalLight(0xfff2e0, 2.4);
+key.position.set(1.6, 2.6, 1.8);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 10;
+key.shadow.camera.left = -1.4;
+key.shadow.camera.right = 1.4;
+key.shadow.camera.top = 1.4;
+key.shadow.camera.bottom = -1.4;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+scene.add(key);
+
+// subtle cool fill from the opposite side
+const fill = new THREE.DirectionalLight(0xbcd0ff, 0.5);
+fill.position.set(-2.2, 1.4, -1.2);
+scene.add(fill);
+
+/* ------------------------------------------------------------------ *
+ *  Auto-frame camera to bounding box
+ * ------------------------------------------------------------------ */
+const framedBox = new THREE.Box3().setFromObject(chair);
+const fCenter = framedBox.getCenter(new THREE.Vector3());
+const fSize = framedBox.getSize(new THREE.Vector3());
+const maxDim = Math.max(fSize.x, fSize.y, fSize.z);
+const fov = camera.fov * (Math.PI / 180);
+let camDist = (maxDim / 2) / Math.tan(fov / 2);
+camDist *= 1.9; // padding
+
+camera.position.set(
+  fCenter.x + camDist * 0.72,
+  fCenter.y + camDist * 0.48,
+  fCenter.z + camDist * 0.82
+);
+camera.near = maxDim / 100;
+camera.far = maxDim * 100;
+camera.updateProjectionMatrix();
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.copy(fCenter);
+controls.minDistance = maxDim * 0.6;
+controls.maxDistance = maxDim * 6;
+controls.maxPolarAngle = Math.PI * 0.5; // stay above the floor
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize handling
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ------------------------------------------------------------------ *
+ *  Render loop
+ * ------------------------------------------------------------------ */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maple Sapling</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#e7eee6}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+// deterministic rng
+let s0=1234567;
+const rnd=()=>{s0=(s0*16807)%2147483647;return (s0-1)/2147483646;};
+const R=(a,b)=>a+(b-a)*rnd();
+
+const scene=new THREE.Scene();
+const BG=new THREE.Color(0xe7eee6);
+scene.background=BG;
+scene.fog=new THREE.Fog(BG,6,14);
+
+const camera=new THREE.PerspectiveCamera(40,innerWidth/innerHeight,.1,60);
+camera.position.set(2.3,1.4,2.7);
+
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+document.body.appendChild(renderer.domElement);
+
+// lighting
+scene.add(new THREE.HemisphereLight(0xd6e6ff,0x8a7f66,.85));
+const sun=new THREE.DirectionalLight(0xfff1dc,2.3);
+sun.position.set(3.5,5,2.2);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+Object.assign(sun.shadow.camera,{left:-2,right:2,top:2,bottom:-2,near:1,far:15});
+sun.shadow.bias=-3e-4;
+scene.add(sun);
+const rim=new THREE.DirectionalLight(0xbcd6ff,.45);
+rim.position.set(-3,2,-2.5);
+scene.add(rim);
+
+// ground + soft shadow catcher
+const ground=new THREE.Mesh(
+  new THREE.CircleGeometry(10,48).rotateX(-Math.PI/2),
+  new THREE.MeshStandardMaterial({color:0x94a37d,roughness:1}));
+ground.receiveShadow=true;
+scene.add(ground);
+const mound=new THREE.Mesh(
+  new THREE.SphereGeometry(.14,20,12),
+  new THREE.MeshStandardMaterial({color:0x6e5b46,roughness:1}));
+mound.scale.set(1,.2,1);
+mound.receiveShadow=mound.castShadow=true;
+scene.add(mound);
+
+// bark: canvas texture, subtle streaks + lenticels + faint green mottling
+function makeBark(){
+  const c=document.createElement('canvas');c.width=128;c.height=256;
+  const g=c.getContext('2d');
+  g.fillStyle='#8d8172';g.fillRect(0,0,128,256);
+  for(let i=0;i<40;i++){
+    g.fillStyle=`rgba(112,126,92,${(.04+rnd()*.1).toFixed(2)})`;
+    g.beginPath();g.ellipse(rnd()*128,rnd()*256,6+rnd()*18,12+rnd()*30,0,0,7);g.fill();
+  }
+  for(let i=0;i<1300;i++){
+    const x=rnd()*128,y=rnd()*256,l=4+rnd()*26;
+    g.strokeStyle=`rgba(${55+rnd()*70|0},${45+rnd()*55|0},${35+rnd()*45|0},${(.05+rnd()*.2).toFixed(2)})`;
+    g.lineWidth=.5+rnd()*1.6;
+    g.beginPath();g.moveTo(x,y);g.lineTo(x+(rnd()-.5)*4,y+l);g.stroke();
+  }
+  for(let i=0;i<50;i++){
+    g.fillStyle=`rgba(215,205,185,${(.1+rnd()*.2).toFixed(2)})`;
+    g.fillRect(rnd()*128,rnd()*256,2+rnd()*3,1);
+  }
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+const barkTex=makeBark();
+const barkMat=new THREE.MeshStandardMaterial({map:barkTex,bumpMap:barkTex,bumpScale:.3,roughness:.92});
+
+// five-lobed maple leaf outline
+function leafGeo(){
+  const sh=new THREE.Shape();
+  const N=180;
+  for(let i=0;i<=N;i++){
+    const a=i/N*Math.PI*2;
+    const m=.22+.78*Math.pow(Math.sin(a/2),.8);            // shrink toward stem
+    const lb=Math.pow(Math.abs(Math.cos(2.5*(a-Math.PI))),1.35); // five pointed lobes
+    const r=m*(.42+.58*lb);
+    const x=Math.sin(a)*r,y=-Math.cos(a)*r;
+    i?sh.lineTo(x,y):sh.moveTo(x,y);
+  }
+  const g=new THREE.ShapeGeometry(sh,4);
+  g.translate(0,.32,0); // leave room for petiole
+  return g;
+}
+const LG=leafGeo();
+const leafMats=[0x5e8c3f,0x6f9c48,0x87ac52].map(c=>new THREE.MeshStandardMaterial({color:c,roughness:.65,side:THREE.DoubleSide}));
+const petMat=new THREE.MeshStandardMaterial({color:0x9c4f38,roughness:.8}); // reddish maple petiole
+const petGeo=new THREE.CylinderGeometry(.018,.026,.34,4).translate(0,.17,0);
+
+function leafCluster(tip,n,sc){
+  for(let i=0;i<n;i++){
+    const p=new THREE.Group();
+    p.rotation.y=R(0,6.283);
+    p.position.set(R(-.01,.01),R(-.02,.02),R(-.01,.01));
+    const l=new THREE.Mesh(LG,leafMats[(rnd()*3)|0]);
+    l.rotation.x=R(-1.9,-1.1);   // droop outward
+    l.rotation.z=R(-.35,.35);
+    l.scale.setScalar(sc*R(.8,1.25));
+    l.castShadow=true;
+    l.add(new THREE.Mesh(petGeo,petMat));
+    p.add(l);
+    tip.add(p);
+  }
+}
+
+// recursive slender limbs; radius drives termination
+function branch(parent,len,rad,depth){
+  const node=new THREE.Group();
+  parent.add(node);
+  const mesh=new THREE.Mesh(new THREE.CylinderGeometry(Math.max(rad*.62,.0018),rad,len,7,1),barkMat);
+  mesh.position.y=len/2;
+  mesh.rotation.y=R(0,6.28);
+  mesh.castShadow=true;
+  node.add(mesh);
+  const tip=new THREE.Group();
+  tip.position.y=len;
+  node.add(tip);
+  if(rad<.007||depth>5){
+    leafCluster(tip,3+(rnd()*2|0),.095);
+    return node;
+  }
+  // continuation with gentle wander
+  const cont=branch(tip,len*R(.7,.82),rad*R(.62,.7),depth+1);
+  cont.rotation.z=R(.05,.18);
+  cont.rotation.y=R(0,6.28);
+  // opposite side-limb pairs (maples branch opposite), lower trunk stays bare
+  if(depth>0){
+    const y0=R(0,6.28),h=R(.45,.95)*len,tilt=R(.7,1.15);
+    for(let i=0;i<2;i++){
+      const at=new THREE.Group();
+      at.position.y=h;
+      at.rotation.y=y0+i*Math.PI+R(-.2,.2);
+      node.add(at);
+      branch(at,len*R(.5,.7),rad*R(.42,.52),depth+1).rotation.z=tilt+R(-.1,.1);
+    }
+  }
+  return node;
+}
+
+const tree=new THREE.Group();
+scene.add(tree);
+branch(tree,.5,.026,0).rotation.z=.03;
+
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,.78,0);
+controls.enableDamping=true;
+controls.autoRotate=true;
+controls.autoRotateSpeed=1.4;
+controls.minDistance=1.2;
+controls.maxDistance=8;
+controls.maxPolarAngle=1.52;
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+
+const clock=new THREE.Clock();
+renderer.setAnimationLoop(()=>{
+  const t=clock.getElapsedTime();
+  tree.rotation.x=Math.sin(t*.9)*.006;   // faint breeze
+  tree.rotation.z=Math.cos(t*.7)*.006;
+  controls.update();
+  renderer.render(scene,camera);
+});
+</script>
+</body>
+</html>

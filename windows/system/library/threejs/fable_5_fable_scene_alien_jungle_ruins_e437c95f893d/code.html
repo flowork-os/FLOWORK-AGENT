@@ -1,0 +1,699 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Alien Jungle Ruins</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d0620}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   ALIEN JUNGLE RUINS — exotic xeno-fantasy twilight
+   Bioluminescent flora, coiled fern-spirals, floating spore sacs,
+   a glyph-etched ruined obelisk, vine curtains, an iridescent pool,
+   jellyfish fliers and a ringed gas giant over the canopy.
+   ================================================================ */
+
+/* ----------------------------- CONFIG & PALETTE ----------------- */
+const SEED    = 20260815;
+const POOL    = { x: 6.5, z: 5.5, r: 5.4 };   // iridescent pool site
+const OBELISK = { x: -6.0, z: -4.5 };         // ruined obelisk site
+const WATER_Y = -1.05;                        // pool water level
+
+const PAL = {
+  fog: 0x1c0f33, skyTop: '#06031a', skyMid: '#2a1152', skyGlow: '#a43a78', skyBase: '#0d0620',
+  groundA: '#152830', groundB: '#20164a', groundC: '#173d33',
+  stone: 0x554a6e, plinth: 0x3f3856, trunk: 0x40305c, canopy: 0x163b49,
+  fern: 0x9c3fd4, vine: 0x2f6b52,
+  glowCyan: 0x59f2ff, glowMagenta: 0xff4fd8, glowLime: 0xb8ff3a,
+  sacSkin: 0xffb3ec, jellySkin: 0x9ff2ff,
+  keyLight: 0xff8fd0, rimLight: 0x3ad0ff, hemiSky: 0x5a3d8f, hemiGround: 0x0e2a24
+};
+
+/* ----------------------------- SEEDED PRNG & HELPERS ------------ */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng     = mulberry32(SEED);
+const rand    = (a, b) => a + rng() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick    = (arr) => arr[Math.floor(rng() * arr.length)];
+const IDENT_Q = new THREE.Quaternion();
+
+// Analytic terrain height, shared by the mesh and by object placement.
+function groundHeight(x, z){
+  let h = Math.sin(x * 0.16 + 0.7) * Math.cos(z * 0.13 - 0.4) * 0.55
+        + Math.sin(x * 0.05 + z * 0.07) * 0.85;
+  const dp = Math.hypot(x - POOL.x, z - POOL.z);
+  h *= 1 - 0.85 * Math.exp(-(dp * dp) / 49);            // calm shore around pool
+  h -= 2.8 * Math.exp(-(dp * dp) / (POOL.r * POOL.r));  // basin under the water
+  const dob = Math.hypot(x - OBELISK.x, z - OBELISK.z);
+  h *= 1 - 0.8 * Math.exp(-(dob * dob) / 30);           // levelled ruin plaza
+  return h;
+}
+
+// Uniform scatter over an annulus, rejecting the pool and the plaza.
+function scatterPoint(minR, maxR){
+  for(let k = 0; k < 24; k++){
+    const a = rand(0, Math.PI * 2);
+    const r = Math.sqrt(rand((minR * minR) / (maxR * maxR), 1)) * maxR;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if(Math.hypot(x - POOL.x, z - POOL.z) < POOL.r + 1.6) continue;
+    if(Math.hypot(x - OBELISK.x, z - OBELISK.z) < 3.8) continue;
+    return new THREE.Vector3(x, groundHeight(x, z), z);
+  }
+  return new THREE.Vector3(maxR, groundHeight(maxR, 0), 0);
+}
+
+/* ----------------------------- RENDERER / SCENE / CAMERA -------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0095);
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 700);
+camera.position.set(26, 12.5, 27);
+const clock = new THREE.Clock();
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4.6, 0); controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true;     controls.autoRotateSpeed = 0.85;
+controls.minDistance = 14;      controls.maxDistance = 58;
+controls.maxPolarAngle = Math.PI * 0.485;
+
+/* ----------------------------- CANVAS TEXTURES ------------------ */
+function makeCanvas(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h; return c;
+}
+
+function makeGroundTexture(){
+  const c = makeCanvas(512, 512), g = c.getContext('2d');
+  g.fillStyle = PAL.groundA; g.fillRect(0, 0, 512, 512);
+  for(let i = 0; i < 380; i++){            // mottled moss and mineral patches
+    g.fillStyle = pick([PAL.groundB, PAL.groundC, '#1b2f52', '#123028']); g.globalAlpha = rand(0.05, 0.16);
+    g.beginPath(); g.arc(rand(0, 512), rand(0, 512), rand(8, 46), 0, Math.PI * 2); g.fill();
+  }
+  for(let i = 0; i < 260; i++){            // faint bioluminescent speckle
+    g.fillStyle = pick(['#3af2ff', '#ff4fd8', '#b8ff3a']); g.globalAlpha = rand(0.06, 0.22);
+    g.beginPath(); g.arc(rand(0, 512), rand(0, 512), rand(0.6, 1.8), 0, Math.PI * 2); g.fill();
+  }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(5, 5); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function makeSkyTexture(){
+  const c = makeCanvas(512, 512), g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.00, PAL.skyTop);  grad.addColorStop(0.40, PAL.skyMid);
+  grad.addColorStop(0.66, '#63256b');   grad.addColorStop(0.78, PAL.skyGlow);
+  grad.addColorStop(0.90, '#341244');   grad.addColorStop(1.00, PAL.skyBase);
+  g.fillStyle = grad; g.fillRect(0, 0, 512, 512);
+  for(let i = 0; i < 170; i++){            // sparse alien stars overhead
+    g.globalAlpha = rand(0.25, 0.9); g.fillStyle = pick(['#cfe9ff', '#ffd9f2', '#ffffff']);
+    g.fillRect(rand(0, 512), rand(0, 300), rand(0.7, 1.8), rand(0.7, 1.8));
+  }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function makePoolTexture(){
+  const c = makeCanvas(512, 512), g = c.getContext('2d');
+  g.fillStyle = '#0a1c30'; g.fillRect(0, 0, 512, 512);
+  g.translate(256, 256);
+  for(let r = 252; r > 6; r -= 4){         // oily interference rings, hue-cycled
+    const hue = (r * 3.1 + Math.sin(r * 0.23) * 40 + 200) % 360;
+    g.strokeStyle = `hsla(${hue},85%,58%,${rand(0.10, 0.26)})`; g.lineWidth = rand(2, 5);
+    const a0 = rand(0, Math.PI * 2);
+    g.beginPath(); g.arc(0, 0, r + Math.sin(r * 0.6) * 2, a0, a0 + rand(2, 5)); g.stroke();
+  }
+  const glow = g.createRadialGradient(0, 0, 10, 0, 0, 250);
+  glow.addColorStop(0, 'rgba(120,255,235,0.35)'); glow.addColorStop(0.5, 'rgba(70,140,220,0.08)');
+  glow.addColorStop(1, 'rgba(10,20,50,0)');
+  g.fillStyle = glow;
+  g.beginPath(); g.arc(0, 0, 252, 0, Math.PI * 2); g.fill();
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; t.center.set(0.5, 0.5); return t;
+}
+
+function makeObeliskTextures(){
+  // Generate glyph stroke data once so the etched map and glow map align.
+  const glyphs = [];
+  for(let col = 0; col < 4; col++) for(let row = 0; row < 10; row++){
+    const cx = 24 + col * 60 + rand(-4, 4), cy = 24 + row * 48 + rand(-5, 5);
+    const pts = [];
+    for(let s = 0, n = randInt(2, 4); s <= n; s++) pts.push([cx + rand(-14, 14), cy + rand(-14, 14)]);
+    glyphs.push({ pts, ring: rng() < 0.4 ? [cx, cy, rand(3, 7)] : null });
+  }
+  const renderGlyphs = (ctx, color, blur, width) => {
+    ctx.strokeStyle = color; ctx.lineWidth = width; ctx.lineCap = 'round';
+    ctx.shadowColor = color; ctx.shadowBlur = blur;
+    for(const gl of glyphs){
+      ctx.beginPath(); ctx.moveTo(gl.pts[0][0], gl.pts[0][1]);
+      for(let i = 1; i < gl.pts.length; i++) ctx.lineTo(gl.pts[i][0], gl.pts[i][1]);
+      ctx.stroke();
+      if(gl.ring){ ctx.beginPath(); ctx.arc(gl.ring[0], gl.ring[1], gl.ring[2], 0, Math.PI * 2); ctx.stroke(); }
+    }
+    ctx.shadowBlur = 0;
+  };
+  const base = makeCanvas(256, 512), b = base.getContext('2d');
+  b.fillStyle = '#2c2540'; b.fillRect(0, 0, 256, 512);
+  for(let i = 0; i < 90; i++){             // weathering streaks down the stone
+    b.strokeStyle = pick(['#241d36', '#372e4e', '#1e1830']);
+    b.globalAlpha = rand(0.2, 0.5); b.lineWidth = rand(1, 4);
+    const x = rand(0, 256);
+    b.beginPath(); b.moveTo(x, rand(0, 512)); b.lineTo(x + rand(-8, 8), rand(0, 512)); b.stroke();
+  }
+  b.globalAlpha = 1;
+  renderGlyphs(b, 'rgba(18,14,28,0.9)', 0, 4);   // engraved grooves
+  const glow = makeCanvas(256, 512), q = glow.getContext('2d');
+  q.fillStyle = '#000'; q.fillRect(0, 0, 256, 512);
+  renderGlyphs(q, '#9ef6ff', 7, 3);              // glowing ink for emissive map
+  const stoneTex = new THREE.CanvasTexture(base); stoneTex.colorSpace = THREE.SRGBColorSpace;
+  const glyphTex = new THREE.CanvasTexture(glow); glyphTex.colorSpace = THREE.SRGBColorSpace;
+  return { stoneTex, glyphTex };
+}
+
+function makePlanetTexture(){
+  const c = makeCanvas(512, 256), g = c.getContext('2d');
+  const bands = ['#e8b48f', '#d98d76', '#f2d7ae', '#b3707f', '#e5a68a', '#caa0c0', '#f0c9a2'];
+  let y = 0;
+  while(y < 256){                          // latitudinal cloud bands
+    const h = rand(8, 30);
+    g.fillStyle = pick(bands); g.fillRect(0, y, 512, h); y += h;
+  }
+  g.globalAlpha = 0.35;
+  for(let i = 0; i < 7; i++){              // storm ovals
+    g.fillStyle = pick(['#f7e3c8', '#a45a68', '#e08a5f']);
+    const ry = rand(4, 10);
+    g.beginPath(); g.ellipse(rand(0, 512), rand(40, 216), ry * rand(2, 3.4), ry, 0, 0, Math.PI * 2); g.fill();
+  }
+  g.globalAlpha = 1;
+  const shade = g.createLinearGradient(0, 0, 0, 256);
+  shade.addColorStop(0, 'rgba(20,8,40,0.55)'); shade.addColorStop(0.25, 'rgba(20,8,40,0)');
+  shade.addColorStop(0.75, 'rgba(20,8,40,0)'); shade.addColorStop(1, 'rgba(20,8,40,0.6)');
+  g.fillStyle = shade; g.fillRect(0, 0, 512, 256);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function makeRingTexture(){
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.translate(128, 128);
+  for(let r = 126; r > 70; r -= 2){        // concentric ring bands with gaps
+    g.strokeStyle = pick(['#e8cfa4', '#caa27e', '#9b7f92', '#e2b490']);
+    g.globalAlpha = rand(0.15, 0.8) * (rng() < 0.12 ? 0.05 : 1); g.lineWidth = 2.2;
+    g.beginPath(); g.arc(0, 0, r, 0, Math.PI * 2); g.stroke();
+  }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function makeSpeckTexture(){
+  const c = makeCanvas(128, 128), g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 128, 128);
+  for(let i = 0; i < 70; i++){             // glowing canopy fruit specks
+    g.fillStyle = pick(['#ff6fd8', '#4df2ff', '#c8ff4a']); g.globalAlpha = rand(0.3, 1);
+    g.beginPath(); g.arc(rand(0, 128), rand(0, 128), rand(0.6, 1.7), 0, Math.PI * 2); g.fill();
+  }
+  g.globalAlpha = 1;
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 2); t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+const groundTex = makeGroundTexture(), skyTex = makeSkyTexture(), poolTex = makePoolTexture();
+const { stoneTex, glyphTex } = makeObeliskTextures();
+const planetTex = makePlanetTexture(), ringTex = makeRingTexture(), speckTex = makeSpeckTexture();
+
+/* ----------------------------- MATERIALS ------------------------ */
+const MAT = {
+  ground:  new THREE.MeshStandardMaterial({ map: groundTex, roughness: 0.95 }),
+  water:   new THREE.MeshStandardMaterial({ map: poolTex, emissive: 0x9fb8d8, emissiveMap: poolTex, emissiveIntensity: 0.55, roughness: 0.18, metalness: 0.35, transparent: true, opacity: 0.92 }),
+  sky:     new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }),
+  planet:  new THREE.MeshBasicMaterial({ map: planetTex, fog: false }),
+  ring:    new THREE.MeshBasicMaterial({ map: ringTex, transparent: true, opacity: 0.9, side: THREE.DoubleSide, fog: false, depthWrite: false }),
+  obelisk: new THREE.MeshStandardMaterial({ map: stoneTex, emissiveMap: glyphTex, emissive: PAL.glowCyan, emissiveIntensity: 1.6, roughness: 0.75, flatShading: true }),
+  plinth:  new THREE.MeshStandardMaterial({ color: PAL.plinth, roughness: 0.9, flatShading: true }),
+  rock:    new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.92, flatShading: true }),
+  trunk:   new THREE.MeshStandardMaterial({ color: PAL.trunk, roughness: 0.88 }),
+  canopy:  new THREE.MeshStandardMaterial({ color: PAL.canopy, emissive: 0xffffff, emissiveMap: speckTex, emissiveIntensity: 0.85, roughness: 0.85 }),
+  fern:    new THREE.MeshStandardMaterial({ color: PAL.fern, emissive: PAL.fern, emissiveIntensity: 0.25, roughness: 0.6 }),
+  fernTip: new THREE.MeshBasicMaterial({ color: PAL.glowLime }),
+  vine:    new THREE.MeshStandardMaterial({ color: PAL.vine, roughness: 0.8 }),
+  sac:     new THREE.MeshStandardMaterial({ color: PAL.sacSkin, transparent: true, opacity: 0.45, emissive: PAL.glowMagenta, emissiveIntensity: 0.55, roughness: 0.3, depthWrite: false, side: THREE.DoubleSide }),
+  sacCore: new THREE.MeshBasicMaterial({ color: 0xffd9f4 }),
+  sacTendril: new THREE.MeshBasicMaterial({ color: 0xff9be8, transparent: true, opacity: 0.6 }),
+  jelly:   new THREE.MeshStandardMaterial({ color: PAL.jellySkin, transparent: true, opacity: 0.5, emissive: PAL.glowCyan, emissiveIntensity: 0.7, roughness: 0.25, depthWrite: false, side: THREE.DoubleSide }),
+  jellyCore: new THREE.MeshBasicMaterial({ color: 0xd8fbff }),
+  tentacle: new THREE.MeshBasicMaterial({ color: 0x7df0ff, transparent: true, opacity: 0.7 }),
+  bulb:    new THREE.MeshBasicMaterial({ color: PAL.glowMagenta }),
+  stalk:   new THREE.MeshStandardMaterial({ color: 0xcfd8e8, emissive: 0x8899cc, emissiveIntensity: 0.25, roughness: 0.7 }),
+  cap:     new THREE.MeshBasicMaterial({ color: 0xffffff }),   // tinted per instance
+  tuft:    new THREE.MeshBasicMaterial({ color: 0xffffff }),   // tinted per instance
+  crystal: new THREE.MeshStandardMaterial({ color: 0x7fe8ff, emissive: 0x2fb8d8, emissiveIntensity: 0.8, roughness: 0.2, transparent: true, opacity: 0.85, flatShading: true })
+};
+
+/* ----------------------------- BUILDER FUNCTIONS ---------------- */
+// Undulating jungle floor with a levelled plaza and a pool basin.
+function buildTerrain(){
+  const geo = new THREE.PlaneGeometry(150, 150, 100, 100);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for(let i = 0; i < pos.count; i++) pos.setY(i, groundHeight(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  const mesh = new THREE.Mesh(geo, MAT.ground);
+  mesh.receiveShadow = true;
+  const group = new THREE.Group(); group.add(mesh); return group;
+}
+
+// Twilight gradient dome with sparse stars.
+function buildSkyDome(){
+  const group = new THREE.Group();
+  group.add(new THREE.Mesh(new THREE.SphereGeometry(300, 32, 18), MAT.sky)); return group;
+}
+
+// Banded gas giant with a tilted ring, looming beyond the canopy.
+function buildGasGiant(){
+  const group = new THREE.Group();
+  const planet = new THREE.Mesh(new THREE.SphereGeometry(26, 48, 32), MAT.planet);
+  group.add(planet);
+  const ring = new THREE.Mesh(new THREE.RingGeometry(33, 57, 96), MAT.ring);
+  ring.rotation.x = Math.PI / 2 - 0.32; group.add(ring);
+  group.position.set(-92, 52, -112); group.rotation.z = 0.18;
+  group.userData = { planet };
+  return group;
+}
+
+// Ruined obelisk: twisted pentagonal segments, a hovering sheared crown
+// and a slow halo of orbiting stone shards.
+function buildObelisk(){
+  const group = new THREE.Group();
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 3.1, 0.9, 5), MAT.plinth);
+  plinth.position.y = 0.45; plinth.castShadow = plinth.receiveShadow = true;
+  group.add(plinth);
+  const shaft = new THREE.Group();
+  let y = 0.9, twist = rand(0, Math.PI);
+  for(const [rt, rb, h] of [[1.55, 1.75, 2.6], [1.3, 1.5, 2.4], [1.05, 1.25, 2.2], [0.8, 1.0, 1.9]]){
+    const seg = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, 5, 1), MAT.obelisk);
+    twist += rand(0.18, 0.42);
+    seg.rotation.y = twist;
+    seg.position.set(rand(-0.12, 0.12), y + h / 2, rand(-0.12, 0.12));
+    seg.castShadow = seg.receiveShadow = true;
+    shaft.add(seg);
+    y += h + 0.06;
+  }
+  const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.78, 1.7, 5, 1), MAT.obelisk);
+  crown.castShadow = true; crown.position.y = y + 1.6;
+  shaft.add(crown);
+  shaft.rotation.z = 0.07;                 // ancient lean
+  group.add(shaft);
+  const shards = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(0.34), MAT.rock, 11);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for(let i = 0; i < 11; i++){
+    const a = i / 11 * Math.PI * 2, r = rand(2.4, 3.4);
+    e.set(rand(0, 3), rand(0, 3), rand(0, 3)); q.setFromEuler(e);
+    m.compose(new THREE.Vector3(Math.cos(a) * r, rand(2.5, 8.5), Math.sin(a) * r), q,
+              new THREE.Vector3().setScalar(rand(0.5, 1.2)));
+    shards.setMatrixAt(i, m);
+  }
+  shards.castShadow = true; group.add(shards);
+  group.userData = { crown, crownBaseY: crown.position.y, shards };
+  return group;
+}
+
+// Coiled fern-spiral (fiddlehead) with glowing nodules along the coil.
+function buildFernSpiral(scale){
+  const group = new THREE.Group();
+  const h = 3.2 * scale, pts = [];
+  for(let i = 0; i <= 54; i++){
+    const t = i / 54;
+    if(t < 0.42){
+      const u = t / 0.42;
+      pts.push(new THREE.Vector3(Math.sin(u * 0.9) * 0.34 * scale, u * h * 0.55, 0));
+    } else {
+      const u = (t - 0.42) / 0.58, ang = u * Math.PI * 2 * 2.05;
+      const r = h * 0.30 * (1 - u * 0.86), cx = Math.sin(0.9) * 0.34 * scale;
+      pts.push(new THREE.Vector3(cx + Math.sin(ang) * r, h * 0.85 - Math.cos(ang) * r, 0.02 * Math.sin(ang * 2)));
+    }
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  const stem = new THREE.Mesh(new THREE.TubeGeometry(curve, 72, 0.055 * scale, 6, false), MAT.fern);
+  stem.castShadow = true; group.add(stem);
+  const nod = new THREE.InstancedMesh(new THREE.SphereGeometry(0.09 * scale, 8, 6), MAT.fernTip, 6);
+  const m = new THREE.Matrix4();
+  for(let i = 0; i < 6; i++){
+    const p = curve.getPoint(0.5 + i * 0.09);
+    m.makeTranslation(p.x, p.y, p.z + 0.06 * scale);
+    nod.setMatrixAt(i, m);
+  }
+  group.add(nod);
+  return group;
+}
+
+// Translucent gas-filled spore sac with a bright core and feeder tendrils.
+function buildSporeSac(){
+  const group = new THREE.Group();
+  const r = rand(0.55, 1.0);
+  const skin = new THREE.Mesh(new THREE.SphereGeometry(r, 20, 16), MAT.sac);
+  skin.scale.set(1, 1.25, 1); group.add(skin);
+  const core = new THREE.Mesh(new THREE.SphereGeometry(r * 0.42, 12, 10), MAT.sacCore);
+  core.position.y = -r * 0.15; group.add(core);
+  for(let i = 0; i < 4; i++){
+    const a = i / 4 * Math.PI * 2 + rand(0, 0.8);
+    const tp = [new THREE.Vector3(Math.cos(a) * r * 0.4, -r * 1.05, Math.sin(a) * r * 0.4),
+                new THREE.Vector3(Math.cos(a) * r * 0.75, -r * 1.9, Math.sin(a) * r * 0.75),
+                new THREE.Vector3(Math.cos(a) * r * 0.55, -r * 2.8, Math.sin(a) * r * 0.55)];
+    group.add(new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(tp), 10, 0.025, 5, false), MAT.sacTendril));
+  }
+  return group;
+}
+
+// Jellyfish-like flier: pulsing translucent bell, glow core, trailing tentacles.
+function buildJellyFlier(){
+  const group = new THREE.Group();
+  const r = rand(0.5, 0.85);
+  const bell = new THREE.Mesh(new THREE.SphereGeometry(r, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.58), MAT.jelly);
+  group.add(bell);
+  group.add(new THREE.Mesh(new THREE.SphereGeometry(r * 0.35, 10, 8), MAT.jellyCore));
+  const tentacles = [];
+  for(let i = 0; i < 5; i++){
+    const a = i / 5 * Math.PI * 2;
+    const t = new THREE.Mesh(new THREE.CylinderGeometry(0.018, 0.008, r * 2.4, 5), MAT.tentacle);
+    t.position.set(Math.cos(a) * r * 0.55, -r * 1.15, Math.sin(a) * r * 0.55);
+    t.rotation.z = Math.cos(a) * 0.18; t.rotation.x = -Math.sin(a) * 0.18;
+    tentacles.push(t); group.add(t);
+  }
+  group.userData = { bell, tentacles };
+  return group;
+}
+
+// Curtain of hanging vines slung between two canopy anchor points,
+// each vine tipped with a small glowing bulb.
+function buildVineCurtain(pA, pB){
+  const group = new THREE.Group();
+  const mid = pA.clone().add(pB).multiplyScalar(0.5);
+  mid.y -= pA.distanceTo(pB) * 0.12;
+  const branchCurve = new THREE.CatmullRomCurve3([pA, mid, pB]);
+  const branch = new THREE.Mesh(new THREE.TubeGeometry(branchCurve, 16, 0.11, 6, false), MAT.trunk);
+  branch.castShadow = true; group.add(branch);
+  const bulbGeo = new THREE.SphereGeometry(0.09, 8, 6);
+  for(let i = 0, nV = 9; i < nV; i++){
+    const top = branchCurve.getPoint(0.08 + 0.84 * i / (nV - 1));
+    const len = rand(2.2, 5.2), sx = rand(-0.5, 0.5), sz = rand(-0.5, 0.5);
+    const pts = [top,
+      new THREE.Vector3(top.x + sx * 0.5, top.y - len * 0.45, top.z + sz * 0.5),
+      new THREE.Vector3(top.x + sx, top.y - len, top.z + sz)];
+    const vine = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 12, 0.032, 5, false), MAT.vine);
+    vine.castShadow = true; group.add(vine);
+    const bulb = new THREE.Mesh(bulbGeo, i % 2 ? MAT.bulb : MAT.fernTip);
+    bulb.position.copy(pts[2]); group.add(bulb);
+  }
+  return group;
+}
+
+// Shallow iridescent pool with a masking ring of shore stones.
+function buildPool(){
+  const group = new THREE.Group();
+  const water = new THREE.Mesh(new THREE.CircleGeometry(POOL.r + 0.9, 56), MAT.water);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(POOL.x, WATER_Y, POOL.z);
+  water.receiveShadow = true; group.add(water);
+  const ring = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.42, 0), MAT.rock, 26);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for(let i = 0; i < 26; i++){
+    const a = i / 26 * Math.PI * 2 + rand(-0.1, 0.1), rr = POOL.r + rand(0.7, 1.6);
+    const x = POOL.x + Math.cos(a) * rr, z = POOL.z + Math.sin(a) * rr;
+    e.set(rand(0, 3), rand(0, 3), rand(0, 3)); q.setFromEuler(e);
+    m.compose(new THREE.Vector3(x, groundHeight(x, z) + 0.12, z), q,
+              new THREE.Vector3(rand(0.6, 1.5), rand(0.5, 1.0), rand(0.6, 1.5)));
+    ring.setMatrixAt(i, m);
+  }
+  ring.castShadow = ring.receiveShadow = true; group.add(ring);
+  return group;
+}
+
+// Leaning alien canopy tree: curved trunk, basal flare, glowing-fruit canopy.
+function buildAlienTree(h){
+  const group = new THREE.Group();
+  const lean = rand(-1.4, 1.4), leanZ = rand(-1.4, 1.4);
+  const top = new THREE.Vector3(lean * 1.5, h, leanZ * 1.5);
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 0, 0),
+    new THREE.Vector3(lean * 0.4, h * 0.4, leanZ * 0.3),
+    new THREE.Vector3(lean, h * 0.75, leanZ * 0.8),
+    top]);
+  const trunk = new THREE.Mesh(new THREE.TubeGeometry(curve, 20, 0.32, 7, false), MAT.trunk);
+  trunk.castShadow = true; group.add(trunk);
+  const flare = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.85, 1.4, 7), MAT.trunk);
+  flare.position.y = 0.7; flare.castShadow = true; group.add(flare);
+  for(let i = 0, nB = randInt(2, 3); i < nB; i++){
+    const blob = new THREE.Mesh(new THREE.SphereGeometry(rand(1.7, 2.7), 14, 10), MAT.canopy);
+    blob.position.set(top.x + rand(-1.6, 1.6), top.y + rand(-0.4, 1.2), top.z + rand(-1.6, 1.6));
+    blob.scale.y = rand(0.42, 0.58);
+    blob.castShadow = blob.receiveShadow = true; group.add(blob);
+  }
+  return group;
+}
+
+// Bioluminescent understory: instanced glow-cap mushrooms and light tufts
+// tinted in impossible colors via per-instance color.
+function buildFloraField(){
+  const group = new THREE.Group();
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), col = new THREE.Color();
+  const nM = 64;
+  const stemGeo = new THREE.CylinderGeometry(0.045, 0.09, 1, 6); stemGeo.translate(0, 0.5, 0);
+  const capGeo = new THREE.SphereGeometry(0.24, 10, 6, 0, Math.PI * 2, 0, Math.PI * 0.55);
+  const stems = new THREE.InstancedMesh(stemGeo, MAT.stalk, nM);
+  const caps = new THREE.InstancedMesh(capGeo, MAT.cap, nM);
+  const capCols = [PAL.glowMagenta, PAL.glowCyan, PAL.glowLime, 0xff8a3d, 0x8a5bff];
+  for(let i = 0; i < nM; i++){
+    const p = scatterPoint(3, 26);
+    const s = rand(0.5, 1.6), hgt = rand(0.6, 1.4) * s;
+    m.compose(new THREE.Vector3(p.x, p.y - 0.05, p.z), IDENT_Q, new THREE.Vector3(s, hgt, s));
+    stems.setMatrixAt(i, m);
+    m.compose(new THREE.Vector3(p.x, p.y - 0.05 + hgt, p.z), IDENT_Q, new THREE.Vector3(s, s, s));
+    caps.setMatrixAt(i, m);
+    col.setHex(pick(capCols)); caps.setColorAt(i, col);
+  }
+  caps.instanceColor.needsUpdate = true; group.add(stems, caps);
+  const nT = 150;
+  const tuftGeo = new THREE.ConeGeometry(0.05, 0.9, 5); tuftGeo.translate(0, 0.45, 0);
+  const tufts = new THREE.InstancedMesh(tuftGeo, MAT.tuft, nT);
+  for(let i = 0; i < nT; i++){
+    const p = scatterPoint(2, 30);
+    e.set(rand(-0.25, 0.25), rand(0, Math.PI * 2), rand(-0.25, 0.25)); q.setFromEuler(e);
+    m.compose(new THREE.Vector3(p.x, p.y - 0.04, p.z), q,
+              new THREE.Vector3(rand(0.7, 1.8), rand(0.5, 1.6), rand(0.7, 1.8)));
+    tufts.setMatrixAt(i, m);
+    col.setHSL(pick([0.52, 0.86, 0.24, 0.68]) + rand(-0.03, 0.03), 1, 0.6); tufts.setColorAt(i, col);
+  }
+  tufts.instanceColor.needsUpdate = true; group.add(tufts);
+  return group;
+}
+
+// Scattered weathered boulders.
+function buildRockField(){
+  const group = new THREE.Group();
+  const rocks = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.8, 0), MAT.rock, 22);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for(let i = 0; i < 22; i++){
+    const p = scatterPoint(4, 27);
+    e.set(rand(0, 3), rand(0, 3), rand(0, 3)); q.setFromEuler(e);
+    m.compose(new THREE.Vector3(p.x, p.y + 0.1, p.z), q,
+              new THREE.Vector3(rand(0.5, 2.2), rand(0.4, 1.2), rand(0.5, 2.2)));
+    rocks.setMatrixAt(i, m);
+  }
+  rocks.castShadow = rocks.receiveShadow = true; group.add(rocks);
+  return group;
+}
+
+// Cluster of luminous xeno-crystals.
+function buildCrystalCluster(){
+  const group = new THREE.Group();
+  for(let i = 0, n = randInt(3, 6); i < n; i++){
+    const h = rand(0.5, 1.8);
+    const c = new THREE.Mesh(new THREE.ConeGeometry(rand(0.09, 0.22), h, 5), MAT.crystal);
+    c.position.set(rand(-0.5, 0.5), h * 0.42, rand(-0.5, 0.5));
+    c.rotation.set(rand(-0.35, 0.35), rand(0, Math.PI * 2), rand(-0.35, 0.35));
+    c.castShadow = true; group.add(c);
+  }
+  return group;
+}
+
+// Drifting spore motes rendered as additive points.
+function buildMotes(){
+  const nP = 130;
+  const geo = new THREE.BufferGeometry();
+  const arr = new Float32Array(nP * 3), seedsY = new Float32Array(nP);
+  for(let i = 0; i < nP; i++){
+    const a = rand(0, Math.PI * 2), r = Math.sqrt(rng()) * 24;
+    arr[i * 3] = Math.cos(a) * r;
+    seedsY[i] = rand(0, 6.5); arr[i * 3 + 1] = seedsY[i];
+    arr[i * 3 + 2] = Math.sin(a) * r;
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xff9bea, size: 0.16, transparent: true, opacity: 0.75,
+    blending: THREE.AdditiveBlending, depthWrite: false, sizeAttenuation: true });
+  const pts = new THREE.Points(geo, mat);
+  pts.userData = { seedsY };
+  return pts;
+}
+
+/* ----------------------------- ASSEMBLY / LAYOUT ---------------- */
+scene.add(buildTerrain());
+scene.add(buildSkyDome());
+const gasGiant = buildGasGiant(); scene.add(gasGiant);
+const obelisk = buildObelisk();
+obelisk.position.set(OBELISK.x, groundHeight(OBELISK.x, OBELISK.z) - 0.15, OBELISK.z);
+scene.add(obelisk);
+scene.add(buildPool());
+
+// Canopy ring — the gaps between crowns frame the gas giant.
+const treeTops = [];
+for(const a of [0.25, 1.05, 1.9, 2.6, 3.5, 4.3, 5.1, 5.8]){
+  const r = rand(15.5, 21);
+  const x = Math.cos(a) * r, z = Math.sin(a) * r, h = rand(8.5, 12);
+  const tree = buildAlienTree(h);
+  tree.position.set(x, groundHeight(x, z) - 0.1, z);
+  tree.rotation.y = rand(0, Math.PI * 2);
+  scene.add(tree);
+  treeTops.push(new THREE.Vector3(x, groundHeight(x, z) + h * 0.72, z));
+}
+
+// Vine curtains slung between neighboring canopy trees.
+for(const [ia, ib] of [[1, 2], [4, 5], [6, 7]]) scene.add(buildVineCurtain(treeTops[ia], treeTops[ib]));
+
+// Coiled fern-spirals scattered through the mid-ground.
+const ferns = [];
+for(let i = 0; i < 9; i++){
+  const f = buildFernSpiral(rand(0.8, 1.7));
+  const p = scatterPoint(4.5, 17);
+  f.position.set(p.x, p.y - 0.05, p.z);
+  f.rotation.y = rand(0, Math.PI * 2);
+  f.userData.phase = rand(0, Math.PI * 2);
+  ferns.push(f); scene.add(f);
+}
+
+// Floating spore sacs drifting above the understory.
+const sacs = [];
+for(let i = 0; i < 8; i++){
+  const s = buildSporeSac();
+  const a = rand(0, Math.PI * 2), r = rand(4, 17);
+  s.position.set(Math.cos(a) * r, rand(3.5, 8.5), Math.sin(a) * r);
+  s.userData = { baseY: s.position.y, phase: rand(0, Math.PI * 2), spin: rand(0.05, 0.2) };
+  sacs.push(s); scene.add(s);
+}
+
+// Jellyfish fliers on slow orbital drifts.
+const fliers = [];
+for(let i = 0; i < 6; i++){
+  const f = buildJellyFlier();
+  f.userData.orbit = { r: rand(6, 14), h: rand(4.5, 9.5), speed: rand(0.05, 0.12) * pick([1, -1]), phase: rand(0, Math.PI * 2), bob: rand(0.4, 0.9) };
+  fliers.push(f); scene.add(f);
+}
+
+// Understory flora, boulders, crystal clusters and drifting motes.
+scene.add(buildFloraField());
+scene.add(buildRockField());
+for(let i = 0; i < 4; i++){
+  const c = buildCrystalCluster(), p = scatterPoint(5, 14);
+  c.position.set(p.x, p.y, p.z);
+  scene.add(c);
+}
+const motes = buildMotes(); scene.add(motes);
+
+/* ----------------------------- LIGHTING RIG --------------------- */
+scene.add(new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.55));
+
+const key = new THREE.DirectionalLight(PAL.keyLight, 1.35);   // gas-giant glow
+key.position.set(-46, 42, -58);
+key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -34; key.shadow.camera.right = 34;
+key.shadow.camera.top = 34;   key.shadow.camera.bottom = -34;
+key.shadow.camera.near = 10;  key.shadow.camera.far = 160;
+key.shadow.bias = -0.0004;
+scene.add(key);
+
+const rim = new THREE.DirectionalLight(PAL.rimLight, 0.4);    // cool twilight rim
+rim.position.set(38, 22, 44); scene.add(rim);
+
+const obeliskLight = new THREE.PointLight(PAL.glowCyan, 60, 30, 1.8);
+obeliskLight.position.set(OBELISK.x, 7.5, OBELISK.z);
+const poolLight = new THREE.PointLight(0x54ffd8, 40, 24, 1.9);
+poolLight.position.set(POOL.x, 1.6, POOL.z);
+const groveMagenta = new THREE.PointLight(PAL.glowMagenta, 26, 20, 2);
+groveMagenta.position.set(10, 2.5, -9);
+const groveLime = new THREE.PointLight(PAL.glowLime, 18, 18, 2);
+groveLime.position.set(-11, 2, 9);
+scene.add(obeliskLight, poolLight, groveMagenta, groveLime);
+
+/* ----------------------------- ANIMATION LOOP ------------------- */
+const motePos = motes.geometry.attributes.position;
+const moteSeeds = motes.userData.seedsY;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // 1) spore sacs bob and slowly spin
+  for(const s of sacs){
+    s.position.y = s.userData.baseY + Math.sin(t * 0.6 + s.userData.phase) * 0.55;
+    s.rotation.y = t * s.userData.spin; }
+  // 2) jellyfish fliers orbit, bells and tentacles pulse
+  for(const f of fliers){
+    const o = f.userData.orbit, a = t * o.speed + o.phase;
+    f.position.set(Math.cos(a) * o.r, o.h + Math.sin(t * 0.9 + o.phase) * o.bob, Math.sin(a) * o.r);
+    f.rotation.y = -a;
+    const pulse = 1 + Math.sin(t * 2.2 + o.phase) * 0.1;
+    f.userData.bell.scale.set(2 - pulse, pulse, 2 - pulse);
+    for(const tn of f.userData.tentacles) tn.scale.y = 1 + Math.sin(t * 2.2 + o.phase + 1.5) * 0.18;
+  }
+  // 3) glyphs breathe, crown hovers, shard halo wheels
+  MAT.obelisk.emissiveIntensity = 1.3 + Math.sin(t * 1.3) * 0.5;
+  obeliskLight.intensity = 55 + Math.sin(t * 1.3) * 18;
+  obelisk.userData.crown.position.y = obelisk.userData.crownBaseY + Math.sin(t * 0.8) * 0.3;
+  obelisk.userData.crown.rotation.y = t * 0.25;
+  obelisk.userData.shards.rotation.y = t * 0.07;
+  // 4) iridescent pool swirls
+  poolTex.rotation = t * 0.045;
+  // 5) fern-spirals sway
+  for(const f of ferns) f.rotation.z = Math.sin(t * 0.7 + f.userData.phase) * 0.05;
+  // 6) spore motes rise and wrap
+  for(let i = 0; i < moteSeeds.length; i++) motePos.array[i * 3 + 1] = 0.3 + ((moteSeeds[i] + t * 0.35) % 6.8);
+  motePos.needsUpdate = true;
+  // 7) gas giant bands drift
+  gasGiant.userData.planet.rotation.y = t * 0.02;
+  controls.update(); renderer.render(scene, camera);
+}
+animate();
+
+/* ----------------------------- RESIZE --------------------------- */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

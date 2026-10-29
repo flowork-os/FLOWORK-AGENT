@@ -1,0 +1,657 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Cryogenics Lab Interior</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0a121a}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ================================================================ config / palette
+const LAB_W = 44, LAB_D = 44, LAB_H = 11;          // lab interior dimensions
+const FOG_COLOR = 0x0a121a;
+const PAL = {
+  floor: '#5f6d79', grout: '#46515b', wall: '#6a7884',
+  podGlow: 0xaee2ff, cryoCyan: 0x7fd4ff, amber: 0xffb03a,
+  steel: 0x9fb0bc, steelDark: 0x39434d, shellWhite: 0xcfd9e0,
+  tankFluid: 0x59e8c8, silhouette: 0x0b1118
+};
+
+// ================================================================ prng / helpers
+function mulberry32(seed){ let a = seed >>> 0; return function(){
+  a |= 0; a = a + 0x6D2B79F5 | 0; let t = Math.imul(a ^ a >>> 15, 1 | a);
+  t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t; return ((t ^ t >>> 14) >>> 0) / 4294967296; }; }
+const rng = mulberry32(59034);
+const rand = (a, b) => a + rng() * (b - a);
+const pick = arr => arr[Math.floor(rng() * arr.length)];
+function shadowify(root){ root.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); return root; }
+
+// ================================================================ canvas textures
+function canvasTex(w, h, draw, repX, repY){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace;
+  if (repX){ t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY); }
+  return t;
+}
+const floorTex = canvasTex(1024, 1024, (g, w, h) => {
+  const px = 1024 / LAB_W, tile = 2 * px;                       // 2 m clinical tiles
+  g.fillStyle = PAL.floor; g.fillRect(0, 0, w, h);
+  for (let ty = 0; ty < 22; ty++) for (let tx = 0; tx < 22; tx++){
+    g.fillStyle = `rgba(${rng() < 0.5 ? '20,26,32' : '196,210,220'},${rand(0.02, 0.07)})`;
+    g.fillRect(tx * tile, ty * tile, tile, tile);
+  }
+  g.strokeStyle = PAL.grout; g.lineWidth = 3;
+  for (let p = 0; p <= w; p += tile){ g.beginPath(); g.moveTo(p, 0); g.lineTo(p, h); g.moveTo(0, p); g.lineTo(w, p); g.stroke(); }
+  g.strokeStyle = 'rgba(127,212,255,0.5)'; g.lineWidth = 5;      // console halo ring
+  g.beginPath(); g.arc(512, 512, 3.4 * px, 0, 6.3); g.stroke();
+  g.strokeStyle = 'rgba(127,212,255,0.28)'; g.setLineDash([20, 14]);
+  for (const lx of [512 - 3.6 * px, 512 + 3.6 * px]){ g.beginPath(); g.moveTo(lx, 60); g.lineTo(lx, 964); g.stroke(); }
+  g.setLineDash([]);
+  for (let i = 0; i < 40; i++){                                  // faint scuffs
+    g.strokeStyle = `rgba(24,30,36,${rand(0.05, 0.14)})`; g.lineWidth = rand(1, 3);
+    const x = rand(0, w), y = rand(0, h); g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(x + rand(-60, 60), y + rand(-60, 60), x + rand(-120, 120), y + rand(-120, 120)); g.stroke();
+  }
+  const dx = 512 + 6 * px, dy = 512 + 7 * px;                    // floor drain grate
+  g.fillStyle = '#2c343c'; g.beginPath(); g.arc(dx, dy, 20, 0, 6.3); g.fill();
+  g.strokeStyle = '#141a20'; g.lineWidth = 3;
+  for (let i = -12; i <= 12; i += 6){ g.beginPath(); g.moveTo(dx - 16, dy + i); g.lineTo(dx + 16, dy + i); g.stroke(); }
+});
+const wallTex = canvasTex(512, 512, (g, w, h) => {
+  g.fillStyle = PAL.wall; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 260; i++){ g.fillStyle = `rgba(${rng() < 0.5 ? '30,38,46' : '210,224,232'},${rand(0.02, 0.06)})`;
+    g.fillRect(rand(0, w), rand(0, h), rand(4, 40), rand(4, 26)); }
+  g.strokeStyle = 'rgba(52,62,72,0.85)'; g.lineWidth = 4;        // panel seams
+  for (let x = 0; x <= w; x += 128){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  g.fillStyle = 'rgba(40,50,60,0.55)'; g.fillRect(0, 0, w, 40); g.fillRect(0, h - 56, w, 56);
+  g.fillStyle = 'rgba(127,212,255,0.16)'; g.fillRect(0, h - 66, w, 8); // cyan trim light line
+}, 6, 1.4);
+const mistTex = canvasTex(256, 256, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  for (let i = 0; i < 60; i++){
+    const x = rand(0, w), y = rand(0, h), r = rand(20, 70);
+    const gr = g.createRadialGradient(x, y, 1, x, y, r);
+    gr.addColorStop(0, `rgba(200,228,244,${rand(0.1, 0.26)})`); gr.addColorStop(1, 'rgba(200,228,244,0)');
+    g.fillStyle = gr; g.beginPath(); g.arc(x, y, r, 0, 6.3); g.fill();
+  }
+}, 2, 2);
+const stripTex = canvasTex(512, 128, (g, w, h) => {              // seamless scrolling ECG strip
+  g.fillStyle = '#04121a'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(40,90,110,0.5)'; g.lineWidth = 1;
+  for (let x = 0; x <= w; x += 32){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  for (let y = 0; y <= h; y += 32){ g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  g.strokeStyle = '#5fe8ff'; g.lineWidth = 3; g.shadowColor = '#5fe8ff'; g.shadowBlur = 6; g.beginPath();
+  for (let c = 0; c < 4; c++){ const x0 = c * 128;               // 4 identical cycles -> wraps cleanly
+    g.moveTo(x0, 72); g.lineTo(x0 + 22, 72); g.quadraticCurveTo(x0 + 30, 58, x0 + 38, 72);
+    g.lineTo(x0 + 52, 72); g.lineTo(x0 + 58, 20); g.lineTo(x0 + 66, 108); g.lineTo(x0 + 72, 72);
+    g.quadraticCurveTo(x0 + 92, 52, x0 + 104, 72); g.lineTo(x0 + 128, 72);
+  }
+  g.stroke(); g.shadowBlur = 0;
+});
+stripTex.wrapS = THREE.RepeatWrapping;
+function infoDraw(title){ return (g, w, h) => {
+  g.fillStyle = '#061620'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#0d2c3c'; g.fillRect(0, 0, w, 34);
+  g.fillStyle = '#7fd4ff'; g.font = 'bold 22px monospace'; g.fillText(title, 10, 25);
+  g.font = 'bold 44px monospace'; g.fillText(`${Math.round(rand(52, 64))}`, 16, 92); // pulse bpm
+  g.fillStyle = '#59e8c8'; g.fillText(`${rand(-191, -186).toFixed(1)}`, 120, 92);    // core temp C
+  g.font = '15px monospace'; g.fillStyle = '#4c98b8';
+  g.fillText('BPM', 16, 112); g.fillText('CORE TEMP', 120, 112); g.fillText('O2 SAT 99%', 16, 140);
+  for (let r = 0; r < 6; r++){ g.fillStyle = `rgba(95,232,255,${rand(0.35, 0.9)})`;
+    g.fillRect(16 + r * 38, 168 - rand(6, 40), 26, 60); }
+  g.strokeStyle = '#2c5c70'; g.strokeRect(6, 40, w - 12, 138);
+  g.fillStyle = '#ffb03a'; g.fillRect(w - 60, 10, 44, 14);       // amber status chip
+}; }
+const infoTexA = canvasTex(256, 192, infoDraw('POD ARRAY // A'));
+const infoTexB = canvasTex(256, 192, infoDraw('CRYO CORE 03'));
+const frostTex = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = 'rgba(190,215,230,1)'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 90; i++){                                  // feathery frost veins
+    g.strokeStyle = `rgba(255,255,255,${rand(0.2, 0.6)})`; g.lineWidth = rand(1, 2.5);
+    let x = rand(0, w), y = rand(0, h); g.beginPath(); g.moveTo(x, y);
+    for (let s = 0; s < 4; s++){ x += rand(-22, 22); y += rand(-22, 22); g.lineTo(x, y); }
+    g.stroke();
+  }
+}, 3, 0.5);
+const spriteTex = (() => {
+  const c = document.createElement('canvas'); c.width = c.height = 64;
+  const g = c.getContext('2d'); const gr = g.createRadialGradient(32, 32, 2, 32, 32, 30);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.5, 'rgba(255,255,255,0.4)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return new THREE.CanvasTexture(c);
+})();
+
+// ================================================================ materials
+const MAT = {
+  floor: new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.45, metalness: 0.15 }),
+  wall: new THREE.MeshStandardMaterial({ map: wallTex, roughness: 0.8, metalness: 0.1 }),
+  ceiling: new THREE.MeshStandardMaterial({ color: 0x2b343e, roughness: 0.9 }),
+  steel: new THREE.MeshStandardMaterial({ color: PAL.steel, roughness: 0.4, metalness: 0.7 }),
+  steelDark: new THREE.MeshStandardMaterial({ color: PAL.steelDark, roughness: 0.55, metalness: 0.6 }),
+  shell: new THREE.MeshStandardMaterial({ color: PAL.shellWhite, roughness: 0.5, metalness: 0.25 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x141920, roughness: 0.95, metalness: 0.05 }),
+  cableBlue: new THREE.MeshStandardMaterial({ color: 0x1e3a54, roughness: 0.85, metalness: 0.1 }),
+  glass: new THREE.MeshPhysicalMaterial({ color: 0xbfe4f5, transparent: true, opacity: 0.3, roughness: 0.7, metalness: 0, depthWrite: false, emissive: 0x9fd8ff, emissiveIntensity: 0.12 }),
+  tankGlass: new THREE.MeshPhysicalMaterial({ color: 0xc8f0e4, transparent: true, opacity: 0.24, roughness: 0.25, metalness: 0, depthWrite: false }),
+  fluid: new THREE.MeshStandardMaterial({ color: 0x0e3a34, emissive: PAL.tankFluid, emissiveIntensity: 0.55, transparent: true, opacity: 0.55 }),
+  frost: new THREE.MeshStandardMaterial({ map: frostTex, color: 0xeef7ff, emissive: 0x9fc8e0, emissiveIntensity: 0.35, roughness: 0.9 }),
+  crystal: new THREE.MeshStandardMaterial({ color: 0xe8f6ff, emissive: 0xbfe4ff, emissiveIntensity: 0.5, roughness: 0.3 }),
+  silhouette: new THREE.MeshStandardMaterial({ color: PAL.silhouette, roughness: 0.95, metalness: 0 }),
+  strip: new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: stripTex, emissiveIntensity: 1.3, roughness: 0.4 }),
+  infoA: new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: infoTexA, emissiveIntensity: 1.1, roughness: 0.4 }),
+  infoB: new THREE.MeshStandardMaterial({ color: 0x000000, emissive: 0xffffff, emissiveMap: infoTexB, emissiveIntensity: 1.1, roughness: 0.4 }),
+  podCore: new THREE.MeshStandardMaterial({ color: 0x0c2634, emissive: PAL.podGlow, emissiveIntensity: 1.6, side: THREE.BackSide }),
+  panelLight: new THREE.MeshStandardMaterial({ color: 0x28323c, emissive: 0xcfe4f2, emissiveIntensity: 1.05 }),
+  amber: new THREE.MeshStandardMaterial({ color: 0x33210a, emissive: PAL.amber, emissiveIntensity: 0.2 }),
+  cyanTrim: new THREE.MeshStandardMaterial({ color: 0x06222e, emissive: PAL.cryoCyan, emissiveIntensity: 1.1 })
+};
+
+// ================================================================ renderer / scene / camera
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 14, 52);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 140);
+camera.position.set(11, 7.6, 15.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.2, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.minDistance = 8; controls.maxDistance = 20;
+controls.maxPolarAngle = 1.45;
+
+// ================================================================ builder: lab shell
+function buildLabShell(){
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(LAB_W, LAB_D), MAT.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const wallGeo = new THREE.PlaneGeometry(LAB_W, LAB_H);
+  for (const [x, z, ry] of [[0, -LAB_D / 2, 0], [0, LAB_D / 2, Math.PI], [-LAB_W / 2, 0, Math.PI / 2], [LAB_W / 2, 0, -Math.PI / 2]]){
+    const wall = new THREE.Mesh(wallGeo, MAT.wall);
+    wall.position.set(x, LAB_H / 2, z); wall.rotation.y = ry; wall.receiveShadow = true; g.add(wall);
+  }
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(LAB_W, LAB_D), MAT.ceiling);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = LAB_H; g.add(ceil);
+  for (const px of [-11, 0, 11]) for (const pz of [-11, 0, 11]){  // recessed light panels
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(5.2, 0.16, 2.4), MAT.steelDark);
+    frame.position.set(px, LAB_H - 0.1, pz); g.add(frame);
+    const lit = new THREE.Mesh(new THREE.PlaneGeometry(4.8, 2.0), MAT.panelLight);
+    lit.rotation.x = Math.PI / 2; lit.position.set(px, LAB_H - 0.19, pz); g.add(lit);
+  }
+  for (const sx of [-1, 1]) for (const z of [-14, 0, 14]){        // wall ribs
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(0.4, LAB_H, 0.7), MAT.steelDark);
+    rib.position.set(sx * (LAB_W / 2 - 0.3), LAB_H / 2, z); g.add(rib);
+  }
+  for (const sx of [-1, 1]){                                      // coolant pipes along side walls
+    const pipe = new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 40, 10), MAT.steel);
+    pipe.rotation.x = Math.PI / 2; pipe.position.set(sx * (LAB_W / 2 - 0.75), 7.6, 0); g.add(pipe);
+    const pipe2 = new THREE.Mesh(new THREE.CylinderGeometry(0.13, 0.13, 40, 10), MAT.cableBlue);
+    pipe2.rotation.x = Math.PI / 2; pipe2.position.set(sx * (LAB_W / 2 - 0.75), 7.1, 0); g.add(pipe2);
+  }
+  for (const [vx, vz, vr] of [[-15, -LAB_D / 2 + 0.35, 0], [15, LAB_D / 2 - 0.35, Math.PI]]){ // vent grilles
+    const vent = new THREE.Mesh(new THREE.BoxGeometry(2.6, 1.3, 0.2), MAT.steelDark);
+    vent.position.set(vx, 8.6, vz); vent.rotation.y = vr; g.add(vent);
+    for (let s = 0; s < 5; s++){ const slat = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.12, 0.1), MAT.steel);
+      slat.position.set(vx, 8.15 + s * 0.22, vz + (vr === 0 ? 0.12 : -0.12)); slat.rotation.y = vr; g.add(slat); }
+  }
+  return shadowify(g);
+}
+
+// ================================================================ builder: cryo pod (upright, occupied)
+function buildSleeper(){
+  const f = new THREE.Group();
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 12, 10), MAT.silhouette); head.position.y = 1.62; f.add(head);
+  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.23, 0.55, 4, 10), MAT.silhouette); torso.position.y = 1.12; f.add(torso);
+  for (const s of [-1, 1]){                                       // arms folded across the chest
+    const arm = new THREE.Mesh(new THREE.CapsuleGeometry(0.07, 0.4, 3, 8), MAT.silhouette);
+    arm.position.set(s * 0.1, 1.2, 0.2); arm.rotation.z = s * 1.25; arm.rotation.x = -0.25; f.add(arm);
+  }
+  const legs = new THREE.Mesh(new THREE.CapsuleGeometry(0.17, 0.62, 4, 10), MAT.silhouette); legs.position.y = 0.48; f.add(legs);
+  head.rotation.x = 0.18; return f;
+}
+const crystalGeo = new THREE.TetrahedronGeometry(0.055);
+function buildCryoPod(coreMat){
+  const g = new THREE.Group();
+  const plinth = new THREE.Mesh(new THREE.CylinderGeometry(0.95, 1.1, 0.5, 18), MAT.shell);
+  plinth.position.y = 0.25; g.add(plinth);
+  const collar = new THREE.Mesh(new THREE.CylinderGeometry(0.8, 0.95, 0.22, 18), MAT.steelDark);
+  collar.position.y = 0.6; g.add(collar);
+  const core = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.55, 2.45, 14, 1, true), coreMat);
+  core.position.y = 1.95; g.add(core);                            // glowing back shell (BackSide)
+  const sleeper = buildSleeper(); sleeper.position.y = 0.62; sleeper.scale.setScalar(1.18); g.add(sleeper);
+  const glass = new THREE.Mesh(new THREE.CapsuleGeometry(0.66, 1.75, 6, 16), MAT.glass);
+  glass.position.y = 1.95; g.add(glass);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(0.72, 0.55, 0.42, 16), MAT.shell);
+  cap.position.y = 3.4; g.add(cap);
+  const beaconTip = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 8), MAT.amber);
+  beaconTip.position.y = 3.66; g.add(beaconTip);
+  for (const s of [-1, 1]){                                       // frame struts + cyan light strips
+    const strut = new THREE.Mesh(new THREE.BoxGeometry(0.16, 2.9, 0.24), MAT.steel);
+    strut.position.set(s * 0.72, 1.95, -0.08); g.add(strut);
+    const stripLight = new THREE.Mesh(new THREE.BoxGeometry(0.05, 2.5, 0.05), MAT.cyanTrim);
+    stripLight.position.set(s * 0.7, 1.95, 0.08); g.add(stripLight);
+  }
+  for (const [ry, rr] of [[0.72, 0.78], [3.2, 0.6]]){             // frosted rims
+    const rim = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.07, 8, 22), MAT.frost);
+    rim.rotation.x = Math.PI / 2; rim.position.y = ry; g.add(rim);
+  }
+  const crystals = new THREE.InstancedMesh(crystalGeo, MAT.crystal, 26); // creeping frost crystals
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (let i = 0; i < 26; i++){
+    const onTop = i % 2 === 0, rr = onTop ? 0.6 : 0.78, ry = onTop ? 3.2 : 0.72;
+    const a = rand(0, Math.PI * 2), s = rand(0.6, 1.7);
+    e.set(rand(0, 3.1), rand(0, 3.1), rand(0, 3.1)); q.setFromEuler(e);
+    m4.compose(new THREE.Vector3(Math.cos(a) * rr, ry + rand(-0.05, 0.12), Math.sin(a) * rr), q, new THREE.Vector3(s, s * rand(1, 2.2), s));
+    crystals.setMatrixAt(i, m4);
+  }
+  g.add(crystals);
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(0.66, 0.42, 0.08), MAT.steelDark);
+  panel.position.set(0, 0.32, 1.0); panel.rotation.x = -0.35; g.add(panel);
+  const panelScr = new THREE.Mesh(new THREE.PlaneGeometry(0.56, 0.3), MAT.strip);
+  panelScr.position.set(0, 0.34, 1.05); panelScr.rotation.x = -0.35; g.add(panelScr);
+  for (const s of [-1, 1]){                                       // coolant hoses into the deck
+    const curve = new THREE.CatmullRomCurve3([new THREE.Vector3(s * 0.4, 0.55, -0.85),
+      new THREE.Vector3(s * 0.7, 0.25, -1.25), new THREE.Vector3(s * 0.95, 0.06, -1.7)]);
+    g.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 12, 0.06, 7), MAT.rubber));
+  }
+  shadowify(g); glass.castShadow = false; return g;
+}
+
+// ================================================================ builder: monitoring console
+function buildConsole(){
+  const g = new THREE.Group();
+  const dais = new THREE.Mesh(new THREE.CylinderGeometry(2.6, 2.8, 0.24, 24), MAT.shell); dais.position.y = 0.12; g.add(dais);
+  const trim = new THREE.Mesh(new THREE.TorusGeometry(2.62, 0.05, 8, 40), MAT.cyanTrim);
+  trim.rotation.x = Math.PI / 2; trim.position.y = 0.26; g.add(trim);
+  const column = new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.7, 2.5, 12), MAT.steelDark); column.position.y = 1.5; g.add(column);
+  const crown = new THREE.Mesh(new THREE.CylinderGeometry(0.75, 0.55, 0.5, 12), MAT.shell); crown.position.y = 2.9; g.add(crown);
+  const halo = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.05, 8, 24), MAT.cyanTrim);
+  halo.rotation.x = Math.PI / 2; halo.position.y = 3.2; g.add(halo);
+  for (let i = 0; i < 4; i++){                                    // four angled vitals stations
+    const a = i * Math.PI / 2 + Math.PI / 4, st = new THREE.Group();
+    const desk = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.5, 0.7), MAT.shell); desk.position.y = 0.95; st.add(desk);
+    const scrF = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.95, 0.1), MAT.steelDark);
+    scrF.position.set(0, 1.75, -0.12); scrF.rotation.x = -0.3; st.add(scrF);
+    const info = new THREE.Mesh(new THREE.PlaneGeometry(1.26, 0.6), i % 2 ? MAT.infoA : MAT.infoB);
+    info.position.set(0, 1.88, -0.045); info.rotation.x = -0.3; st.add(info);
+    const strip = new THREE.Mesh(new THREE.PlaneGeometry(1.26, 0.24), MAT.strip);
+    strip.position.set(0, 1.47, 0.083); strip.rotation.x = -0.3; st.add(strip);
+    st.position.set(Math.cos(a) * 1.85, 0.12, Math.sin(a) * 1.85);
+    st.rotation.y = -a - Math.PI / 2; g.add(st);
+  }
+  return shadowify(g);
+}
+
+// ================================================================ builder: specimen tank rig
+function buildTankRig(){
+  const g = new THREE.Group();
+  const bench = new THREE.Mesh(new THREE.BoxGeometry(5.6, 0.55, 1.7), MAT.shell); bench.position.y = 0.28; g.add(bench);
+  const back = new THREE.Mesh(new THREE.BoxGeometry(5.6, 2.9, 0.25), MAT.steelDark); back.position.set(0, 1.45, -0.8); g.add(back);
+  const bubbleSystems = [];
+  for (let i = 0; i < 3; i++){
+    const x = -1.8 + i * 1.8;
+    const glass = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.52, 2.0, 16, 1, true), MAT.tankGlass);
+    glass.position.set(x, 1.72, 0); g.add(glass);
+    const fluid = new THREE.Mesh(new THREE.CylinderGeometry(0.46, 0.46, 1.8, 14), MAT.fluid);
+    fluid.position.set(x, 1.7, 0); g.add(fluid);
+    const spec = new THREE.Group();                                // suspended specimen mass
+    for (let b = 0; b < 5; b++){ const blob = new THREE.Mesh(new THREE.SphereGeometry(rand(0.08, 0.17), 8, 7), MAT.silhouette);
+      blob.position.set(rand(-0.12, 0.12), rand(-0.2, 0.2), rand(-0.12, 0.12)); spec.add(blob); }
+    spec.position.set(x, 1.7, 0); g.add(spec);
+    for (const [cy, ch] of [[0.62, 0.24], [2.82, 0.28]]){          // caps
+      const capm = new THREE.Mesh(new THREE.CylinderGeometry(0.58, 0.58, ch, 16), MAT.steel);
+      capm.position.set(x, cy, 0); g.add(capm);
+    }
+    const valve = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.3, 8), MAT.steelDark);
+    valve.position.set(x, 3.05, 0); g.add(valve);
+    const n = 24, pos = new Float32Array(n * 3), ph = [], spd = [], ang = [], rad = [];
+    for (let p = 0; p < n; p++){ ph.push(rand(0, 1)); spd.push(rand(0.16, 0.35)); ang.push(rand(0, 6.28)); rad.push(rand(0.05, 0.4)); }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+    const pts = new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xd8fff2, size: 0.07, map: spriteTex,
+      transparent: true, opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending }));
+    g.add(pts);
+    bubbleSystems.push({ geo, pos, ph, spd, ang, rad, n, cx: x, cy: 0.82, h: 1.72 });
+  }
+  shadowify(g); return { g, bubbleSystems };
+}
+
+// ================================================================ builder: support props
+function buildDewarRack(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const x = -0.95 + i * 0.95;
+    const body = new THREE.Mesh(new THREE.CylinderGeometry(0.42, 0.42, 1.7, 14), MAT.shell);
+    body.position.set(x, 0.85, 0); g.add(body);
+    const band = new THREE.Mesh(new THREE.CylinderGeometry(0.43, 0.43, 0.2, 14), MAT.cableBlue);
+    band.position.set(x, 1.15, 0); g.add(band);
+    const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 0.35, 10), MAT.steel);
+    neck.position.set(x, 1.85, 0); g.add(neck);
+    const handle = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.035, 6, 14), MAT.steelDark);
+    handle.position.set(x, 1.95, 0); handle.rotation.x = Math.PI / 2; g.add(handle);
+  }
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(2.9, 0.1, 0.1), MAT.steel); rail.position.set(0, 1.35, 0.45); g.add(rail);
+  return shadowify(g);
+}
+function buildMedCart(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.9, 0.7), MAT.shell); body.position.y = 0.7; g.add(body);
+  for (let i = 0; i < 2; i++){ const dr = new THREE.Mesh(new THREE.BoxGeometry(1.06, 0.28, 0.05), MAT.steelDark);
+    dr.position.set(0, 0.5 + i * 0.36, 0.38); g.add(dr); }
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(1.3, 0.06, 0.8), MAT.steel); tray.position.y = 1.18; g.add(tray);
+  const mon = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.45, 0.08), MAT.steelDark);
+  mon.position.set(-0.2, 1.65, 0); mon.rotation.y = 0.4; g.add(mon);
+  const monScr = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.34), MAT.infoB);
+  monScr.position.set(-0.184, 1.65, 0.045); monScr.rotation.y = 0.4; g.add(monScr);
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 1.1, 8), MAT.steel); pole.position.set(0.45, 1.7, -0.2); g.add(pole);
+  for (const sx of [-0.45, 0.45]) for (const sz of [-0.22, 0.22]){
+    const wh = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.07, 10), MAT.rubber);
+    wh.rotation.x = Math.PI / 2; wh.position.set(sx, 0.09, sz); g.add(wh);
+  }
+  return shadowify(g);
+}
+function buildDoorHatch(){
+  const g = new THREE.Group();
+  const frame = new THREE.Mesh(new THREE.BoxGeometry(5.4, 7.2, 0.5), MAT.steelDark); frame.position.y = 3.6; g.add(frame);
+  const leaf = new THREE.Mesh(new THREE.BoxGeometry(4.4, 6.4, 0.3), MAT.shell); leaf.position.set(0, 3.35, 0.2); g.add(leaf);
+  const seam = new THREE.Mesh(new THREE.BoxGeometry(0.08, 6.4, 0.34), MAT.steelDark); seam.position.set(0, 3.35, 0.22); g.add(seam);
+  const port = new THREE.Mesh(new THREE.TorusGeometry(0.55, 0.09, 8, 20), MAT.steel);
+  port.position.set(0, 4.4, 0.38); g.add(port);
+  const portGlass = new THREE.Mesh(new THREE.CircleGeometry(0.52, 20), MAT.cyanTrim);
+  portGlass.position.set(0, 4.4, 0.37); g.add(portGlass);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 0.8), new THREE.MeshStandardMaterial({
+    map: canvasTex(256, 72, (c2, w, h) => { c2.fillStyle = '#0d2c3c'; c2.fillRect(0, 0, w, h);
+      c2.fillStyle = '#7fd4ff'; c2.font = 'bold 40px monospace'; c2.textAlign = 'center';
+      c2.fillText('CRYO LAB 03', w / 2, 50); }), roughness: 0.7 }));
+  sign.position.set(0, 7.8, 0.32); g.add(sign);
+  return shadowify(g);
+}
+function buildBeacon(){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.3, 0.18, 10), MAT.steelDark); g.add(base);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 8, 0, 6.3, 0, 1.6), MAT.amber.clone());
+  dome.position.y = 0.09; g.add(dome);
+  return { g, mat: dome.material };
+}
+function buildCable(points, r, mat){
+  const curve = new THREE.CatmullRomCurve3(points.map(p => new THREE.Vector3(p[0], r * 0.9, p[1])));
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 42, r, 8), mat);
+  tube.castShadow = true; tube.receiveShadow = true; return tube;
+}
+function buildCoolantManifold(){
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.22, 25, 12), MAT.steel);
+  trunk.rotation.x = Math.PI / 2; trunk.position.y = 2.3; g.add(trunk);
+  for (const z of [-9.5, -3.2, 3.2, 9.5]){                        // risers feeding each pod
+    const riser = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.1, 2.1, 8), MAT.cableBlue);
+    riser.position.set(0, 1.25, z); g.add(riser);
+    const elbow = new THREE.Mesh(new THREE.SphereGeometry(0.13, 8, 8), MAT.steelDark);
+    elbow.position.set(0, 2.3, z); g.add(elbow);
+    const feed = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.08, 1.3, 8), MAT.cableBlue);
+    feed.rotation.z = Math.PI / 2; feed.position.set(-0.65, 0.25, z); g.add(feed);
+    const gauge = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, 0.07, 12), MAT.cyanTrim);
+    gauge.rotation.z = Math.PI / 2; gauge.position.set(-0.2, 2.62, z); g.add(gauge);
+  }
+  for (const z of [-8, 0, 8]){                                    // trunk stands
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.12, 2.3, 0.12), MAT.steelDark);
+    leg.position.set(0.12, 1.15, z); g.add(leg);
+  }
+  return shadowify(g);
+}
+function buildHoloProjector(){
+  const g = new THREE.Group(), rings = [];
+  const holoMat = op => new THREE.MeshBasicMaterial({ color: PAL.cryoCyan, wireframe: true, transparent: true, opacity: op, blending: THREE.AdditiveBlending, depthWrite: false });
+  const icosa = new THREE.Mesh(new THREE.IcosahedronGeometry(0.3, 0), holoMat(0.75)); icosa.position.y = 0.55; g.add(icosa);
+  for (const [rr, ry, op] of [[0.48, 0.55, 0.5], [0.62, 0.55, 0.3]]){
+    const ring = new THREE.Mesh(new THREE.TorusGeometry(rr, 0.012, 5, 40), holoMat(op));
+    ring.position.y = ry; g.add(ring); rings.push(ring);
+  }
+  const beam = new THREE.Mesh(new THREE.ConeGeometry(0.34, 0.55, 16, 1, true),
+    new THREE.MeshBasicMaterial({ color: PAL.cryoCyan, transparent: true, opacity: 0.1, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide }));
+  beam.position.y = 0.28; g.add(beam);
+  return { g, icosa, rings };
+}
+function buildSensorGantry(){
+  const g = new THREE.Group();
+  for (const sx of [-0.8, 0.8]){                                  // ceiling track above the aisle
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.28, 26), MAT.steelDark);
+    rail.position.set(sx, 9.4, 0); g.add(rail);
+  }
+  for (const z of [-12, -6, 0, 6, 12]){
+    const tie = new THREE.Mesh(new THREE.BoxGeometry(2.1, 0.16, 0.3), MAT.steel); tie.position.set(0, 9.56, z); g.add(tie);
+    const drop = new THREE.Mesh(new THREE.BoxGeometry(0.12, 1.3, 0.12), MAT.steelDark); drop.position.set(0, 10.2, z); g.add(drop);
+  }
+  const head = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.5, 1.2), MAT.shell); head.add(body);
+  const lensRim = new THREE.Mesh(new THREE.TorusGeometry(0.3, 0.06, 8, 18), MAT.steelDark);
+  lensRim.rotation.x = Math.PI / 2; lensRim.position.y = -0.28; head.add(lensRim);
+  const lens = new THREE.Mesh(new THREE.CircleGeometry(0.27, 18), MAT.cyanTrim.clone());
+  lens.rotation.x = Math.PI / 2; lens.position.y = -0.3; head.add(lens);
+  head.position.set(0, 9.05, 0); g.add(head);
+  shadowify(g); return { g, head, lensMat: lens.material };
+}
+function buildLabBench(){
+  const g = new THREE.Group();
+  const top = new THREE.Mesh(new THREE.BoxGeometry(3.4, 0.14, 1.3), MAT.steel); top.position.y = 1.0; g.add(top);
+  for (const sx of [-1.5, 1.5]){ const leg = new THREE.Mesh(new THREE.BoxGeometry(0.25, 1.0, 1.1), MAT.shell); leg.position.set(sx, 0.5, 0); g.add(leg); }
+  const scopeBase = new THREE.Mesh(new THREE.CylinderGeometry(0.22, 0.28, 0.1, 12), MAT.steelDark);
+  scopeBase.position.set(-1.0, 1.12, 0.15); g.add(scopeBase);
+  const scopeArm = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.7, 8), MAT.steelDark);
+  scopeArm.position.set(-1.0, 1.45, 0.02); scopeArm.rotation.x = 0.5; g.add(scopeArm);
+  const eyepiece = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.3, 8), MAT.steel);
+  eyepiece.position.set(-1.0, 1.78, -0.16); eyepiece.rotation.x = -0.5; g.add(eyepiece);
+  const fuge = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.38, 0.34, 14), MAT.shell);
+  fuge.position.set(0.15, 1.24, -0.1); g.add(fuge);
+  const fugeLid = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.34, 0.08, 14), MAT.cableBlue);
+  fugeLid.position.set(0.15, 1.44, -0.1); g.add(fugeLid);
+  const rack = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.1, 0.4), MAT.steelDark); rack.position.set(1.2, 1.12, 0.15); g.add(rack);
+  const vials = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.035, 0.035, 0.2, 8), MAT.cyanTrim, 8);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < 8; i++){ m4.makeTranslation(0.85 + (i % 4) * 0.22, 1.26, 0.05 + Math.floor(i / 4) * 0.2); vials.setMatrixAt(i, m4); }
+  g.add(vials);
+  const stool = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.26, 0.08, 12), MAT.cableBlue); stool.position.set(0.3, 0.72, 1.2); g.add(stool);
+  const stoolLeg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.7, 8), MAT.steelDark); stoolLeg.position.set(0.3, 0.35, 1.2); g.add(stoolLeg);
+  return shadowify(g);
+}
+function buildLockerRow(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 4; i++){
+    const x = -1.8 + i * 1.2;
+    const box = new THREE.Mesh(new THREE.BoxGeometry(1.08, 2.5, 0.6), MAT.shell);
+    box.position.set(x, 1.25, 0); g.add(box);
+    const door = new THREE.Mesh(new THREE.BoxGeometry(0.98, 2.3, 0.06), MAT.steel);
+    if (i === 2){ door.position.set(x - 0.18, 1.25, 0.42); door.rotation.y = 0.85; } // one door ajar
+    else door.position.set(x, 1.25, 0.33);
+    g.add(door);
+    const handle = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.3, 0.05), MAT.steelDark);
+    handle.position.set(x + 0.36, 1.3, i === 2 ? 0.38 : 0.38); if (i === 2) handle.visible = false; g.add(handle);
+    const label = new THREE.Mesh(new THREE.PlaneGeometry(0.5, 0.16), MAT.cyanTrim);
+    label.position.set(x, 2.28, 0.37); g.add(label);
+    for (let v = 0; v < 3; v++){ const slit = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.04, 0.03), MAT.steelDark);
+      slit.position.set(x, 0.5 + v * 0.12, 0.37); g.add(slit); }
+  }
+  return shadowify(g);
+}
+function buildEmergencyStation(){
+  const g = new THREE.Group();
+  const panel = new THREE.Mesh(new THREE.BoxGeometry(1.3, 1.7, 0.18), new THREE.MeshStandardMaterial({ color: 0x8e2418, roughness: 0.55 }));
+  panel.position.y = 3.4; g.add(panel);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(1.1, 0.4), new THREE.MeshStandardMaterial({
+    map: canvasTex(160, 56, (c2, w, h) => { c2.fillStyle = '#e8e2d8'; c2.fillRect(0, 0, w, h);
+      c2.fillStyle = '#a02818'; c2.font = 'bold 26px monospace'; c2.textAlign = 'center'; c2.fillText('EMERG O2', w / 2, 38); }),
+    roughness: 0.7 }));
+  sign.position.set(0, 4.0, 0.12); g.add(sign);
+  const tank = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.0, 10), new THREE.MeshStandardMaterial({ color: 0xb03020, roughness: 0.4, metalness: 0.4 }));
+  tank.position.set(-0.25, 3.25, 0.2); g.add(tank);
+  const nozzle = new THREE.Mesh(new THREE.CylinderGeometry(0.04, 0.06, 0.24, 8), MAT.steelDark);
+  nozzle.position.set(-0.25, 3.85, 0.2); g.add(nozzle);
+  const caseBox = new THREE.Mesh(new THREE.BoxGeometry(0.9, 0.5, 0.4), MAT.shell); caseBox.position.set(0.4, 0.25, 0.3); g.add(caseBox);
+  return shadowify(g);
+}
+
+// ================================================================ assembly / layout
+scene.add(buildLabShell());
+const podPulses = [];
+const podZ = [-9.5, -3.2, 3.2, 9.5];
+for (const sx of [-1, 1]) for (const z of podZ){                  // two facing rows of pods
+  const coreMat = MAT.podCore.clone();
+  const pod = buildCryoPod(coreMat);
+  pod.position.set(sx * 8.2, 0, z); pod.rotation.y = sx * Math.PI / 2 + rand(-0.05, 0.05);
+  scene.add(pod); podPulses.push({ mat: coreMat, ph: rand(0, 6.28) });
+}
+const consoleHub = buildConsole(); scene.add(consoleHub);
+const holo = buildHoloProjector(); holo.g.position.set(0, 3.25, 0); scene.add(holo.g);
+const tankRig = buildTankRig(); tankRig.g.position.set(9.8, 0, -11.4); tankRig.g.rotation.y = 0.55; scene.add(tankRig.g);
+const dewars = buildDewarRack(); dewars.position.set(-11.5, 0, -11); dewars.rotation.y = -0.4; scene.add(dewars);
+const bench = buildLabBench(); bench.position.set(-12.5, 0, -3.5); bench.rotation.y = Math.PI / 2 - 0.15; scene.add(bench);
+const cart = buildMedCart(); cart.position.set(-6.4, 0, 9.6); cart.rotation.y = 0.7; scene.add(cart);
+const door = buildDoorHatch(); door.position.set(0, 0, -LAB_D / 2 + 0.3); scene.add(door);
+const lockers = buildLockerRow(); lockers.position.set(6.5, 0, LAB_D / 2 - 0.65); lockers.rotation.y = Math.PI; scene.add(lockers);
+const emerg = buildEmergencyStation(); emerg.position.set(LAB_W / 2 - 0.4, 0, 8); emerg.rotation.y = -Math.PI / 2; scene.add(emerg);
+for (const sx of [-1, 1]){                                        // coolant manifolds feeding each row
+  const man = buildCoolantManifold(); man.position.set(sx * 10.6, 0, 0);
+  if (sx > 0) man.rotation.y = Math.PI; scene.add(man);
+}
+const gantry = buildSensorGantry(); scene.add(gantry.g);
+for (const [cx, cz] of [[-9.9, -6.3], [-9.9, 6.4], [9.9, 0.1]]){  // sample cases along pod rows
+  const box = new THREE.Mesh(new THREE.BoxGeometry(0.8, 0.5, 0.55), MAT.steelDark);
+  box.position.set(cx, 0.25, cz); box.rotation.y = rand(-0.4, 0.4); shadowify(box); scene.add(box);
+}
+
+// thick insulated cables snaking from every pod to the console dais
+const cableMats = [MAT.rubber, MAT.cableBlue];
+let ci = 0;
+for (const sx of [-1, 1]) for (const z of podZ){
+  const wob = rand(-1.4, 1.4);
+  scene.add(buildCable([[sx * 7.1, z], [sx * 4.8, z * 0.8 + wob], [sx * 3.2, z * 0.45 + wob * 0.4], [sx * 2.5, z * 0.16]],
+    rand(0.09, 0.13), cableMats[ci++ % 2]));
+}
+scene.add(buildCable([[2.2, -1.2], [5.2, -4.6], [8.2, -8.2], [9.6, -10.6]], 0.14, MAT.rubber));
+scene.add(buildCable([[-1.8, -1.6], [-3.5, -8], [-1.6, -14], [0, -20.6]], 0.12, MAT.cableBlue));
+
+// wall vitals monitors + blinking amber beacons
+for (const z of [-6, 6]){
+  const wm = new THREE.Group();
+  const fr = new THREE.Mesh(new THREE.BoxGeometry(2.2, 1.4, 0.16), MAT.steelDark); wm.add(fr);
+  const scr = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 0.9), z < 0 ? MAT.infoA : MAT.infoB); scr.position.set(0, 0.14, 0.1); wm.add(scr);
+  const stripM = new THREE.Mesh(new THREE.PlaneGeometry(2.0, 0.3), MAT.strip); stripM.position.set(0, -0.5, 0.1); wm.add(stripM);
+  wm.position.set(-LAB_W / 2 + 0.35, 4.4, z); wm.rotation.y = Math.PI / 2; shadowify(wm); scene.add(wm);
+}
+const beacons = [];
+for (const [bx, by, bz, ry] of [[0, 8.3, -LAB_D / 2 + 0.45, 0], [0, 8.3, LAB_D / 2 - 0.45, 0],
+  [-LAB_W / 2 + 0.45, 8.3, 8, 0], [LAB_W / 2 - 0.45, 8.3, -8, 0], [2.4, 0.4, 2.4, 0]]){
+  const b = buildBeacon(); b.g.position.set(bx, by, bz); b.g.rotation.y = ry;
+  scene.add(b.g); beacons.push({ mat: b.mat, ph: rand(0, 6.28) });
+}
+
+// pooling floor mist (low drifting layers)
+const mistLayers = [];
+for (let i = 0; i < 3; i++){
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(41, 41), new THREE.MeshBasicMaterial({
+    map: mistTex, transparent: true, opacity: 0.3 + i * 0.05, depthWrite: false, fog: true }));
+  m.rotation.x = -Math.PI / 2; m.rotation.z = rand(0, 6.28); m.position.y = 0.16 + i * 0.2;
+  scene.add(m); mistLayers.push({ mesh: m, spin: (i % 2 ? -1 : 1) * rand(0.008, 0.02), ph: rand(0, 6.28) });
+}
+
+// cold vapor spilling off every pod cap
+const VAPOR_PER_POD = 12, podTops = [];
+for (const sx of [-1, 1]) for (const z of podZ) podTops.push(new THREE.Vector3(sx * 8.2, 3.5, z));
+const vaporN = podTops.length * VAPOR_PER_POD;
+const vaporPos = new Float32Array(vaporN * 3), vaporPh = [], vaporSpd = [], vaporAng = [];
+for (let i = 0; i < vaporN; i++){ vaporPh.push(rand(0, 1)); vaporSpd.push(rand(0.1, 0.22)); vaporAng.push(rand(0, 6.28)); }
+const vaporGeo = new THREE.BufferGeometry();
+vaporGeo.setAttribute('position', new THREE.BufferAttribute(vaporPos, 3).setUsage(THREE.DynamicDrawUsage));
+const vapor = new THREE.Points(vaporGeo, new THREE.PointsMaterial({
+  color: 0xcfe6f2, size: 0.5, map: spriteTex, transparent: true, opacity: 0.18, depthWrite: false, sizeAttenuation: true }));
+scene.add(vapor);
+function updateVapor(t){
+  for (let i = 0; i < vaporN; i++){
+    const top = podTops[Math.floor(i / VAPOR_PER_POD)];
+    const age = (t * vaporSpd[i] + vaporPh[i]) % 1, j = i * 3, r = 0.55 + age * 0.75;
+    vaporPos[j] = top.x + Math.cos(vaporAng[i] + t * 0.25) * r;
+    vaporPos[j + 1] = top.y - age * 2.9;
+    vaporPos[j + 2] = top.z + Math.sin(vaporAng[i] + t * 0.25) * r;
+  }
+  vaporGeo.attributes.position.needsUpdate = true;
+}
+
+// ================================================================ lighting rig
+scene.add(new THREE.HemisphereLight(0x8fb4cc, 0x141c26, 0.58));
+const keySpot = new THREE.SpotLight(0xcfe8ff, 1500, 0, 0.78, 0.5, 1.8);
+keySpot.position.set(8, 10.4, 7); keySpot.target.position.set(0, 1.2, -1);
+keySpot.castShadow = true; keySpot.shadow.mapSize.set(2048, 2048);
+keySpot.shadow.bias = -0.0004; keySpot.shadow.camera.near = 3; keySpot.shadow.camera.far = 40;
+scene.add(keySpot, keySpot.target);
+const fillSpot = new THREE.SpotLight(0xa8c4de, 620, 0, 0.85, 0.6, 1.8);
+fillSpot.position.set(-9, 10.2, -8); fillSpot.target.position.set(3, 1, 3);
+scene.add(fillSpot, fillSpot.target);
+const rowLightL = new THREE.PointLight(PAL.podGlow, 140, 20, 1.9); rowLightL.position.set(-7.4, 3.4, 0); scene.add(rowLightL);
+const rowLightR = new THREE.PointLight(PAL.podGlow, 140, 20, 1.9); rowLightR.position.set(7.4, 3.4, 0); scene.add(rowLightR);
+const consoleLight = new THREE.PointLight(PAL.cryoCyan, 70, 12, 1.9); consoleLight.position.set(0, 3.4, 0); scene.add(consoleLight);
+const tankLight = new THREE.PointLight(PAL.tankFluid, 45, 10, 1.9); tankLight.position.set(10.2, 2.6, -11.4); scene.add(tankLight);
+const amberLight = new THREE.PointLight(PAL.amber, 0, 24, 1.8); amberLight.position.set(0, 8.2, -LAB_D / 2 + 1.2); scene.add(amberLight);
+
+// ================================================================ animation loop
+const clock = new THREE.Clock();
+function updateBubbles(t){
+  for (const s of tankRig.bubbleSystems){
+    for (let i = 0; i < s.n; i++){
+      const age = (t * s.spd[i] + s.ph[i]) % 1, j = i * 3;
+      s.pos[j] = s.cx + Math.cos(s.ang[i] + age * 2.4) * s.rad[i] * (1 - age * 0.35);
+      s.pos[j + 1] = s.cy + age * s.h;
+      s.pos[j + 2] = Math.sin(s.ang[i] + age * 2.4) * s.rad[i] * (1 - age * 0.35);
+    }
+    s.geo.attributes.position.needsUpdate = true;
+  }
+}
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.elapsedTime;
+  stripTex.offset.x = (t * 0.22) % 1;                              // vitals traces scroll
+  for (const p of podPulses) p.mat.emissiveIntensity = 2.2 + Math.sin(t * 0.85 + p.ph) * 0.55; // pods breathe
+  const blink = Math.pow(Math.max(0, Math.sin(t * 2.7)), 6);       // amber warning cadence
+  for (const b of beacons) b.mat.emissiveIntensity = 0.25 + Math.pow(Math.max(0, Math.sin(t * 2.7 + b.ph)), 6) * 4.2;
+  amberLight.intensity = blink * 240;
+  for (const m of mistLayers){                                     // mist swirl + slow breathing
+    m.mesh.rotation.z += m.spin * dt * 60 * 0.016;
+    m.mesh.material.opacity = 0.3 + 0.08 * Math.sin(t * 0.4 + m.ph);
+  }
+  holo.g.rotation.y = t * 0.55;                                    // console hologram spin
+  holo.icosa.rotation.x = t * 0.8; holo.rings[0].rotation.x = 0.4 + Math.sin(t * 0.5) * 0.25;
+  holo.rings[1].rotation.z = Math.sin(t * 0.35) * 0.3;
+  gantry.head.position.z = Math.sin(t * 0.11) * 9.5;               // scanner tracking the aisle
+  gantry.lensMat.emissiveIntensity = 1.0 + Math.pow(Math.max(0, Math.sin(t * 1.7)), 4) * 1.6;
+  updateVapor(t);
+  updateBubbles(t);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ================================================================ resize
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

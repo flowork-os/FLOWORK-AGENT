@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Knitted Bobble Beanie</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#191a1d; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191a1d);
+scene.fog = new THREE.Fog(0x191a1d, 1.4, 5.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.42, 0.30, 0.62);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, 0.115, 0);
+controls.minDistance = 0.30;
+controls.maxDistance = 1.8;
+controls.maxPolarAngle = Math.PI * 0.90;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (hemisphere ambient + key / fill / rim)
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xbfd6ff, 0x2a2118, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e0, 2.5);
+key.position.set(0.55, 0.85, 0.55);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 4;
+key.shadow.camera.left = -0.45;
+key.shadow.camera.right = 0.45;
+key.shadow.camera.top = 0.45;
+key.shadow.camera.bottom = -0.45;
+key.shadow.bias = -0.0011;
+key.shadow.normalBias = 0.006;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fc0ff, 0.55);
+fill.position.set(-0.7, 0.35, 0.45);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9a8, 1.5);
+rim.position.set(-0.35, 0.55, -0.85);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffe6c0, 0.35, 2.0, 2.0);
+bounce.position.set(0.0, -0.15, 0.30);
+scene.add(bounce);
+
+/* shadow-only ground */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Materials — wool yarn look
+ * ------------------------------------------------------------------ */
+const MUSTARD = 0xd9a326;
+const MUSTARD_DK = 0xc08d1b;
+const CREAM = 0xf2e5cd;
+
+function yarnMat(color, opts = {}) {
+  const m = new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(color),
+    roughness: opts.roughness ?? 0.96,
+    metalness: 0.0,
+    sheen: 1.0,
+    sheenRoughness: 0.75,
+    sheenColor: new THREE.Color(opts.sheenColor ?? 0xfff0d0),
+    clearcoat: 0.0,
+    flatShading: false
+  });
+  return m;
+}
+
+const matMustard  = yarnMat(MUSTARD);
+const matMustardD = yarnMat(MUSTARD_DK);
+const matCream    = yarnMat(CREAM, { sheenColor: 0xffffff });
+
+/* ------------------------------------------------------------------ *
+ *  Geometry helpers
+ * ------------------------------------------------------------------ */
+const TAU = Math.PI * 2;
+const parts = [];
+function add(mesh) {
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  parts.push(mesh);
+  return mesh;
+}
+
+/** deterministic pseudo-random */
+let _s = 20260720;
+function rnd() {
+  _s = (_s * 1664525 + 1013904223) % 4294967296;
+  return _s / 4294967296;
+}
+
+/**
+ * Tube along a sampled curve, given a function t->Vector3.
+ */
+function tubeFromFn(fn, segs, radius, radialSegs, closed = false) {
+  const pts = [];
+  const n = closed ? segs : segs + 1;
+  for (let i = 0; i < n; i++) pts.push(fn(i / segs));
+  const curve = new THREE.CatmullRomCurve3(pts, closed, 'centripetal', 0.5);
+  return new THREE.TubeGeometry(curve, segs * 2, radius, radialSegs, closed);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Beanie profile
+ *  Radius as function of height parameter u (0 = brim bottom, 1 = crown)
+ *  Real-world scale: circumference ~55cm -> radius ~0.088 m
+ * ------------------------------------------------------------------ */
+const BRIM_BOTTOM = 0.000;   // y of the bottom edge of the folded brim
+const BRIM_TOP    = 0.072;   // top of folded cuff
+const CROWN_Y     = 0.245;   // top of dome (before pom)
+
+const R_BASE = 0.090;
+
+// Dome profile: y -> radius. Slouchy: bulges out slightly above brim then rounds in.
+function domeRadius(y) {
+  const t = THREE.MathUtils.clamp((y - BRIM_BOTTOM) / (CROWN_Y - BRIM_BOTTOM), 0, 1);
+  // base body radius with a gentle slouchy bulge
+  const bulge = 1.0 + 0.075 * Math.sin(Math.PI * Math.pow(t, 0.85)) * (1 - t * 0.25);
+  // rounded crown falloff
+  const round = Math.pow(Math.cos(Math.PI * 0.5 * Math.pow(t, 1.45)), 0.52);
+  return R_BASE * bulge * round;
+}
+
+// slight asymmetric slouch lean (cozy, hand-knit feel)
+function slouchOffset(y) {
+  const t = THREE.MathUtils.clamp((y - BRIM_TOP) / (CROWN_Y - BRIM_TOP), 0, 1);
+  const s = Math.pow(Math.max(t, 0), 1.6);
+  return new THREE.Vector2(0.014 * s, -0.006 * s);
+}
+
+function bodyPoint(y, ang, rOff = 0) {
+  const r = domeRadius(y) + rOff;
+  const o = slouchOffset(y);
+  return new THREE.Vector3(
+    Math.cos(ang) * r + o.x,
+    y,
+    Math.sin(ang) * r + o.y
+  );
+}
+
+/* ------------------------------------------------------------------ *
+ *  1. Inner shell  (so you never see through the stitches)
+ * ------------------------------------------------------------------ */
+{
+  const rows = 96, cols = 128;
+  const pos = [], idx = [], nor = [];
+  const yTop = CROWN_Y - 0.002;
+  for (let i = 0; i <= rows; i++) {
+    const v = i / rows;
+    const y = THREE.MathUtils.lerp(BRIM_BOTTOM - 0.004, yTop, v);
+    for (let j = 0; j <= cols; j++) {
+      const a = (j / cols) * TAU;
+      const p = bodyPoint(y, a, -0.0075);
+      pos.push(p.x, p.y, p.z);
+    }
+  }
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * (cols + 1) + j, b = a + cols + 1;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const shell = new THREE.Mesh(g, yarnMat(0x8f671a, { roughness: 1.0 }));
+  shell.material.side = THREE.DoubleSide;
+  add(shell);
+}
+
+/* ------------------------------------------------------------------ *
+ *  2. Crown dome cap  (fills the very top, under the stitch loops)
+ * ------------------------------------------------------------------ */
+{
+  const g = new THREE.SphereGeometry(1, 48, 24, 0, TAU, 0, Math.PI * 0.55);
+  const p = g.attributes.position;
+  const v = new THREE.Vector3();
+  const rTop = domeRadius(CROWN_Y - 0.001);
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const ang = Math.atan2(v.z, v.x);
+    // map sphere cap onto our crown region
+    const s = 1 - v.y;             // 0 at pole -> ~1 at rim of the cap
+    const y = CROWN_Y - 0.001 - s * 0.055;
+    const target = bodyPoint(y, ang, -0.006);
+    const rr = Math.hypot(v.x, v.z);
+    if (rr < 1e-6) { p.setXYZ(i, slouchOffset(y).x, y, slouchOffset(y).y); }
+    else p.setXYZ(i, target.x, target.y, target.z);
+  }
+  g.computeVertexNormals();
+  add(new THREE.Mesh(g, yarnMat(MUSTARD_DK)));
+}
+
+/* ------------------------------------------------------------------ *
+ *  3. Cable-knit panels on the dome body
+ *     8 repeats: each repeat = [ 2 purl ribs | 2-strand cable braid | 2 purl ribs ]
+ * ------------------------------------------------------------------ */
+const REPEATS = 8;
+const BODY_BOT = BRIM_TOP - 0.010;
+const BODY_TOP = CROWN_Y - 0.012;
+
+/* ---- 3a. Ribbing columns (stockinette / purl bumps between cables) ---- */
+{
+  const ribGeos = [];
+  const RIBS_PER_REPEAT = 6;      // small knit columns flanking each cable
+  const cableHalf = 0.055;        // angular half-width reserved for the cable
+
+  for (let r = 0; r < REPEATS; r++) {
+    const centre = (r / REPEATS) * TAU;
+    for (let k = 0; k < RIBS_PER_REPEAT; k++) {
+      // place ribs on both sides of the cable, skipping the cable channel
+      const side = k < RIBS_PER_REPEAT / 2 ? -1 : 1;
+      const kk = k % (RIBS_PER_REPEAT / 2);
+      const ang = centre + side * (cableHalf + 0.035 + kk * 0.052);
+
+      const rows = 30;
+      const geo = tubeFromFn((t) => {
+        const y = THREE.MathUtils.lerp(BODY_BOT - 0.006, BODY_TOP + 0.004, t);
+        // columns converge toward the crown (decrease rows)
+        const conv = 1 - Math.pow(t, 2.4) * 0.55;
+        const wob = Math.sin(t * Math.PI * 14 + r * 1.3 + k) * 0.0016;
+        const a = centre + (ang - centre) * conv + wob;
+        return bodyPoint(y, a, 0.0018);
+      }, rows, 0.0042, 7);
+      ribGeos.push(geo);
+    }
+  }
+  const merged = mergeGeos(ribGeos);
+  add(new THREE.Mesh(merged, matMustardD));
+}
+
+/* ---- 3b. purl bump texture: tiny torus "stitches" over the rib field ---- */
+{
+  const bumpGeos = [];
+  const ROWS = 22;
+  const proto = new THREE.SphereGeometry(0.0052, 8, 6);
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0);
+  const nrm = new THREE.Vector3();
+  const scl = new THREE.Vector3(1, 0.62, 1.35);
+
+  for (let r = 0; r < REPEATS; r++) {
+    const centre = (r / REPEATS) * TAU;
+    for (let i = 0; i < ROWS; i++) {
+      const t = i / (ROWS - 1);
+      const y = THREE.MathUtils.lerp(BODY_BOT, BODY_TOP, t);
+      const conv = 1 - Math.pow(t, 2.4) * 0.55;
+      for (let s = -1; s <= 1; s += 2) {
+        for (let kk = 0; kk < 3; kk++) {
+          const a0 = centre + s * (0.055 + 0.061 + kk * 0.052);
+          const a = centre + (a0 - centre) * conv + (i % 2 ? 0.012 : -0.012);
+          const p = bodyPoint(y, a, 0.0038);
+          nrm.set(p.x - slouchOffset(y).x, 0, p.z - slouchOffset(y).y).normalize();
+          q.setFromUnitVectors(up, nrm);
+          m4.compose(p, q, scl);
+          const g2 = proto.clone();
+          g2.applyMatrix4(m4);
+          bumpGeos.push(g2);
+        }
+      }
+    }
+  }
+  add(new THREE.Mesh(mergeGeos(bumpGeos), matMustard));
+}
+
+/* ---- 3c. The cable braids — two yarn strands twisting around each other ---- */
+{
+  const cableGeos = [];
+  const TWIST_PERIOD = 0.155;   // vertical length of one crossing
+  for (let r = 0; r < REPEATS; r++) {
+    const centre = (r / REPEATS) * TAU;
+    for (let strand = 0; strand < 2; strand++) {
+      const phase = strand * Math.PI;
+      const geo = tubeFromFn((t) => {
+        const y = THREE.MathUtils.lerp(BODY_BOT - 0.012, BODY_TOP + 0.010, t);
+        const conv = 1 - Math.pow(Math.max(t, 0), 2.4) * 0.55;
+        const span = (y - (BODY_BOT - 0.012)) / TWIST_PERIOD;
+        const ph = span * TAU + phase;
+        const amp = 0.040 * conv;              // angular sway
+        const a = centre + Math.sin(ph) * amp;
+        // radial in/out so strands genuinely braid over-under
+        const rOff = 0.0055 + Math.cos(ph) * 0.0045;
+        return bodyPoint(y, a, rOff);
+      }, 120, 0.0088, 10);
+      cableGeos.push(geo);
+    }
+  }
+  add(new THREE.Mesh(mergeGeos(cableGeos), matMustard));
+}
+
+/* ---- 3d. cable "rope twist" detail: small loops wrapping each strand ---- */
+{
+  const wrapGeos = [];
+  const N = 34;
+  const proto = new THREE.TorusGeometry(0.0092, 0.0021, 6, 14);
+  const m4 = new THREE.Matrix4();
+  const q = new THREE.Quaternion();
+  const zAxis = new THREE.Vector3(0, 0, 1);
+  const tan = new THREE.Vector3();
+  const one = new THREE.Vector3(1, 1, 1);
+  const TWIST_PERIOD = 0.155;
+
+  for (let r = 0; r < REPEATS; r++) {
+    const centre = (r / REPEATS) * TAU;
+    for (let strand = 0; strand < 2; strand++) {
+      const phase = strand * Math.PI;
+      const f = (t) => {
+        const y = THREE.MathUtils.lerp(BODY_BOT - 0.010, BODY_TOP + 0.008, t);
+        const conv = 1 - Math.pow(Math.max(t, 0), 2.4) * 0.55;
+        const span = (y - (BODY_BOT - 0.010)) / TWIST_PERIOD;
+        const ph = span * TAU + phase;
+        const a = centre + Math.sin(ph) * 0.040 * conv;
+        const rOff = 0.0055 + Math.cos(ph) * 0.0045;
+        return bodyPoint(y, a, rOff);
+      };
+      for (let i = 0; i < N; i++) {
+        const t = i / (N - 1);
+        const p = f(t);
+        const p2 = f(Math.min(t + 0.01, 1));
+        tan.subVectors(p2, p).normalize();
+        if (tan.lengthSq() < 1e-8) continue;
+        q.setFromUnitVectors(zAxis, tan);
+        const sc = 1 - Math.pow(t, 2.4) * 0.35;
+        m4.compose(p, q, one.clone().multiplyScalar(sc));
+        const g2 = proto.clone();
+        g2.applyMatrix4(m4);
+        wrapGeos.push(g2);
+      }
+    }
+  }
+  add(new THREE.Mesh(mergeGeos(wrapGeos), matMustardD));
+}
+
+/* ------------------------------------------------------------------ *
+ *  4. Cream contrasting band  (chunky folded brim, 2x2 ribbing)
+ * ------------------------------------------------------------------ */
+{
+  /* 4a. the solid folded cuff body: a torus-ish band with a rolled bottom edge */
+  const rows = 40, cols = 200;
+  const pos = [], idx = [];
+  for (let i = 0; i <= rows; i++) {
+    const v = i / rows;
+    // cross-section of the fold: a rounded "U" that rolls under at the bottom
+    const cs = v * Math.PI;                     // 0..pi across the fold thickness
+    const y = THREE.MathUtils.lerp(BRIM_TOP + 0.004, BRIM_BOTTOM - 0.004, v);
+    const bulgeR = Math.sin(cs) * 0.0105;       // fold thickness
+    for (let j = 0; j <= cols; j++) {
+      const a = (j / cols) * TAU;
+      const r = domeRadius(BRIM_TOP * (1 - v) + 0.0001) + 0.0125 + bulgeR;
+      const o = slouchOffset(y);
+      pos.push(Math.cos(a) * r + o.x, y, Math.sin(a) * r + o.y);
+    }
+  }
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * (cols + 1) + j, b = a + cols + 1;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  const band = new THREE.Mesh(g, matCream);
+  band.material.side = THREE.DoubleSide;
+  add(band);
+}
+
+{
+  /* 4b. 2x2 rib: vertical yarn ridges wrapping the cuff, folding over the top */
+  const ribGeos = [];
+  const COUNT = 64;
+  for (let i = 0; i < COUNT; i++) {
+    const a = (i / COUNT) * TAU;
+    const geo = tubeFromFn((t) => {
+      // travel from bottom rolled edge, up the outside, over the fold top
+      const v = t;
+      const y = THREE.MathUtils.lerp(BRIM_BOTTOM - 0.006, BRIM_TOP + 0.008, v);
+      const cs = Math.sin(v * Math.PI);
+      const base = domeRadius(Math.max(y, 0.0005));
+      const r = base + 0.0145 + cs * 0.0105;
+      const o = slouchOffset(Math.max(y, 0));
+      const wob = Math.sin(v * Math.PI * 3.0 + i) * 0.004;
+      const aa = a + wob * 0.35;
+      return new THREE.Vector3(Math.cos(aa) * r + o.x, y, Math.sin(aa) * r + o.y);
+    }, 26, 0.0058, 8);
+    ribGeos.push(geo);
+  }
+  add(new THREE.Mesh(mergeGeos(ribGeos), matCream));
+}
+
+{
+  /* 4c. knit V-stitch bumps across the cream band for close-up texture */
+  const bumps = [];
+  const ROWS = 7, COLS = 64;
+  const proto = new THREE.TorusGeometry(0.0062, 0.0022, 6, 12);
+  const m4 = new THREE.Matrix4(); const q = new THREE.Quaternion();
+  const up = new THREE.Vector3(0, 1, 0); const nrm = new THREE.Vector3();
+  for (let i = 0; i < ROWS; i++) {
+    const v = (i + 0.5) / ROWS;
+    const y = THREE.MathUtils.lerp(BRIM_BOTTOM + 0.004, BRIM_TOP - 0.002, v);
+    const cs = Math.sin(THREE.MathUtils.clamp((BRIM_TOP - y) / (BRIM_TOP - BRIM_BOTTOM), 0, 1) * Math.PI);
+    for (let j = 0; j < COLS; j++) {
+      const a = ((j + (i % 2) * 0.5) / COLS) * TAU;
+      const r = domeRadius(Math.max(y, 0.0005)) + 0.0145 + cs * 0.0105 + 0.0035;
+      const o = slouchOffset(Math.max(y, 0));
+      const p = new THREE.Vector3(Math.cos(a) * r + o.x, y, Math.sin(a) * r + o.y);
+      nrm.set(Math.cos(a), 0.0, Math.sin(a)).normalize();
+      q.setFromUnitVectors(up, nrm);
+      m4.compose(p, q, new THREE.Vector3(1, 1, 1));
+      const g2 = proto.clone(); g2.applyMatrix4(m4); bumps.push(g2);
+    }
+  }
+  add(new THREE.Mesh(mergeGeos(bumps), matCream));
+}
+
+{
+  /* 4d. thin mustard join line where the cuff meets the dome */
+  const geo = tubeFromFn((t) => {
+    const a = t * TAU;
+    const y = BRIM_TOP + 0.010;
+    const r = domeRadius(y) + 0.0075;
+    const o = slouchOffset(y);
+    return new THREE.Vector3(Math.cos(a) * r + o.x, y + Math.sin(a * 32) * 0.0012, Math.sin(a) * r + o.y);
+  }, 240, 0.0050, 8, true);
+  add(new THREE.Mesh(geo, matMustard));
+}
+
+/* ------------------------------------------------------------------ *
+ *  5. Crown decrease swirl — yarn spirals gathering at the top
+ * ------------------------------------------------------------------ */
+{
+  const geos = [];
+  const N = 8;
+  for (let i = 0; i < N; i++) {
+    const a0 = (i / N) * TAU;
+    const geo = tubeFromFn((t) => {
+      const y = THREE.MathUtils.lerp(BODY_TOP - 0.012, CROWN_Y + 0.006, t);
+      const a = a0 + t * 0.85;
+      const rr = domeRadius(Math.min(y, CROWN_Y - 0.0005)) * (1 - Math.pow(t, 2.0) * 0.55);
+      const o = slouchOffset(Math.min(y, CROWN_Y));
+      return new THREE.Vector3(Math.cos(a) * (rr + 0.003) + o.x, y, Math.sin(a) * (rr + 0.003) + o.y);
+    }, 26, 0.0062, 8);
+    geos.push(geo);
+  }
+  add(new THREE.Mesh(mergeGeos(geos), matMustardD));
+}
+
+/* small gathered knot at the crown centre where the pom is sewn on */
+{
+  const cy = CROWN_Y + 0.004;
+  const o = slouchOffset(CROWN_Y);
+  const knot = new THREE.Mesh(new THREE.SphereGeometry(0.014, 20, 14), matMustardD);
+  knot.position.set(o.x, cy, o.y);
+  knot.scale.set(1, 0.7, 1);
+  add(knot);
+}
+
+/* ------------------------------------------------------------------ *
+ *  6. Pom-pom — dense fuzzy sphere of tapered yarn tufts
+ * ------------------------------------------------------------------ */
+{
+  const oC = slouchOffset(CROWN_Y);
+  const POM = new THREE.Group();
+  POM.position.set(oC.x, CROWN_Y + 0.052, oC.y);
+
+  // inner core so the pom reads solid
+  const core = new THREE.Mesh(new THREE.SphereGeometry(0.030, 28, 20), yarnMat(0xc99a24));
+  core.castShadow = true; core.receiveShadow = true;
+  POM.add(core);
+
+  // tufts: strands radiating out, slightly curved, tapered
+  const tuftGeos = [];
+  const TUFTS = 720;
+  const golden = Math.PI * (3 - Math.sqrt(5));
+  for (let i = 0; i < TUFTS; i++) {
+    const yv = 1 - (i / (TUFTS - 1)) * 2;
+    const rad = Math.sqrt(Math.max(0, 1 - yv * yv));
+    const th = golden * i;
+    const dir = new THREE.Vector3(Math.cos(th) * rad, yv, Math.sin(th) * rad).normalize();
+
+    // random tangent for curl
+    const tmp = new THREE.Vector3(rnd() - 0.5, rnd() - 0.5, rnd() - 0.5);
+    const tang = new THREE.Vector3().crossVectors(dir, tmp).normalize();
+
+    const L = 0.026 + rnd() * 0.020;
+    const curl = 0.010 + rnd() * 0.012;
+    const start = dir.clone().multiplyScalar(0.020);
+
+    const pts = [];
+    const SEG = 5;
+    for (let s = 0; s <= SEG; s++) {
+      const t = s / SEG;
+      const p = start.clone()
+        .addScaledVector(dir, L * t)
+        .addScaledVector(tang, curl * Math.sin(t * Math.PI * 0.9) * (0.4 + t));
+      pts.push(p);
+    }
+    const curve = new THREE.CatmullRomCurve3(pts);
+    const g = new THREE.TubeGeometry(curve, 5, 0.0028, 5, false);
+    // taper the strand
+    const pa = g.attributes.position;
+    const v = new THREE.Vector3();
+    for (let k = 0; k < pa.count; k++) {
+      v.fromBufferAttribute(pa, k);
+      const along = THREE.MathUtils.clamp(v.clone().sub(start).dot(dir) / L, 0, 1);
+      const shrink = 1 - along * 0.45;
+      const cpt = curve.getPointAt(THREE.MathUtils.clamp(along, 0, 1));
+      v.sub(cpt).multiplyScalar(shrink).add(cpt);
+      pa.setXYZ(k, v.x, v.y, v.z);
+    }
+    g.computeVertexNormals();
+    tuftGeos.push(g);
+  }
+
+  // split into two colour groups for depth (mustard + lighter highlights)
+  const grpA = [], grpB = [];
+  tuftGeos.forEach((g, i) => ((i % 5 === 0) ? grpB : grpA).push(g));
+  const fuzzA = new THREE.Mesh(mergeGeos(grpA), yarnMat(MUSTARD, { roughness: 1.0 }));
+  const fuzzB = new THREE.Mesh(mergeGeos(grpB), yarnMat(0xe8c05a, { roughness: 1.0 }));
+  [fuzzA, fuzzB].forEach(m => { m.castShadow = true; m.receiveShadow = true; POM.add(m); });
+
+  // a few cream flecks in the pom to tie to the band
+  const fleck = [];
+  for (let i = 0; i < 60; i++) {
+    const g = tuftGeos[(i * 11) % tuftGeos.length].clone();
+    fleck.push(g);
+  }
+  const fuzzC = new THREE.Mesh(mergeGeos(fleck), yarnMat(CREAM, { roughness: 1.0 }));
+  fuzzC.scale.setScalar(0.985);
+  fuzzC.castShadow = true; fuzzC.receiveShadow = true;
+  POM.add(fuzzC);
+
+  parts.push(POM);
+}
+
+/* ------------------------------------------------------------------ *
+ *  merge helper (defined after use is fine — function declaration hoists)
+ * ------------------------------------------------------------------ */
+function mergeGeos(geoms) {
+  // manual non-indexed merge (avoids extra addon import)
+  let total = 0;
+  const nonIndexed = geoms.map(g => {
+    const ni = g.index ? g.toNonIndexed() : g;
+    total += ni.attributes.position.count;
+    return ni;
+  });
+  const pos = new Float32Array(total * 3);
+  const nor = new Float32Array(total * 3);
+  let o = 0;
+  for (const g of nonIndexed) {
+    if (!g.attributes.normal) g.computeVertexNormals();
+    pos.set(g.attributes.position.array, o * 3);
+    nor.set(g.attributes.normal.array, o * 3);
+    o += g.attributes.position.count;
+    g.dispose();
+  }
+  const out = new THREE.BufferGeometry();
+  out.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  out.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  out.computeBoundingSphere();
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Assemble the ONE object
+ * ------------------------------------------------------------------ */
+const beanie = new THREE.Group();
+parts.forEach(p => beanie.add(p));
+
+// centre it: sit brim on the ground plane, centre horizontally
+const box = new THREE.Box3().setFromObject(beanie);
+const c = box.getCenter(new THREE.Vector3());
+beanie.position.x -= c.x;
+beanie.position.z -= c.z;
+beanie.position.y -= box.min.y;
+scene.add(beanie);
+
+// re-target controls at the object's middle
+const box2 = new THREE.Box3().setFromObject(beanie);
+controls.target.copy(box2.getCenter(new THREE.Vector3()));
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Amigurumi Hedgehog</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17181c; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(255,255,255,0.38); letter-spacing: 0.02em; user-select: none; pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer / Scene / Camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1c20);
+scene.fog = new THREE.Fog(0x1b1c20, 1.6, 6.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.52, 0.34, 0.72);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 0.32;
+controls.maxDistance = 2.4;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 0.105, 0);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambient + key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbfd4e8, 0x3a3128, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.5);
+key.position.set(0.55, 0.85, 0.55);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 4;
+key.shadow.camera.left = -0.45;
+key.shadow.camera.right = 0.45;
+key.shadow.camera.top = 0.45;
+key.shadow.camera.bottom = -0.45;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.006;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.55);
+fill.position.set(-0.7, 0.35, 0.45);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9a8, 1.15);
+rim.position.set(-0.3, 0.55, -0.85);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffe6c8, 0.35, 2.2, 2.0);
+bounce.position.set(0.0, 0.06, 0.42);
+scene.add(bounce);
+
+// ---------------------------------------------------------------------------
+// Shadow-only ground
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(8, 8),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Deterministic PRNG (so the yarn look is stable frame to frame / reload)
+// ---------------------------------------------------------------------------
+function makeRNG(seed) {
+  let s = seed >>> 0;
+  return function () {
+    s ^= s << 13; s >>>= 0;
+    s ^= s >> 17;
+    s ^= s << 5;  s >>>= 0;
+    return s / 4294967296;
+  };
+}
+const rng = makeRNG(20260720);
+const rand = (a, b) => a + (b - a) * rng();
+
+// ---------------------------------------------------------------------------
+// Yarn palettes
+// ---------------------------------------------------------------------------
+const OATMEAL = new THREE.Color(0xe4d2b4);
+const OATMEAL_DEEP = new THREE.Color(0xd0b98f);
+const QUILL_COLORS = [
+  new THREE.Color(0x6b4a2f), // dark chocolate
+  new THREE.Color(0x855c39), // brown
+  new THREE.Color(0x9c6f45), // mid brown
+  new THREE.Color(0xb98a52), // caramel
+  new THREE.Color(0xd0a468), // light caramel
+  new THREE.Color(0x7a5638)  // cocoa
+];
+
+// Fuzzy yarn-ish material factory: high roughness, no metalness, slight sheen
+function yarnMaterial(color, opts) {
+  opts = opts || {};
+  const m = new THREE.MeshStandardMaterial({
+    color: color,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.95,
+    metalness: 0.0,
+    flatShading: !!opts.flat
+  });
+  if (opts.vertexColors) m.vertexColors = true;
+  return m;
+}
+
+const matFace = yarnMaterial(OATMEAL.clone(), { roughness: 0.93 });
+const matFaceDeep = yarnMaterial(OATMEAL_DEEP.clone(), { roughness: 0.95 });
+const matBody = yarnMaterial(new THREE.Color(0x8a6440), { roughness: 0.96 });
+const matQuill = new THREE.MeshStandardMaterial({
+  vertexColors: true, color: 0xffffff, roughness: 0.9, metalness: 0.0
+});
+const matNose = new THREE.MeshPhysicalMaterial({
+  color: 0x14100f, roughness: 0.36, metalness: 0.0, clearcoat: 0.7, clearcoatRoughness: 0.35
+});
+const matEye = new THREE.MeshPhysicalMaterial({
+  color: 0x08070a, roughness: 0.06, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.03,
+  reflectivity: 0.85
+});
+const matThread = new THREE.MeshStandardMaterial({ color: 0x3a2a20, roughness: 0.85, metalness: 0.0 });
+const matBlush = new THREE.MeshStandardMaterial({
+  color: 0xd98d80, roughness: 1.0, metalness: 0.0, transparent: true, opacity: 0.55
+});
+
+// ---------------------------------------------------------------------------
+// Root group — the ONE object
+// ---------------------------------------------------------------------------
+const hedgehog = new THREE.Group();
+scene.add(hedgehog);
+
+// ---------------------------------------------------------------------------
+// Body shape function.
+// A teardrop: wide round rump at the back (-z), tapering to a snout at +z.
+// bodyRadius(t) with t in [0,1] going from tail(0) to nose tip(1).
+// ---------------------------------------------------------------------------
+const BODY_LEN = 0.230;   // total nose-to-tail length in metres (palm sized)
+const BODY_HALF = BODY_LEN * 0.5;
+
+// Profile: returns {r, cy} the cross-section radius and vertical centre offset
+function bodyProfile(t) {
+  // t: 0 = back of rump, 1 = nose tip
+  const u = THREE.MathUtils.clamp(t, 0, 1);
+  // wide rounded rump
+  const rump = Math.pow(Math.sin(Math.pow(u, 0.62) * Math.PI * 0.5 + Math.PI * 0.5), 1.0);
+  // taper toward snout
+  let r;
+  if (u < 0.62) {
+    // back half: near-spherical falloff
+    const a = u / 0.62;                      // 0..1
+    r = 0.086 * Math.sqrt(Math.max(0.0001, 1.0 - Math.pow(1.0 - a, 2.1) * 0.97));
+    r = 0.0155 + r;
+  } else {
+    const a = (u - 0.62) / 0.38;             // 0..1 across the head/snout
+    const s = Math.cos(a * Math.PI * 0.5);   // 1 -> 0
+    r = 0.0155 + 0.086 * Math.pow(Math.max(0.0, s), 0.55);
+  }
+  // slight vertical lift of the snout centre-line
+  const cy = 0.006 * Math.pow(THREE.MathUtils.clamp((u - 0.55) / 0.45, 0, 1), 1.6);
+  return { r: r, cy: cy, rumpHint: rump };
+}
+
+// Squash factors: body is a bit wider than tall at the rump, and the belly is flat.
+function bodyPoint(t, theta) {
+  const p = bodyProfile(t);
+  const z = -BODY_HALF + t * BODY_LEN;
+  const wide = 1.06;                                     // x scale
+  const tall = 0.95;                                     // y scale
+  let x = Math.cos(theta) * p.r * wide;
+  let y = Math.sin(theta) * p.r * tall;
+  // flatten belly (bottom) so it "sits"
+  if (y < 0) y *= 0.80;
+  const yBase = 0.093 + p.cy;                            // centre-line height above ground
+  return new THREE.Vector3(x, yBase + y, z);
+}
+
+// ---------------------------------------------------------------------------
+// BODY MESH — built as a lathe-like parametric surface so we can add
+// a subtle horizontal ribbing that reads as spiral single-crochet rounds.
+// ---------------------------------------------------------------------------
+const SEG_T = 132;   // along the length
+const SEG_A = 96;    // around
+
+function buildBodyGeometry(ribAmp, roundsFreq) {
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const P = (t, a) => {
+    const base = bodyPoint(t, a);
+    // spiral rounds: displacement follows a helix -> round index depends on t and theta
+    const spiral = Math.sin((t * roundsFreq + a / (Math.PI * 2)) * Math.PI * 2.0);
+    // stitch bumps around the circumference
+    const stitches = Math.sin(a * 22.0 + t * 6.0);
+    const p = bodyProfile(t);
+    const amp = ribAmp * THREE.MathUtils.clamp(p.r / 0.09, 0.25, 1.0);
+    const n = base.clone();
+    n.y -= (0.093 + p.cy);
+    if (n.lengthSq() < 1e-9) n.set(0, 1, 0);
+    n.normalize();
+    base.addScaledVector(n, spiral * amp + stitches * amp * 0.32);
+    return base;
+  };
+
+  for (let i = 0; i <= SEG_T; i++) {
+    const t = i / SEG_T;
+    for (let j = 0; j <= SEG_A; j++) {
+      const a = (j / SEG_A) * Math.PI * 2;
+      const v = P(t, a);
+      positions.push(v.x, v.y, v.z);
+      uvs.push(j / SEG_A, t);
+      normals.push(0, 0, 0);
+    }
+  }
+  for (let i = 0; i < SEG_T; i++) {
+    for (let j = 0; j < SEG_A; j++) {
+      const a = i * (SEG_A + 1) + j;
+      const b = a + SEG_A + 1;
+      indices.push(a, b, a + 1);
+      indices.push(b, b + 1, a + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+const bodyGeo = buildBodyGeometry(0.00075, 17.0);
+
+// Vertex colours across the body: oatmeal face/belly blending into brown back
+{
+  const pos = bodyGeo.attributes.position;
+  const colors = new Float32Array(pos.count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < pos.count; i++) {
+    const z = pos.getZ(i);
+    const y = pos.getY(i);
+    const t = (z + BODY_HALF) / BODY_LEN;     // 0 tail .. 1 nose
+    // face-ness: front + upper-front region is oatmeal
+    const front = THREE.MathUtils.smoothstep(t, 0.55, 0.78);
+    const low = THREE.MathUtils.smoothstep(0.098 - y, -0.005, 0.03); // belly
+    const oat = THREE.MathUtils.clamp(Math.max(front, low * 0.9), 0, 1);
+    c.copy(matBody.color).lerp(OATMEAL, oat);
+    // faint round-to-round tonal variation (variegated yarn feel)
+    const v = 0.965 + 0.05 * Math.sin(t * 34.0 + Math.atan2(pos.getX(i), y) * 3.0);
+    colors[i * 3 + 0] = c.r * v;
+    colors[i * 3 + 1] = c.g * v;
+    colors[i * 3 + 2] = c.b * v;
+  }
+  bodyGeo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+}
+
+const bodyMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.95, metalness: 0.0
+});
+const body = new THREE.Mesh(bodyGeo, bodyMat);
+body.castShadow = true;
+body.receiveShadow = true;
+hedgehog.add(body);
+
+// ---------------------------------------------------------------------------
+// QUILLS — dense loopy bobble stitches over the back/sides.
+// Each bobble = a small squashed icosahedron with a "loop" arc of yarn on top.
+// Instanced for performance, with per-instance variegated colours.
+// ---------------------------------------------------------------------------
+
+// Bobble base geometry (a knobbly puff)
+const bobbleGeo = new THREE.IcosahedronGeometry(1.0, 2);
+{
+  const p = bobbleGeo.attributes.position;
+  const v = new THREE.Vector3();
+  const r2 = makeRNG(99177);
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const n = 1.0 + 0.14 * Math.sin(v.x * 9.0) * Math.cos(v.z * 8.0) + (r2() - 0.5) * 0.06;
+    v.multiplyScalar(n);
+    v.y *= 1.0;
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  bobbleGeo.computeVertexNormals();
+}
+
+// The little yarn loop that sits atop each bobble (a partial torus = pulled loop)
+const loopGeo = new THREE.TorusGeometry(0.62, 0.18, 6, 16, Math.PI * 1.45);
+
+// Determine where quills go: on the upper/back surface, excluding the face.
+function quillMask(t, a) {
+  // a: 0 = +x side, PI/2 = top
+  const up = Math.sin(a);                            // 1 at top, -1 at bottom
+  const back = 1.0 - THREE.MathUtils.smoothstep(t, 0.42, 0.66);  // 1 at rump, 0 at head
+  const upness = THREE.MathUtils.smoothstep(up, -0.34, 0.30);
+  return THREE.MathUtils.clamp(back * upness, 0, 1);
+}
+
+const quillTransforms = [];
+{
+  const ROWS = 30;
+  for (let i = 0; i < ROWS; i++) {
+    // t from the very back to the brow line
+    const t = THREE.MathUtils.lerp(0.030, 0.665, i / (ROWS - 1));
+    const prof = bodyProfile(t);
+    const circ = 2 * Math.PI * prof.r;
+    const count = Math.max(6, Math.round(circ / 0.0125));
+    const rowPhase = (i * 0.37) % 1.0;  // spiral offset per round
+    for (let j = 0; j < count; j++) {
+      const a = ((j + rowPhase) / count) * Math.PI * 2;
+      const m = quillMask(t, a);
+      if (m < 0.16) continue;
+      if (rng() > m * 0.96 + 0.06) continue;
+
+      const jt = THREE.MathUtils.clamp(t + rand(-0.008, 0.008), 0.02, 0.70);
+      const ja = a + rand(-0.045, 0.045);
+
+      const base = bodyPoint(jt, ja);
+      // outward normal
+      const p2 = bodyProfile(jt);
+      const nrm = base.clone();
+      nrm.y -= (0.093 + p2.cy);
+      if (nrm.lengthSq() < 1e-9) nrm.set(0, 1, 0);
+      nrm.normalize();
+      // lean the quills backward (toward -z) like brushed fur
+      const lean = new THREE.Vector3(0, 0.10, -0.55 * THREE.MathUtils.smoothstep(jt, 0.05, 0.7));
+      const dir = nrm.clone().addScaledVector(lean, 0.55).normalize();
+
+      const size = rand(0.0088, 0.0132) * THREE.MathUtils.lerp(0.78, 1.0, THREE.MathUtils.smoothstep(jt, 0.66, 0.30) * 0.0 + 1.0);
+      const sizeScale = THREE.MathUtils.lerp(0.72, 1.0, THREE.MathUtils.clamp(m * 1.15, 0, 1));
+
+      const pos = base.clone().addScaledVector(nrm, size * 0.42);
+
+      quillTransforms.push({
+        pos: pos,
+        dir: dir,
+        nrm: nrm,
+        size: size * sizeScale,
+        color: QUILL_COLORS[(Math.random() * 0 + Math.floor(rng() * QUILL_COLORS.length)) % QUILL_COLORS.length],
+        roll: rng() * Math.PI * 2,
+        squash: rand(0.72, 0.95)
+      });
+    }
+  }
+}
+
+const QUILL_COUNT = quillTransforms.length;
+
+const bobbleMesh = new THREE.InstancedMesh(bobbleGeo, matQuill, QUILL_COUNT);
+bobbleMesh.castShadow = true;
+bobbleMesh.receiveShadow = true;
+
+const loopMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.88, metalness: 0.0 });
+const loopMesh = new THREE.InstancedMesh(loopGeo, loopMat, QUILL_COUNT);
+loopMesh.castShadow = true;
+loopMesh.receiveShadow = true;
+
+{
+  const dummy = new THREE.Object3D();
+  const up = new THREE.Vector3(0, 1, 0);
+  const q = new THREE.Quaternion();
+  const tmpColor = new THREE.Color();
+
+  for (let i = 0; i < QUILL_COUNT; i++) {
+    const it = quillTransforms[i];
+
+    q.setFromUnitVectors(up, it.dir);
+
+    // --- bobble ---
+    dummy.position.copy(it.pos);
+    dummy.quaternion.copy(q);
+    dummy.rotateY(it.roll);
+    dummy.scale.set(it.size * 1.02, it.size * 1.42 * it.squash + it.size * 0.18, it.size * 1.02);
+    dummy.updateMatrix();
+    bobbleMesh.setMatrixAt(i, dummy.matrix);
+
+    tmpColor.copy(it.color);
+    const shade = 0.9 + rng() * 0.22;
+    tmpColor.multiplyScalar(shade);
+    bobbleMesh.setColorAt(i, tmpColor);
+
+    // --- pulled loop on top ---
+    const tipOffset = it.size * 1.42 * it.squash + it.size * 0.10;
+    dummy.position.copy(it.pos).addScaledVector(it.dir, tipOffset);
+    dummy.quaternion.copy(q);
+    dummy.rotateY(it.roll + 0.6);
+    dummy.rotateX(Math.PI / 2);
+    const ls = it.size * 0.95;
+    dummy.scale.set(ls, ls, ls);
+    dummy.updateMatrix();
+    loopMesh.setMatrixAt(i, dummy.matrix);
+
+    tmpColor.copy(it.color).multiplyScalar(1.06);
+    loopMesh.setColorAt(i, tmpColor);
+  }
+  bobbleMesh.instanceMatrix.needsUpdate = true;
+  loopMesh.instanceMatrix.needsUpdate = true;
+  if (bobbleMesh.instanceColor) bobbleMesh.instanceColor.needsUpdate = true;
+  if (loopMesh.instanceColor) loopMesh.instanceColor.needsUpdate = true;
+}
+
+hedgehog.add(bobbleMesh);
+hedgehog.add(loopMesh);
+
+// ---------------------------------------------------------------------------
+// The crocheted "brow" round — a raised rim of oatmeal stitches where the
+// quill cap meets the face.
+// ---------------------------------------------------------------------------
+{
+  const rimT = 0.665;
+  const prof = bodyProfile(rimT);
+  const count = 46;
+  const stitchGeo = new THREE.SphereGeometry(1.0, 10, 8);
+  const rimMesh = new THREE.InstancedMesh(stitchGeo, matFaceDeep, count);
+  rimMesh.castShadow = true;
+  rimMesh.receiveShadow = true;
+  const dummy = new THREE.Object3D();
+  const up = new THREE.Vector3(0, 1, 0);
+  const q = new THREE.Quaternion();
+  let n = 0;
+  for (let j = 0; j < count; j++) {
+    const a = (j / count) * Math.PI * 2;
+    // only across the top arc (the visible brow)
+    const base = bodyPoint(rimT, a);
+    const nrm = base.clone();
+    nrm.y -= (0.093 + prof.cy);
+    if (nrm.lengthSq() < 1e-9) nrm.set(0, 1, 0);
+    nrm.normalize();
+    dummy.position.copy(base).addScaledVector(nrm, 0.0018);
+    q.setFromUnitVectors(up, nrm);
+    dummy.quaternion.copy(q);
+    dummy.scale.set(0.0038, 0.0030, 0.0052);
+    dummy.updateMatrix();
+    rimMesh.setMatrixAt(n++, dummy.matrix);
+  }
+  rimMesh.count = n;
+  rimMesh.instanceMatrix.needsUpdate = true;
+  hedgehog.add(rimMesh);
+}
+
+// ---------------------------------------------------------------------------
+// SNOUT — a small extra oatmeal cone tip for a sweet hedgehog muzzle
+// ---------------------------------------------------------------------------
+{
+  const snoutGeo = new THREE.SphereGeometry(0.0195, 30, 22);
+  const p = snoutGeo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    v.z *= 1.55;
+    v.y *= 0.92;
+    // gentle stitch ripple
+    const rip = 1.0 + 0.014 * Math.sin(v.z * 260.0);
+    v.multiplyScalar(rip);
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  snoutGeo.computeVertexNormals();
+  const snout = new THREE.Mesh(snoutGeo, matFace);
+  const tip = bodyPoint(0.905, Math.PI / 2);
+  snout.position.set(0, 0.0955, BODY_HALF - 0.028);
+  snout.rotation.x = -0.10;
+  snout.castShadow = true;
+  snout.receiveShadow = true;
+  hedgehog.add(snout);
+}
+
+// ---------------------------------------------------------------------------
+// NOSE — felted black bead at the tip of the snout
+// ---------------------------------------------------------------------------
+const NOSE_POS = new THREE.Vector3(0, 0.0985, BODY_HALF + 0.0005);
+{
+  const noseGeo = new THREE.SphereGeometry(0.0082, 26, 20);
+  const p = noseGeo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    v.y *= 0.86;
+    v.z *= 0.94;
+    p.setXYZ(i, v.x, v.y, v.z);
+  }
+  noseGeo.computeVertexNormals();
+  const nose = new THREE.Mesh(noseGeo, matNose);
+  nose.position.copy(NOSE_POS);
+  nose.castShadow = true;
+  hedgehog.add(nose);
+}
+
+// ---------------------------------------------------------------------------
+// EYES — shiny safety eyes with tiny highlights, set in oatmeal
+// ---------------------------------------------------------------------------
+function makeEye(side) {
+  const g = new THREE.Group();
+  const R = 0.0072;
+
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(R, 24, 18), matEye);
+  eye.castShadow = false;
+  g.add(eye);
+
+  // safety-eye washer / shallow rim of oatmeal around the eye
+  const rimGeo = new THREE.TorusGeometry(R * 1.02, R * 0.30, 8, 22);
+  const rimM = new THREE.Mesh(rimGeo, matFaceDeep);
+  rimM.position.z = -R * 0.30;
+  g.add(rimM);
+
+  // catchlight
+  const hl = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 0.30, 12, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffffff })
+  );
+  hl.position.set(-side * R * 0.34, R * 0.36, R * 0.74);
+  g.add(hl);
+
+  const hl2 = new THREE.Mesh(
+    new THREE.SphereGeometry(R * 0.14, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xdfe8ff })
+  );
+  hl2.position.set(side * R * 0.36, -R * 0.30, R * 0.76);
+  g.add(hl2);
+
+  return g;
+}
+
+{
+  const eyeT = 0.815;
+  for (const side of [-1, 1]) {
+    // place on the surface, slightly above the centreline
+    const a = Math.PI / 2 - side * 0 + 0; // will compute directly
+    const theta = (side === 1) ? (Math.PI * 0.30) : (Math.PI * 0.70);
+    const surf = bodyPoint(eyeT, theta);
+    const prof = bodyProfile(eyeT);
+    const nrm = surf.clone();
+    nrm.y -= (0.093 + prof.cy);
+    nrm.normalize();
+
+    const eye = makeEye(side);
+    eye.position.copy(surf).addScaledVector(nrm, 0.0026);
+    // face outward along the normal, biased forward
+    const look = surf.clone().addScaledVector(nrm, 0.05);
+    look.z += 0.05;
+    eye.lookAt(look);
+    hedgehog.add(eye);
+
+    // blush
+    const blush = new THREE.Mesh(new THREE.CircleGeometry(0.0085, 20), matBlush);
+    const bt = 0.755;
+    const bth = (side === 1) ? (Math.PI * 0.12) : (Math.PI * 0.88);
+    const bs = bodyPoint(bt, bth);
+    const bp = bodyProfile(bt);
+    const bn = bs.clone(); bn.y -= (0.093 + bp.cy); bn.normalize();
+    blush.position.copy(bs).addScaledVector(bn, 0.0012);
+    blush.lookAt(bs.clone().addScaledVector(bn, 0.05));
+    hedgehog.add(blush);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// EMBROIDERED SMILE — thin tube curves under the nose
+// ---------------------------------------------------------------------------
+{
+  const smileGroup = new THREE.Group();
+
+  // vertical stitch from nose down
+  const stemPts = [];
+  for (let i = 0; i <= 10; i++) {
+    const u = i / 10;
+    stemPts.push(new THREE.Vector3(0, 0.0968 - u * 0.0088, BODY_HALF - 0.0018 - u * 0.0032));
+  }
+  const stem = new THREE.Mesh(
+    new THREE.TubeGeometry(new THREE.CatmullRomCurve3(stemPts), 20, 0.00085, 6, false),
+    matThread
+  );
+  smileGroup.add(stem);
+
+  // two mouth arcs
+  for (const side of [-1, 1]) {
+    const pts = [];
+    for (let i = 0; i <= 14; i++) {
+      const u = i / 14;
+      const x = side * u * 0.0125;
+      const y = 0.0880 - Math.sin(u * Math.PI * 0.85) * 0.0038 + u * 0.0012;
+      const z = BODY_HALF - 0.0050 - u * u * 0.0075;
+      pts.push(new THREE.Vector3(x, y, z));
+    }
+    const arc = new THREE.Mesh(
+      new THREE.TubeGeometry(new THREE.CatmullRomCurve3(pts), 26, 0.00085, 6, false),
+      matThread
+    );
+    smileGroup.add(arc);
+  }
+  smileGroup.traverse(o => { if (o.isMesh) o.castShadow = false; });
+  hedgehog.add(smileGroup);
+}
+
+// ---------------------------------------------------------------------------
+// EARS — small rounded crocheted discs
+// ---------------------------------------------------------------------------
+function makeEar() {
+  const g = new THREE.Group();
+  const outerGeo = new THREE.SphereGeometry(0.0145, 24, 18);
+  {
+    const p = outerGeo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i);
+      v.z *= 0.34;
+      v.y *= 1.02;
+      // ripple = crochet rounds
+      const rr = 1.0 + 0.02 * Math.sin(Math.sqrt(v.x * v.x + v.y * v.y) * 620.0);
+      v.x *= rr; v.y *= rr;
+      p.setXYZ(i, v.x, v.y, v.z);
+    }
+    outerGeo.computeVertexNormals();
+  }
+  const outer = new THREE.Mesh(outerGeo, matFaceDeep);
+  outer.castShadow = true;
+  outer.receiveShadow = true;
+  g.add(outer);
+
+  const inner = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0092, 20, 14),
+    new THREE.MeshStandardMaterial({ color: 0xe9c9b4, roughness: 0.98, metalness: 0 })
+  );
+  inner.scale.set(1.0, 1.0, 0.26);
+  inner.position.z = 0.0034;
+  g.add(inner);
+
+  return g;
+}
+
+{
+  const earT = 0.640;
+  for (const side of [-1, 1]) {
+    const theta = (side === 1) ? (Math.PI * 0.22) : (Math.PI * 0.78);
+    const surf = bodyPoint(earT, theta);
+    const prof = bodyProfile(earT);
+    const nrm = surf.clone(); nrm.y -= (0.093 + prof.cy); nrm.normalize();
+
+    const ear = makeEar();
+    ear.position.copy(surf).addScaledVector(nrm, 0.0055);
+    ear.position.y += 0.006;
+    const look = ear.position.clone().addScaledVector(nrm, 0.05);
+    look.y += 0.02;
+    ear.lookAt(look);
+    ear.rotateZ(side * 0.15);
+    hedgehog.add(ear);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// PAWS — four stubby yarn feet
+// ---------------------------------------------------------------------------
+function makePaw(scaleK) {
+  const g = new THREE.Group();
+  const k = scaleK || 1.0;
+
+  const geo = new THREE.SphereGeometry(0.0135 * k, 22, 16);
+  {
+    const p = geo.attributes.position;
+    const v = new THREE.Vector3();
+    for (let i = 0; i < p.count; i++) {
+      v.fromBufferAttribute(p, i);
+      v.z *= 1.30;
+      v.y *= 0.80;
+      const rip = 1.0 + 0.018 * Math.sin(v.z * 430.0);
+      v.multiplyScalar(rip);
+      p.setXYZ(i, v.x, v.y, v.z);
+    }
+    geo.computeVertexNormals();
+  }
+  const foot = new THREE.Mesh(geo, matFaceDeep);
+  foot.castShadow = true;
+  foot.receiveShadow = true;
+  g.add(foot);
+
+  // three tiny toes
+  const toeMat = new THREE.MeshStandardMaterial({ color: 0xc9ab7f, roughness: 1.0, metalness: 0 });
+  for (let i = -1; i <= 1; i++) {
+    const toe = new THREE.Mesh(new THREE.SphereGeometry(0.0038 * k, 12, 10), toeMat);
+    toe.position.set(i * 0.0060 * k, -0.0016 * k, 0.0158 * k);
+    toe.scale.set(1.0, 0.72, 1.15);
+    toe.castShadow = true;
+    g.add(toe);
+  }
+  return g;
+}
+
+{
+  // front paws (near the head), back paws (near the rump)
+  const defs = [
+    { z: BODY_HALF - 0.075, x: 0.043, k: 0.92, rotY: 0.28, y: 0.0125 },
+    { z: BODY_HALF - 0.075, x: -0.043, k: 0.92, rotY: -0.28, y: 0.0125 },
+    { z: -BODY_HALF + 0.055, x: 0.050, k: 1.05, rotY: 0.55, y: 0.0135 },
+    { z: -BODY_HALF + 0.055, x: -0.050, k: 1.05, rotY: -0.55, y: 0.0135 }
+  ];
+  for (const d of defs) {
+    const paw = makePaw(d.k);
+    paw.position.set(d.x, d.y, d.z);
+    paw.rotation.y = d.rotY;
+    paw.rotation.x = 0.06;
+    hedgehog.add(paw);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TINY TAIL — a stubby oatmeal nub at the back
+// ---------------------------------------------------------------------------
+{
+  const tail = new THREE.Mesh(new THREE.SphereGeometry(0.0085, 16, 12), matFaceDeep);
+  tail.position.set(0, 0.062, -BODY_HALF + 0.004);
+  tail.scale.set(1.0, 0.9, 0.8);
+  tail.castShadow = true;
+  hedgehog.add(tail);
+}
+
+// ---------------------------------------------------------------------------
+// A soft contact "sit" shadow disc for grounding (subtle, receives only)
+// ---------------------------------------------------------------------------
+{
+  const c = document.createElement('canvas');
+  c.width = c.height = 128;
+  const ctx = c.getContext('2d');
+  const grd = ctx.createRadialGradient(64, 64, 4, 64, 64, 64);
+  grd.addColorStop(0.0, 'rgba(0,0,0,0.55)');
+  grd.addColorStop(0.55, 'rgba(0,0,0,0.22)');
+  grd.addColorStop(1.0, 'rgba(0,0,0,0.0)');
+  ctx.fillStyle = grd;
+  ctx.fillRect(0, 0, 128, 128);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const disc = new THREE.Mesh(
+    new THREE.PlaneGeometry(0.30, 0.24),
+    new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false })
+  );
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = 0.0012;
+  disc.renderOrder = -1;
+  scene.add(disc);
+}
+
+// ---------------------------------------------------------------------------
+// Center the whole hedgehog on the origin (X/Z), rest it on the ground.
+// ---------------------------------------------------------------------------
+{
+  const box = new THREE.Box3().setFromObject(hedgehog);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  hedgehog.position.x -= center.x;
+  hedgehog.position.z -= center.z;
+  hedgehog.position.y -= box.min.y;   // sit on y = 0
+
+  const box2 = new THREE.Box3().setFromObject(hedgehog);
+  const c2 = new THREE.Vector3();
+  box2.getCenter(c2);
+  controls.target.copy(c2);
+  controls.update();
+}
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

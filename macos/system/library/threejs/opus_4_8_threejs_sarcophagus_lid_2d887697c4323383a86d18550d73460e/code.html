@@ -1,0 +1,405 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Egyptian Sarcophagus Lid — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #0d0e11; overflow: hidden; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 2;
+    font: 12px/1.4 system-ui, sans-serif; color: #b9b09a; opacity: 0.75;
+    letter-spacing: 0.3px; pointer-events: none; text-shadow: 0 1px 2px #000;
+  }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="info">Anthropoid sarcophagus lid · painted &amp; gilt limestone · ~200&nbsp;cm · drag to orbit</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene, camera, environment
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x141519);
+
+// Procedural PBR environment so gilt/stone read correctly (no external assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// Subtle neutral-dark studio backdrop (procedural gradient, no texture URL)
+(function addBackdrop () {
+  const c = document.createElement('canvas');
+  c.width = 16; c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createLinearGradient(0, 0, 0, 256);
+  g.addColorStop(0.0, '#262a31');
+  g.addColorStop(0.5, '#181a1f');
+  g.addColorStop(1.0, '#0c0d10');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, 16, 256);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  const bg = new THREE.Mesh(
+    new THREE.SphereGeometry(3000, 32, 16),
+    new THREE.MeshBasicMaterial({ map: tex, side: THREE.BackSide, depthWrite: false })
+  );
+  scene.add(bg);
+})();
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 1, 6000);
+camera.position.set(205, 55, 330);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + key (shadow) + side fill + warm rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcc7d6, 0x3a3227, 0.45);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.1);
+key.position.set(200, 320, 260);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 10;
+key.shadow.camera.far = 1200;
+key.shadow.camera.left = -150;
+key.shadow.camera.right = 150;
+key.shadow.camera.top = 250;
+key.shadow.camera.bottom = -170;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 1.0;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xcfe0ff, 0.5);
+fill.position.set(-260, 130, 150);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe4bd, 1.2);
+rim.position.set(-120, 200, -260);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane — receives shadows only
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(2400, 2400),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -100;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Materials (units are centimeters)
+// ---------------------------------------------------------------------------
+const stoneMat = new THREE.MeshStandardMaterial({ color: 0xccbc93, roughness: 0.92, metalness: 0.0 });
+const stoneDeep = new THREE.MeshStandardMaterial({ color: 0xb7a680, roughness: 0.95, metalness: 0.0 });
+const goldMat  = new THREE.MeshStandardMaterial({ color: 0xe9b74a, roughness: 0.32, metalness: 0.9 });
+const blueMat  = new THREE.MeshStandardMaterial({ color: 0x2e5192, roughness: 0.5,  metalness: 0.25 });
+const darkMat  = new THREE.MeshStandardMaterial({ color: 0x0e1622, roughness: 0.35, metalness: 0.4 });
+const redMat   = new THREE.MeshStandardMaterial({ color: 0x9c3a2c, roughness: 0.7,  metalness: 0.05 });
+
+// ---------------------------------------------------------------------------
+// The single centered object
+// ---------------------------------------------------------------------------
+const lid = new THREE.Group();
+scene.add(lid);
+
+function boxMesh (w, h, d, mat) { return new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat); }
+function place (mesh, x, y, z, rx = 0, ry = 0, rz = 0) {
+  mesh.position.set(x, y, z);
+  mesh.rotation.set(rx, ry, rz);
+  lid.add(mesh);
+  return mesh;
+}
+
+// --- Anthropoid silhouette: half-width as a function of height y -----------
+const PROFILE = [
+  [-100, 16], [-96, 22], [-88, 24], [-70, 25], [-45, 26], [-20, 27],
+  [5, 29], [22, 32], [35, 34], [45, 33], [52, 34], [60, 31],
+  [72, 27], [84, 20], [92, 15], [99, 8]
+];
+function halfWidthAt (y) {
+  if (y <= PROFILE[0][0]) return PROFILE[0][1];
+  const last = PROFILE[PROFILE.length - 1];
+  if (y >= last[0]) return last[1];
+  for (let i = 0; i < PROFILE.length - 1; i++) {
+    const a = PROFILE[i], b = PROFILE[i + 1];
+    if (y >= a[0] && y <= b[0]) {
+      const t = (y - a[0]) / (b[0] - a[0]);
+      return a[1] + (b[1] - a[1]) * t;
+    }
+  }
+  return 20;
+}
+
+// Face geometry helpers (stylized carved face, oval)
+const FACE_CY = 70, FACE_RX = 11.5, FACE_RY = 13.5, FACE_RZ = 6.5, FACE_Z0 = 1.5;
+function faceHalfAt (y) {
+  const dy = (y - FACE_CY) / FACE_RY;
+  if (Math.abs(dy) >= 1) return 0;
+  return FACE_RX * Math.sqrt(1 - dy * dy);
+}
+function faceFrontAt (x, y) {
+  const dx = x / FACE_RX, dy = (y - FACE_CY) / FACE_RY;
+  const s = 1 - dx * dx - dy * dy;
+  if (s <= 0) return FACE_Z0;
+  return FACE_Z0 + FACE_RZ * Math.sqrt(s);
+}
+
+// --- Build the smooth mummy-shaped slab (extruded, beveled edges) ----------
+(function buildSlab () {
+  const pts = [];
+  for (const [py, pw] of PROFILE) pts.push(new THREE.Vector3(pw, py, 0));
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.5);
+  const s = curve.getSpacedPoints(130);
+
+  const shape = new THREE.Shape();
+  shape.moveTo(s[0].x, s[0].y);
+  for (let i = 1; i < s.length; i++) shape.lineTo(s[i].x, s[i].y);
+  for (let i = s.length - 1; i >= 0; i--) shape.lineTo(-s[i].x, s[i].y);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: 20, bevelEnabled: true, bevelThickness: 6, bevelSize: 5,
+    bevelSegments: 5, steps: 1, curveSegments: 24
+  });
+  geo.translate(0, 0, -20);      // flat front face now at z = 0
+  geo.computeVertexNormals();
+
+  const slab = new THREE.Mesh(geo, stoneMat);
+  lid.add(slab);
+})();
+
+// --- NEMES headdress: striped crown + flanking lappets ---------------------
+// Crown stripes (above the brow, full head width, tapering to the top)
+(function crown () {
+  let t = 0;
+  for (let y = 84; y < 97; y += 2.1) {
+    const yc = y + 1.05;
+    const w = (halfWidthAt(yc) - 2) * 2 * 0.86;
+    if (w < 4) { t++; continue; }
+    place(boxMesh(w, 2.0, 2.6, t % 2 ? blueMat : goldMat), 0, yc, 2.4);
+    t++;
+  }
+})();
+
+// Lappets (the two striped flaps beside the face, flaring at the shoulders)
+(function lappets () {
+  let t = 0;
+  for (let y = 55; y < 82; y += 2.1) {
+    const yc = y + 1.05;
+    const outer = halfWidthAt(yc) - 2.5;
+    const inner = Math.max(4.5, faceHalfAt(yc) + 1.5);
+    if (outer - inner < 2) { t++; continue; }
+    const w = outer - inner, xc = inner + w / 2;
+    const m = t % 2 ? goldMat : blueMat;
+    place(boxMesh(w, 2.0, 2.4, m), xc, yc, 2.2);
+    place(boxMesh(w, 2.0, 2.4, m), -xc, yc, 2.2);
+    t++;
+  }
+})();
+
+// Brow band + uraeus (cobra) at the headdress edge over the forehead
+place(boxMesh(halfWidthAt(83) * 2 * 0.78, 2.6, 2.8, goldMat), 0, 83, 2.6);
+place(new THREE.Mesh(new THREE.SphereGeometry(1.7, 16, 12), goldMat), 0, 84, 3.4);
+place(boxMesh(2.2, 3.0, 2.0, goldMat), 0, 85.6, 3.2);
+
+// --- FACE: domed mask with carved features (gilt) --------------------------
+(function face () {
+  const mask = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 32), goldMat);
+  mask.scale.set(FACE_RX, FACE_RY, FACE_RZ);
+  place(mask, 0, FACE_CY, FACE_Z0);
+
+  // nose (bridge + tip)
+  const nose = new THREE.Mesh(new THREE.CapsuleGeometry(1.5, 4.2, 6, 12), goldMat);
+  nose.scale.set(1, 1, 0.7);
+  place(nose, 0, 66, faceFrontAt(0, 64) + 0.5);
+  place(new THREE.Mesh(new THREE.SphereGeometry(1.8, 16, 12), goldMat), 0, 63.6, faceFrontAt(0, 63.6) + 0.9);
+
+  // eyes (inlaid dark almond + cosmetic tail) and gilt brows
+  for (const sx of [-1, 1]) {
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(1, 22, 14), darkMat);
+    eye.scale.set(3.4, 1.9, 0.9);
+    place(eye, sx * 5, 73, faceFrontAt(sx * 5, 73) + 0.25);
+    place(boxMesh(3.4, 0.9, 0.8, darkMat), sx * 8.6, 72.5, faceFrontAt(sx * 8.6, 72.5) + 0.2, 0, 0, sx * -0.18);
+    place(boxMesh(6.6, 1.1, 1.2, goldMat), sx * 5, 76.6, faceFrontAt(sx * 5, 76.6) + 0.55, 0, 0, sx * -0.12);
+  }
+
+  // mouth
+  place(boxMesh(7.0, 1.6, 1.5, goldMat), 0, 62.6, faceFrontAt(0, 62.6) + 0.3);
+  place(boxMesh(6.0, 1.4, 1.5, darkMat), 0, 61.2, faceFrontAt(0, 61.2) + 0.35);
+})();
+
+// --- False ceremonial beard ------------------------------------------------
+(function beard () {
+  place(boxMesh(4.6, 13, 5, goldMat), 0, 50.5, 5.5);
+  place(boxMesh(5.6, 2.2, 5, goldMat), 0, 44.2, 5.4);
+  for (let i = 0; i < 4; i++) {
+    place(boxMesh(4.8, 0.5, 5.2, stoneDeep), 0, 55 - i * 3, 8.05);
+  }
+})();
+
+// --- Broad collar (usekh): concentric draped bands over the shoulders ------
+(function collar () {
+  const cols = [goldMat, blueMat, redMat, goldMat, blueMat, goldMat, blueMat];
+  let i = 0;
+  for (let r = 7; r <= 22; r += 2.3) {
+    const tor = new THREE.Mesh(new THREE.TorusGeometry(r, 0.95, 8, 52, Math.PI), cols[i % cols.length]);
+    tor.rotation.z = Math.PI; // lower semicircle → hangs beneath the chin
+    place(tor, 0, 53, 2.2);
+    i++;
+  }
+})();
+
+// --- Folded arms across the chest, holding crook & flail -------------------
+(function arms () {
+  // two crossed forearms (relief, stone)
+  const armA = new THREE.Mesh(new THREE.CapsuleGeometry(4.2, 30, 10, 18), stoneDeep);
+  place(armA, 0, 24, 4.6, 0, 0, Math.PI / 2 + 0.15);
+  const armB = new THREE.Mesh(new THREE.CapsuleGeometry(4.2, 30, 10, 18), stoneDeep);
+  place(armB, 0, 15, 4.6, 0, 0, Math.PI / 2 - 0.15);
+
+  // fists
+  place(boxMesh(7.5, 6.5, 5, stoneDeep), -10.5, 18.5, 6.0, 0, 0, 0.15);
+  place(boxMesh(7.5, 6.5, 5, stoneDeep), 10.5, 20.5, 6.0, 0, 0, -0.15);
+
+  // gold wrist bands
+  for (const [x, y, rz] of [[-10.5, 22, 0.15], [10.5, 17, -0.15]]) {
+    const wb = new THREE.Mesh(new THREE.TorusGeometry(4.4, 0.9, 8, 24), goldMat);
+    place(wb, x, y, 4.6, Math.PI / 2, 0, rz);
+  }
+
+  // crook (with hooked top) & flail (with strands), crossed at center chest
+  const crook = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 22, 12), goldMat);
+  place(crook, -3.5, 20, 6.6, 0, 0, 0.34);
+  const hook = new THREE.Mesh(new THREE.TorusGeometry(2.2, 0.9, 8, 20, Math.PI * 1.25), goldMat);
+  place(hook, -6.6, 30.3, 6.6, 0, 0, 0.9);
+
+  const flail = new THREE.Mesh(new THREE.CylinderGeometry(1, 1, 22, 12), goldMat);
+  place(flail, 3.5, 20, 6.9, 0, 0, -0.34);
+  for (let k = -1; k <= 1; k++) {
+    place(new THREE.Mesh(new THREE.CylinderGeometry(0.5, 0.5, 6, 8), goldMat),
+      6.6 + k * 1.5, 31, 6.9, 0, 0, -0.34);
+    place(new THREE.Mesh(new THREE.SphereGeometry(0.9, 10, 8), blueMat),
+      6.6 + k * 1.5, 34, 6.9);
+  }
+})();
+
+// --- Winged decorative register just below the arms ------------------------
+(function wingedBand () {
+  const bw = halfWidthAt(6) * 2 - 10;
+  const segN = 15, segw = bw / segN;
+  const cols = [goldMat, blueMat, redMat];
+  for (let i = 0; i < segN; i++) {
+    const x = -bw / 2 + segw * (i + 0.5);
+    place(boxMesh(segw * 0.9, 5, 2.4, cols[i % 3]), x, 6, 2.4);
+  }
+})();
+
+// --- Banded body registers: central inscription column + divider bands -----
+(function bodyRegisters () {
+  // central column of "hieroglyphs"
+  place(boxMesh(9, 92, 2.4, goldMat), 0, -44, 2.0);
+  let g = 0;
+  for (let y = -2; y > -90; y -= 5.8) {
+    place(boxMesh(5, 3.2, 1.2, g % 2 ? blueMat : darkMat), 0, y, 3.35);
+    g++;
+  }
+
+  // horizontal register (divider) bands framing the panels
+  for (const y of [1, -16, -34, -52, -70, -86]) {
+    const w = Math.max(6, halfWidthAt(y) * 2 - 8);
+    place(boxMesh(w, 3.4, 2.2, goldMat), 0, y, 2.0);
+  }
+
+  // side frame bands running down the body
+  for (const sx of [-1, 1]) {
+    place(boxMesh(2.6, 90, 2.0, goldMat), sx * (halfWidthAt(-40) - 6), -44, 1.8);
+  }
+
+  // recessed painted panels between the bands (readable carved planes)
+  const panelCols = [redMat, blueMat, stoneDeep, redMat, blueMat];
+  let p = 0;
+  for (const [y, h] of [[-8, 12], [-25, 12], [-43, 12], [-61, 12], [-78, 10]]) {
+    const w = halfWidthAt(y) * 2 - 20;
+    if (w < 8) { p++; continue; }
+    for (const sx of [-1, 1]) {
+      const pw = (w - 4) / 2;
+      place(boxMesh(pw, h, 1.2, panelCols[p % panelCols.length]),
+        sx * (7 + pw / 2), y, 1.6);
+    }
+    p++;
+  }
+})();
+
+// --- Foot panel ------------------------------------------------------------
+(function feet () {
+  const fw = halfWidthAt(-96) * 2 - 6;
+  place(boxMesh(fw, 12, 1.6, blueMat), 0, -95, 1.8);
+  place(boxMesh(fw, 1.6, 2.2, goldMat), 0, -89, 2.1);
+  place(boxMesh(fw, 1.6, 2.2, goldMat), 0, -101, 2.1);
+  place(boxMesh(9, 9, 2.0, goldMat), 0, -95, 2.2);   // small central motif
+})();
+
+// Enable shadow casting/receiving on every part of the lid
+lid.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.target.set(0, 4, 0);
+controls.minDistance = 160;
+controls.maxDistance = 750;
+controls.maxPolarAngle = 2.45;
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate () {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

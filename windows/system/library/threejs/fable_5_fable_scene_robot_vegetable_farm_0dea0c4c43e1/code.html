@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Robotic Hydroponic Farm</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b1020}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ============================ 1. CONFIG & PALETTE ============================ */
+const CFG = {
+  seed: 20260815,
+  room: { w: 40, d: 28, h: 13 },          // interior bay dimensions
+  shelfY: [1.0, 2.3, 3.6, 4.9],           // grow-shelf heights
+  capY: 6.15,                              // rack top-cap height
+  conveyor: { y: 1.02, len: 26, z: 3.6, span: 27.8, speed: 1.05 },
+};
+const PAL = {
+  night: 0x0b1020, fog: 0x0d1428,
+  frame: 0xf3f5f8, alloy: 0xb9c2cc, dark: 0x3a4048, joint: 0x22262c,
+  tray: 0xe9edf1, teal: 0x2fbfb0, amber: 0xff9b3d,
+  magenta: 0xff3fae, leaf: 0x58c14f, herb: 0x2f8f4a, bush: 0x3da858,
+  tomato: 0xe8422f, drone: 0x5a6470,
+  liquids: [0x59d68c, 0xffb84d, 0x53c8ff],
+};
+
+/* ============================ 2. PRNG & HELPERS ============================ */
+function mulberry32(seed){
+  return function(){
+    seed |= 0; seed = (seed + 0x6D2B79F5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng  = mulberry32(CFG.seed);
+const rand = (a, b) => a + rng() * (b - a);
+const dummy = new THREE.Object3D();
+function setShadow(root, cast = true, receive = true){
+  root.traverse(o => { if (o.isMesh){ o.castShadow = cast; o.receiveShadow = receive; } });
+}
+
+/* ============================ 3. RENDERER / SCENE / CAMERA ============================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.night);
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0105);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(52, innerWidth / innerHeight, 0.1, 300);
+camera.position.set(22, 12.5, 28.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.8, -1);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.15;
+controls.minDistance = 15;
+controls.maxDistance = 44;
+controls.maxPolarAngle = 1.42;
+
+/* ============================ 4. CANVAS TEXTURES ============================ */
+function canvasTex(w, h, draw, repX = 1, repY = 1){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repX, repY); t.anisotropy = 8;
+  return t;
+}
+const floorTex = canvasTex(1024, 720, (g, w, h) => {
+  g.fillStyle = '#e2e6ec'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#c3cad4'; g.lineWidth = 3;
+  for (let x = 0; x <= w; x += 128){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+  for (let y = 0; y <= h; y += 120){ g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  for (let i = 0; i < 900; i++){                       // speckled panel wear
+    g.fillStyle = rng() < 0.5 ? 'rgba(160,170,182,0.25)' : 'rgba(255,255,255,0.3)';
+    g.fillRect(rand(0, w), rand(0, h), rand(1, 3), rand(1, 3));
+  }
+  g.strokeStyle = '#2fbfb0'; g.lineWidth = 6;          // teal service lane
+  g.strokeRect(70, 96, w - 140, h - 260);
+  g.save(); g.beginPath(); g.rect(0, 440, w, 46); g.clip();   // hazard band by conveyor
+  g.fillStyle = '#e8b430'; g.fillRect(0, 440, w, 46); g.fillStyle = '#2b2f36';
+  for (let x = -40; x < w + 40; x += 46){ g.beginPath(); g.moveTo(x, 486); g.lineTo(x + 22, 440); g.lineTo(x + 44, 440); g.lineTo(x + 22, 486); g.fill(); }
+  g.restore();
+});
+function wallTexture(repX, repY){
+  return canvasTex(512, 256, (g, w, h) => {
+    g.fillStyle = '#eef1f5'; g.fillRect(0, 0, w, h);
+    g.strokeStyle = '#d5dae2'; g.lineWidth = 3;
+    for (let x = 0; x <= w; x += 96){ g.beginPath(); g.moveTo(x, 0); g.lineTo(x, h); g.stroke(); }
+    g.beginPath(); g.moveTo(0, h * 0.42); g.lineTo(w, h * 0.42); g.stroke();
+    g.fillStyle = '#2fbfb0'; g.fillRect(0, h - 26, w, 7);
+    g.fillStyle = '#c9cfd8';
+    for (let x = 12; x < w; x += 96) for (const y of [14, h * 0.42 - 12, h - 40]) g.fillRect(x, y, 4, 4);
+  }, repX, repY);
+}
+function cityTexture(base, glow){
+  return canvasTex(1024, 300, (g, w, h) => {
+    g.clearRect(0, 0, w, h);
+    let x = 0;
+    while (x < w){
+      const bw = rand(28, 88), bh = rand(60, 245);
+      g.fillStyle = base; g.fillRect(x, h - bh, bw, bh);
+      for (let wx = x + 4; wx < x + bw - 5; wx += 9)
+        for (let wy = h - bh + 6; wy < h - 8; wy += 11)
+          if (rng() < 0.28){
+            g.fillStyle = rng() < 0.14 ? '#ff6fd8' : (rng() < 0.5 ? '#ffd98a' : glow);
+            g.fillRect(wx, wy, 4, 5);
+          }
+      if (rng() < 0.3){ g.strokeStyle = '#7a86a0'; g.lineWidth = 2;
+        g.beginPath(); g.moveTo(x + bw / 2, h - bh); g.lineTo(x + bw / 2, h - bh - rand(10, 26)); g.stroke();
+        g.fillStyle = '#ff5560'; g.fillRect(x + bw / 2 - 1.5, h - bh - rand(12, 26), 3, 3); }
+      x += bw + rand(2, 10);
+    }
+  });
+}
+const beltTex = canvasTex(128, 128, (g, w, h) => {
+  g.fillStyle = '#22252a'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#31353c';
+  for (let x = 0; x < w; x += 16) g.fillRect(x, 0, 5, h);
+}, 12, 1);
+const dialTex = canvasTex(128, 128, (g, w, h) => {
+  g.fillStyle = '#f4f6f8'; g.beginPath(); g.arc(64, 64, 60, 0, 7); g.fill();
+  g.strokeStyle = '#22262c'; g.lineWidth = 6; g.beginPath(); g.arc(64, 64, 57, 0, 7); g.stroke();
+  g.lineWidth = 8; g.strokeStyle = '#2fbfb0'; g.beginPath(); g.arc(64, 64, 44, Math.PI * 0.75, Math.PI * 1.6); g.stroke();
+  g.strokeStyle = '#e8422f'; g.beginPath(); g.arc(64, 64, 44, Math.PI * 1.6, Math.PI * 2.05); g.stroke();
+  g.strokeStyle = '#22262c'; g.lineWidth = 3;
+  for (let i = 0; i < 11; i++){ const a = Math.PI * 0.75 + i * Math.PI * 1.3 / 10;
+    g.beginPath(); g.moveTo(64 + Math.cos(a) * 50, 64 + Math.sin(a) * 50);
+    g.lineTo(64 + Math.cos(a) * 40, 64 + Math.sin(a) * 40); g.stroke(); }
+  g.fillStyle = '#22262c'; g.beginPath(); g.arc(64, 64, 6, 0, 7); g.fill();
+});
+const screenTex = canvasTex(512, 320, (g, w, h) => {
+  g.fillStyle = '#08101c'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#123043'; g.fillRect(0, 0, w, 46);
+  g.fillStyle = '#4fe3d2'; g.font = 'bold 26px monospace'; g.fillText('AGRIPOD FARM OS  ·  BAY 07', 16, 32);
+  g.strokeStyle = '#1d3a52'; g.lineWidth = 2;
+  for (let y = 60; y < h; y += 36){ g.beginPath(); g.moveTo(16, y); g.lineTo(300, y); g.stroke(); }
+  for (let i = 0; i < 8; i++){ const bh = rand(20, 120);
+    g.fillStyle = i % 3 === 0 ? '#ff6fd8' : '#37c8b8'; g.fillRect(24 + i * 36, 276 - bh, 22, bh); }
+  g.strokeStyle = '#ffd98a'; g.lineWidth = 3; g.beginPath();
+  for (let i = 0; i <= 20; i++){ const px = 320 + i * 8.5, py = 150 - Math.sin(i * 0.8) * 30 - rand(0, 14);
+    i ? g.lineTo(px, py) : g.moveTo(px, py); }
+  g.stroke();
+  ['#43d17c', '#43d17c', '#ffb84d', '#43d17c'].forEach((c, i) => {
+    g.fillStyle = c; g.beginPath(); g.arc(340 + i * 42, 240, 9, 0, 7); g.fill();
+    g.fillStyle = '#9fb4c8'; g.font = '13px monospace'; g.fillText('T' + (i + 1), 333 + i * 42, 268); });
+});
+const signTex = canvasTex(1024, 128, (g, w, h) => {
+  g.fillStyle = 'rgba(10,18,30,0.85)'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#2fbfb0'; g.lineWidth = 5; g.strokeRect(6, 6, w - 12, h - 12);
+  g.fillStyle = '#5df0dd'; g.font = 'bold 62px monospace'; g.textAlign = 'center';
+  g.fillText('AGRIPOD-07 · HYDROPONIC BAY', w / 2, 84);
+});
+const skyTex = canvasTex(256, 512, (g, w, h) => {
+  const grd = g.createLinearGradient(0, 0, 0, h);
+  grd.addColorStop(0, '#04060f'); grd.addColorStop(0.5, '#0b142e');
+  grd.addColorStop(0.74, '#1a2a55'); grd.addColorStop(0.86, '#282450'); grd.addColorStop(1, '#101228');
+  g.fillStyle = grd; g.fillRect(0, 0, w, h);
+});
+
+/* ============================ 5. MATERIALS ============================ */
+const M = {
+  floor:  new THREE.MeshStandardMaterial({ map: floorTex, roughness: 0.82, metalness: 0.08 }),
+  plinth: new THREE.MeshStandardMaterial({ color: 0x2a3038, roughness: 0.9 }),
+  frame:  new THREE.MeshStandardMaterial({ color: PAL.frame, roughness: 0.55, metalness: 0.15 }),
+  alloy:  new THREE.MeshStandardMaterial({ color: PAL.alloy, roughness: 0.4, metalness: 0.65 }),
+  dark:   new THREE.MeshStandardMaterial({ color: PAL.dark, roughness: 0.6, metalness: 0.4 }),
+  joint:  new THREE.MeshStandardMaterial({ color: PAL.joint, roughness: 0.45, metalness: 0.5 }),
+  tray:   new THREE.MeshStandardMaterial({ color: PAL.tray, roughness: 0.7 }),
+  teal:   new THREE.MeshStandardMaterial({ color: PAL.teal, roughness: 0.45, metalness: 0.3 }),
+  tealGlow: new THREE.MeshStandardMaterial({ color: 0x0c2a28, emissive: PAL.teal, emissiveIntensity: 1.6 }),
+  amber:  new THREE.MeshStandardMaterial({ color: PAL.amber, roughness: 0.5 }),
+  growLight: new THREE.MeshStandardMaterial({ color: 0x2a1030, emissive: PAL.magenta, emissiveIntensity: 2.4 }),
+  ceilLight: new THREE.MeshStandardMaterial({ color: 0xf4f6f8, emissive: 0xdfe8ff, emissiveIntensity: 1.5 }),
+  leaf:   new THREE.MeshStandardMaterial({ color: PAL.leaf, roughness: 0.85 }),
+  herb:   new THREE.MeshStandardMaterial({ color: PAL.herb, roughness: 0.85 }),
+  bush:   new THREE.MeshStandardMaterial({ color: PAL.bush, roughness: 0.85 }),
+  tomato: new THREE.MeshStandardMaterial({ color: PAL.tomato, roughness: 0.4 }),
+  belt:   new THREE.MeshStandardMaterial({ map: beltTex, roughness: 0.9 }),
+  glass:  new THREE.MeshPhysicalMaterial({ color: 0xbfe3ee, roughness: 0.08, metalness: 0,
+            transparent: true, opacity: 0.14, depthWrite: false, side: THREE.DoubleSide }),
+  tankGlass: new THREE.MeshPhysicalMaterial({ color: 0xd8eef5, roughness: 0.06, transparent: true,
+            opacity: 0.22, depthWrite: false, side: THREE.DoubleSide }),
+  drone:  new THREE.MeshStandardMaterial({ color: PAL.drone, roughness: 0.5, metalness: 0.5 }),
+  prop:   new THREE.MeshStandardMaterial({ color: 0x22262c, roughness: 0.6, side: THREE.DoubleSide }),
+  led:    new THREE.MeshStandardMaterial({ color: 0x300808, emissive: 0xff3040, emissiveIntensity: 2 }),
+  drip:   new THREE.MeshStandardMaterial({ color: 0x9fdcff, emissive: 0x3fa8ff, emissiveIntensity: 0.4,
+            transparent: true, opacity: 0.85, roughness: 0.15 }),
+  screen: new THREE.MeshStandardMaterial({ color: 0x0a0f18, emissive: 0xffffff, emissiveMap: screenTex,
+            emissiveIntensity: 1.15, roughness: 0.4 }),
+  sign:   new THREE.MeshBasicMaterial({ map: signTex, transparent: true }),
+  pipe:   new THREE.MeshStandardMaterial({ color: 0x3f8f88, roughness: 0.4, metalness: 0.5 }),
+};
+
+/* ============================ 6. BUILDERS ============================ */
+// --- vertical grow rack: posts, lit shelves, plant trays, irrigation pipe ---
+function buildGrowRack(len, plantOrder){
+  const g = new THREE.Group(), depth = 1.7;
+  const postGeo = new THREE.BoxGeometry(0.14, CFG.capY + 0.1, 0.14);
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]){
+    const p = new THREE.Mesh(postGeo, M.frame);
+    p.position.set(sx * (len / 2 - 0.09), (CFG.capY + 0.1) / 2, sz * (depth / 2 - 0.09));
+    g.add(p);
+  }
+  const shelfGeo = new THREE.BoxGeometry(len, 0.12, depth);
+  const trayGeo  = new THREE.BoxGeometry(len - 0.5, 0.16, depth - 0.45);
+  const barGeo   = new THREE.BoxGeometry(len - 0.6, 0.07, 1.1);
+  const edgeGeo  = new THREE.BoxGeometry(len - 0.2, 0.07, 0.05);
+  CFG.shelfY.forEach(y => {
+    const s = new THREE.Mesh(shelfGeo, M.alloy); s.position.y = y; g.add(s);
+    const t = new THREE.Mesh(trayGeo, M.tray);  t.position.y = y + 0.14; g.add(t);
+  });
+  const cap = new THREE.Mesh(shelfGeo, M.frame); cap.position.y = CFG.capY; g.add(cap);
+  [...CFG.shelfY.slice(1), CFG.capY].forEach(y => {          // magenta bar under each cover
+    const b = new THREE.Mesh(barGeo, M.growLight); b.position.y = y - 0.14; g.add(b);
+    for (const sz of [-1, 1]){                               // visible edge glow strips
+      const e = new THREE.Mesh(edgeGeo, M.growLight);
+      e.position.set(0, y - 0.1, sz * (depth / 2 + 0.01)); g.add(e);
+    }
+  });
+  // plants, instanced per species
+  const put = { lettuce: [], herb: [], bush: [], berry: [] };
+  CFG.shelfY.forEach((y, i) => {
+    const kind = plantOrder[i % plantOrder.length];
+    const n = Math.floor((len - 1) / 0.62);
+    for (let k = 0; k < n; k++){
+      const x = -len / 2 + 0.6 + k * 0.62 + rand(-0.05, 0.05);
+      for (const z of [-0.36, 0.36]){
+        const s = rand(0.85, 1.2);
+        if (kind === 'lettuce') put.lettuce.push({ x, y: y + 0.3, z: z + rand(-0.06, 0.06), s });
+        else if (kind === 'herb') put.herb.push({ x, y: y + 0.44, z: z + rand(-0.06, 0.06), s });
+        else {
+          put.bush.push({ x, y: y + 0.4, z, s });
+          for (let b = 0; b < 3; b++) put.berry.push({ x: x + rand(-0.17, 0.17), y: y + rand(0.32, 0.64), z: z + rand(-0.13, 0.13), s: rand(0.6, 1) });
+        }
+      }
+    }
+  });
+  const species = {
+    lettuce: [new THREE.IcosahedronGeometry(0.26, 1), M.leaf, 0.74],
+    herb:    [new THREE.ConeGeometry(0.16, 0.55, 6),  M.herb, 1],
+    bush:    [new THREE.IcosahedronGeometry(0.23, 1), M.bush, 1.2],
+    berry:   [new THREE.SphereGeometry(0.07, 8, 6),   M.tomato, 1],
+  };
+  for (const [kind, list] of Object.entries(put)){
+    if (!list.length) continue;
+    const [geo, mat, ys] = species[kind];
+    const inst = new THREE.InstancedMesh(geo, mat, list.length);
+    list.forEach((p, i) => {
+      dummy.position.set(p.x, p.y, p.z);
+      dummy.rotation.set(0, rand(0, Math.PI * 2), 0);
+      dummy.scale.set(p.s, p.s * ys, p.s);
+      dummy.updateMatrix(); inst.setMatrixAt(i, dummy.matrix);
+    });
+    inst.castShadow = true; g.add(inst);
+  }
+  // irrigation: top feed pipe + two risers, drip emitters registered in userData
+  const pipeGeo = new THREE.CylinderGeometry(0.05, 0.05, len - 0.3, 8); pipeGeo.rotateZ(Math.PI / 2);
+  const pipe = new THREE.Mesh(pipeGeo, M.pipe); pipe.position.set(0, CFG.capY + 0.18, 0.55); g.add(pipe);
+  const riserGeo = new THREE.CylinderGeometry(0.05, 0.05, CFG.capY + 0.18, 8);
+  for (const sx of [-1, 1]){
+    const r = new THREE.Mesh(riserGeo, M.pipe);
+    r.position.set(sx * (len / 2 - 0.16), (CFG.capY + 0.18) / 2, 0.55); g.add(r);
+  }
+  g.userData.emitters = [];
+  for (let gap = 0; gap < 3; gap++)
+    for (let e = 0; e < 2; e++)
+      g.userData.emitters.push({
+        x: rand(-len / 2 + 0.8, len / 2 - 0.8), z: rand(-0.3, 0.3),
+        y0: CFG.shelfY[gap + 1] - 0.22, y1: CFG.shelfY[gap] + 0.34,
+        phase: rng(), speed: rand(0.55, 0.95),
+      });
+  return g;
+}
+// --- articulated tending arm: swivel base, two-link arm, gripper ---
+function buildRobotArm(){
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 0.72, 0.36, 20), M.dark);
+  base.position.y = 0.18; g.add(base);
+  const swivel = new THREE.Group(); swivel.position.y = 0.36; g.add(swivel);
+  const torso = new THREE.Mesh(new THREE.CylinderGeometry(0.4, 0.46, 0.55, 16), M.frame);
+  torso.position.y = 0.27; swivel.add(torso);
+  const stripe = new THREE.Mesh(new THREE.CylinderGeometry(0.41, 0.41, 0.1, 16), M.amber);
+  stripe.position.y = 0.32; swivel.add(stripe);
+  const shoulder = new THREE.Group(); shoulder.position.y = 0.62; swivel.add(shoulder);
+  shoulder.add(new THREE.Mesh(new THREE.SphereGeometry(0.3, 14, 12), M.joint));
+  const upper = new THREE.Mesh(new THREE.BoxGeometry(0.26, 1.65, 0.26), M.frame);
+  upper.position.y = 0.82; shoulder.add(upper);
+  const elbow = new THREE.Group(); elbow.position.y = 1.64; shoulder.add(elbow);
+  elbow.add(new THREE.Mesh(new THREE.SphereGeometry(0.24, 14, 12), M.joint));
+  const fore = new THREE.Mesh(new THREE.BoxGeometry(0.2, 1.3, 0.2), M.frame);
+  fore.position.y = 0.64; elbow.add(fore);
+  const cuff = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.16, 12), M.amber);
+  cuff.position.y = 1.16; elbow.add(cuff);
+  const wrist = new THREE.Group(); wrist.position.y = 1.3; elbow.add(wrist);
+  wrist.add(new THREE.Mesh(new THREE.SphereGeometry(0.16, 12, 10), M.joint));
+  const palm = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.14, 0.2), M.dark);
+  palm.position.y = 0.2; wrist.add(palm);
+  const fingerGeo = new THREE.BoxGeometry(0.05, 0.3, 0.12);
+  const f1 = new THREE.Mesh(fingerGeo, M.teal); f1.position.set(0.11, 0.4, 0); wrist.add(f1);
+  const f2 = new THREE.Mesh(fingerGeo, M.teal); f2.position.set(-0.11, 0.4, 0); wrist.add(f2);
+  g.userData.joints = { swivel, shoulder, elbow, wrist, fingers: [f1, f2] };
+  return g;
+}
+// --- conveyor line (frame + scrolling belt + rollers) ---
+function buildConveyor(){
+  const g = new THREE.Group(), L = CFG.conveyor.len, y = CFG.conveyor.y;
+  for (const sz of [-1, 1]){
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(L, 0.14, 0.16), M.dark);
+    rail.position.set(0, y + 0.02, sz * 0.72); g.add(rail);
+  }
+  const belt = new THREE.Mesh(new THREE.BoxGeometry(L, 0.08, 1.3), M.belt);
+  belt.position.y = y - 0.05; g.add(belt);
+  for (let i = 0; i < 4; i++){
+    const leg = new THREE.Mesh(new THREE.BoxGeometry(0.14, y - 0.1, 0.9), M.alloy);
+    leg.position.set(-L / 2 + 2 + i * (L - 4) / 3, (y - 0.1) / 2, 0); g.add(leg);
+  }
+  const rollGeo = new THREE.CylinderGeometry(0.15, 0.15, 1.4, 12); rollGeo.rotateX(Math.PI / 2);
+  const rollers = [];
+  for (const sx of [-1, 1]){
+    const r = new THREE.Mesh(rollGeo, M.joint); r.position.set(sx * L / 2, y - 0.06, 0);
+    g.add(r); rollers.push(r);
+  }
+  g.userData.rollers = rollers;
+  return g;
+}
+// --- loader / unloader cabinet that masks tray spawn ---
+function buildEndCabinet(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2.6, 2.4, 2.2), M.frame);
+  body.position.y = 1.2; g.add(body);
+  const slot = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.6, 1.6), M.joint);
+  slot.position.set(-1.25, CFG.conveyor.y + 0.1, 0); g.add(slot);
+  const lamp = new THREE.Mesh(new THREE.BoxGeometry(0.06, 0.14, 0.7), M.tealGlow);
+  lamp.position.set(-1.31, 2.0, 0); g.add(lamp);
+  const vent = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.5, 0.06), M.dark);
+  vent.position.set(0, 1.9, 1.11); g.add(vent);
+  return g;
+}
+// --- produce tray riding the belt ---
+function buildProduceTray(kind){
+  const g = new THREE.Group();
+  const tray = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.14, 1.05), M.tray);
+  tray.position.y = 0.07; g.add(tray);
+  const geo = kind === 'tomato' ? new THREE.SphereGeometry(0.11, 8, 6) : new THREE.IcosahedronGeometry(0.16, 1);
+  const inst = new THREE.InstancedMesh(geo, kind === 'tomato' ? M.tomato : M.leaf, 6);
+  for (let i = 0; i < 6; i++){
+    dummy.position.set(rand(-0.5, 0.5), 0.22, rand(-0.3, 0.3));
+    dummy.rotation.set(0, rand(0, 6.3), 0); dummy.scale.setScalar(rand(0.8, 1.15));
+    dummy.updateMatrix(); inst.setMatrixAt(i, dummy.matrix);
+  }
+  inst.castShadow = true; g.add(inst);
+  return g;
+}
+// --- nutrient tank with liquid, gauge and outlet pipe ---
+function buildNutrientTank(idx){
+  const g = new THREE.Group(), col = PAL.liquids[idx];
+  const base = new THREE.Mesh(new THREE.CylinderGeometry(1.25, 1.35, 0.3, 24), M.dark);
+  base.position.y = 0.15; g.add(base);
+  const shell = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.05, 3.1, 24, 1, true), M.tankGlass);
+  shell.position.y = 1.9; g.add(shell);
+  const fill = 0.5 + idx * 0.14, lh = 3.0 * fill;
+  const liquid = new THREE.Mesh(new THREE.CylinderGeometry(0.96, 0.96, lh, 20),
+    new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 0.5, roughness: 0.4, transparent: true, opacity: 0.85 }));
+  liquid.position.y = 0.38 + lh / 2; g.add(liquid);
+  const cap = new THREE.Mesh(new THREE.CylinderGeometry(1.14, 1.14, 0.24, 24), M.frame);
+  cap.position.y = 3.56; g.add(cap);
+  const hatch = new THREE.Mesh(new THREE.CylinderGeometry(0.34, 0.34, 0.16, 14), M.teal);
+  hatch.position.y = 3.72; g.add(hatch);
+  const gauge = new THREE.Group(); gauge.position.set(-1.08, 2.2, 0); gauge.rotation.y = -Math.PI / 2; g.add(gauge);
+  const face = new THREE.Mesh(new THREE.CircleGeometry(0.28, 20), new THREE.MeshBasicMaterial({ map: dialTex }));
+  gauge.add(face);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.28, 0.035, 8, 20), M.joint); gauge.add(rim);
+  const needle = new THREE.Mesh(new THREE.BoxGeometry(0.035, 0.24, 0.02), M.tomato);
+  needle.geometry.translate(0, 0.1, 0); needle.position.z = 0.015; gauge.add(needle);
+  const down = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.7, 8), M.pipe);
+  down.position.set(0, 2.75, 1.12); g.add(down);
+  const elbowJ = new THREE.Mesh(new THREE.SphereGeometry(0.1, 8, 8), M.pipe);
+  elbowJ.position.set(0, 3.56, 1.12); g.add(elbowJ);
+  const drop = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.07, 1.9, 8), M.pipe);
+  drop.position.set(0, 0.95, 1.12); g.add(drop);
+  const valve = new THREE.Mesh(new THREE.TorusGeometry(0.16, 0.035, 8, 14), M.amber);
+  valve.position.set(0, 1.35, 1.14); valve.rotation.y = Math.PI / 2; g.add(valve);
+  g.userData.needle = needle;
+  return g;
+}
+// --- monitor drone (quad rotors, camera, tail LED) ---
+function buildDrone(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.55, 0.16, 0.55), M.drone); g.add(body);
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(0.14, 12, 10), M.joint);
+  dome.position.y = 0.12; g.add(dome);
+  const lens = new THREE.Mesh(new THREE.CylinderGeometry(0.06, 0.06, 0.12, 10), M.joint);
+  lens.rotation.x = Math.PI / 2; lens.position.set(0, -0.07, 0.28); g.add(lens);
+  const props = [];
+  const armGeo = new THREE.BoxGeometry(0.5, 0.05, 0.08);
+  const propGeo = new THREE.CylinderGeometry(0.23, 0.23, 0.02, 12);
+  [[1, 1], [1, -1], [-1, 1], [-1, -1]].forEach(([sx, sz]) => {
+    const arm = new THREE.Mesh(armGeo, M.dark);
+    arm.position.set(sx * 0.4, 0.03, sz * 0.4); arm.rotation.y = -sx * sz * Math.PI / 4; g.add(arm);
+    const p = new THREE.Mesh(propGeo, M.prop);
+    p.position.set(sx * 0.55, 0.1, sz * 0.55); g.add(p); props.push(p);
+  });
+  const led = new THREE.Mesh(new THREE.SphereGeometry(0.05, 8, 8), M.led);
+  led.position.set(0, 0.02, -0.32); g.add(led);
+  g.userData.props = props;
+  return g;
+}
+// --- operator console with dashboard screen ---
+function buildConsole(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.9, 1.02, 0.9), M.frame);
+  body.position.y = 0.51; g.add(body);
+  const kick = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.1, 0.9), M.joint);
+  kick.position.y = 0.05; g.add(kick);
+  const deck = new THREE.Mesh(new THREE.BoxGeometry(1.7, 0.05, 0.5), M.joint);
+  deck.position.set(0, 1.06, 0.15); g.add(deck);
+  const screen = new THREE.Mesh(new THREE.BoxGeometry(1.72, 0.98, 0.07), M.screen);
+  screen.position.set(0, 1.62, -0.22); screen.rotation.x = -0.3; g.add(screen);
+  const strip = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 0.02), M.tealGlow);
+  strip.position.set(0, 0.72, 0.46); g.add(strip);
+  return g;
+}
+// --- harvest crate ---
+function buildCrate(color){
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.8 });
+  const box = new THREE.Mesh(new THREE.BoxGeometry(1.1, 0.6, 0.85), mat);
+  box.position.y = 0.3; g.add(box);
+  for (const sy of [0.1, 0.5]){
+    const band = new THREE.Mesh(new THREE.BoxGeometry(1.16, 0.08, 0.91), M.joint);
+    band.position.y = sy; g.add(band);
+  }
+  return g;
+}
+// --- small autonomous cart shuttling crates on the service lane ---
+function buildCart(){
+  const g = new THREE.Group();
+  const chassis = new THREE.Mesh(new THREE.BoxGeometry(1.5, 0.32, 0.95), M.frame);
+  chassis.position.y = 0.34; g.add(chassis);
+  const stripe = new THREE.Mesh(new THREE.BoxGeometry(1.52, 0.07, 0.97), M.teal);
+  stripe.position.y = 0.24; g.add(stripe);
+  const wheels = [];
+  const wGeo = new THREE.CylinderGeometry(0.16, 0.16, 0.1, 12); wGeo.rotateX(Math.PI / 2);
+  [[0.55, 0.42], [0.55, -0.42], [-0.55, 0.42], [-0.55, -0.42]].forEach(([x, z]) => {
+    const w = new THREE.Mesh(wGeo, M.joint); w.position.set(x, 0.16, z); g.add(w); wheels.push(w);
+  });
+  const load = buildCrate(0x8fd06a); load.position.y = 0.5; g.add(load);
+  const beacon = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 8), M.led);
+  beacon.position.set(-0.65, 0.56, 0); g.add(beacon);
+  g.userData.wheels = wheels;
+  return g;
+}
+
+/* ============================ 7. ENVIRONMENT SHELL ============================ */
+const R = CFG.room;
+function buildRoom(){
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(R.w, R.d), M.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const plinth = new THREE.Mesh(new THREE.BoxGeometry(R.w + 3, 1.2, R.d + 3), M.plinth); plinth.position.y = -0.61; g.add(plinth);
+  const wallGeo = new THREE.PlaneGeometry(R.d, R.h);
+  const wallL = new THREE.Mesh(wallGeo, new THREE.MeshStandardMaterial({ map: wallTexture(6, 3), roughness: 0.9 }));
+  wallL.position.set(-R.w / 2, R.h / 2, 0); wallL.rotation.y = Math.PI / 2; wallL.receiveShadow = true; g.add(wallL);
+  const wallR = new THREE.Mesh(wallGeo, new THREE.MeshStandardMaterial({ map: wallTexture(6, 3), roughness: 0.9 }));
+  wallR.position.set(R.w / 2, R.h / 2, 0); wallR.rotation.y = -Math.PI / 2; wallR.receiveShadow = true; g.add(wallR);
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(R.w, R.d),
+    new THREE.MeshStandardMaterial({ color: 0xdde2e9, roughness: 0.95 }));
+  ceil.position.y = R.h; ceil.rotation.x = Math.PI / 2; g.add(ceil);
+  const stripGeo = new THREE.BoxGeometry(7, 0.09, 0.6);
+  [[-9, -6], [9, -6], [-9, 6], [9, 6]].forEach(([x, z]) => {
+    const s = new THREE.Mesh(stripGeo, M.ceilLight); s.position.set(x, R.h - 0.06, z); g.add(s);
+  });
+  for (let i = 0; i < 3; i++){                              // wall vents, right side
+    const v = new THREE.Mesh(new THREE.BoxGeometry(0.14, 1.1, 2.4), M.dark);
+    v.position.set(R.w / 2 - 0.08, 9.6, -8 + i * 8); g.add(v);
+  }
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(11, 1.38), M.sign);
+  sign.position.set(0, 11.7, -R.d / 2 + 0.35); g.add(sign);
+  return g;
+}
+function buildGlassWall(){
+  const g = new THREE.Group(), w = R.w, h = R.h;
+  const pane = new THREE.Mesh(new THREE.PlaneGeometry(w, h), M.glass);
+  pane.position.y = h / 2; g.add(pane);
+  const beamGeo = new THREE.BoxGeometry(w, 0.34, 0.34);
+  for (const y of [0.17, h - 0.17]){
+    const b = new THREE.Mesh(beamGeo, M.dark); b.position.y = y; g.add(b);
+  }
+  const mullGeo = new THREE.BoxGeometry(0.18, h, 0.18);
+  for (let x = -w / 2; x <= w / 2 + 0.01; x += 5){
+    const m = new THREE.Mesh(mullGeo, M.dark); m.position.set(x, h / 2, 0); g.add(m);
+  }
+  return g;
+}
+function buildNightOutside(){
+  const g = new THREE.Group();
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(115, 32, 20),
+    new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+  g.add(sky);
+  const starN = 320, pos = new Float32Array(starN * 3);
+  for (let i = 0; i < starN; i++){
+    const a = rand(0, Math.PI * 2), e = rand(0.06, 1.35), r = 108;
+    pos[i * 3] = Math.cos(a) * Math.cos(e) * r;
+    pos[i * 3 + 1] = Math.sin(e) * r;
+    pos[i * 3 + 2] = Math.sin(a) * Math.cos(e) * r;
+  }
+  const starGeo = new THREE.BufferGeometry();
+  starGeo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xbfd0ff, size: 1.6,
+    sizeAttenuation: false, transparent: true, opacity: 0.85, fog: false })));
+  const moon = new THREE.Mesh(new THREE.SphereGeometry(3.2, 20, 16),
+    new THREE.MeshBasicMaterial({ color: 0xf2eeda, fog: false }));
+  moon.position.set(-48, 44, -80); g.add(moon);
+  const near = new THREE.Mesh(new THREE.PlaneGeometry(64, 17),
+    new THREE.MeshBasicMaterial({ map: cityTexture('#101a2e', '#9fd8ff'), transparent: true }));
+  near.position.set(0, 5.5, -22); g.add(near);
+  const far = new THREE.Mesh(new THREE.PlaneGeometry(90, 22),
+    new THREE.MeshBasicMaterial({ map: cityTexture('#0a111f', '#5f7fa8'), transparent: true }));
+  far.position.set(-4, 7.5, -30); g.add(far);
+  return g;
+}
+
+/* ============================ 8. ASSEMBLY & LAYOUT ============================ */
+scene.add(buildRoom());
+const glassWall = buildGlassWall(); glassWall.position.z = -R.d / 2; scene.add(glassWall);
+scene.add(buildNightOutside());
+
+const rackDefs = [
+  { x: -9.5, z: -10,  len: 12, order: ['lettuce', 'bush', 'herb', 'lettuce'] },
+  { x:  5,   z: -10,  len: 12, order: ['bush', 'lettuce', 'lettuce', 'herb'] },
+  { x: -8,   z: -5.2, len: 10, order: ['herb', 'lettuce', 'bush', 'lettuce'] },
+  { x:  7,   z: -5.2, len: 9,  order: ['lettuce', 'herb', 'bush', 'bush'] },
+];
+const dripEmitters = [];
+rackDefs.forEach(d => {
+  const rack = buildGrowRack(d.len, d.order);
+  rack.position.set(d.x, 0, d.z);
+  setShadow(rack); scene.add(rack);
+  rack.userData.emitters.forEach(e => dripEmitters.push({ ...e, x: e.x + d.x, z: e.z + d.z }));
+});
+
+const arms = [];
+[[-4.5, -1.3, 0.5], [7.5, -1.3, -0.6]].forEach(([x, z, ry]) => {
+  const arm = buildRobotArm(); arm.position.set(x, 0, z); arm.rotation.y = ry;
+  setShadow(arm); scene.add(arm); arms.push(arm);
+});
+
+const conveyor = buildConveyor(); conveyor.position.z = CFG.conveyor.z;
+setShadow(conveyor); scene.add(conveyor);
+const cabA = buildEndCabinet(); cabA.position.set(14.6, 0, CFG.conveyor.z); setShadow(cabA); scene.add(cabA);
+const cabB = buildEndCabinet(); cabB.position.set(-14.6, 0, CFG.conveyor.z); cabB.rotation.y = Math.PI;
+setShadow(cabB); scene.add(cabB);
+const trays = [];
+for (let i = 0; i < 5; i++){
+  const t = buildProduceTray(i % 2 ? 'tomato' : 'lettuce');
+  t.position.set(0, CFG.conveyor.y, CFG.conveyor.z);
+  setShadow(t); scene.add(t);
+  trays.push({ g: t, off: i * CFG.conveyor.span / 5 });
+}
+
+const tanks = [];
+for (let i = 0; i < 3; i++){
+  const tank = buildNutrientTank(i); tank.position.set(15.1, 0, -9.8 + i * 4);
+  setShadow(tank); scene.add(tank); tanks.push(tank);
+}
+const feedGeo = new THREE.CylinderGeometry(0.07, 0.07, 30, 8); feedGeo.rotateZ(Math.PI / 2);
+const feed = new THREE.Mesh(feedGeo, M.pipe); feed.position.set(1, 0.2, -12.9);
+setShadow(feed); scene.add(feed);
+
+const drones = [];
+[{ cx: 0, cz: -3, r: 9, w: 0.16, h: 8.6, phase: 0 },
+ { cx: -5, cz: 2, r: 6, w: -0.12, h: 9.8, phase: 2.1 },
+ { cx: 8, cz: -2, r: 5, w: 0.2, h: 7.7, phase: 4.4 }].forEach(p => {
+  const d = buildDrone(); d.userData.path = p; setShadow(d, true, false); scene.add(d); drones.push(d);
+});
+
+const consoleUnit = buildConsole(); consoleUnit.position.set(13.5, 0, 9); consoleUnit.rotation.y = -0.9;
+setShadow(consoleUnit); scene.add(consoleUnit);
+const crateColors = [0x8fd06a, 0xe8b430, 0x8fd06a, 0x53a8dd];
+crateColors.forEach((c, i) => {
+  const crate = buildCrate(c);
+  crate.position.set(-16.5 + (i % 2) * 1.3, (i > 1 ? 0.68 : 0), 7.5 + Math.floor(i / 2) * 0.2);
+  crate.rotation.y = rand(-0.2, 0.2); setShadow(crate); scene.add(crate);
+});
+const cart = buildCart(); cart.position.set(0, 0, 8.6); setShadow(cart); scene.add(cart);
+
+const dripGeo = new THREE.SphereGeometry(0.04, 6, 6); dripGeo.scale(1, 1.7, 1);
+const drips = new THREE.InstancedMesh(dripGeo, M.drip, dripEmitters.length);
+scene.add(drips);
+
+/* ============================ 9. LIGHTING RIG ============================ */
+scene.add(new THREE.HemisphereLight(0xbfd6ff, 0x39404b, 0.5));
+const key = new THREE.DirectionalLight(0xfff1e2, 2.1);
+key.position.set(15, 20, 11); key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -26; key.shadow.camera.right = 26;
+key.shadow.camera.top = 26; key.shadow.camera.bottom = -26;
+key.shadow.camera.near = 2; key.shadow.camera.far = 60;
+key.shadow.bias = -0.0004;
+scene.add(key);
+const rim = new THREE.DirectionalLight(0x9fb8ff, 0.4);
+rim.position.set(-14, 9, -10); scene.add(rim);
+rackDefs.forEach(d => {
+  const p = new THREE.PointLight(PAL.magenta, 60, 13, 2);
+  p.position.set(d.x, 3.9, d.z); scene.add(p);
+});
+const tankGlow = new THREE.PointLight(0x3fd2c0, 22, 13, 2);
+tankGlow.position.set(14.2, 4.2, -5.8); scene.add(tankGlow);
+
+/* ============================ 10. ANIMATION LOOP ============================ */
+const clock = new THREE.Clock();
+renderer.setAnimationLoop(() => {
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  // articulated arms: slow tending sweep with gripper open/close
+  arms.forEach((a, i) => {
+    const p = i * 2.3, j = a.userData.joints;
+    j.swivel.rotation.y = Math.sin(t * 0.32 + p) * 0.85;
+    j.shoulder.rotation.z = -0.5 + Math.sin(t * 0.45 + p) * 0.3;
+    j.elbow.rotation.z = 0.95 + Math.sin(t * 0.5 + p + 1.3) * 0.35;
+    j.wrist.rotation.z = -0.55 + Math.sin(t * 0.7 + p) * 0.3;
+    const open = 0.09 + Math.max(0, Math.sin(t * 0.9 + p)) * 0.07;
+    j.fingers[0].position.x = open; j.fingers[1].position.x = -open;
+  });
+
+  // conveyor: scrolling belt, spinning rollers, wrapping trays
+  beltTex.offset.x = -(t * 0.48) % 1;
+  conveyor.userData.rollers.forEach(r => { r.rotation.z = t * 6.5; });
+  trays.forEach(tr => {
+    tr.g.position.x = -CFG.conveyor.span / 2 + ((tr.off + t * CFG.conveyor.speed) % CFG.conveyor.span);
+  });
+
+  // monitor drones on lazy circuits
+  drones.forEach((d, i) => {
+    const c = d.userData.path, a = t * c.w + c.phase;
+    d.position.set(c.cx + Math.cos(a) * c.r, c.h + Math.sin(t * 1.4 + i * 2) * 0.3, c.cz + Math.sin(a) * c.r);
+    d.rotation.y = -a - Math.sign(c.w) * Math.PI / 2;
+    d.rotation.z = Math.sin(a * 2) * 0.07;
+    d.userData.props.forEach((pr, k) => { pr.rotation.y = t * 42 + k * 1.6; });
+  });
+
+  // irrigation drips falling shelf to tray
+  dripEmitters.forEach((e, i) => {
+    const f = (t * e.speed + e.phase) % 1;
+    dummy.position.set(e.x, e.y0 + (e.y1 - e.y0) * f, e.z);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.setScalar(0.7 + 0.5 * Math.sin(f * Math.PI));
+    dummy.updateMatrix(); drips.setMatrixAt(i, dummy.matrix);
+  });
+  drips.instanceMatrix.needsUpdate = true;
+
+  // ambient life: grow-light pulse, gauges, LEDs, screen shimmer, cart shuttle
+  M.growLight.emissiveIntensity = 3.1 + Math.sin(t * 2.1) * 0.35;
+  M.led.emissiveIntensity = 1.4 + Math.sin(t * 6) * 1.1;
+  M.screen.emissiveIntensity = 1.12 + 0.07 * Math.sin(t * 13) + 0.05 * Math.sin(t * 7.3);
+  tanks.forEach((tk, i) => { tk.userData.needle.rotation.z = -0.9 + Math.sin(t * 0.6 + i * 1.7) * 0.55; });
+  const cx = Math.sin(t * 0.22) * 9.5;
+  cart.userData.wheels.forEach(w => { w.rotation.z -= (cx - cart.position.x) / 0.16; });
+  cart.position.x = cx;
+
+  controls.update();
+  renderer.render(scene, camera);
+});
+
+/* ============================ 11. RESIZE ============================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

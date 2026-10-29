@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Glowing Mushroom Forest</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a1322}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= 1 · CONFIG & PALETTE — Glowing Mushroom Forest ================= */
+const CFG = {
+  seed: 47110815, forestRadius: 18,
+  toadstoolClusters: 11, fernClusters: 12, sporeCount: 260,
+  reedCount: 26, poolPebbles: 64, treeCount: 6
+};
+const GLOW = [                                     // the three bioluminescent families
+  { name: 'teal',   glow: 0x2ee6c8, base: '#0d3a36', spot: '#9ef2e4' },
+  { name: 'violet', glow: 0xa06bff, base: '#2a1b4a', spot: '#d9c2ff' },
+  { name: 'amber',  glow: 0xffb347, base: '#4a2c10', spot: '#ffe0a8' }
+];
+const PAL = {
+  fog: 0x0a1322, skyTop: '#04060d', skyMid: '#0a1626', skyLow: '#12263c',
+  groundBase: '#0e1a17', moss: 0x1c3a2a,
+  stem: 0xb9c4cf, toadStem: 0xcfd8de,
+  log: '#241a12', tree: 0x10151d,
+  pool: 0x0d1b2e, stone: 0x27313a, stoneGlow: 0x59f5d8,
+  reed: 0x1f4a3c, reedTip: 0x8affe0,
+  moon: 0x8fb0e8, hemiSky: 0x24365c, hemiGround: 0x0c1018
+};
+
+/* ================= 2 · SEEDED PRNG & SMALL HELPERS ================= */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CFG.seed);
+const rand = (a, b) => a + rng() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+const TAU = Math.PI * 2;
+
+/** Returns a function giving the xz-distance from (x,z) to the sampled curve. */
+function curveSampler(curve, n = 90){
+  const pts = [];
+  for (let i = 0; i <= n; i++) pts.push(curve.getPointAt(i / n));
+  return (x, z) => {
+    let d = Infinity;
+    for (const p of pts){ const dd = (p.x - x) ** 2 + (p.z - z) ** 2; if (dd < d) d = dd; }
+    return Math.sqrt(d);
+  };
+}
+
+/* ================= 3 · RENDERER · SCENE · CAMERA · CONTROLS ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.15;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 16, 48);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 160);
+camera.position.set(13, 8.5, 16);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.8, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.9;
+controls.minDistance = 9; controls.maxDistance = 30; controls.maxPolarAngle = 1.48;
+
+/* ================= 4 · PROCEDURAL CANVAS TEXTURES ================= */
+function makeCanvas(w, h){ const c = document.createElement('canvas'); c.width = w; c.height = h; return c; }
+
+function groundTexture(){
+  const c = makeCanvas(512, 512), g = c.getContext('2d');
+  g.fillStyle = PAL.groundBase; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2400; i++){                       // damp moss mottling
+    const s = rand(2, 11);
+    g.fillStyle = `rgba(${randInt(10, 28)},${randInt(30, 58)},${randInt(24, 44)},${rand(0.1, 0.32).toFixed(2)})`;
+    g.beginPath(); g.ellipse(rng() * 512, rng() * 512, s, s * rand(0.5, 1), rng() * TAU, 0, TAU); g.fill();
+  }
+  for (let i = 0; i < 320; i++){                        // faint glowing lichen freckles
+    const f = pick(GLOW);
+    g.fillStyle = f.spot + '2a';
+    g.beginPath(); g.arc(rng() * 512, rng() * 512, rand(0.6, 2), 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping;
+  t.repeat.set(5, 5); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function skyTexture(){
+  const c = makeCanvas(1024, 512), g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0, PAL.skyTop); grad.addColorStop(0.6, PAL.skyMid); grad.addColorStop(1, PAL.skyLow);
+  g.fillStyle = grad; g.fillRect(0, 0, 1024, 512);
+  for (let i = 0; i < 420; i++){                        // pinprick stars, thickest near the zenith
+    const y = rng() * rng() * 340;
+    g.fillStyle = `rgba(${randInt(190, 255)},${randInt(210, 255)},255,${rand(0.2, 0.9).toFixed(2)})`;
+    g.beginPath(); g.arc(rng() * 1024, y, rand(0.4, 1.1), 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function sporeTexture(){                                // soft round sprite so points aren't squares
+  const c = makeCanvas(64, 64), g = c.getContext('2d');
+  const grad = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,255,255,0.55)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+function capTexture(fam){                               // dark cap skin with pale glow spots
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.fillStyle = fam.base; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 42; i++){
+    const x = rng() * 256, y = rng() * 256, r = rand(4, 15);
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, fam.spot); grad.addColorStop(1, fam.spot + '00');
+    g.fillStyle = grad; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function logTexture(){
+  const c = makeCanvas(256, 128), g = c.getContext('2d');
+  g.fillStyle = PAL.log; g.fillRect(0, 0, 256, 128);
+  for (let i = 0; i < 90; i++){                         // bark streaks along the grain
+    g.strokeStyle = `rgba(${randInt(20, 50)},${randInt(16, 38)},${randInt(10, 24)},${rand(0.25, 0.7).toFixed(2)})`;
+    g.lineWidth = rand(0.6, 2.4);
+    const y = rng() * 128;
+    g.beginPath(); g.moveTo(0, y); g.lineTo(256, y + rand(-6, 6)); g.stroke();
+  }
+  for (let i = 0; i < 170; i++){                        // moss growing over the bark
+    g.fillStyle = `rgba(${randInt(18, 40)},${randInt(58, 96)},${randInt(38, 62)},${rand(0.14, 0.5).toFixed(2)})`;
+    g.beginPath(); g.ellipse(rng() * 256, rng() * 128, rand(3, 14), rand(2, 7), rng() * TAU, 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+function poolGlowTexture(){                             // blurry colored blooms = reflected caps
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.fillStyle = '#000000'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 12; i++){
+    const fam = pick(GLOW), x = rand(30, 226), y = rand(30, 226), r = rand(18, 52);
+    const grad = g.createRadialGradient(x, y, 0, x, y, r);
+    grad.addColorStop(0, fam.spot + 'cc'); grad.addColorStop(0.5, fam.spot + '44'); grad.addColorStop(1, '#00000000');
+    g.fillStyle = grad; g.beginPath(); g.arc(x, y, r, 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.center.set(0.5, 0.5); return t;
+}
+
+function fernTexture(){                                 // leaflet silhouette, alpha-tested
+  const c = makeCanvas(256, 128), g = c.getContext('2d');
+  g.clearRect(0, 0, 256, 128);
+  g.strokeStyle = '#2e6b46'; g.lineWidth = 5;
+  g.beginPath(); g.moveTo(0, 64); g.lineTo(256, 64); g.stroke();   // rachis
+  g.fillStyle = '#39815a';
+  for (let x = 8; x < 250; x += 11){                    // paired leaflets, shrinking to the tip
+    const L = 52 * (1 - x / 290);
+    for (const s of [1, -1]){
+      g.beginPath();
+      g.moveTo(x, 64);
+      g.quadraticCurveTo(x + 9, 64 + s * L * 0.7, x + 3, 64 + s * L);
+      g.quadraticCurveTo(x + 14, 64 + s * L * 0.5, x + 16, 64);
+      g.fill();
+    }
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* ================= 5 · SHARED MATERIALS ================= */
+const MAT = {
+  ground: new THREE.MeshStandardMaterial({ map: groundTexture(), roughness: 1 }),
+  stem: new THREE.MeshStandardMaterial({ color: PAL.stem, roughness: 0.65 }),
+  toadStem: new THREE.MeshStandardMaterial({ color: PAL.toadStem, roughness: 0.7 }),
+  moss: new THREE.MeshStandardMaterial({ color: PAL.moss, roughness: 1 }),
+  log: new THREE.MeshStandardMaterial({ map: logTexture(), roughness: 0.95 }),
+  tree: new THREE.MeshStandardMaterial({ color: PAL.tree, roughness: 0.95 }),
+  stone: new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.85 }),
+  stoneGlow: new THREE.MeshBasicMaterial({ color: 0xffffff, toneMapped: false }),
+  pool: new THREE.MeshStandardMaterial({ color: PAL.pool, roughness: 0.12, metalness: 0.6,
+    emissive: 0xffffff, emissiveMap: poolGlowTexture(), emissiveIntensity: 0.55 }),
+  pebble: new THREE.MeshStandardMaterial({ color: 0x323c44, roughness: 0.9 }),
+  reed: new THREE.MeshStandardMaterial({ color: PAL.reed, roughness: 0.8 }),
+  reedTip: new THREE.MeshBasicMaterial({ color: PAL.reedTip, toneMapped: false }),
+  fern: new THREE.MeshStandardMaterial({ map: fernTexture(), alphaTest: 0.45, side: THREE.DoubleSide,
+    roughness: 0.9, emissive: 0x1d4a30, emissiveIntensity: 0.65 }),
+  spore: new THREE.PointsMaterial({ size: 0.22, map: sporeTexture(), vertexColors: true, transparent: true,
+    opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false, toneMapped: false })
+};
+const poolTex = MAT.pool.emissiveMap;
+
+/* ================= 6 · LAYOUT — winding path curve & the shallow pool ================= */
+const POOL = { x: 4.5, z: -3, r: 4 };
+const pathCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-14, 0, 6), new THREE.Vector3(-8, 0, 3), new THREE.Vector3(-3.5, 0, 2),
+  new THREE.Vector3(-0.5, 0, -1.5), new THREE.Vector3(0.8, 0, -5.8), new THREE.Vector3(4.5, 0, -9),
+  new THREE.Vector3(9, 0, -10.5), new THREE.Vector3(13, 0, -11)
+]);
+const distToPath = curveSampler(pathCurve);
+const distToPool = (x, z) => Math.hypot(x - POOL.x, z - POOL.z) - POOL.r;
+const GIANTS = [                                       // towering focal mushrooms
+  { x: -5.2, z: -4.2, fam: 0, h: 7.5, capR: 2.6 }, { x: 3.2, z: 3.8, fam: 1, h: 6.4, capR: 2.2 },
+  { x: -1.5, z: -8.8, fam: 2, h: 5.6, capR: 2.0 }, { x: 8.5, z: -6.8, fam: 0, h: 8.2, capR: 2.9 },
+  { x: -8.5, z: 2.5, fam: 1, h: 5.2, capR: 1.8 }, { x: 0.5, z: 8.5, fam: 2, h: 6.8, capR: 2.4 }
+];
+const nearGiant = (x, z, r) => GIANTS.some(m => Math.hypot(m.x - x, m.z - z) < r);
+function openSpot(minPath, minPool, minG){             // rejection-sample a clear ground spot
+  for (let k = 0; k < 60; k++){
+    const a = rng() * TAU, r = Math.sqrt(rng()) * (CFG.forestRadius - 1);
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    if (distToPath(x, z) < minPath || distToPool(x, z) < minPool || nearGiant(x, z, minG)) continue;
+    return { x, z };
+  }
+  return null;
+}
+
+/* ================= 7 · BUILDERS — environment shell (ground + starry sky dome) ================= */
+function buildGround(){
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.CircleGeometry(30, 56), MAT.ground);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true;
+  g.add(floor); return g;
+}
+function buildSkyDome(){
+  const g = new THREE.Group();
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(60, 28, 14),
+    new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false })));
+  return g;
+}
+
+/* ================= 8 · BUILDER — towering bioluminescent mushroom ================= */
+const capPulses = [];
+function capGeometry(rimR, height){                    // lathe dome with a curled under-rim
+  const pts = [];
+  for (let i = 0; i <= 10; i++){
+    const s = i / 10;
+    pts.push(new THREE.Vector2(Math.sin(s * Math.PI / 2) * rimR, height * (1 - s * s)));
+  }
+  pts.push(new THREE.Vector2(rimR * 0.86, -height * 0.1));
+  return new THREE.LatheGeometry(pts, 26);
+}
+function buildGiantMushroom(spec){
+  const fam = GLOW[spec.fam];
+  const g = new THREE.Group();
+  const stemH = spec.h, capH = spec.capR * 0.62;
+  const stem = new THREE.Mesh(new THREE.CylinderGeometry(spec.capR * 0.22, spec.capR * 0.34, stemH, 12), MAT.stem);
+  stem.position.y = stemH / 2; stem.castShadow = true;
+  g.add(stem);
+  const skirt = new THREE.Mesh(new THREE.TorusGeometry(spec.capR * 0.26, spec.capR * 0.07, 8, 18), MAT.stem);
+  skirt.rotation.x = Math.PI / 2; skirt.position.y = stemH * 0.72;
+  g.add(skirt);
+  const skin = capTexture(fam);
+  const capMat = new THREE.MeshStandardMaterial({ map: skin, emissiveMap: skin,
+    emissive: fam.glow, emissiveIntensity: 1.15, roughness: 0.5 });
+  const cap = new THREE.Mesh(capGeometry(spec.capR, capH), capMat);
+  cap.position.y = stemH; cap.castShadow = true;
+  g.add(cap);
+  const gills = new THREE.Mesh(
+    new THREE.CylinderGeometry(spec.capR * 0.24, spec.capR * 0.82, capH * 0.34, 26, 1, true),
+    new THREE.MeshStandardMaterial({ color: fam.base, emissive: fam.glow, emissiveIntensity: 1.1,
+      side: THREE.DoubleSide }));
+  gills.position.y = stemH - capH * 0.12;
+  g.add(gills);
+  const light = new THREE.PointLight(fam.glow, 26, spec.capR * 9, 1.6);
+  light.position.y = stemH - capH * 0.7;
+  g.add(light);
+  g.position.set(spec.x, 0, spec.z);
+  g.rotation.set(rand(-0.05, 0.05), rng() * TAU, rand(-0.05, 0.05));
+  capPulses.push({ capMat, gillMat: gills.material, light,
+    phase: rng() * TAU, speed: rand(0.5, 0.9), lBase: 26, base: 1.15 });
+  return g;
+}
+
+/* ================= 9 · BUILDER — clusters of small glowing toadstools ================= */
+function buildToadstools(){
+  const g = new THREE.Group();
+  const stemXf = [], capXf = [[], [], []];
+  const q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (let cl = 0; cl < CFG.toadstoolClusters; cl++){
+    const spot = openSpot(1.3, 0.6, 2.2);
+    if (!spot) continue;
+    const famIdx = cl % 3, n = randInt(5, 9);
+    for (let i = 0; i < n; i++){
+      const a = rng() * TAU, rr = Math.sqrt(rng()) * 0.95;
+      const x = spot.x + Math.cos(a) * rr, z = spot.z + Math.sin(a) * rr;
+      const h = rand(0.16, 0.5), capR = h * rand(0.55, 0.8);
+      q.setFromEuler(e.set(rand(-0.15, 0.15), 0, rand(-0.15, 0.15)));
+      stemXf.push(new THREE.Matrix4().compose(new THREE.Vector3(x, h / 2, z), q,
+        new THREE.Vector3(capR * 0.32, h, capR * 0.32)));
+      capXf[famIdx].push(new THREE.Matrix4().compose(new THREE.Vector3(x, h, z), q,
+        new THREE.Vector3(capR, capR * 0.72, capR)));
+    }
+  }
+  const stemGeo = new THREE.CylinderGeometry(0.8, 1.1, 1, 7);
+  const stems = new THREE.InstancedMesh(stemGeo, MAT.toadStem, stemXf.length);
+  stemXf.forEach((m, i) => stems.setMatrixAt(i, m));
+  stems.castShadow = true;
+  g.add(stems);
+  const capGeo = new THREE.SphereGeometry(1, 12, 7, 0, TAU, 0, Math.PI * 0.55);
+  capXf.forEach((list, fi) => {
+    const fam = GLOW[fi];
+    const mat = new THREE.MeshStandardMaterial({ color: fam.base, emissive: fam.glow,
+      emissiveIntensity: 0.9, roughness: 0.6 });
+    const caps = new THREE.InstancedMesh(capGeo, mat, list.length);
+    list.forEach((m, i) => caps.setMatrixAt(i, m));
+    caps.castShadow = true;
+    capPulses.push({ capMat: mat, gillMat: null, light: null, phase: rng() * TAU, speed: rand(0.6, 1), lBase: 0, base: 0.9 });
+    g.add(caps);
+  });
+  return g;
+}
+
+/* ================= 10 · BUILDER — curling ferns (alpha-tested curl-strip fronds) ================= */
+function frondGeometry(){
+  const seg = 16, pos = [], uv = [], idx = [];
+  let x = 0, y = 0;
+  for (let i = 0; i <= seg; i++){
+    const s = i / seg, w = 0.09 * (1 - s * 0.7) + 0.015;
+    pos.push(x, y, -w, x, y, w);
+    uv.push(s, 0, s, 1);
+    const ang = 0.45 + 3.6 * s * s;                    // curvature grows: tip curls right over
+    x += Math.cos(ang) / seg; y += Math.sin(ang) / seg;
+  }
+  for (let i = 0; i < seg; i++){ const a = i * 2; idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals(); return g;
+}
+function buildFerns(){
+  const g = new THREE.Group();
+  const xf = [];
+  const q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (let cl = 0; cl < CFG.fernClusters; cl++){
+    const spot = openSpot(1.1, 0.5, 2);
+    if (!spot) continue;
+    const n = randInt(5, 8), base = rng() * TAU;
+    for (let i = 0; i < n; i++){
+      const yaw = base + i / n * TAU + rand(-0.3, 0.3);
+      q.setFromEuler(e.set(0, yaw, rand(-0.12, 0.12), 'YXZ'));
+      const s = rand(0.8, 1.7);
+      xf.push(new THREE.Matrix4().compose(
+        new THREE.Vector3(spot.x + rand(-0.15, 0.15), 0.02, spot.z + rand(-0.15, 0.15)), q,
+        new THREE.Vector3(s, s, s)));
+    }
+  }
+  const mesh = new THREE.InstancedMesh(frondGeometry(), MAT.fern, xf.length);
+  xf.forEach((m, i) => mesh.setMatrixAt(i, m));
+  mesh.castShadow = true;
+  g.add(mesh);
+  return g;
+}
+
+/* ================= 11 · BUILDER — mossy fallen log with shelf fungi ================= */
+function buildFallenLog(x, z, yaw, len, r){
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(r, r * 1.08, len, 11), MAT.log);
+  trunk.rotation.z = Math.PI / 2;
+  trunk.castShadow = trunk.receiveShadow = true;
+  g.add(trunk);
+  for (let i = 0; i < 7; i++){                          // moss cushions along the top
+    const clump = new THREE.Mesh(new THREE.SphereGeometry(rand(0.1, 0.22), 8, 6), MAT.moss);
+    clump.position.set(rand(-len / 2 + 0.3, len / 2 - 0.3), r * rand(0.7, 0.95), rand(-r * 0.4, r * 0.4));
+    clump.scale.y = 0.4;
+    g.add(clump);
+  }
+  for (let i = 0; i < 4; i++){                          // faintly glowing shelf fungi
+    const fam = pick(GLOW);
+    const shelf = new THREE.Mesh(new THREE.CylinderGeometry(rand(0.12, 0.2), rand(0.14, 0.24), 0.05, 10, 1, false, 0, Math.PI),
+      new THREE.MeshStandardMaterial({ color: fam.base, emissive: fam.glow, emissiveIntensity: 0.8 }));
+    shelf.position.set(rand(-len / 2 + 0.4, len / 2 - 0.4), rand(-r * 0.2, r * 0.55), r * 0.92);
+    g.add(shelf);
+  }
+  g.position.set(x, r, z);
+  g.rotation.y = yaw;
+  return g;
+}
+
+/* ================= 12 · BUILDER — twisted leafless tree silhouettes ================= */
+function limb(parent, baseR, topR, segLen, nSeg, tilt){
+  let p = parent;
+  const joints = [];
+  for (let i = 0; i < nSeg; i++){
+    const piv = new THREE.Group();
+    piv.rotation.set(rand(-tilt, tilt), rand(-0.4, 0.4), rand(-tilt, tilt));
+    p.add(piv);
+    const r0 = baseR + (topR - baseR) * (i / nSeg), r1 = baseR + (topR - baseR) * ((i + 1) / nSeg);
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, segLen, 7), MAT.tree);
+    m.position.y = segLen / 2; m.castShadow = true;
+    piv.add(m);
+    const next = new THREE.Group(); next.position.y = segLen;
+    piv.add(next);
+    p = next; joints.push(next);
+  }
+  return joints;
+}
+function buildTwistedTree(x, z){
+  const g = new THREE.Group();
+  const joints = limb(g, rand(0.32, 0.45), 0.1, rand(1.3, 1.8), 5, 0.24);
+  for (const j of [joints[2], joints[4]]){              // two crooked branches
+    const arm = new THREE.Group();
+    arm.rotation.set(rand(0.6, 1.1), rng() * TAU, 0, 'YXZ');
+    j.add(arm);
+    limb(arm, 0.09, 0.02, rand(0.7, 1), 3, 0.32);
+  }
+  g.position.set(x, 0, z);
+  g.rotation.y = rng() * TAU;
+  return g;
+}
+
+/* ================= 13 · BUILDER — shallow reflecting pool, pebble rim, glowing reeds ================= */
+function buildPool(){
+  const g = new THREE.Group();
+  const water = new THREE.Mesh(new THREE.CircleGeometry(POOL.r, 40), MAT.pool);
+  water.rotation.x = -Math.PI / 2;
+  water.position.set(POOL.x, 0.03, POOL.z);
+  g.add(water);
+  const pebbles = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), MAT.pebble, CFG.poolPebbles);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), col = new THREE.Color();
+  for (let i = 0; i < CFG.poolPebbles; i++){
+    const a = rng() * TAU, rr = POOL.r + rand(0.1, 0.7);
+    q.setFromEuler(e.set(rng() * TAU, rng() * TAU, rng() * TAU));
+    m.compose(new THREE.Vector3(POOL.x + Math.cos(a) * rr, 0.05, POOL.z + Math.sin(a) * rr), q,
+      new THREE.Vector3(rand(0.08, 0.2), rand(0.06, 0.12), rand(0.08, 0.2)));
+    pebbles.setMatrixAt(i, m);
+    pebbles.setColorAt(i, col.setHSL(0.58, rand(0.05, 0.15), rand(0.25, 0.45)));
+  }
+  pebbles.castShadow = pebbles.receiveShadow = true;
+  g.add(pebbles);
+  // glowing reeds leaning out of the shallows
+  const stalks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.5, 1, 1, 5), MAT.reed, CFG.reedCount);
+  const tips = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 6, 5), MAT.reedTip, CFG.reedCount);
+  for (let i = 0; i < CFG.reedCount; i++){
+    const a = rng() * TAU, rr = POOL.r * rand(0.75, 1.02), h = rand(0.9, 1.7);
+    const x = POOL.x + Math.cos(a) * rr, z = POOL.z + Math.sin(a) * rr;
+    const ex = rand(-0.14, 0.14), ez = rand(-0.14, 0.14);
+    q.setFromEuler(e.set(ex, 0, ez));
+    stalks.setMatrixAt(i, m.compose(new THREE.Vector3(x, h / 2, z), q, new THREE.Vector3(0.03, h, 0.03)));
+    tips.setMatrixAt(i, m.compose(                       // tip sits on the leaned stalk's end
+      new THREE.Vector3(x - Math.sin(ez) * h, Math.cos(ex) * Math.cos(ez) * h, z + Math.sin(ex) * h), q,
+      new THREE.Vector3(0.05, 0.09, 0.05)));
+  }
+  g.add(stalks, tips);
+  const shine = new THREE.PointLight(0x67d8c4, 2.2, 9, 1.8);  // soft glow hovering over the water
+  shine.position.set(POOL.x, 0.8, POOL.z);
+  g.add(shine);
+  return g;
+}
+
+/* ================= 14 · BUILDER — winding path of luminous stepping stones ================= */
+let stoneGlowMesh, stoneCount = 0;
+function buildStonePath(){
+  const g = new THREE.Group();
+  const placements = [];
+  const len = pathCurve.getLength();
+  for (let d = 0.7; d < len - 0.7; d += 1.18){
+    const u = d / len, p = pathCurve.getPointAt(u), tan = pathCurve.getTangentAt(u);
+    placements.push({ p, yaw: Math.atan2(-tan.z, tan.x) + rand(-0.35, 0.35) });
+  }
+  stoneCount = placements.length;
+  const base = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1.15, 1, 7), MAT.stone, stoneCount);
+  stoneGlowMesh = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.82, 0.82, 1, 7), MAT.stoneGlow, stoneCount);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), col = new THREE.Color();
+  placements.forEach((pl, i) => {
+    q.setFromEuler(e.set(0, pl.yaw, 0));
+    const sx = rand(0.42, 0.58), sz = rand(0.32, 0.46);
+    base.setMatrixAt(i, m.compose(new THREE.Vector3(pl.p.x, 0.05, pl.p.z), q, new THREE.Vector3(sx, 0.1, sz)));
+    stoneGlowMesh.setMatrixAt(i, m.compose(new THREE.Vector3(pl.p.x, 0.105, pl.p.z), q,
+      new THREE.Vector3(sx, 0.012, sz)));
+    stoneGlowMesh.setColorAt(i, col.setHex(PAL.stoneGlow));
+  });
+  base.castShadow = base.receiveShadow = true;
+  g.add(base, stoneGlowMesh);
+  return g;
+}
+const _sgC = new THREE.Color(), _sgBase = new THREE.Color(PAL.stoneGlow);
+function updateStoneGlow(t){
+  for (let i = 0; i < stoneCount; i++){                 // a slow pulse travels down the path
+    const w = 0.5 + 0.5 * Math.sin(t * 1.5 - i * 0.55);
+    stoneGlowMesh.setColorAt(i, _sgC.copy(_sgBase).multiplyScalar(0.25 + w * w * 1.3));
+  }
+  stoneGlowMesh.instanceColor.needsUpdate = true;
+}
+
+/* ================= 15 · BUILDER — glowing spores drifting up through the dark ================= */
+let sporeGeo;
+const sporeData = [];
+function buildSpores(){
+  const g = new THREE.Group();
+  const posArr = new Float32Array(CFG.sporeCount * 3), colArr = new Float32Array(CFG.sporeCount * 3);
+  const col = new THREE.Color();
+  for (let i = 0; i < CFG.sporeCount; i++){
+    const a = rng() * TAU, r = Math.sqrt(rng()) * 15;
+    const d = { x: Math.cos(a) * r, y: rng() * 8.5, z: Math.sin(a) * r,
+      rise: rand(0.18, 0.55), sway: rand(0.3, 0.9), phase: rng() * TAU };
+    sporeData.push(d);
+    posArr.set([d.x, d.y, d.z], i * 3);
+    col.setHex(pick(GLOW).glow).multiplyScalar(rand(0.5, 1));
+    colArr.set([col.r, col.g, col.b], i * 3);
+  }
+  sporeGeo = new THREE.BufferGeometry();
+  sporeGeo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+  sporeGeo.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+  const points = new THREE.Points(sporeGeo, MAT.spore);
+  points.frustumCulled = false;
+  g.add(points);
+  return g;
+}
+function updateSpores(t, dt){
+  const pos = sporeGeo.attributes.position.array;
+  for (let i = 0; i < sporeData.length; i++){
+    const d = sporeData[i];
+    d.y += d.rise * dt;
+    if (d.y > 8.8) d.y = 0.1;                           // recycle at the canopy, reborn at the moss
+    pos[i * 3] = d.x + Math.sin(t * d.sway + d.phase) * 0.6;
+    pos[i * 3 + 1] = d.y;
+    pos[i * 3 + 2] = d.z + Math.cos(t * d.sway * 0.8 + d.phase) * 0.6;
+  }
+  sporeGeo.attributes.position.needsUpdate = true;
+}
+
+/* ================= 16 · ASSEMBLY ================= */
+scene.add(buildSkyDome(), buildGround(), buildPool(), buildStonePath());
+for (const spec of GIANTS) scene.add(buildGiantMushroom(spec));
+scene.add(buildToadstools(), buildFerns(), buildSpores());
+scene.add(buildFallenLog(-9.5, -7.5, 0.5, 4.6, 0.42),
+          buildFallenLog(6.5, 7.5, -0.9, 3.8, 0.36),
+          buildFallenLog(-4, 9.5, 0.15, 3.2, 0.3));
+for (let i = 0; i < CFG.treeCount; i++){                // gnarled silhouettes ring the clearing
+  const a = i / CFG.treeCount * TAU + rand(-0.3, 0.3), r = rand(12.5, 16);
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  if (distToPath(x, z) < 2.2) continue;
+  scene.add(buildTwistedTree(x, z));
+}
+
+/* ================= 17 · LIGHTING RIG — cold moonlight over living neon ================= */
+const moon = new THREE.DirectionalLight(PAL.moon, 0.75);
+moon.position.set(-14, 20, -8); moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.left = -20; moon.shadow.camera.right = 20;
+moon.shadow.camera.top = 20; moon.shadow.camera.bottom = -20;
+moon.shadow.camera.near = 4; moon.shadow.camera.far = 60;
+moon.shadow.bias = -0.0006;
+scene.add(moon, moon.target);
+const hemi = new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.85);
+scene.add(hemi);
+
+/* ================= 18 · ANIMATION LOOP — pulse, rise, shimmer, ripple ================= */
+const clock = new THREE.Clock();
+let lastT = 0;
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  const dt = Math.min(t - lastT, 0.05);
+  lastT = t;
+  for (const p of capPulses){                           // caps breathe light in and out
+    const w = 0.72 + 0.32 * Math.sin(t * p.speed + p.phase);
+    p.capMat.emissiveIntensity = p.base * w;
+    if (p.gillMat) p.gillMat.emissiveIntensity = 1.1 * w;
+    if (p.light) p.light.intensity = p.lBase * w;
+  }
+  updateSpores(t, dt);
+  updateStoneGlow(t);
+  poolTex.rotation += dt * 0.03;                        // reflections slowly swirl
+  MAT.pool.emissiveIntensity = 0.5 + 0.14 * Math.sin(t * 0.7);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================= 19 · RESIZE ================= */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

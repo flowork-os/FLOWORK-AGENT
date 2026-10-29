@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Chapel Apse</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#dfe7ee}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- renderer / scene / camera ----------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdfe7ee);
+scene.fog = new THREE.Fog(0xdfe7ee, 28, 60);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 200);
+camera.position.set(9, 5.5, 11.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.1, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+controls.minDistance = 5;
+controls.maxDistance = 35;
+controls.maxPolarAngle = 1.48;
+
+// ---------- lights ----------
+scene.add(new THREE.HemisphereLight(0xbfd4e6, 0x8a7f6a, 0.9));
+const sun = new THREE.DirectionalLight(0xfff1de, 2.4);
+sun.position.set(9, 14, 7);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -10;
+sun.shadow.camera.right = sun.shadow.camera.top = 10;
+sun.shadow.camera.near = 1;
+sun.shadow.camera.far = 40;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.02;
+scene.add(sun);
+
+// ---------- procedural masonry texture ----------
+function makeStoneTexture() {
+  const s = 512, c = document.createElement('canvas');
+  c.width = c.height = s;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8f8168'; g.fillRect(0, 0, s, s);            // mortar
+  const rows = 6, rh = s / rows, bw = s / 3;                   // 0.4 m courses, 0.8 m blocks
+  for (let r = 0; r < rows; r++) {
+    const off = (r % 2) ? bw / 2 : 0;
+    for (let b = -1; b <= 3; b++) {
+      const v = Math.floor(Math.random() * 18) - 9;
+      g.fillStyle = `rgb(${182 + v},${168 + v},${142 + v})`;
+      g.fillRect(b * bw + off + 3, r * rh + 3, bw - 6, rh - 6);
+    }
+  }
+  for (let i = 0; i < 2600; i++) {                             // weathering speckle
+    g.fillStyle = `rgba(60,50,35,${Math.random() * 0.06})`;
+    g.fillRect(Math.random() * s, Math.random() * s, 2, 2);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.repeat.set(1 / 2.4, 1 / 2.4);                              // canvas tile = 2.4 m
+  t.anisotropy = 8;
+  return t;
+}
+const stoneTex = makeStoneTexture();
+
+const stoneM = new THREE.MeshStandardMaterial({ map: stoneTex, bumpMap: stoneTex, bumpScale: 0.05, roughness: 0.95 });
+const trimM  = new THREE.MeshStandardMaterial({ color: 0xa79878, roughness: 0.9 });
+const roofM  = new THREE.MeshStandardMaterial({ color: 0x5e6b76, roughness: 0.85, metalness: 0.05 });
+const glassM = new THREE.MeshPhysicalMaterial({ color: 0x223a52, roughness: 0.12, metalness: 0.45, emissive: 0x0b1626, emissiveIntensity: 0.7, side: THREE.DoubleSide });
+
+// ---------- dimensions (meters) ----------
+const Ri = 3.0, T = 0.6, Ro = Ri + T, Rm = Ri + T / 2;         // wall radii / thickness
+const H = 6.2, W = Math.PI * Rm;                               // wall height / unrolled arc length
+const SILL = 1.9, SPR = 4.4, WH = 0.48;                        // window sill, arch springing, half-width
+const winA = [-60, -30, 0, 30, 60].map(d => d * Math.PI / 180);
+const butA = [-75, -45, -15, 15, 45, 75].map(d => d * Math.PI / 180);
+
+const apse = new THREE.Group();
+apse.position.z = -0.9;
+scene.add(apse);
+
+function addMesh(geo, mat, cast = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = cast; m.receiveShadow = true;
+  apse.add(m); return m;
+}
+
+// ---------- semicircular wall with real arched openings ----------
+// Built flat (with holes), extruded, then bent around the cylinder axis.
+const wall = new THREE.Shape();
+const N = 72;
+wall.moveTo(-W / 2, 0);
+for (let i = 1; i <= N; i++) wall.lineTo(-W / 2 + W * i / N, 0);
+wall.lineTo(W / 2, H);
+for (let i = 1; i <= N; i++) wall.lineTo(W / 2 - W * i / N, H);
+wall.closePath();
+for (const a of winA) {
+  const cx = a * Rm, h = new THREE.Path();
+  h.moveTo(cx - WH, SILL);
+  h.lineTo(cx + WH, SILL);
+  h.lineTo(cx + WH, SPR);
+  h.absarc(cx, SPR, WH, 0, Math.PI, false);
+  h.closePath();
+  wall.holes.push(h);
+}
+const wallGeo = new THREE.ExtrudeGeometry(wall, { depth: T, bevelEnabled: false, curveSegments: 24, steps: 1 });
+const pos = wallGeo.attributes.position;
+for (let i = 0; i < pos.count; i++) {                          // bend: x -> angle, z -> radius
+  const th = pos.getX(i) / Rm, r = Ri + pos.getZ(i);
+  pos.setXYZ(i, Math.sin(th) * r, pos.getY(i), Math.cos(th) * r);
+}
+wallGeo.computeVertexNormals();
+addMesh(wallGeo, stoneM);
+
+// ---------- glass + mullions ----------
+const gShape = new THREE.Shape();
+gShape.moveTo(-WH, SILL);
+gShape.lineTo(WH, SILL);
+gShape.lineTo(WH, SPR);
+gShape.absarc(0, SPR, WH, 0, Math.PI, false);
+gShape.closePath();
+const glassGeo = new THREE.ShapeGeometry(gShape, 24);
+const mullGeo = new THREE.BoxGeometry(0.09, SPR - SILL, 0.09);
+for (const a of winA) {
+  const gm = new THREE.Mesh(glassGeo, glassM);
+  gm.position.set(Math.sin(a) * (Ri + 0.12), 0, Math.cos(a) * (Ri + 0.12));
+  gm.rotation.y = a;
+  apse.add(gm);
+  const mu = addMesh(mullGeo, trimM);
+  mu.position.set(Math.sin(a) * (Ri + 0.2), (SILL + SPR) / 2, Math.cos(a) * (Ri + 0.2));
+  mu.rotation.y = a;
+}
+
+// ---------- buttresses ----------
+const bp = new THREE.Shape();                                  // radial profile
+bp.moveTo(0, 0); bp.lineTo(0.85, 0); bp.lineTo(0.85, 3.1);
+bp.lineTo(0.28, 5.3); bp.lineTo(0, 5.3); bp.closePath();
+const butGeo = new THREE.ExtrudeGeometry(bp, { depth: 0.55, bevelEnabled: false });
+butGeo.translate(0, 0, -0.275);
+for (const a of butA) {
+  const b = addMesh(butGeo, stoneM);
+  b.position.set(Math.sin(a) * (Ro - 0.05), 0, Math.cos(a) * (Ro - 0.05));
+  b.rotation.y = a - Math.PI / 2;
+}
+
+// ---------- plinth, cornice, closing back wall ----------
+addMesh(new THREE.CylinderGeometry(3.8, 3.8, 0.45, 64, 1, false, -Math.PI / 2, Math.PI), trimM).position.y = 0.225;
+addMesh(new THREE.CylinderGeometry(3.85, 3.76, 0.28, 64, 1, false, -Math.PI / 2, Math.PI), trimM).position.y = H + 0.14;
+addMesh(new THREE.BoxGeometry(2 * Ro + 0.4, 6.5, 0.45), trimM).position.set(0, 3.25, -0.225);
+addMesh(new THREE.BoxGeometry(2 * Ro + 0.6, 0.45, 0.55), trimM).position.set(0, 0.225, -0.25);
+
+// ---------- half-conical roof ----------
+const roofBase = H + 0.28, roofH = 2.3, roofR = 3.95;
+addMesh(new THREE.ConeGeometry(roofR, roofH, 48, 1, false, -Math.PI / 2, Math.PI), roofM).position.y = roofBase + roofH / 2;
+const gable = new THREE.Shape();
+gable.moveTo(-roofR, 0); gable.lineTo(roofR, 0); gable.lineTo(0, roofH); gable.closePath();
+const gm = addMesh(new THREE.ShapeGeometry(gable), new THREE.MeshStandardMaterial({ color: 0xa79878, roughness: 0.9, side: THREE.DoubleSide }));
+gm.position.set(0, roofBase, -0.02);
+gm.rotation.y = Math.PI;
+
+// ---------- finial cross ----------
+addMesh(new THREE.CylinderGeometry(0.1, 0.16, 0.35, 12), trimM).position.y = roofBase + roofH + 0.1;
+addMesh(new THREE.BoxGeometry(0.08, 0.8, 0.08), trimM).position.y = roofBase + roofH + 0.6;
+addMesh(new THREE.BoxGeometry(0.46, 0.08, 0.08), trimM).position.y = roofBase + roofH + 0.78;
+
+// ---------- ground ----------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(16, 64),
+  new THREE.MeshStandardMaterial({ color: 0xb8b19e, roughness: 1 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- loop / resize ----------
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

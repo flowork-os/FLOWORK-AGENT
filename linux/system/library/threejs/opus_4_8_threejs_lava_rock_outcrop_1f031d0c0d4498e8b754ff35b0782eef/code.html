@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lava Rock Outcrop</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0a0b0d; }
+  #c { display: block; width: 100%; height: 100%; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 system-ui, sans-serif; color: #9aa0a6;
+    opacity: 0.55; letter-spacing: .02em; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="hint">drag to orbit &middot; scroll to zoom &middot; auto-rotating</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ------------------------------------------------------------------ *
+ *  Seeded deterministic RNG (mulberry32) so the outcrop is stable.
+ * ------------------------------------------------------------------ */
+let _seed = 20260706;
+function rand() {
+  _seed |= 0; _seed = (_seed + 0x6D2B79F5) | 0;
+  let t = Math.imul(_seed ^ (_seed >>> 15), 1 | _seed);
+  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+}
+const rr = (a, b) => a + (b - a) * rand();
+function h3(x, y, z) { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453; return s - Math.floor(s); }
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / scene / camera
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+const scene = new THREE.Scene();
+
+// Neutral dark studio backdrop: subtle vertical gradient (lighter above, deep below).
+function makeBackground() {
+  const cv = document.createElement('canvas');
+  cv.width = 4; cv.height = 256;
+  const g = cv.getContext('2d');
+  const grd = g.createLinearGradient(0, 0, 0, 256);
+  grd.addColorStop(0.0, '#282b30');
+  grd.addColorStop(0.45, '#16181b');
+  grd.addColorStop(1.0, '#08090b');
+  g.fillStyle = grd; g.fillRect(0, 0, 4, 256);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeBackground();
+scene.fog = new THREE.Fog(0x0d0f11, 9, 26);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.6, 2.8, 5.2);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere fill + directional key/fill/rim + faint warm
+ * ------------------------------------------------------------------ */
+scene.add(new THREE.HemisphereLight(0x93b2d8, 0x171310, 0.55));
+
+const key = new THREE.DirectionalLight(0xffe9cf, 3.2);
+key.position.set(4.2, 6.4, 3.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 3;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.03;
+{
+  const d = 3.6;
+  const sc = key.shadow.camera;
+  sc.left = -d; sc.right = d; sc.top = d; sc.bottom = -d;
+  sc.near = 0.5; sc.far = 30;
+  sc.updateProjectionMatrix();
+}
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9cc0ff, 0.55);
+fill.position.set(-5.5, 3.0, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xc3d8ff, 1.35);
+rim.position.set(-2.5, 4.2, -5.5);
+scene.add(rim);
+
+// Very faint residual warmth lifting the shadowed cavities near the base.
+const warm = new THREE.PointLight(0xff6a28, 0.35, 4.5, 2.0);
+warm.position.set(0.1, 0.55, 0.7);
+scene.add(warm);
+
+/* ------------------------------------------------------------------ *
+ *  Ground plane — receives shadows only (invisible otherwise).
+ * ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.5 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Basalt palette (authored in sRGB, stored in linear working space).
+ * ------------------------------------------------------------------ */
+const C_BASALT = new THREE.Color().setRGB(0.115, 0.112, 0.118, THREE.SRGBColorSpace);
+const C_OXIDE  = new THREE.Color().setRGB(0.150, 0.088, 0.062, THREE.SRGBColorSpace);
+const C_GREY   = new THREE.Color().setRGB(0.185, 0.180, 0.190, THREE.SRGBColorSpace);
+
+function pickColor() {
+  const r = rand();
+  if (r < 0.12) return C_OXIDE.clone().multiplyScalar(rr(0.85, 1.1));
+  if (r < 0.22) return C_GREY.clone().multiplyScalar(rr(0.85, 1.05));
+  return C_BASALT.clone().multiplyScalar(rr(0.8, 1.12));
+}
+
+/* ------------------------------------------------------------------ *
+ *  Angular rock chunk = convex hull of jittered points.
+ *  Convex hulls give genuinely flat facets and sharp edges.
+ * ------------------------------------------------------------------ */
+function makeChunkPoints(n) {
+  const pts = [];
+  let sx = rr(0.62, 1.35), sy = rr(0.62, 1.30), sz = rr(0.62, 1.35);
+  if (rand() < 0.28) sy *= 1.55;          // occasional tall blade / spire
+  if (rand() < 0.22) sx *= 1.45;          // occasional flattened slab
+  for (let i = 0; i < n; i++) {
+    let x = rand() * 2 - 1, y = rand() * 2 - 1, z = rand() * 2 - 1;
+    const l = Math.hypot(x, y, z) || 1; x /= l; y /= l; z /= l;
+    let r = 0.6 + 0.55 * rand();
+    if (rand() < 0.16) r *= 1.4;          // sharp protruding vertex
+    pts.push(new THREE.Vector3(x * r * sx, y * r * sy, z * r * sz));
+  }
+  return pts;
+}
+
+const parts = [];
+function addChunk(px, py, pz, size, nPts, baseColor) {
+  const pts = makeChunkPoints(nPts);
+  let geo;
+  try { geo = new ConvexGeometry(pts); } catch (e) { return; }
+
+  const m = new THREE.Matrix4();
+  const q = new THREE.Quaternion().setFromEuler(
+    new THREE.Euler(rr(0, Math.PI * 2), rr(0, Math.PI * 2), rr(0, Math.PI * 2))
+  );
+  const s = new THREE.Vector3(size * rr(0.9, 1.12), size * rr(0.85, 1.15), size * rr(0.9, 1.12));
+  m.compose(new THREE.Vector3(px, py, pz), q, s);
+  geo.applyMatrix4(m);
+
+  // Per-vertex colour: base tint + gentle crevice/base darkening + mottling.
+  const pos = geo.attributes.position;
+  const count = pos.count;
+  const colors = new Float32Array(count * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    let shade = THREE.MathUtils.mapLinear(Math.min(y, 1.8), -0.25, 1.8, 0.7, 1.06);
+    const mott = 0.86 + 0.28 * h3(x * 2.3, y * 2.3, z * 2.3);
+    c.copy(baseColor).multiplyScalar(shade * mott);
+    colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+  parts.push(geo);
+}
+
+/* ---- Compose the outcrop: heavy base mass, craggy mound, rubble ---- */
+const H = 2.0, RB = 1.25;
+
+// Big rooted base boulders forming the core mass.
+addChunk( 0.00, 0.52,  0.00, 1.18, 20, pickColor());
+addChunk( 0.52, 0.40, -0.32, 0.95, 18, pickColor());
+addChunk(-0.55, 0.46,  0.26, 0.98, 18, pickColor());
+addChunk( 0.30, 0.44,  0.50, 0.85, 17, pickColor());
+
+// Stacked, tapering craggy chunks (denser and larger lower down).
+const MID = 28;
+for (let i = 0; i < MID; i++) {
+  const t = Math.pow(rand(), 0.75);                 // biased toward the base
+  const y = t * H * 0.92 + 0.18;
+  const maxR = RB * (1.0 - t * 0.72);
+  const ang = rand() * Math.PI * 2;
+  const rad = maxR * Math.sqrt(rand());
+  const x = Math.cos(ang) * rad;
+  const z = Math.sin(ang) * rad;
+  const size = Math.max(0.22, (0.66 - t * 0.42) * rr(0.72, 1.28));
+  addChunk(x, y, z, size, 13 + Math.floor(rand() * 11), pickColor());
+}
+
+// A couple of jagged blades near the top for a sharp peak.
+addChunk( 0.05, 1.55,  0.02, 0.42, 14, pickColor());
+addChunk(-0.18, 1.35,  0.14, 0.36, 13, pickColor());
+
+// Fallen rubble scattered around the base.
+const RUBBLE = 11;
+for (let i = 0; i < RUBBLE; i++) {
+  const ang = rand() * Math.PI * 2;
+  const d = RB * rr(0.82, 1.35);
+  addChunk(Math.cos(ang) * d, 0.10, Math.sin(ang) * d, rr(0.16, 0.34), 11 + Math.floor(rand() * 7), pickColor());
+}
+
+/* ------------------------------------------------------------------ *
+ *  Merge everything into a single centered mesh.
+ * ------------------------------------------------------------------ */
+const merged = mergeGeometries(parts, false);
+merged.computeVertexNormals();
+merged.computeBoundingBox();
+{
+  const bb = merged.boundingBox;
+  const cx = (bb.min.x + bb.max.x) * 0.5;
+  const cz = (bb.min.z + bb.max.z) * 0.5;
+  merged.translate(-cx, -bb.min.y, -cz);   // sit on ground, centered on X/Z
+}
+
+/* ------------------------------------------------------------------ *
+ *  Basalt material: dark, rough, flat-shaded facets + procedural
+ *  vesicular micro-relief injected via onBeforeCompile (bump + AO).
+ * ------------------------------------------------------------------ */
+const rockMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  flatShading: true,
+  roughness: 0.92,
+  metalness: 0.0
+});
+
+const NOISE_GLSL = `
+varying vec3 vLocalPos;
+uniform float uBumpScale;
+float hash13(vec3 p3){
+  p3 = fract(p3 * 0.1031);
+  p3 += dot(p3, p3.zyx + 31.32);
+  return fract((p3.x + p3.y) * p3.z);
+}
+vec3 hash33(vec3 p3){
+  p3 = fract(p3 * vec3(0.1031, 0.1030, 0.0973));
+  p3 += dot(p3, p3.yxz + 33.33);
+  return fract((p3.xxy + p3.yxx) * p3.zyx);
+}
+float vnoise(vec3 x){
+  vec3 i = floor(x); vec3 f = fract(x);
+  f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(hash13(i+vec3(0,0,0)), hash13(i+vec3(1,0,0)), f.x),
+                 mix(hash13(i+vec3(0,1,0)), hash13(i+vec3(1,1,0)), f.x), f.y),
+             mix(mix(hash13(i+vec3(0,0,1)), hash13(i+vec3(1,0,1)), f.x),
+                 mix(hash13(i+vec3(0,1,1)), hash13(i+vec3(1,1,1)), f.x), f.y), f.z);
+}
+float fbm(vec3 p){
+  float s = 0.0, a = 0.5;
+  for(int i=0;i<4;i++){ s += a * vnoise(p); p *= 2.02; a *= 0.5; }
+  return s;
+}
+float worley(vec3 p){
+  vec3 id = floor(p); vec3 fp = fract(p);
+  float d = 1.0;
+  for(int k=-1;k<=1;k++)
+  for(int j=-1;j<=1;j++)
+  for(int ii=-1;ii<=1;ii++){
+    vec3 g = vec3(float(ii), float(j), float(k));
+    vec3 o = hash33(id + g);
+    vec3 r = g + o - fp;
+    d = min(d, dot(r, r));
+  }
+  return sqrt(d);
+}
+float surfHeight(vec3 p){
+  float rough = fbm(p * 5.0);
+  float ves = worley(p * 22.0);
+  ves = smoothstep(0.0, 0.45, ves);   // pits at vesicle cell centers
+  float fine = fbm(p * 15.0) * 0.35;
+  return rough * 0.55 + ves * 0.5 + fine;
+}
+`;
+
+rockMat.onBeforeCompile = (shader) => {
+  shader.uniforms.uBumpScale = { value: 0.24 };
+
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vLocalPos;')
+    .replace('#include <begin_vertex>', '#include <begin_vertex>\n  vLocalPos = transformed;');
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace('#include <common>', '#include <common>\n' + NOISE_GLSL)
+    .replace('#include <color_fragment>', `#include <color_fragment>
+  float vHeight = surfHeight(vLocalPos);
+  float vAO = mix(0.5, 1.0, smoothstep(0.0, 1.1, vHeight));
+  diffuseColor.rgb *= vAO;`)
+    .replace('#include <roughnessmap_fragment>', `#include <roughnessmap_fragment>
+  roughnessFactor = clamp(roughnessFactor * mix(1.06, 0.9, smoothstep(0.0, 1.2, vHeight)), 0.4, 1.0);`)
+    .replace('#include <normal_fragment_begin>', `#include <normal_fragment_begin>
+  {
+    vec3 vp = -vViewPosition;
+    vec3 dpx = dFdx(vp);
+    vec3 dpy = dFdy(vp);
+    float dHx = dFdx(vHeight);
+    float dHy = dFdy(vHeight);
+    vec3 Sn = normal;
+    vec3 r1 = cross(dpy, Sn);
+    vec3 r2 = cross(Sn, dpx);
+    float det = dot(dpx, r1);
+    vec3 grad = sign(det) * (dHx * r1 + dHy * r2);
+    normal = normalize( abs(det) * Sn - uBumpScale * grad );
+  }`);
+};
+
+const outcrop = new THREE.Mesh(merged, rockMat);
+outcrop.castShadow = true;
+outcrop.receiveShadow = true;
+scene.add(outcrop);
+
+/* ------------------------------------------------------------------ *
+ *  Orbit controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 3.2;
+controls.maxDistance = 13;
+controls.maxPolarAngle = Math.PI * 0.5 - 0.02;   // stay above the ground
+controls.target.set(0, 0.95, 0);
+controls.update();
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

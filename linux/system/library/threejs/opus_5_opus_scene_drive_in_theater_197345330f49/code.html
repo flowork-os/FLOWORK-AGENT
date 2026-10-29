@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drive-In Theater Night</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0f22}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================================================================
+   1. CONFIG & PALETTE  —  the "Starlite" drive-in, summer of 1957
+   ================================================================ */
+const CONFIG = {
+  seed: 1957042,
+  screenZ: -38,                       // projection tower at the far end of the lot
+  carRows: [                          // three terraced ramps facing the screen
+    { z: -13, xs: [-18, -6, 6, 18] },
+    { z:  -1, xs: [-18, -6, 6, 18] },
+    { z:  11, xs: [-12, 0, 12] }
+  ],
+  poleX: [-14.4, -4.8, 4.8, 14.4],    // speaker poles between the parking slots
+  stringX: [-14, -7, 0, 7, 14],       // string-light posts along the back rail
+  stringZ: 17
+};
+
+const PAL = {
+  fog: 0x141c38, berm: 0x565040, frame: 0xd8cfba,
+  steel: 0x6d7078, chrome: 0xc9d2dc, glass: 0x1b2a44, tire: 0x1d1e22,
+  cream: 0xf0e2c4, barnRed: 0xb8362f, teal: 0x3fa9a3, neonPink: 0xff5fa2,
+  neonCyan: 0x66e8ff, bulb: 0xffd08a, moon: 0xfff4d6, hills: 0x1d2742, wood: 0x6b5233
+};
+
+const CAR_COLORS = [0x57c9c3, 0xe0705c, 0xf0e4cb, 0xefd06a, 0x7fa8d8, 0xb8443c,
+                    0xd8b0cf, 0x8fbf7a, 0x4f6fb0, 0xe8a05a, 0xdfe3e8, 0x5f8f6c];
+
+/* ================================================================
+   2. SEEDED PRNG & SMALL HELPERS  (no Math.random anywhere)
+   ================================================================ */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + (b - a) * rand(), ri = (a, b) => Math.floor(rr(a, b + 1));
+const pick = arr => arr[Math.floor(rand() * arr.length)];
+
+// Build + place + parent a mesh in one call. Object3D.add() returns the PARENT,
+// so binding the mesh here keeps every transform on the right object.
+function put(parent, geo, mat, x = 0, y = 0, z = 0, cast = true, receive = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = cast; m.receiveShadow = receive;
+  parent.add(m);
+  return m;
+}
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, s = 12) => new THREE.CylinderGeometry(rt, rb, h, s);
+const plane = (w, h) => new THREE.PlaneGeometry(w, h);
+
+/* ================================================================
+   3. PROCEDURAL CANVAS TEXTURES
+   ================================================================ */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return { c, x: c.getContext('2d') };
+}
+
+// Gradient night sky with a soft milky band, painted on the inside of a dome.
+function skyTexture() {
+  const { c, x } = makeCanvas(1024, 512);
+  const g = x.createLinearGradient(0, 0, 0, 512);
+  g.addColorStop(0.00, '#05070f'); g.addColorStop(0.42, '#0d1533');
+  g.addColorStop(0.72, '#1d2d54'); g.addColorStop(0.88, '#3a4a72');
+  g.addColorStop(1.00, '#16203c');
+  x.fillStyle = g; x.fillRect(0, 0, 1024, 512);
+  x.globalAlpha = 0.10; x.fillStyle = '#9fb6ff';
+  for (let i = 0; i < 150; i++) {
+    const px = rr(0, 1024), py = 95 + Math.sin(px * 0.006) * 40 + rr(-32, 32);
+    x.beginPath(); x.arc(px, py, rr(8, 30), 0, Math.PI * 2); x.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Cinder-and-asphalt lot with tyre smears and faint painted lane stripes.
+function groundTexture() {
+  const { c, x } = makeCanvas(512, 512);
+  x.fillStyle = '#3a3b45'; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 5000; i++) {
+    const v = ri(34, 96);
+    x.fillStyle = `rgba(${v},${v - 2},${v + 6},${rr(0.2, 0.75)})`;
+    x.fillRect(rr(0, 512), rr(0, 512), rr(1, 3.5), rr(1, 3));
+  }
+  for (let i = 0; i < 24; i++) {
+    x.strokeStyle = `rgba(20,20,26,${rr(0.15, 0.4)})`; x.lineWidth = rr(1, 5);
+    x.beginPath(); x.moveTo(rr(0, 512), rr(0, 512));
+    x.bezierCurveTo(rr(0, 512), rr(0, 512), rr(0, 512), rr(0, 512), rr(0, 512), rr(0, 512));
+    x.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(10, 10);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// The feature presentation: an abstract animated film, repainted every frame.
+const film = makeCanvas(384, 216);
+const filmTex = new THREE.CanvasTexture(film.c);
+filmTex.colorSpace = THREE.SRGBColorSpace;
+const filmBlobs = [];
+for (let i = 0; i < 7; i++) filmBlobs.push({ r: rr(30, 78), h: ri(0, 360) });
+
+function drawFilm(t) {
+  const x = film.x;
+  const bg = 24 + Math.sin(t * 0.45) * 12;
+  x.fillStyle = `rgb(${bg | 0},${(bg * 0.8) | 0},${(bg * 1.6) | 0})`;
+  x.fillRect(0, 0, 384, 216);
+  x.globalCompositeOperation = 'lighter';
+  for (let i = 0; i < filmBlobs.length; i++) {
+    const b = filmBlobs[i];
+    const px = 192 + Math.sin(t * 0.31 + i * 1.7) * (108 + i * 8);
+    const py = 108 + Math.cos(t * 0.24 + i * 2.3) * (56 + i * 4);
+    const rad = b.r * (0.75 + 0.25 * Math.sin(t * 0.7 + i));
+    const g = x.createRadialGradient(px, py, 0, px, py, rad);
+    const hue = (b.h + t * 12) % 360;
+    g.addColorStop(0, `hsla(${hue},82%,74%,0.95)`);
+    g.addColorStop(1, `hsla(${hue},85%,35%,0)`);
+    x.fillStyle = g;
+    x.beginPath(); x.arc(px, py, rad, 0, Math.PI * 2); x.fill();
+  }
+  const bx = ((t * 46) % 520) - 68;                       // sweeping light bar
+  const lg = x.createLinearGradient(bx, 0, bx + 64, 0);
+  lg.addColorStop(0, 'rgba(255,240,200,0)');
+  lg.addColorStop(0.5, 'rgba(255,240,200,0.5)');
+  lg.addColorStop(1, 'rgba(255,240,200,0)');
+  x.fillStyle = lg; x.fillRect(bx, 0, 64, 216);
+  x.globalCompositeOperation = 'source-over';
+  x.fillStyle = 'rgba(8,6,14,0.28)';                      // projector scan lines
+  for (let y = 0; y < 216; y += 3) x.fillRect(0, y, 384, 1);
+  x.fillStyle = `rgba(255,255,255,${0.05 + 0.05 * Math.sin(t * 9.1)})`;
+  x.fillRect(0, 0, 384, 216);
+  filmTex.needsUpdate = true;
+}
+
+// Painted sign panel used by the marquee, the popcorn board and the arrows.
+function signTexture(w, h, bgA, bgB, lines) {
+  const { c, x } = makeCanvas(w, h);
+  const g = x.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0, bgA); g.addColorStop(1, bgB);
+  x.fillStyle = g; x.fillRect(0, 0, w, h);
+  x.strokeStyle = 'rgba(255,235,190,0.85)'; x.lineWidth = Math.max(3, h * 0.045);
+  x.strokeRect(x.lineWidth, x.lineWidth, w - x.lineWidth * 2, h - x.lineWidth * 2);
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  for (const ln of lines) {
+    x.font = `${ln.b ? 'bold ' : ''}${ln.size}px Georgia, serif`;
+    x.fillStyle = ln.col;
+    x.shadowColor = ln.glow || 'rgba(0,0,0,0)';
+    x.shadowBlur = ln.glow ? h * 0.14 : 0;
+    x.fillText(ln.t, w / 2, ln.y * h);
+  }
+  x.shadowBlur = 0;
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+
+// Soft round falloff sprite, reused for steam puffs and the moon halo.
+function puffTexture() {
+  const { c, x } = makeCanvas(64, 64);
+  const g = x.createRadialGradient(32, 32, 0, 32, 32, 32);
+  g.addColorStop(0, 'rgba(255,255,255,0.85)');
+  g.addColorStop(0.45, 'rgba(255,255,255,0.28)');
+  g.addColorStop(1, 'rgba(255,255,255,0)');
+  x.fillStyle = g; x.fillRect(0, 0, 64, 64);
+  return new THREE.CanvasTexture(c);
+}
+
+/* ================================================================
+   4. MATERIAL PALETTE
+   ================================================================ */
+const std = (c, r, m, extra) => new THREE.MeshStandardMaterial(
+  Object.assign({ color: c, roughness: r, metalness: m, envMapIntensity: 0.3 }, extra || {}));
+const glow = c => new THREE.MeshBasicMaterial({ color: c });
+const signMat = tex => new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
+
+const MAT = {
+  ground: std(0xffffff, 0.95, 0.02, { map: groundTexture() }),
+  berm:   std(PAL.berm, 0.98, 0),
+  screen: new THREE.MeshBasicMaterial({ map: filmTex, toneMapped: false }),
+  frame:  std(PAL.frame, 0.75, 0.05),
+  steel:  std(PAL.steel, 0.55, 0.6, { envMapIntensity: 0.6 }),
+  chrome: std(PAL.chrome, 0.18, 1, { envMapIntensity: 0.9 }),
+  glass:  std(PAL.glass, 0.15, 0.4, { emissive: 0x2a4776, emissiveIntensity: 0.8, envMapIntensity: 0.6 }),
+  tire:   std(PAL.tire, 0.92, 0.05),
+  cream:  std(PAL.cream, 0.8, 0.02),
+  red:    std(PAL.barnRed, 0.7, 0.05),
+  teal:   std(PAL.teal, 0.62, 0.1),
+  wood:   std(PAL.wood, 0.9, 0),
+  bush:   std(0x2b4634, 1, 0),
+  neonP:  glow(PAL.neonPink),
+  neonC:  glow(PAL.neonCyan),
+  bulb:   glow(PAL.bulb),
+  tail:   glow(0xff3b30),
+  head:   glow(0xffeec4),
+  win:    glow(0xffd9a0),
+  moon:   new THREE.MeshBasicMaterial({ color: PAL.moon, fog: false }),
+  wire:   new THREE.LineBasicMaterial({ color: 0x252a36 })
+};
+
+/* ================================================================
+   5. BUILDERS  —  each returns a THREE.Group
+   ================================================================ */
+
+// 5.1 Screen tower: film surface, painted frame, back trestle, roof marquee.
+function buildScreenTower() {
+  const g = new THREE.Group();
+  const W = 30, H = 17, base = 4.5;
+  const face = put(g, plane(W, H), MAT.screen, 0, base + H / 2, 0.42, false, false);
+  face.name = 'filmFace';
+  put(g, box(W + 2.4, 1.2, 0.9), MAT.frame, 0, base + H + 0.6, 0);
+  put(g, box(W + 2.4, 1.2, 0.9), MAT.frame, 0, base - 0.6, 0);
+  for (const s of [-1, 1]) put(g, box(1.2, H + 2.4, 0.9), MAT.frame, s * (W / 2 + 0.6), base + H / 2, 0);
+  put(g, box(W + 1, H + 1, 0.5), std(0x4b4c55, 0.9, 0.05), 0, base + H / 2, -0.45);
+  for (let i = 0; i < 5; i++) {                            // rear trestle bracing
+    const px = -12 + i * 6;
+    put(g, box(0.7, base + H, 0.7), MAT.steel, px, (base + H) / 2, -1.6);
+    put(g, box(0.35, 13, 0.35), MAT.steel, px, base + 4, -3.2).rotation.x = 0.42;
+  }
+  put(g, box(W + 2, 0.6, 4.6), MAT.steel, 0, 0.3, -2.2);
+  put(g, box(15, 3.2, 0.6), MAT.red, 0, base + H + 3.1, 0.1).receiveShadow = false;
+  const mtex = signTexture(512, 128, '#8f2a24', '#4d1512', [
+    { t: 'STARLITE', y: 0.36, size: 62, col: '#ffe9b8', b: true, glow: '#ff9b5e' },
+    { t: 'DRIVE-IN', y: 0.74, size: 44, col: '#8ff0ff', glow: '#3fd0ff' }]);
+  put(g, plane(14.4, 2.8), signMat(mtex), 0, base + H + 3.1, 0.42, false, false);
+  put(g, box(15.6, 0.35, 1.1), MAT.neonP, 0, base + H + 4.85, 0.1, false, false);
+  put(g, box(15.6, 0.35, 1.1), MAT.neonC, 0, base + H + 1.4, 0.1, false, false);
+  for (const sx of [-8.2, 8.2]) {                          // star finials
+    const s = put(g, new THREE.OctahedronGeometry(0.85, 0), MAT.bulb, sx, base + H + 5.4, 0.1, false, false);
+    s.scale.set(1, 1.5, 0.4);
+  }
+  for (const fx of [-9, 9]) {                              // deck floodlights
+    put(g, cyl(0.5, 0.62, 1, 10), MAT.steel, fx, 0.9, 2.6).rotation.x = -0.6;
+    put(g, cyl(0.42, 0.42, 0.12, 10), MAT.head, fx, 1.35, 3.0, false, false);
+  }
+  return g;
+}
+
+// 5.2 A 1957 sedan: slab body, two-tone roof, chrome spears, big tail fins.
+function buildVintageCar(bodyColor, roofColor) {
+  const g = new THREE.Group();
+  const bodyM = std(bodyColor, 0.34, 0.16, { envMapIntensity: 0.5 });
+  const roofM = std(roofColor, 0.36, 0.14, { envMapIntensity: 0.5 });
+  put(g, box(1.98, 0.95, 4.7), bodyM, 0, 0.92, 0);
+  put(g, box(1.92, 0.5, 1.6), bodyM, 0, 1.62, -1.55);          // long hood
+  put(g, box(1.92, 0.62, 1.75), bodyM, 0, 1.72, 1.68);         // sloping rear deck
+  put(g, box(1.72, 0.85, 2.05), MAT.glass, 0, 1.85, -0.05);    // wrap-around greenhouse
+  put(g, box(1.82, 0.16, 2.2), roofM, 0, 2.34, -0.05);         // two-tone roof
+  put(g, box(2.08, 0.3, 0.32), MAT.chrome, 0, 0.78, 2.42);     // bumpers
+  put(g, box(2.08, 0.3, 0.32), MAT.chrome, 0, 0.78, -2.42);
+  put(g, box(1.5, 0.36, 0.2), MAT.chrome, 0, 1.3, -2.44);      // grille
+  for (const s of [-1, 1]) {
+    put(g, box(0.16, 0.86, 1.3), bodyM, s * 0.9, 2.12, 2.0).rotation.x = -0.24;   // tail fin
+    put(g, box(0.05, 0.11, 4.3), MAT.chrome, s * 1.0, 1.2, 0.05);                 // side spear
+    put(g, cyl(0.2, 0.2, 0.22, 8), MAT.tail, s * 0.74, 1.78, 2.48, false, false)
+      .rotation.x = Math.PI / 2;
+    put(g, cyl(0.17, 0.17, 0.2, 8), MAT.head, s * 0.62, 1.28, -2.36, false, false)
+      .rotation.x = Math.PI / 2;
+    for (const z of [-1.5, 1.45]) {
+      put(g, cyl(0.44, 0.44, 0.34, 12), MAT.tire, s * 0.98, 0.44, z).rotation.z = Math.PI / 2;
+      put(g, cyl(0.26, 0.26, 0.36, 10), MAT.chrome, s * 1.01, 0.44, z).rotation.z = Math.PI / 2;
+    }
+  }
+  return g;
+}
+
+// 5.3 Speaker pole: post with two hanging window speakers and a marker lamp.
+function buildSpeakerPole() {
+  const g = new THREE.Group();
+  put(g, cyl(0.09, 0.12, 3.1, 8), MAT.steel, 0, 1.55, 0);
+  put(g, cyl(0.3, 0.34, 0.24, 10), std(0x3c3d45, 0.9, 0.2), 0, 0.12, 0);
+  put(g, box(0.9, 0.12, 0.16), MAT.steel, 0, 3.0, 0);
+  for (const s of [-1, 1]) {
+    put(g, box(0.34, 0.52, 0.26), std(0x8d8577, 0.75, 0.15), s * 0.42, 2.66, 0).rotation.y = s * 0.12;
+    put(g, cyl(0.11, 0.11, 0.04, 8), std(0x2b2c33, 0.8, 0.3), s * 0.42, 2.66, 0.15).rotation.x = Math.PI / 2;
+  }
+  put(g, new THREE.SphereGeometry(0.12, 8, 6), MAT.bulb, 0, 3.2, 0, false, false);
+  return g;
+}
+
+// 5.4 Snack stand: cinder-block hut, striped awning, neon trim, popcorn sign.
+function buildSnackStand() {
+  const g = new THREE.Group();
+  const W = 11, D = 7, H = 4.4;
+  put(g, box(W, H, D), MAT.cream, 0, H / 2, 0);
+  put(g, box(W + 0.8, 0.5, D + 0.8), MAT.red, 0, H + 0.25, 0);
+  put(g, box(W - 1, 0.6, D - 1), MAT.cream, 0, H + 0.75, 0);
+  for (let i = 0; i < 5; i++)                                     // candy-stripe base
+    put(g, box(1.1, 1.1, 0.08), i % 2 ? MAT.red : MAT.teal, -4.4 + i * 2.2, 0.55, D / 2 + 0.05);
+  put(g, box(6.2, 2.0, 0.14), MAT.win, 0, 2.6, D / 2 + 0.08, false, false);   // service window
+  put(g, box(6.6, 0.28, 0.5), MAT.chrome, 0, 1.5, D / 2 + 0.3);               // counter
+  for (const sx of [-2.6, 0, 2.6]) put(g, box(0.14, 2.0, 0.18), MAT.frame, sx, 2.6, D / 2 + 0.15);
+  for (let i = 0; i < 8; i++)                                     // striped awning
+    put(g, box(0.98, 0.14, 2.3), i % 2 ? MAT.red : MAT.cream, -3.5 + i, 4.15, D / 2 + 1.05).rotation.x = -0.34;
+  put(g, box(8.2, 0.16, 0.2), MAT.chrome, 0, 3.62, D / 2 + 2.1);
+  for (const sx of [-3.9, 3.9]) put(g, cyl(0.07, 0.07, 3.6, 8), MAT.chrome, sx, 1.8, D / 2 + 2.1);
+  put(g, box(W + 0.9, 0.16, 0.16), MAT.neonP, 0, H + 0.56, D / 2 + 0.42, false, false);
+  for (const s of [-1, 1]) put(g, box(0.16, H, 0.16), MAT.neonC, s * (W / 2 + 0.1), H / 2, D / 2 + 0.42, false, false);
+  // rooftop POPCORN board
+  const sign = new THREE.Group();
+  const ptex = signTexture(320, 200, '#f6e6c2', '#e8cf9c', [
+    { t: 'HOT', y: 0.24, size: 44, col: '#b8362f', b: true },
+    { t: 'POPCORN', y: 0.55, size: 50, col: '#b8362f', b: true, glow: '#ff8a5e' },
+    { t: '10 CENTS', y: 0.84, size: 30, col: '#2f6d68', b: true }]);
+  put(sign, plane(4.4, 2.75), signMat(ptex), 0, 0, 0.13, false, false);
+  put(sign, box(4.8, 3.1, 0.22), MAT.frame, 0, 0, 0);
+  for (const sy of [-1.66, 1.66]) put(sign, box(5.1, 0.16, 0.3), MAT.neonP, 0, sy, 0.05, false, false);
+  put(sign, box(1.1, 1.2, 0.5), MAT.red, 0, 2.55, 0.1).rotation.z = 0.06;   // popcorn box
+  for (let i = 0; i < 7; i++)
+    put(sign, new THREE.SphereGeometry(rr(0.16, 0.24), 8, 6), MAT.cream,
+        rr(-0.55, 0.55), 3.2 + rr(-0.15, 0.4), rr(-0.1, 0.3));
+  sign.position.set(0, H + 3.0, D / 2 - 0.6);
+  sign.name = 'popcornSign';
+  g.add(sign);
+  for (const sx of [-1.7, 1.7]) put(g, box(0.2, 2.2, 0.2), MAT.frame, sx, H + 1.4, D / 2 - 0.6);
+  put(g, cyl(0.45, 0.45, 1.3, 10), MAT.steel, -3.4, H + 1.6, 0);            // roof vent
+  put(g, cyl(0.62, 0.62, 0.18, 10), MAT.steel, -3.4, H + 2.3, 0);
+  return g;
+}
+
+// 5.5 Ticket booth plus the lit entrance arch over the drive lane.
+function buildTicketBooth() {
+  const g = new THREE.Group();
+  put(g, box(3.2, 3.2, 3.2), MAT.cream, 0, 1.6, 0);
+  put(g, box(3.9, 0.35, 3.9), MAT.red, 0, 3.4, 0);
+  put(g, cyl(0.0, 1.5, 1.3, 4), MAT.red, 0, 4.2, 0).rotation.y = Math.PI / 4;
+  put(g, box(2.0, 1.3, 0.12), MAT.win, 0, 2.1, 1.63, false, false);
+  put(g, box(2.4, 0.2, 0.5), MAT.chrome, 0, 1.35, 1.72);
+  put(g, box(3.4, 0.14, 0.14), MAT.neonC, 0, 3.66, 1.6, false, false);
+  const ttex = signTexture(256, 96, '#2f6d68', '#1b4441', [
+    { t: 'TICKETS', y: 0.38, size: 40, col: '#ffe9b8', b: true },
+    { t: '75 CENTS A CAR', y: 0.78, size: 22, col: '#ffd0e2' }]);
+  put(g, plane(2.6, 1.0), signMat(ttex), 0, 3.05, 1.66, false, false);
+  const arch = new THREE.Group();
+  for (const s of [-1, 1]) put(arch, cyl(0.16, 0.22, 4.6, 8), MAT.steel, s * 4.2, 2.3, 0);
+  put(arch, box(9.2, 0.45, 0.4), MAT.steel, 0, 4.6, 0).receiveShadow = false;
+  const atex = signTexture(384, 96, '#8f2a24', '#521613', [
+    { t: 'ENTRANCE', y: 0.52, size: 48, col: '#ffe9b8', b: true, glow: '#ff9b5e' }]);
+  put(arch, box(6.6, 1.5, 0.22), MAT.frame, 0, 5.15, 0);
+  put(arch, plane(6.2, 1.25), signMat(atex), 0, 5.15, 0.16, false, false);
+  const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.14, 8, 6), MAT.bulb, 22);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < 22; i++) { m4.setPosition(-4.2 + (i / 21) * 8.4, 5.98, 0); bulbs.setMatrixAt(i, m4); }
+  bulbs.instanceMatrix.needsUpdate = true;
+  arch.add(bulbs);
+  arch.position.set(6.4, 0, 1.5);
+  g.add(arch);
+  return g;
+}
+
+// 5.6 Crisp point-sprite star field filling the upper hemisphere.
+function buildStars() {
+  const N = 1500, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  const c = new THREE.Color();
+  for (let i = 0; i < N; i++) {
+    const th = rr(0, Math.PI * 2), y = rr(0.04, 1), s = Math.sqrt(Math.max(0, 1 - y * y));
+    pos[i * 3] = Math.cos(th) * s * 400;
+    pos[i * 3 + 1] = y * 400;
+    pos[i * 3 + 2] = Math.sin(th) * s * 400;
+    c.setHSL(rr(0.55, 0.68), rr(0.05, 0.4), rr(0.55, 1));
+    c.toArray(col, i * 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({
+    size: 2.2, sizeAttenuation: false, vertexColors: true, map: puffTexture(),
+    transparent: true, depthWrite: false, fog: false, blending: THREE.AdditiveBlending }));
+}
+
+// 5.7 String-light run: timber posts, catenary wires, instanced bulbs.
+function buildStringLights(xs, z) {
+  const g = new THREE.Group();
+  const total = (xs.length - 1) * 9;
+  const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.17, 8, 6), MAT.bulb, total);
+  const m4 = new THREE.Matrix4(), col = new THREE.Color();
+  let n = 0;
+  for (let i = 0; i < xs.length; i++) {
+    put(g, cyl(0.12, 0.18, 5.6, 8), MAT.wood, xs[i], 2.8, z);
+    put(g, box(1.0, 0.12, 0.12), MAT.wood, xs[i], 5.45, z);
+    if (i === xs.length - 1) break;
+    const x0 = xs[i], x1 = xs[i + 1], pts = [];
+    for (let k = 0; k <= 18; k++) {
+      const u = k / 18, px = x0 + (x1 - x0) * u;
+      const py = 5.45 - Math.sin(u * Math.PI) * 0.95;
+      pts.push(new THREE.Vector3(px, py, z));
+      if (k % 2 === 1 && n < total) {
+        m4.setPosition(px, py - 0.26, z);
+        bulbs.setMatrixAt(n, m4);
+        col.setHSL(0.09 + rr(-0.05, 0.05), 0.85, 0.62);
+        bulbs.setColorAt(n, col);
+        n++;
+      }
+    }
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), MAT.wire));
+  }
+  bulbs.instanceMatrix.needsUpdate = true;
+  if (bulbs.instanceColor) bulbs.instanceColor.needsUpdate = true;
+  bulbs.name = 'stringBulbs';
+  bulbs.userData.count = n;
+  g.add(bulbs);
+  return g;
+}
+
+// 5.8 Distant hill ridge in three fogged layers, with a fringe of pines.
+function buildHills() {
+  const g = new THREE.Group();
+  for (let layer = 0; layer < 3; layer++) {
+    const zz = -118 - layer * 26, scale = 1 + layer * 0.55;
+    const shade = std(new THREE.Color(PAL.hills).lerp(new THREE.Color(0x33456f), layer * 0.32), 1, 0);
+    for (let i = 0; i < 7; i++) {
+      const h = rr(11, 27) * scale, r = rr(24, 42) * scale;
+      const m = put(g, cyl(0, r, h, 12), shade, -160 + i * 55 + rr(-16, 16), h / 2 - 3, zz + rr(-10, 10), false, false);
+      m.scale.set(1, 1, 0.6);
+    }
+  }
+  const pineM = std(0x18233a, 1, 0);
+  for (let i = 0; i < 14; i++) {
+    const h = rr(5, 10);
+    put(g, cyl(0, h * 0.3, h, 6), pineM, rr(-120, 130), h / 2, rr(-104, -92), false, false);
+  }
+  return g;
+}
+
+// 5.9 Lot dressing: trash barrels, picnic tables, a snack-bar arrow, bushes.
+function buildLotProps() {
+  const g = new THREE.Group();
+  const barrelM = std(0x35604f, 0.85, 0.15);
+  for (const p of [[16.6, -20.5], [-21, 6], [11, 16.5], [26.5, -11]]) {
+    put(g, cyl(0.55, 0.48, 1.25, 10), barrelM, p[0], 0.62, p[1]).rotation.y = rr(0, 1);
+    put(g, cyl(0.6, 0.6, 0.12, 10), MAT.steel, p[0], 1.3, p[1]);
+  }
+  for (const p of [[19.5, -23.5, 0.3], [26, -24.5, -0.4]]) {
+    const t = new THREE.Group();
+    put(t, box(2.6, 0.14, 1.1), MAT.wood, 0, 0.78, 0);
+    for (const s of [-1, 1]) {
+      put(t, box(2.6, 0.12, 0.4), MAT.wood, 0, 0.44, s * 0.85);
+      put(t, box(0.12, 0.86, 1.9), MAT.wood, s * 1.0, 0.4, 0);
+    }
+    t.position.set(p[0], 0, p[1]); t.rotation.y = p[2];
+    g.add(t);
+  }
+  const sg = new THREE.Group();                                  // SNACK BAR arrow
+  put(sg, cyl(0.1, 0.13, 4.2, 8), MAT.wood, 0, 2.1, 0);
+  const stex = signTexture(256, 128, '#f2e2be', '#ddc79a', [
+    { t: 'SNACK', y: 0.34, size: 44, col: '#b8362f', b: true },
+    { t: 'BAR  >>', y: 0.74, size: 36, col: '#2f6d68', b: true }]);
+  put(sg, box(2.8, 1.5, 0.16), MAT.frame, 0, 4.3, 0);
+  put(sg, plane(2.6, 1.3), signMat(stex), 0, 4.3, 0.09, false, false);
+  put(sg, box(2.9, 0.12, 0.24), MAT.neonC, 0, 5.12, 0.04, false, false);
+  sg.position.set(9.5, 0, -22.5); sg.rotation.y = -0.5;
+  g.add(sg);
+  for (let i = 0; i <= 12; i++)                                  // perimeter posts
+    put(g, cyl(0.09, 0.11, 1.5, 6), MAT.wood, -33 + i * 5.6, 0.75, 25.5);
+  const fpts = [];
+  for (let i = 0; i <= 12; i++) fpts.push(new THREE.Vector3(-33 + i * 5.6, 1.25, 25.5));
+  g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(fpts), MAT.wire));
+  for (let i = 0; i < 12; i++) {
+    const px = rr(-36, 36), pz = rand() < 0.5 ? rr(22, 28) : rr(-30, -25);
+    put(g, new THREE.SphereGeometry(rr(0.8, 1.6), 8, 6), MAT.bush, px, rr(0.3, 0.6), pz).scale.y = 0.65;
+  }
+  return g;
+}
+
+/* ================================================================
+   6. RENDERER, CAMERA, CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.16;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0029);
+// A dim studio probe keeps chrome, glass and paintwork from going flat black.
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.5, 900);
+camera.position.set(2.4, 15.5, 50.3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 10, -12);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.minDistance = 42;
+controls.maxDistance = 105;
+controls.minPolarAngle = Math.PI * 0.16;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ================================================================
+   7. ASSEMBLY / LAYOUT
+   ================================================================ */
+const sky = new THREE.Mesh(new THREE.SphereGeometry(430, 40, 24),
+  new THREE.MeshBasicMaterial({ map: skyTexture(), side: THREE.BackSide, fog: false, depthWrite: false }));
+scene.add(sky);
+const stars = buildStars();
+scene.add(stars);
+
+const ground = new THREE.Mesh(plane(520, 520), MAT.ground);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground, buildHills());
+
+const screenTower = buildScreenTower();
+screenTower.position.z = CONFIG.screenZ;
+scene.add(screenTower);
+
+const carGroup = new THREE.Group();                    // terraced ramps + parked cars
+for (const row of CONFIG.carRows) {
+  put(carGroup, box(52, 0.45, 2.4), MAT.berm, 0, 0.2, row.z - 3.5, false, true);
+  for (const x of row.xs) {
+    const car = buildVintageCar(pick(CAR_COLORS), rand() < 0.55 ? PAL.cream : pick(CAR_COLORS));
+    car.position.set(x + rr(-0.6, 0.6), 0.06, row.z + rr(-0.5, 0.5));
+    car.rotation.set(0.045, rr(-0.06, 0.06), 0);
+    car.userData.bob = rand() * Math.PI * 2;
+    carGroup.add(car);
+  }
+}
+scene.add(carGroup);
+for (const rz of [-13, -1]) {                          // speaker poles between slots
+  for (const px of CONFIG.poleX) {
+    const p = buildSpeakerPole();
+    p.position.set(px, 0, rz + 1.8);
+    p.rotation.y = rr(-0.3, 0.3);
+    scene.add(p);
+  }
+}
+
+const snack = buildSnackStand();
+snack.position.set(22, 0, -16);
+snack.rotation.y = -0.62;
+scene.add(snack);
+const booth = buildTicketBooth();
+booth.position.set(-24, 0, -24);
+booth.rotation.y = 0.55;
+scene.add(booth);
+const strings = buildStringLights(CONFIG.stringX, CONFIG.stringZ);
+scene.add(strings);
+const stringBulbs = strings.getObjectByName('stringBulbs');
+scene.add(buildLotProps());
+
+const moonPos = new THREE.Vector3(52, 32, -150);       // big low moon over the hills
+const moon = new THREE.Mesh(new THREE.SphereGeometry(9, 32, 24), MAT.moon);
+const halo = new THREE.Mesh(plane(60, 60), new THREE.MeshBasicMaterial({
+  map: puffTexture(), color: 0xbfd4ff, transparent: true, opacity: 0.55,
+  blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+moon.position.copy(moonPos); halo.position.copy(moonPos);
+scene.add(moon, halo);
+
+const PUFFS = 80;                                      // steam from the roof vent
+const puffPos = new Float32Array(PUFFS * 3), puffSeed = new Float32Array(PUFFS);
+for (let i = 0; i < PUFFS; i++) { puffSeed[i] = rand(); puffPos[i * 3 + 1] = rr(0, 7); }
+const puffGeo = new THREE.BufferGeometry();
+puffGeo.setAttribute('position', new THREE.BufferAttribute(puffPos, 3));
+const steam = new THREE.Points(puffGeo, new THREE.PointsMaterial({
+  map: puffTexture(), color: 0xd7e2f2, size: 5.0, transparent: true, opacity: 0.12,
+  depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true }));
+steam.position.set(19.2, 6.8, -18.0);
+scene.add(steam);
+
+/* ================================================================
+   8. LIGHTING RIG
+   ================================================================ */
+// Key: moonlight from high on the right, steep enough that the screen tower
+// never drops the parking lot into its own shadow. Only shadow caster.
+const moonLight = new THREE.DirectionalLight(0xc3d5ff, 1.25);
+moonLight.position.set(55, 95, -55);
+moonLight.target.position.set(0, 2, -4);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+const shadowCam = moonLight.shadow.camera;
+shadowCam.near = 5; shadowCam.far = 220;
+shadowCam.left = -72; shadowCam.right = 72; shadowCam.top = 66; shadowCam.bottom = -56;
+moonLight.shadow.bias = -0.0006; moonLight.shadow.normalBias = 0.03;
+scene.add(moonLight, moonLight.target);
+
+// Camera-side bounce so fins, chrome and tail lamps never fall into pure black.
+const fill = new THREE.DirectionalLight(0x8ea2e0, 0.75);
+fill.position.set(-24, 26, 62);
+scene.add(fill);
+
+scene.add(new THREE.HemisphereLight(0x40589a, 0x4a4433, 0.9), new THREE.AmbientLight(0x44507a, 0.55));
+
+// Practical lamps: the film wash, the snack bar, the neon, the bulbs, the marquee.
+function lamp(col, int, dist, x, y, z) {
+  const l = new THREE.PointLight(col, int, dist, 1.8);
+  l.position.set(x, y, z);
+  scene.add(l); return l;
+}
+const screenLights = [-10, 0, 10].map(sx => lamp(0xcfe0ff, 2.2, 100, sx, 13, CONFIG.screenZ + 3));
+lamp(0xffc98a, 2.6, 44, 19.9, 3.4, -12.4);
+const neonLight = lamp(PAL.neonPink, 1.5, 32, 20.3, 8.2, -13.6);
+lamp(0xffd9a0, 2.2, 36, -22.6, 3.2, -22.0);
+const stringLight = lamp(PAL.bulb, 1.6, 48, 0, 6.4, CONFIG.stringZ - 1);
+const marqueeLight = lamp(0xff7fb0, 1.2, 46, 0, 26, CONFIG.screenZ + 4);
+
+/* ================================================================
+   9. ANIMATION LOOP
+   ================================================================ */
+const clock = new THREE.Clock();
+const popSign = snack.getObjectByName('popcornSign');
+const tmpC = new THREE.Color();
+const puffArr = puffGeo.attributes.position.array;
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // (a) the abstract film keeps rolling; its brightness drives the screen wash
+  drawFilm(t);
+  const flick = 2.0 + Math.sin(t * 2.3) * 0.45 + Math.sin(t * 7.7) * 0.2;
+  for (let i = 0; i < screenLights.length; i++)
+    screenLights[i].intensity = flick * (0.85 + 0.15 * Math.sin(t * 1.3 + i));
+
+  // (b) the neon popcorn sign buzzes; the marquee pulses in counter-phase
+  const buzz = 0.72 + 0.28 * Math.sin(t * 3.1) + (Math.sin(t * 31.0) > 0.93 ? -0.4 : 0);
+  neonLight.intensity = 1.15 + buzz * 0.7;
+  marqueeLight.intensity = 1.0 + 0.45 * Math.sin(t * 1.7 + 1.2);
+  if (popSign) popSign.position.y = 7.4 + Math.sin(t * 0.9) * 0.05;
+
+  // (c) each string bulb twinkles on its own phase
+  if (stringBulbs.instanceColor) {
+    for (let i = 0; i < stringBulbs.userData.count; i++) {
+      const k = 0.72 + 0.28 * Math.sin(t * 2.0 + i * 1.31);
+      tmpC.setHSL(0.09, 0.85, 0.36 + 0.3 * k);
+      stringBulbs.setColorAt(i, tmpC);
+    }
+    stringBulbs.instanceColor.needsUpdate = true;
+    stringLight.intensity = 1.35 + 0.35 * Math.sin(t * 1.6);
+  }
+
+  // (d) steam curling out of the snack-bar vent
+  for (let i = 0; i < PUFFS; i++) {
+    const y = (puffArr[i * 3 + 1] + 0.012 + puffSeed[i] * 0.01) % 8.5;
+    puffArr[i * 3] = Math.sin(t * 0.5 + puffSeed[i] * 9) * (0.5 + y * 0.28);
+    puffArr[i * 3 + 1] = y;
+    puffArr[i * 3 + 2] = Math.cos(t * 0.42 + puffSeed[i] * 7) * (0.4 + y * 0.22);
+  }
+  puffGeo.attributes.position.needsUpdate = true;
+
+  // (e) cars settle gently on their springs; the star dome drifts overhead
+  for (const car of carGroup.children)
+    if (car.userData.bob !== undefined)
+      car.position.y = 0.06 + Math.sin(t * 0.7 + car.userData.bob) * 0.014;
+  sky.rotation.y = t * 0.0035;
+  stars.rotation.y = t * 0.0035;
+  halo.lookAt(camera.position);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   10. RESIZE
+   ================================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

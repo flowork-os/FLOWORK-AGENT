@@ -1,0 +1,1126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Plush Axolotl</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14151a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(255,255,255,0.32); letter-spacing: 0.08em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15161b);
+scene.fog = new THREE.Fog(0x15161b, 3.2, 9.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(0.95, 0.62, 1.45);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.minDistance = 0.75;
+controls.maxDistance = 5.0;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, 0.115, 0);
+
+/* ============================================================
+   Lighting: hemi + key + fill + rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xdfe6ff, 0x2a2226, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3ea, 2.35);
+key.position.set(1.6, 2.5, 1.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 9;
+key.shadow.camera.left = -1.3;
+key.shadow.camera.right = 1.3;
+key.shadow.camera.top = 1.3;
+key.shadow.camera.bottom = -1.3;
+key.shadow.bias = -0.0011;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 3.2;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd2ff, 0.62);
+fill.position.set(-2.0, 1.0, 1.1);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffc6dd, 1.15);
+rim.position.set(-0.9, 1.3, -2.2);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xffd9e6, 0.35, 4.0, 2.0);
+bounce.position.set(0, -0.25, 0.6);
+scene.add(bounce);
+
+// Shadow-only ground
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 14),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   Utility noise (deterministic, no external assets)
+   ============================================================ */
+function hash3(x, y, z) {
+  let h = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453123;
+  return h - Math.floor(h);
+}
+function vnoise(x, y, z) {
+  const xi = Math.floor(x), yi = Math.floor(y), zi = Math.floor(z);
+  const xf = x - xi, yf = y - yi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf), w = zf * zf * (3 - 2 * zf);
+  function L(a, b, t) { return a + (b - a) * t; }
+  const c000 = hash3(xi, yi, zi),       c100 = hash3(xi + 1, yi, zi);
+  const c010 = hash3(xi, yi + 1, zi),   c110 = hash3(xi + 1, yi + 1, zi);
+  const c001 = hash3(xi, yi, zi + 1),   c101 = hash3(xi + 1, yi, zi + 1);
+  const c011 = hash3(xi, yi + 1, zi + 1), c111 = hash3(xi + 1, yi + 1, zi + 1);
+  return L(
+    L(L(c000, c100, u), L(c010, c110, u), v),
+    L(L(c001, c101, u), L(c011, c111, u), v),
+    w
+  ) * 2 - 1;
+}
+function fbm(x, y, z, oct) {
+  let a = 0.5, f = 1.0, s = 0;
+  for (let i = 0; i < oct; i++) { s += a * vnoise(x * f, y * f, z * f); f *= 2.03; a *= 0.5; }
+  return s;
+}
+function smoothstep(e0, e1, x) {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+}
+
+/* ============================================================
+   Procedural fabric textures (canvas-based, minky / felt)
+   ============================================================ */
+function makeMinkyMaps(baseHex, opts) {
+  opts = opts || {};
+  const S = 512;
+  const pileDensity = opts.pileDensity !== undefined ? opts.pileDensity : 26000;
+  const pillCount   = opts.pillCount !== undefined ? opts.pillCount : 130;
+
+  const base = new THREE.Color(baseHex);
+
+  // ---- color / albedo ----
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#' + base.getHexString();
+  g.fillRect(0, 0, S, S);
+
+  // soft cloudy tonal variation (dye unevenness)
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const n = fbm(x * 0.018, y * 0.018, 3.7, 4);
+      const m = 1 + n * 0.055;
+      const i = (y * S + x) * 4;
+      d[i]     = Math.min(255, d[i] * m);
+      d[i + 1] = Math.min(255, d[i + 1] * m);
+      d[i + 2] = Math.min(255, d[i + 2] * m);
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // fine pile speckle (short velvety fibers)
+  g.globalAlpha = 0.09;
+  for (let i = 0; i < pileDensity; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const bright = Math.random() < 0.5;
+    g.strokeStyle = bright ? 'rgba(255,255,255,1)' : 'rgba(120,80,95,1)';
+    g.lineWidth = 0.7;
+    const a = Math.random() * Math.PI * 2;
+    const l = 1.2 + Math.random() * 2.4;
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+
+  // fabric pilling: tiny fuzzy lint balls
+  for (let i = 0; i < pillCount; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const r = 1.6 + Math.random() * 3.4;
+    const grd = g.createRadialGradient(x, y, 0, x, y, r);
+    grd.addColorStop(0, 'rgba(255,246,250,0.55)');
+    grd.addColorStop(0.55, 'rgba(255,240,246,0.22)');
+    grd.addColorStop(1, 'rgba(255,240,246,0)');
+    g.fillStyle = grd;
+    g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+  }
+
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  // ---- roughness map (pills read glossier/duller in patches) ----
+  const rc = document.createElement('canvas'); rc.width = rc.height = S;
+  const rg = rc.getContext('2d');
+  rg.fillStyle = '#d8d8d8';
+  rg.fillRect(0, 0, S, S);
+  const rimg = rg.getImageData(0, 0, S, S);
+  const rd = rimg.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const n = fbm(x * 0.03 + 11.0, y * 0.03 - 4.0, 1.3, 4);
+      const v = Math.max(0, Math.min(255, 214 + n * 42));
+      const i = (y * S + x) * 4;
+      rd[i] = rd[i + 1] = rd[i + 2] = v;
+    }
+  }
+  rg.putImageData(rimg, 0, 0);
+  const roughnessMap = new THREE.CanvasTexture(rc);
+  roughnessMap.wrapS = roughnessMap.wrapT = THREE.RepeatWrapping;
+
+  // ---- bump map: pile texture + pills ----
+  const bc = document.createElement('canvas'); bc.width = bc.height = S;
+  const bg = bc.getContext('2d');
+  bg.fillStyle = '#808080';
+  bg.fillRect(0, 0, S, S);
+  bg.globalAlpha = 0.16;
+  for (let i = 0; i < pileDensity * 0.8; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    bg.strokeStyle = Math.random() < 0.5 ? '#ffffff' : '#000000';
+    bg.lineWidth = 0.8;
+    const a = Math.random() * Math.PI * 2;
+    const l = 1.0 + Math.random() * 2.6;
+    bg.beginPath(); bg.moveTo(x, y);
+    bg.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
+    bg.stroke();
+  }
+  bg.globalAlpha = 1;
+  for (let i = 0; i < pillCount; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const r = 1.8 + Math.random() * 3.6;
+    const grd = bg.createRadialGradient(x - r * 0.25, y - r * 0.25, 0, x, y, r);
+    grd.addColorStop(0, 'rgba(255,255,255,0.95)');
+    grd.addColorStop(0.6, 'rgba(160,160,160,0.35)');
+    grd.addColorStop(1, 'rgba(128,128,128,0)');
+    bg.fillStyle = grd;
+    bg.beginPath(); bg.arc(x, y, r, 0, Math.PI * 2); bg.fill();
+  }
+  const bumpMap = new THREE.CanvasTexture(bc);
+  bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
+
+  return { map, roughnessMap, bumpMap };
+}
+
+function makeFeltMaps(baseHex) {
+  const S = 384;
+  const base = new THREE.Color(baseHex);
+
+  const c = document.createElement('canvas'); c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#' + base.getHexString();
+  g.fillRect(0, 0, S, S);
+  // matted, tangled short fibers
+  for (let i = 0; i < 22000; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    const t = Math.random();
+    g.strokeStyle = t < 0.45
+      ? 'rgba(255,255,255,0.10)'
+      : (t < 0.85 ? 'rgba(0,0,0,0.075)' : 'rgba(255,220,240,0.13)');
+    g.lineWidth = 0.6 + Math.random() * 0.7;
+    const a = Math.random() * Math.PI * 2;
+    const l = 1.5 + Math.random() * 4.0;
+    g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(
+      x + Math.cos(a) * l * 0.5 + (Math.random() - 0.5) * 1.5,
+      y + Math.sin(a) * l * 0.5 + (Math.random() - 0.5) * 1.5,
+      x + Math.cos(a) * l, y + Math.sin(a) * l
+    );
+    g.stroke();
+  }
+  const map = new THREE.CanvasTexture(c);
+  map.colorSpace = THREE.SRGBColorSpace;
+  map.wrapS = map.wrapT = THREE.RepeatWrapping;
+  map.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  const bcv = document.createElement('canvas'); bcv.width = bcv.height = S;
+  const bg = bcv.getContext('2d');
+  bg.fillStyle = '#808080'; bg.fillRect(0, 0, S, S);
+  for (let i = 0; i < 16000; i++) {
+    const x = Math.random() * S, y = Math.random() * S;
+    bg.strokeStyle = Math.random() < 0.5 ? 'rgba(255,255,255,0.16)' : 'rgba(0,0,0,0.16)';
+    bg.lineWidth = 0.7 + Math.random() * 0.8;
+    const a = Math.random() * Math.PI * 2;
+    const l = 1.6 + Math.random() * 4.0;
+    bg.beginPath(); bg.moveTo(x, y);
+    bg.lineTo(x + Math.cos(a) * l, y + Math.sin(a) * l);
+    bg.stroke();
+  }
+  const bumpMap = new THREE.CanvasTexture(bcv);
+  bumpMap.wrapS = bumpMap.wrapT = THREE.RepeatWrapping;
+
+  return { map, bumpMap };
+}
+
+const minkyPink  = makeMinkyMaps(0xf6bfd0, { pileDensity: 30000, pillCount: 170 });
+const minkyBelly = makeMinkyMaps(0xfbdfe6, { pileDensity: 22000, pillCount: 90 });
+const feltMag    = makeFeltMaps(0xe0538f);
+
+/* ============================================================
+   Materials
+   ============================================================ */
+const bodyMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: minkyPink.map,
+  roughnessMap: minkyPink.roughnessMap,
+  bumpMap: minkyPink.bumpMap,
+  bumpScale: 0.0038,
+  roughness: 0.94,
+  metalness: 0.0,
+  sheen: 1.0,
+  sheenRoughness: 0.62,
+  sheenColor: new THREE.Color(0xffd7e6),
+  clearcoat: 0.0
+});
+
+const bellyMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: minkyBelly.map,
+  roughnessMap: minkyBelly.roughnessMap,
+  bumpMap: minkyBelly.bumpMap,
+  bumpScale: 0.003,
+  roughness: 0.95,
+  metalness: 0.0,
+  sheen: 1.0,
+  sheenRoughness: 0.7,
+  sheenColor: new THREE.Color(0xfff0f4)
+});
+
+const feltMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  map: feltMag.map,
+  bumpMap: feltMag.bumpMap,
+  bumpScale: 0.004,
+  roughness: 0.99,
+  metalness: 0.0,
+  sheen: 0.7,
+  sheenRoughness: 0.9,
+  sheenColor: new THREE.Color(0xff9ec6),
+  side: THREE.DoubleSide
+});
+
+const threadDark = new THREE.MeshStandardMaterial({
+  color: 0x2b1c24, roughness: 0.72, metalness: 0.0
+});
+const threadSeam = new THREE.MeshStandardMaterial({
+  color: 0xe28aa8, roughness: 0.78, metalness: 0.0
+});
+const eyeMat = new THREE.MeshPhysicalMaterial({
+  color: 0x1c1216, roughness: 0.55, metalness: 0.0, sheen: 0.5,
+  sheenColor: new THREE.Color(0x6b5560), clearcoat: 0.25, clearcoatRoughness: 0.6
+});
+const blushMat = new THREE.MeshStandardMaterial({
+  color: 0xf49ab4, roughness: 0.98, metalness: 0.0,
+  transparent: true, opacity: 0.55, depthWrite: false
+});
+
+/* ============================================================
+   Root object
+   ============================================================ */
+const plush = new THREE.Group();
+scene.add(plush);
+
+/* ---------- Helpers ---------- */
+function markShadows(obj) {
+  obj.traverse(o => {
+    if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+  });
+}
+
+// Deform a geometry's positions with a callback (p, i) -> void, then recompute normals.
+function deform(geo, fn) {
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    fn(v, i);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ============================================================
+   BODY — squashy stuffed torso, wide flat head
+   ============================================================
+   Built from a high-res sphere warped along its length into a
+   head+body+tail-base silhouette, then squashed vertically and
+   given stuffing lumps + a spine seam crease.
+   Axis convention: +Z is forward (nose), Y up, X right.
+*/
+const BODY_LEN = 0.42;
+
+function buildBody() {
+  const geo = new THREE.SphereGeometry(1, 160, 112);
+  geo.rotateX(-Math.PI / 2); // poles now at ±Z so the seam runs cleanly
+
+  deform(geo, (v) => {
+    // t: -1 at tail-base, +1 at snout
+    const t = Math.max(-1, Math.min(1, v.z));
+    const ring = Math.hypot(v.x, v.y) + 1e-6;
+    const nx = v.x / ring, ny = v.y / ring;
+
+    // ---- longitudinal profile (half-width) ----
+    // Head lobe near +Z, body lobe near -0.15, tapering to tail base at -1.
+    const headLobe = Math.exp(-Math.pow((t - 0.62) / 0.34, 2)) * 1.02;
+    const bodyLobe = Math.exp(-Math.pow((t + 0.18) / 0.55, 2)) * 0.90;
+    const neck     = 1.0 - 0.20 * Math.exp(-Math.pow((t - 0.24) / 0.11, 2));
+    let w = Math.max(headLobe, bodyLobe) * neck;
+    // ensure closure at both ends
+    w *= Math.pow(Math.max(0, 1 - Math.pow(Math.abs(t), 7)), 0.34);
+    w = Math.max(w, 0.0);
+
+    // ---- cross-section shaping ----
+    const isHead = smoothstep(0.20, 0.55, t);
+    // Head is WIDE and FLAT; body is rounder and slightly wider than tall.
+    const wideX  = 1.04 + 0.44 * isHead;
+    const flatY  = 0.82 - 0.24 * isHead;
+    // Flatten the belly (it rests / is understuffed underneath)
+    const bellyFlat = 1.0 - 0.20 * smoothstep(0.0, -0.75, ny) * (1.0 - isHead * 0.45);
+
+    let px = nx * w * wideX;
+    let py = ny * w * flatY * bellyFlat;
+    let pz = t;
+
+    // Squarish head plan-view (axolotl heads are blunt/boxy)
+    const boxy = isHead * 0.16;
+    px += nx * Math.abs(nx) * w * boxy;
+
+    // ---- longitudinal length mapping ----
+    pz = t * 1.0;
+
+    // ---- stuffing lumps (soft, low-frequency) ----
+    const lump = fbm(px * 6.5, py * 6.5, pz * 5.0, 3) * 0.030;
+    // Understuffed dip behind the head / above the hips
+    const dip = -0.030 * Math.exp(-Math.pow((t + 0.02) / 0.20, 2)) * smoothstep(0.15, 0.85, ny);
+    const dip2 = -0.022 * Math.exp(-Math.pow((t + 0.62) / 0.22, 2)) * smoothstep(0.1, 0.8, ny);
+
+    // ---- spine seam crease along the top centerline ----
+    const topness = smoothstep(0.55, 1.0, ny);
+    const centerness = Math.exp(-Math.pow(px / 0.045, 2));
+    const seam = -0.016 * topness * centerness;
+
+    // ---- belly seam (subtle) ----
+    const botness = smoothstep(0.55, 1.0, -ny);
+    const seamB = -0.008 * botness * centerness;
+
+    // ---- compression wrinkles near limb sockets ----
+    let wrinkle = 0;
+    const sockets = [
+      { x:  0.62, z:  0.02 }, { x: -0.62, z:  0.02 },
+      { x:  0.58, z: -0.66 }, { x: -0.58, z: -0.66 }
+    ];
+    for (const s of sockets) {
+      const dx = px - s.x * 0.62, dz = pz - s.z;
+      const dy = py + 0.10;
+      const dist = Math.sqrt(dx * dx + dy * dy * 0.7 + dz * dz);
+      const band = Math.exp(-Math.pow((dist - 0.19) / 0.11, 2));
+      wrinkle += Math.sin(dist * 78.0) * 0.0060 * band;
+    }
+
+    const push = 1 + lump + wrinkle * 3.0;
+    px *= push; py *= push; pz *= (1 + lump * 0.35);
+    py += dip + dip2 + seam + seamB;
+
+    // Head sits slightly higher & is tilted up a touch
+    const headLift = 0.055 * smoothstep(0.10, 0.80, t);
+    py += headLift;
+
+    // Gentle downward slope of the snout tip
+    py -= 0.030 * smoothstep(0.72, 1.0, t);
+
+    // Final scale to world units
+    v.set(px * BODY_LEN * 0.90, py * BODY_LEN * 0.92, pz * BODY_LEN);
+  });
+
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const bodyGeo = buildBody();
+const body = new THREE.Mesh(bodyGeo, bodyMat);
+plush.add(body);
+
+/* ---------- Pale belly panel (separate fabric piece) ---------- */
+function buildBellyPanel() {
+  const geo = new THREE.SphereGeometry(1, 120, 84, 0, Math.PI * 2, Math.PI * 0.60, Math.PI * 0.40);
+  geo.rotateX(-Math.PI / 2);
+  deform(geo, (v) => {
+    const t = Math.max(-1, Math.min(1, v.z));
+    const ring = Math.hypot(v.x, v.y) + 1e-6;
+    const nx = v.x / ring, ny = v.y / ring;
+    const headLobe = Math.exp(-Math.pow((t - 0.62) / 0.34, 2)) * 1.02;
+    const bodyLobe = Math.exp(-Math.pow((t + 0.18) / 0.55, 2)) * 0.90;
+    const neck     = 1.0 - 0.20 * Math.exp(-Math.pow((t - 0.24) / 0.11, 2));
+    let w = Math.max(headLobe, bodyLobe) * neck;
+    w *= Math.pow(Math.max(0, 1 - Math.pow(Math.abs(t), 7)), 0.34);
+    const isHead = smoothstep(0.20, 0.55, t);
+    const wideX  = 1.04 + 0.44 * isHead;
+    const flatY  = 0.82 - 0.24 * isHead;
+    const bellyFlat = 1.0 - 0.20 * smoothstep(0.0, -0.75, ny) * (1.0 - isHead * 0.45);
+    let px = nx * w * wideX;
+    let py = ny * w * flatY * bellyFlat;
+    let pz = t;
+    const boxy = isHead * 0.16;
+    px += nx * Math.abs(nx) * w * boxy;
+    const lump = fbm(px * 6.5, py * 6.5, pz * 5.0, 3) * 0.030;
+    px *= (1 + lump); py *= (1 + lump); pz *= (1 + lump * 0.35);
+    const headLift = 0.055 * smoothstep(0.10, 0.80, t);
+    py += headLift - 0.030 * smoothstep(0.72, 1.0, t);
+    v.set(px * BODY_LEN * 0.90, py * BODY_LEN * 0.92, pz * BODY_LEN);
+    // push outward a hair so it reads as an applied panel
+    v.multiplyScalar(1.006);
+  });
+  return geo;
+}
+const bellyPanel = new THREE.Mesh(buildBellyPanel(), bellyMat);
+bellyPanel.position.y = -0.0008;
+plush.add(bellyPanel);
+
+/* ============================================================
+   TAIL — broad paddle, understuffed (creased, floppy)
+   ============================================================ */
+function buildTail() {
+  const geo = new THREE.SphereGeometry(1, 120, 90);
+  geo.rotateX(-Math.PI / 2);
+
+  deform(geo, (v) => {
+    const t = Math.max(-1, Math.min(1, v.z)); // -1 root .. +1 tip
+    const ring = Math.hypot(v.x, v.y) + 1e-6;
+    const nx = v.x / ring, ny = v.y / ring;
+    const u = (t + 1) * 0.5; // 0..1 along tail
+
+    // Paddle silhouette: tall vertical fin that widens then tapers
+    const height = (0.42 + 0.86 * Math.sin(Math.pow(u, 0.72) * Math.PI * 0.92)) * (1 - Math.pow(u, 5) * 0.55);
+    const thick  = (0.30 * (1 - u * 0.62)) * (0.55 + 0.45 * Math.pow(Math.max(0, 1 - Math.pow(Math.abs(ny), 2.1)), 0.6));
+
+    let px = nx * thick;
+    let py = ny * height;
+    let pz = u;
+
+    // close the ends
+    const cap = Math.pow(Math.max(0, 1 - Math.pow(Math.abs(t), 8)), 0.30);
+    px *= cap; py *= (0.25 + 0.75 * cap);
+
+    // Understuffing: vertical soft creases + a saggy droop
+    const crease = Math.sin(u * 15.0 + ny * 2.2) * 0.014 * smoothstep(0.12, 0.7, u);
+    px *= (1 + crease * 3.4);
+    const wob = fbm(px * 9.0, py * 6.0, pz * 7.0 + 21.0, 3) * 0.024;
+    px *= (1 + wob); py *= (1 + wob * 0.6);
+
+    // Flatten the fin membrane further at top & bottom edges
+    const edge = smoothstep(0.55, 1.0, Math.abs(ny));
+    px *= (1 - 0.45 * edge);
+
+    // droop + slight upward tail-tip curl (floppy plush)
+    py += -0.16 * u * u + 0.06 * Math.pow(u, 3.0);
+    // slight sideways lean for character
+    px += 0.05 * u * u;
+
+    v.set(px * 0.115, py * 0.165, pz * 0.36);
+  });
+  return geo;
+}
+const tail = new THREE.Mesh(buildTail(), bodyMat);
+tail.position.set(0, 0.006, -BODY_LEN * 0.90);
+tail.rotation.x = 0.10;
+tail.rotation.y = 0.05;
+plush.add(tail);
+
+/* ============================================================
+   SPINE SEAM — stitched ridge from head to tail
+   ============================================================ */
+function spinePointAt(t) {
+  // t: 0 at back of head .. 1 at tail tip. Follows the top ridge.
+  const z = THREE.MathUtils.lerp(BODY_LEN * 0.30, -BODY_LEN * 0.90 - 0.33, t);
+  let y;
+  const zn = z / BODY_LEN;
+  if (zn > -1.0) {
+    // approximate the deformed top ridge height
+    const tt = Math.max(-1, Math.min(1, zn));
+    const headLobe = Math.exp(-Math.pow((tt - 0.62) / 0.34, 2)) * 1.02;
+    const bodyLobe = Math.exp(-Math.pow((tt + 0.18) / 0.55, 2)) * 0.90;
+    const neck     = 1.0 - 0.20 * Math.exp(-Math.pow((tt - 0.24) / 0.11, 2));
+    let w = Math.max(headLobe, bodyLobe) * neck;
+    w *= Math.pow(Math.max(0, 1 - Math.pow(Math.abs(tt), 7)), 0.34);
+    const isHead = smoothstep(0.20, 0.55, tt);
+    const flatY = 0.82 - 0.24 * isHead;
+    const headLift = 0.055 * smoothstep(0.10, 0.80, tt);
+    y = (w * flatY - 0.016 + headLift) * BODY_LEN * 0.92;
+  } else {
+    // on the tail
+    const u = Math.max(0, Math.min(1, (-z - BODY_LEN * 0.90) / 0.36));
+    const height = (0.42 + 0.86 * Math.sin(Math.pow(u, 0.72) * Math.PI * 0.92)) * (1 - Math.pow(u, 5) * 0.55);
+    y = 0.006 + (height - 0.16 * u * u + 0.06 * Math.pow(u, 3)) * 0.165;
+  }
+  return new THREE.Vector3(0, y, z);
+}
+
+const seamGroup = new THREE.Group();
+{
+  const N = 74;
+  const stitchGeo = new THREE.CapsuleGeometry(0.0035, 0.014, 4, 8);
+  const dummy = new THREE.Object3D();
+  const stitches = new THREE.InstancedMesh(stitchGeo, threadSeam, N);
+  stitches.castShadow = true;
+  stitches.receiveShadow = true;
+  for (let i = 0; i < N; i++) {
+    const t = i / (N - 1);
+    const p = spinePointAt(t);
+    const p2 = spinePointAt(Math.min(1, t + 0.012));
+    const dir = new THREE.Vector3().subVectors(p2, p);
+    if (dir.lengthSq() < 1e-10) dir.set(0, 0, -1);
+    dir.normalize();
+    dummy.position.copy(p);
+    dummy.position.y += 0.0016;
+    // orient capsule (local +Y) along dir
+    dummy.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+    const s = 0.85 + 0.3 * Math.sin(i * 1.7);
+    dummy.scale.set(1, s, 1);
+    dummy.updateMatrix();
+    stitches.setMatrixAt(i, dummy.matrix);
+  }
+  stitches.instanceMatrix.needsUpdate = true;
+  seamGroup.add(stitches);
+
+  // Soft raised welt under the stitch line (the seam allowance bulge)
+  const curvePts = [];
+  for (let i = 0; i <= 60; i++) curvePts.push(spinePointAt(i / 60));
+  const seamCurve = new THREE.CatmullRomCurve3(curvePts);
+  const weltGeo = new THREE.TubeGeometry(seamCurve, 160, 0.0060, 10, false);
+  const welt = new THREE.Mesh(weltGeo, bodyMat);
+  welt.castShadow = true; welt.receiveShadow = true;
+  seamGroup.add(welt);
+}
+plush.add(seamGroup);
+
+/* ============================================================
+   HEAD FEATURES
+   ============================================================ */
+const headZ = BODY_LEN * 0.62;   // center of head lobe in world Z
+const HEAD_HALF_W = 0.185;
+
+// Approximate head top height at a given z (for placing gills / eyes)
+function headTopY(zn) {
+  const tt = Math.max(-1, Math.min(1, zn));
+  const headLobe = Math.exp(-Math.pow((tt - 0.62) / 0.34, 2)) * 1.02;
+  const bodyLobe = Math.exp(-Math.pow((tt + 0.18) / 0.55, 2)) * 0.90;
+  const neck     = 1.0 - 0.20 * Math.exp(-Math.pow((tt - 0.24) / 0.11, 2));
+  let w = Math.max(headLobe, bodyLobe) * neck;
+  w *= Math.pow(Math.max(0, 1 - Math.pow(Math.abs(tt), 7)), 0.34);
+  const isHead = smoothstep(0.20, 0.55, tt);
+  const flatY = 0.82 - 0.24 * isHead;
+  const headLift = 0.055 * smoothstep(0.10, 0.80, tt);
+  return (w * flatY + headLift - 0.030 * smoothstep(0.72, 1.0, tt)) * BODY_LEN * 0.92;
+}
+function headHalfWidth(zn) {
+  const tt = Math.max(-1, Math.min(1, zn));
+  const headLobe = Math.exp(-Math.pow((tt - 0.62) / 0.34, 2)) * 1.02;
+  const bodyLobe = Math.exp(-Math.pow((tt + 0.18) / 0.55, 2)) * 0.90;
+  const neck     = 1.0 - 0.20 * Math.exp(-Math.pow((tt - 0.24) / 0.11, 2));
+  let w = Math.max(headLobe, bodyLobe) * neck;
+  w *= Math.pow(Math.max(0, 1 - Math.pow(Math.abs(tt), 7)), 0.34);
+  const isHead = smoothstep(0.20, 0.55, tt);
+  const wideX = 1.04 + 0.44 * isHead;
+  return w * (wideX + isHead * 0.16) * BODY_LEN * 0.90;
+}
+
+/* ---------- Embroidered dot eyes ---------- */
+function makeEye(side) {
+  const g = new THREE.Group();
+  const zn = 0.72;
+  const hw = headHalfWidth(zn);
+  const ty = headTopY(zn);
+
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.0195, 40, 28), eyeMat);
+  eye.scale.set(1.0, 0.86, 0.66);
+  eye.position.set(side * hw * 0.78, ty * 0.50, BODY_LEN * zn);
+  eye.rotation.y = side * 0.45;
+  g.add(eye);
+
+  // satin-stitch fringe: tiny radial threads around the dot
+  const fringeGeo = new THREE.CapsuleGeometry(0.0011, 0.0055, 3, 6);
+  const fringe = new THREE.InstancedMesh(fringeGeo, threadDark, 26);
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 26; i++) {
+    const a = (i / 26) * Math.PI * 2;
+    const r = 0.0192;
+    d.position.set(
+      eye.position.x + Math.cos(a) * r * 1.02 * 0.98,
+      eye.position.y + Math.sin(a) * r * 0.86,
+      eye.position.z + 0.0055
+    );
+    d.rotation.set(0, 0, a + Math.PI / 2);
+    d.updateMatrix();
+    fringe.setMatrixAt(i, d.matrix);
+  }
+  fringe.instanceMatrix.needsUpdate = true;
+  g.add(fringe);
+
+  // tiny felt highlight
+  const hi = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0042, 16, 12),
+    new THREE.MeshStandardMaterial({ color: 0xfff2f6, roughness: 0.85 })
+  );
+  hi.position.set(
+    eye.position.x + side * 0.0045,
+    eye.position.y + 0.0058,
+    eye.position.z + 0.0125
+  );
+  g.add(hi);
+
+  return g;
+}
+plush.add(makeEye(1));
+plush.add(makeEye(-1));
+
+/* ---------- Stitched smile (dark thread) ---------- */
+{
+  const smile = new THREE.Group();
+  const zBase = BODY_LEN * 0.93;
+  const yBase = headTopY(0.93) * 0.06 - 0.012;
+
+  // Smile path: a gentle upward-curving arc wrapping around the snout
+  const pts = [];
+  const SPAN = 0.085;
+  for (let i = 0; i <= 40; i++) {
+    const s = (i / 40) * 2 - 1;             // -1..1
+    const x = s * SPAN;
+    const y = yBase - 0.0 + (1 - Math.cos(s * 1.55)) * 0.030 - 0.004;
+    // wrap around the rounded snout front
+    const z = zBase - Math.pow(Math.abs(s), 1.9) * 0.055;
+    pts.push(new THREE.Vector3(x, y, z));
+  }
+  const smileCurve = new THREE.CatmullRomCurve3(pts);
+
+  // Dashed running stitch along the curve
+  const NS = 21;
+  const sgeo = new THREE.CapsuleGeometry(0.0021, 0.0062, 4, 8);
+  const sm = new THREE.InstancedMesh(sgeo, threadDark, NS);
+  sm.castShadow = true;
+  const d = new THREE.Object3D();
+  const up = new THREE.Vector3(0, 1, 0);
+  for (let i = 0; i < NS; i++) {
+    const t = i / (NS - 1);
+    const p = smileCurve.getPoint(t);
+    const tan = smileCurve.getTangent(t).normalize();
+    d.position.copy(p);
+    d.quaternion.setFromUnitVectors(up, tan);
+    d.scale.setScalar(1.0);
+    d.updateMatrix();
+    sm.setMatrixAt(i, d.matrix);
+  }
+  sm.instanceMatrix.needsUpdate = true;
+  smile.add(sm);
+
+  // Two short upturned corner ticks
+  for (const side of [-1, 1]) {
+    const tick = new THREE.Mesh(new THREE.CapsuleGeometry(0.0021, 0.011, 4, 8), threadDark);
+    const p = smileCurve.getPoint(side > 0 ? 1 : 0);
+    tick.position.copy(p);
+    tick.position.y += 0.0055;
+    tick.position.x += side * 0.0022;
+    tick.rotation.z = -side * 0.65;
+    tick.castShadow = true;
+    smile.add(tick);
+  }
+
+  // Embroidered nostril dots
+  for (const side of [-1, 1]) {
+    const n = new THREE.Mesh(new THREE.SphereGeometry(0.0032, 14, 10), threadDark);
+    n.position.set(side * 0.019, yBase + 0.052, BODY_LEN * 0.965);
+    n.scale.set(1, 0.7, 0.55);
+    smile.add(n);
+  }
+  plush.add(smile);
+}
+
+/* ---------- Blush patches ---------- */
+for (const side of [-1, 1]) {
+  const zn = 0.80;
+  const blush = new THREE.Mesh(new THREE.CircleGeometry(0.024, 28), blushMat);
+  blush.position.set(side * headHalfWidth(zn) * 0.86, headTopY(zn) * 0.20, BODY_LEN * zn);
+  blush.rotation.y = side * (Math.PI / 2 - 0.55);
+  blush.scale.set(1, 0.72, 1);
+  plush.add(blush);
+}
+
+/* ============================================================
+   GILLS — six floppy magenta felt fronds (3 per side)
+   ============================================================ */
+function buildFrond(len, width, droop, curl, seed) {
+  // A tapered flat felt blade with wavy edges, built as a ribbon.
+  const SEG = 26, SIDE = 7;
+  const geo = new THREE.PlaneGeometry(1, 1, SIDE, SEG);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const u = v.y + 0.5;                  // 0 at base .. 1 at tip
+    const s = v.x;                        // -0.5 .. 0.5 across
+    const taper = Math.pow(Math.sin(Math.min(1, u * 1.02) * Math.PI * 0.94), 0.55);
+    const w = width * (0.42 + 0.85 * taper) * (1 - Math.pow(u, 3.2) * 0.75);
+    // frilly wavy edge
+    const frill = Math.sin(u * 26.0 + seed * 4.0) * 0.055 * w * 4.0;
+    const x = s * 2 * w + Math.sign(s) * frill * Math.abs(s) * 1.2;
+    // droop: falls away and curls
+    const yy = u * len * Math.cos(droop * u) - Math.pow(u, 2.0) * len * droop * 0.30;
+    const zz = -Math.sin(droop * u * 1.1) * len * 0.55 - curl * Math.pow(u, 2.4) * len * 0.32;
+    // cross-sectional cup so the felt has body
+    const cup = -Math.pow(s * 2, 2) * w * 0.55 * (0.4 + u);
+    v.set(x, yy + cup * 0.4, zz + cup * 0.55 + Math.sin(u * 9.0 + seed) * 0.004);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function buildGillCluster(side) {
+  const cluster = new THREE.Group();
+
+  // stalk root positions along the back of the head
+  const specs = [
+    { zn: 0.44, up: 0.44, out: 0.86, len: 0.150, w: 0.030, droop: 0.62, spread: 0.30, tilt: 0.10 },
+    { zn: 0.36, up: 0.20, out: 0.98, len: 0.168, w: 0.034, droop: 0.80, spread: 0.62, tilt: -0.05 },
+    { zn: 0.30, up: -0.06, out: 0.92, len: 0.146, w: 0.030, droop: 0.98, spread: 0.86, tilt: -0.22 }
+  ];
+
+  specs.forEach((sp, idx) => {
+    const g = new THREE.Group();
+    const hw = headHalfWidth(sp.zn);
+    const ty = headTopY(sp.zn);
+    const px = side * hw * sp.out;
+    const py = ty * sp.up + 0.012;
+    const pz = BODY_LEN * sp.zn;
+    g.position.set(px, py, pz);
+    g.rotation.y = side * (sp.spread * 0.9);
+    g.rotation.z = -side * (0.45 + sp.spread * 0.55);
+    g.rotation.x = sp.tilt;
+
+    // short plush stalk connecting frond to head
+    const stalk = new THREE.Mesh(new THREE.CapsuleGeometry(0.0125, 0.020, 8, 20), feltMat);
+    stalk.position.y = 0.012;
+    stalk.scale.set(1, 1, 0.72);
+    g.add(stalk);
+
+    // three frilly blades per stalk (a frond)
+    for (let b = 0; b < 3; b++) {
+      const bl = (b - 1);
+      const bladeGeo = buildFrond(
+        sp.len * (0.78 + 0.22 * (1 - Math.abs(bl) * 0.5)),
+        sp.w * (0.85 + 0.25 * (1 - Math.abs(bl) * 0.4)),
+        sp.droop + bl * 0.16,
+        0.55 + idx * 0.12,
+        idx * 3.1 + b * 1.7 + (side > 0 ? 0 : 0.9)
+      );
+      const blade = new THREE.Mesh(bladeGeo, feltMat);
+      blade.position.y = 0.020;
+      blade.rotation.y = bl * 0.52;
+      blade.rotation.z = bl * 0.24;
+      blade.castShadow = true;
+      blade.receiveShadow = true;
+      g.add(blade);
+    }
+
+    // stitched attachment ring where felt meets minky
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(0.0128, 0.0018, 8, 26),
+      threadDark
+    );
+    ring.rotation.x = Math.PI / 2;
+    ring.position.y = 0.003;
+    ring.scale.set(1, 0.75, 1);
+    g.add(ring);
+
+    cluster.add(g);
+  });
+
+  return cluster;
+}
+const gillsR = buildGillCluster(1);
+const gillsL = buildGillCluster(-1);
+plush.add(gillsR, gillsL);
+
+/* ---------- Dorsal crest: small felt fin between the gills ---------- */
+{
+  const crestGeo = buildFrond(0.055, 0.020, 0.25, 0.2, 5.5);
+  const crest = new THREE.Mesh(crestGeo, feltMat);
+  crest.position.set(0, headTopY(0.40) + 0.004, BODY_LEN * 0.40);
+  crest.rotation.x = -0.25;
+  crest.scale.set(1.5, 0.85, 1);
+  crest.castShadow = true;
+  plush.add(crest);
+}
+
+/* ============================================================
+   LIMBS — stubby, with compression wrinkles at the sockets
+   ============================================================ */
+function buildLimb(len, rad, bend, seed) {
+  const geo = new THREE.CapsuleGeometry(rad, len, 14, 32);
+  deform(geo, (v) => {
+    // capsule axis is Y, from -(len/2+rad) to +(len/2+rad)
+    const half = len / 2 + rad;
+    const u = THREE.MathUtils.clamp((v.y + half) / (2 * half), 0, 1); // 0 = paw end, 1 = socket end
+    const uu = 1 - u; // 0 at socket, 1 at paw
+
+    const ring = Math.hypot(v.x, v.z) + 1e-6;
+    const nx = v.x / ring, nz = v.z / ring;
+
+    // taper: thicker at the socket, slightly bulbous paw
+    const taper = 0.86 + 0.30 * Math.pow(u, 1.6) + 0.16 * Math.exp(-Math.pow((uu - 0.92) / 0.16, 2));
+    // fabric compression wrinkles: rings near the socket
+    const wr = Math.sin(uu * 34.0 + seed) * 0.020 * Math.exp(-Math.pow((uu - 0.16) / 0.22, 2));
+    // stuffing lumps
+    const lump = fbm(v.x * 24, v.y * 24 + seed * 5, v.z * 24, 3) * 0.055;
+
+    const scale = taper * (1 + wr + lump);
+    v.x = nx * ring * scale;
+    v.z = nz * ring * scale;
+
+    // gentle banana bend outward/downward
+    v.x += bend * Math.pow(uu, 1.8) * len * 0.55;
+    v.z += Math.sin(uu * 2.0 + seed) * len * 0.05;
+
+    // flatten the paw a bit (plush limbs are pancake-y at the tip)
+    const flat = smoothstep(0.72, 1.0, uu);
+    v.z *= (1 - 0.22 * flat);
+    v.y += flat * 0.004;
+  });
+  return geo;
+}
+
+function addLimb(side, isFront) {
+  const zn = isFront ? 0.20 : -0.52;
+  const hw = headHalfWidth(zn);
+  const g = new THREE.Group();
+
+  const len = isFront ? 0.055 : 0.062;
+  const rad = isFront ? 0.030 : 0.034;
+  const seed = (isFront ? 1.3 : 4.9) + (side > 0 ? 0 : 2.1);
+
+  const limbGeo = buildLimb(len, rad, side * 0.28, seed);
+  const limb = new THREE.Mesh(limbGeo, bodyMat);
+  // rotate so +Y (socket) points inward/up toward the body
+  limb.rotation.z = side * (Math.PI * 0.5 - 0.34);
+  limb.rotation.x = isFront ? 0.28 : -0.20;
+  limb.castShadow = true;
+  limb.receiveShadow = true;
+  g.add(limb);
+
+  // stubby toes (3 per paw) — soft nubs
+  const toeCount = 3;
+  const paw = new THREE.Group();
+  for (let i = 0; i < toeCount; i++) {
+    const a = (i - (toeCount - 1) / 2) * 0.55;
+    const toe = new THREE.Mesh(new THREE.SphereGeometry(rad * 0.34, 18, 14), bodyMat);
+    toe.scale.set(1.0, 0.72, 1.25);
+    toe.position.set(
+      Math.sin(a) * rad * 0.62,
+      -rad * 0.16,
+      Math.cos(a) * rad * 0.72
+    );
+    toe.castShadow = true;
+    toe.receiveShadow = true;
+    paw.add(toe);
+  }
+  // place the paw group at the far end of the limb
+  const reach = (len / 2 + rad) * 1.02;
+  paw.position.set(
+    -Math.sin(limb.rotation.z) * -reach + side * 0.28 * Math.pow(1, 1.8) * len * 0.55,
+    Math.cos(limb.rotation.z) * -reach,
+    0
+  );
+  paw.position.x = side * (Math.cos(0.34) * reach + 0.28 * len * 0.55);
+  paw.position.y = -Math.sin(0.34) * reach - 0.004;
+  paw.position.z = isFront ? 0.010 : -0.006;
+  paw.rotation.y = side * 0.5;
+  g.add(paw);
+
+  g.position.set(side * hw * 0.68, -BODY_LEN * 0.20, BODY_LEN * zn);
+
+  // socket compression ring: a squashed torus that reads as gathered fabric
+  const socket = new THREE.Mesh(
+    new THREE.TorusGeometry(rad * 0.98, rad * 0.30, 12, 34),
+    bodyMat
+  );
+  socket.rotation.y = Math.PI / 2;
+  socket.rotation.x = 0.15 * side;
+  socket.position.set(side * rad * 0.28, 0.006, 0);
+  socket.scale.set(1, 0.86, 0.9);
+  socket.castShadow = true; socket.receiveShadow = true;
+  g.add(socket);
+
+  plush.add(g);
+  return g;
+}
+addLimb(1, true); addLimb(-1, true);
+addLimb(1, false); addLimb(-1, false);
+
+/* ============================================================
+   Extra surface detail: scattered fabric pills (real geometry)
+   ============================================================ */
+{
+  const COUNT = 260;
+  const pillGeo = new THREE.SphereGeometry(1, 8, 6);
+  const pillMat = new THREE.MeshStandardMaterial({
+    color: 0xfad2de, roughness: 1.0, metalness: 0.0
+  });
+  const pills = new THREE.InstancedMesh(pillGeo, pillMat, COUNT);
+  pills.castShadow = false;
+  pills.receiveShadow = true;
+
+  // Sample points on the body surface using the raw body geometry
+  const bpos = bodyGeo.attributes.position;
+  const bnor = bodyGeo.attributes.normal;
+  const d = new THREE.Object3D();
+  const p = new THREE.Vector3(), n = new THREE.Vector3();
+  for (let i = 0; i < COUNT; i++) {
+    const idx = Math.floor(hash3(i * 1.7, 3.3, 9.1) * bpos.count) % bpos.count;
+    p.fromBufferAttribute(bpos, idx);
+    n.fromBufferAttribute(bnor, idx).normalize();
+    const s = 0.0022 + hash3(i, 7.7, 2.2) * 0.0034;
+    d.position.copy(p).addScaledVector(n, s * 0.45);
+    d.scale.set(s, s * 0.75, s);
+    d.rotation.set(hash3(i, 1, 2) * 6.28, hash3(i, 2, 3) * 6.28, 0);
+    d.updateMatrix();
+    pills.setMatrixAt(i, d.matrix);
+  }
+  pills.instanceMatrix.needsUpdate = true;
+  plush.add(pills);
+}
+
+/* ============================================================
+   Care tag (small fabric label at the hip seam)
+   ============================================================ */
+{
+  const tagGeo = new THREE.PlaneGeometry(0.030, 0.020, 8, 6);
+  deform(tagGeo, (v) => {
+    v.z += Math.sin(v.x * 60 + v.y * 12) * 0.0016 + Math.sin(v.y * 45) * 0.0012;
+  });
+  const tagMat = new THREE.MeshStandardMaterial({
+    color: 0xf2ece6, roughness: 0.92, side: THREE.DoubleSide
+  });
+  const tag = new THREE.Mesh(tagGeo, tagMat);
+  tag.position.set(-0.115, -0.075, -BODY_LEN * 0.50);
+  tag.rotation.set(0.5, -1.15, 0.35);
+  tag.castShadow = true; tag.receiveShadow = true;
+  plush.add(tag);
+}
+
+/* ============================================================
+   Position / settle the whole plush on the ground
+   ============================================================ */
+markShadows(plush);
+
+// compute bounds and rest it on y=0, centered at origin in XZ
+plush.updateMatrixWorld(true);
+const box = new THREE.Box3().setFromObject(plush);
+const center = box.getCenter(new THREE.Vector3());
+const size = box.getSize(new THREE.Vector3());
+plush.position.x -= center.x;
+plush.position.z -= center.z;
+plush.position.y -= box.min.y;
+
+// Slight settle so the belly appears to compress against the surface
+plush.position.y -= size.y * 0.012;
+
+controls.target.set(0, size.y * 0.46, 0);
+controls.update();
+
+// Frame the camera to the object
+{
+  const radius = Math.max(size.x, size.y, size.z) * 0.5;
+  const dist = radius / Math.tan((camera.fov * Math.PI) / 360) * 2.05;
+  camera.position.set(dist * 0.55, dist * 0.42 + size.y * 0.3, dist * 0.78);
+  camera.lookAt(controls.target);
+  controls.update();
+}
+
+// Aim the key light's shadow camera at the plush
+key.target.position.set(0, size.y * 0.4, 0);
+scene.add(key.target);
+
+/* ============================================================
+   Resize + render loop
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // very subtle plush "breathing" squash
+  const b = 1 + Math.sin(t * 0.9) * 0.006;
+  plush.scale.set(1 / Math.sqrt(b), b, 1 / Math.sqrt(b));
+
+  // gills sway gently
+  gillsR.rotation.z = Math.sin(t * 0.75) * 0.035;
+  gillsL.rotation.z = Math.sin(t * 0.75 + 0.6) * -0.035;
+  tail.rotation.y = 0.05 + Math.sin(t * 0.55) * 0.03;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,401 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Plowed Lot Edge — Snow Berm</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0f1012; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(220,228,240,0.5); letter-spacing: .3px; user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Snow berm at a plowed lot edge · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Small math / noise helpers
+ * ------------------------------------------------------------------ */
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const lerp  = (a, b, t) => a + (b - a) * t;
+function smoothstep(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+function hash2(x, y) {
+  const n = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123;
+  return n - Math.floor(n);
+}
+function valueNoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const a = hash2(xi, yi),     b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  const u = xf * xf * (3 - 2 * xf);
+  const v = yf * yf * (3 - 2 * yf);
+  return lerp(lerp(a, b, u), lerp(c, d, u), v);
+}
+function fbm(x, y) {
+  let sum = 0, amp = 0.5, freq = 1;
+  for (let i = 0; i < 5; i++) { sum += amp * valueNoise(x * freq, y * freq); freq *= 2; amp *= 0.5; }
+  return sum;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / scene / camera
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0f1012);
+scene.fog = new THREE.FogExp2(0x0f1012, 0.011);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(13.5, 8.2, 13.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 0.35, 0);
+controls.minDistance = 8;
+controls.maxDistance = 42;
+controls.maxPolarAngle = Math.PI * 0.495;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere + key / fill / rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xaac4ff, 0x40382c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.4);
+key.position.set(9, 13, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 45;
+key.shadow.camera.left = -13;
+key.shadow.camera.right = 13;
+key.shadow.camera.top = 13;
+key.shadow.camera.bottom = -13;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x93a7c9, 0.55);
+fill.position.set(-9, 5, -3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xd0e2ff, 0.95);
+rim.position.set(-5, 5.5, -11);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-only studio ground plane
+ * ------------------------------------------------------------------ */
+const shadowFloor = new THREE.Mesh(
+  new THREE.PlaneGeometry(90, 90),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+shadowFloor.rotation.x = -Math.PI / 2;
+shadowFloor.position.y = -0.11;
+shadowFloor.receiveShadow = true;
+scene.add(shadowFloor);
+
+/* ================================================================== *
+ *  THE ONE OBJECT — plowed lot edge with a snow berm
+ * ================================================================== */
+const lotEdge = new THREE.Group();
+
+/* ---- Berm profile parameters (also used by chunk placement) ------ */
+const xMin = -6.8, xMax = 6.8;
+const zFront = 1.2, zBack = 4.35;
+const maxH = 0.95;
+
+function crossProfile(t) {
+  if (t <= 0 || t >= 1) return 0;
+  const p = 0.42;                       // peak sits toward the scraped (front) side
+  if (t < p) {                          // steep, snow-plow face
+    return Math.sin((t / p) * Math.PI * 0.5);
+  }
+  const v = Math.max(0, 1 - (t - p) / (1 - p));
+  return Math.pow(v, 1.3);              // gentler back slope
+}
+function ampX(x) {
+  const edge = 2.1;
+  let a = smoothstep(0, edge, x - xMin) * smoothstep(0, edge, xMax - x);
+  a *= 0.82 + 0.18 * fbm(x * 0.15 + 10, 5.0);   // ridge-line undulation
+  return a;
+}
+function bermHeight(x, z) {
+  const t = (z - zFront) / (zBack - zFront);
+  if (t < 0 || t > 1) return 0;
+  const env = crossProfile(t) * ampX(x);
+  let H = maxH * env;
+  H += env * (0.15 * (fbm(x * 0.5 + 3, z * 0.5 + 7) - 0.5)
+            + 0.06 * (fbm(x * 1.6 + 20, z * 1.6 + 2) - 0.5));   // lumpy plowed surface
+  return Math.max(0, H);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Asphalt slab with procedural speckle / crack texture
+ * ------------------------------------------------------------------ */
+function makeAsphaltTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 1024;
+  const g = c.getContext('2d');
+  g.fillStyle = '#2b2a2e';
+  g.fillRect(0, 0, 1024, 1024);
+
+  // fine grain speckle
+  for (let i = 0; i < 55000; i++) {
+    const v = 18 + Math.random() * 70;
+    g.fillStyle = `rgba(${v},${v},${v + 3},${0.06 + Math.random() * 0.14})`;
+    const s = 1 + Math.random() * 2;
+    g.fillRect(Math.random() * 1024, Math.random() * 1024, s, s);
+  }
+  // lighter aggregate stones
+  for (let i = 0; i < 3500; i++) {
+    const v = 95 + Math.random() * 70;
+    g.fillStyle = `rgba(${v},${v},${v},${0.15 + Math.random() * 0.25})`;
+    g.beginPath();
+    g.arc(Math.random() * 1024, Math.random() * 1024, 0.6 + Math.random() * 1.6, 0, 7);
+    g.fill();
+  }
+  // faint plow-scrape streaks
+  for (let i = 0; i < 40; i++) {
+    g.strokeStyle = `rgba(200,200,205,${0.02 + Math.random() * 0.03})`;
+    g.lineWidth = 1 + Math.random() * 3;
+    const y = Math.random() * 1024;
+    g.beginPath();
+    g.moveTo(0, y);
+    g.bezierCurveTo(340, y + (Math.random() - 0.5) * 40, 680, y + (Math.random() - 0.5) * 40, 1024, y + (Math.random() - 0.5) * 20);
+    g.stroke();
+  }
+  // a few dark cracks
+  for (let i = 0; i < 22; i++) {
+    g.strokeStyle = `rgba(10,10,12,${0.35 + Math.random() * 0.3})`;
+    g.lineWidth = 0.8 + Math.random() * 1.2;
+    let px = Math.random() * 1024, py = Math.random() * 1024;
+    g.beginPath();
+    g.moveTo(px, py);
+    const steps = 4 + (Math.random() * 6 | 0);
+    for (let s = 0; s < steps; s++) {
+      px += (Math.random() - 0.5) * 120;
+      py += (Math.random() - 0.5) * 120;
+      g.lineTo(px, py);
+    }
+    g.stroke();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(4, 2.4);
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+const asphaltTex = makeAsphaltTexture();
+const asphalt = new THREE.Mesh(
+  new THREE.BoxGeometry(14.6, 0.22, 8.6),
+  new THREE.MeshStandardMaterial({
+    map: asphaltTex,
+    bumpMap: asphaltTex,
+    bumpScale: 0.015,
+    roughness: 0.96,
+    metalness: 0.0,
+    color: 0xffffff
+  })
+);
+asphalt.position.set(0, -0.11, 0.1);   // top surface at y = 0
+asphalt.receiveShadow = true;
+asphalt.castShadow = false;
+lotEdge.add(asphalt);
+
+/* ------------------------------------------------------------------ *
+ *  Painted line markings (parking stalls + a yellow lane line)
+ * ------------------------------------------------------------------ */
+const lines = new THREE.Group();
+const whiteLineMat = new THREE.MeshStandardMaterial({ color: 0xd8d9d0, roughness: 0.78, metalness: 0.0 });
+const yellowLineMat = new THREE.MeshStandardMaterial({ color: 0xc9a12a, roughness: 0.8, metalness: 0.0 });
+
+for (const x of [-6.5, -3.9, -1.3, 1.3, 3.9, 6.5]) {
+  const stall = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 4.9), whiteLineMat);
+  stall.rotation.x = -Math.PI / 2;
+  stall.position.set(x, 0.014, -1.2);
+  stall.receiveShadow = true;
+  lines.add(stall);
+}
+const laneLine = new THREE.Mesh(new THREE.PlaneGeometry(13.4, 0.15), yellowLineMat);
+laneLine.rotation.x = -Math.PI / 2;
+laneLine.position.set(0, 0.014, -3.75);
+laneLine.receiveShadow = true;
+lines.add(laneLine);
+lotEdge.add(lines);
+
+/* ------------------------------------------------------------------ *
+ *  The snow berm — procedural heightfield with vertex colors
+ * ------------------------------------------------------------------ */
+const cSnow = new THREE.Color(0xeef2f7).convertSRGBToLinear();
+const cDirt = new THREE.Color(0x4a4038).convertSRGBToLinear();
+
+function buildBerm() {
+  const NX = 240, NZ = 70;
+  const positions = [];
+  const colors = [];
+  const indices = [];
+
+  for (let j = 0; j <= NZ; j++) {
+    const tz = j / NZ;
+    const z = lerp(zFront, zBack, tz);
+    for (let i = 0; i <= NX; i++) {
+      const tx = i / NX;
+      const x = lerp(xMin, xMax, tx);
+      const H = bermHeight(x, z);
+      positions.push(x, H, z);
+
+      // dirt is concentrated low on the pile, streaked, worst on the scraped front base
+      let d = smoothstep(0.34, 0.03, H);
+      const streak = fbm(x * 0.8, z * 0.8 + 40);
+      d = clamp(d * (0.55 + 0.9 * streak), 0, 1);
+      const frontBase = smoothstep(0.5, 0.0, tz) * smoothstep(0.28, 0.0, H);
+      d = clamp(Math.max(d, frontBase * 0.85), 0, 1);
+
+      const bright = 0.94 + 0.12 * fbm(x * 2.3 + 5, z * 2.3 + 9);
+      const r = lerp(cSnow.r, cDirt.r, d) * bright;
+      const gc = lerp(cSnow.g, cDirt.g, d) * bright;
+      const b = lerp(cSnow.b, cDirt.b, d) * bright;
+      colors.push(r, gc, b);
+    }
+  }
+  const rowLen = NX + 1;
+  for (let j = 0; j < NZ; j++) {
+    for (let i = 0; i < NX; i++) {
+      const a = j * rowLen + i;
+      const b = a + 1;
+      const c = a + rowLen;
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const snowMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.9,
+  metalness: 0.0
+});
+const berm = new THREE.Mesh(buildBerm(), snowMat);
+berm.castShadow = true;
+berm.receiveShadow = true;
+lotEdge.add(berm);
+
+/* ------------------------------------------------------------------ *
+ *  Chunky plowed-snow clumps sitting on / around the berm
+ * ------------------------------------------------------------------ */
+function makeChunkGeo(r, seed) {
+  const g = new THREE.IcosahedronGeometry(r, 1);
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const n = 0.72 + 0.5 * fbm(x * 3 + seed, z * 3 + y * 2 + seed);
+    pos.setXYZ(i, x * n, y * n * 0.82, z * n);
+  }
+  g.computeVertexNormals();
+  return g;
+}
+function chunkMat(dirty) {
+  const col = new THREE.Color().setHSL(0.6, 0.05, dirty ? 0.55 : 0.9);
+  if (dirty) col.lerp(new THREE.Color(0x5b5046), 0.45);
+  return new THREE.MeshStandardMaterial({ color: col, roughness: 0.92, metalness: 0.0 });
+}
+
+// clumps riding on the pile
+for (let n = 0; n < 18; n++) {
+  const s = n * 13.3 + 1;
+  const x = lerp(-6, 6, hash2(s, 1.7));
+  const z = lerp(zFront + 0.35, zBack - 0.6, hash2(s, 4.1));
+  const h = bermHeight(x, z);
+  if (h < 0.16) continue;
+  const r = 0.14 + hash2(s, 8.2) * 0.24;
+  const dirty = h < 0.32;
+  const m = new THREE.Mesh(makeChunkGeo(r, s), chunkMat(dirty));
+  m.position.set(x, h - r * 0.28, z);
+  m.rotation.set(hash2(s, 2) * 6, hash2(s, 3) * 6, hash2(s, 5) * 6);
+  m.castShadow = true; m.receiveShadow = true;
+  lotEdge.add(m);
+}
+// stray chunks that fell onto the asphalt at the scraped base
+for (let n = 0; n < 7; n++) {
+  const s = n * 27.7 + 100;
+  const x = lerp(-6.3, 6.3, hash2(s, 1.1));
+  const z = lerp(zFront - 0.9, zFront - 0.05, hash2(s, 3.3));
+  const r = 0.09 + hash2(s, 6.6) * 0.13;
+  const m = new THREE.Mesh(makeChunkGeo(r, s), chunkMat(hash2(s, 9) > 0.5));
+  m.position.set(x, r * 0.5, z);
+  m.rotation.set(hash2(s, 2) * 6, hash2(s, 4) * 6, hash2(s, 7) * 6);
+  m.castShadow = true; m.receiveShadow = true;
+  lotEdge.add(m);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Center the single object on the origin and add to scene
+ * ------------------------------------------------------------------ */
+const box = new THREE.Box3().setFromObject(lotEdge);
+const center = box.getCenter(new THREE.Vector3());
+lotEdge.position.x -= center.x;
+lotEdge.position.z -= center.z;
+scene.add(lotEdge);
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

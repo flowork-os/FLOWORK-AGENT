@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Crystal Cavern Lake</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0a0718}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ===== 1. CONFIG & PALETTE  —  luminous mineral fantasy ============================== */
+const CFG = {
+  seed: 73114, waterY: 0,
+  domeR: 50, domeH: 26,                      // semi-axes of the squashed cavern shell
+  lakeR: 16.0, shoreIn: 15.6, shoreOut: 47.0,
+  bridgeSpan: 22, bridgeRise: 5.6, bridgeBase: 1.4,
+  bridgeYaw: 42 * Math.PI / 180, bridgeMid: new THREE.Vector3(-6.0, 0, -6.7)
+};
+const PAL = {
+  rock: 0x35284f, rockLit: 0x6b578f, water: 0x123a4c, glowworm: 0xb6ffe4, fog: 0x0c0a1e,
+  amethyst: 0x9a5cf5, amethystDeep: 0x5c1fce, aqua: 0x46e2dc, aquaDeep: 0x0f8fb4,
+  rose: 0xef7dbb, roseDeep: 0xb4358a
+};
+
+/* Six hero crystal clusters standing in / around the glassy lake. */
+const CLUSTERS = [
+  { x:  12.6, z: -2.9, s: 1.45, hue: 'amethyst', yaw: 0.35 },
+  { x:  -4.0, z: 13.0, s: 1.30, hue: 'aqua',     yaw: 1.90 },
+  { x: -13.5, z:  5.0, s: 1.05, hue: 'amethyst', yaw: 2.70 },
+  { x:   8.6, z:  9.6, s: 0.95, hue: 'aqua',     yaw: 4.30 },
+  { x: -11.0, z: -7.5, s: 0.75, hue: 'rose',     yaw: 5.10 },
+  { x:   1.2, z: -0.5, s: 1.60, hue: 'aqua',     yaw: 0.90 }
+];
+
+/* ===== 2. PRNG, NOISE & SMALL HELPERS  (every random value is seeded) ================ */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+let rnd = mulberry32(CFG.seed);
+const rr = (a, b) => a + (b - a) * rnd();
+const ri = (a, b) => Math.floor(a + (b - a + 1) * rnd());
+const TAU = Math.PI * 2;
+
+/* Run a builder off a private stream so a shape and its mirror come out identical. */
+function withSeed(seed, fn) {
+  const keep = rnd; rnd = mulberry32(seed);
+  const out = fn(); rnd = keep;
+  return out;
+}
+
+/* Deterministic value noise, used for rock displacement and shore height. */
+function hash2(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + CFG.seed * 0.001) * 43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y), xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return (a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v) * 2 - 1;
+}
+const fbm = (x, y) => vnoise(x, y) * 0.6 + vnoise(x * 2.1 + 5.2, y * 2.1 + 1.3) * 0.28
+                    + vnoise(x * 4.3 + 9.1, y * 4.3 + 7.7) * 0.12;
+
+/* Height of the rocky shore ring at any world position (props are seated on this). */
+function terrainY(x, z) {
+  const r = Math.hypot(x, z);
+  if (r <= CFG.shoreIn) return -0.8;
+  const t = Math.min(1, (r - CFG.shoreIn) / (CFG.shoreOut - CFG.shoreIn));
+  return -0.8 + 9.0 * Math.pow(t, 1.35) + fbm(x * 0.11, z * 0.11) * (0.4 + 2.2 * t);
+}
+/* Inner surface of the cavern ceiling above a horizontal radius (clamped: no NaN). */
+const ceilingY = r => CFG.domeH * Math.sqrt(Math.max(0, 1 - (r / CFG.domeR) ** 2));
+
+/* ===== 3. PROCEDURAL CANVAS TEXTURES ================================================= */
+const canvas2d = (w, h) => {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return [c, c.getContext('2d')]; };
+
+/* Mottled cave rock: blotchy mineral veins, glinting specks and strata cracks. */
+function makeRockTexture() {
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#241b38'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 260; i++) {
+    const x = rr(0, 512), y = rr(0, 512), rad = rr(14, 70), tint = ri(0, 2);
+    const col = tint === 0 ? '58,42,86' : tint === 1 ? '30,52,70' : '74,52,104';
+    const grd = g.createRadialGradient(x, y, 0, x, y, rad);
+    grd.addColorStop(0, `rgba(${col},${rr(0.12, 0.34).toFixed(2)})`);
+    grd.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = grd; g.beginPath(); g.arc(x, y, rad, 0, TAU); g.fill();
+  }
+  for (let i = 0; i < 900; i++) {
+    g.fillStyle = `rgba(${ri(120, 210)},${ri(150, 230)},${ri(190, 255)},${rr(0.05, 0.3).toFixed(2)})`;
+    g.fillRect(rr(0, 512), rr(0, 512), rr(1, 2.6), rr(1, 2.6));
+  }
+  for (let i = 0; i < 70; i++) {
+    g.strokeStyle = `rgba(12,8,22,${rr(0.2, 0.5).toFixed(2)})`;
+    g.lineWidth = rr(0.6, 2.2); g.beginPath();
+    let x = rr(0, 512), y = rr(0, 512); g.moveTo(x, y);
+    for (let s = 0; s < 6; s++) { x += rr(-46, 46); y += rr(-26, 26); g.lineTo(x, y); }
+    g.stroke();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(3, 3);
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* Height-field derived normal map that gives the lake its slow ripples. */
+function makeRippleNormals() {
+  const N = 256, [c, g] = canvas2d(N, N), img = g.createImageData(N, N);
+  const h = (i, j) => {
+    const u = i / N * TAU, v = j / N * TAU;
+    return Math.sin(u * 3 + Math.cos(v * 2) * 1.4) * 0.5 +
+           Math.sin(v * 4 - Math.sin(u * 3) * 0.9) * 0.34 + Math.sin((u + v) * 6) * 0.16;
+  };
+  for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+    const nx = -(h((i + 1) % N, j) - h((i + N - 1) % N, j)) * 0.6;
+    const nz = -(h(i, (j + 1) % N) - h(i, (j + N - 1) % N)) * 0.6;
+    const inv = 1 / Math.sqrt(nx * nx + 1 + nz * nz), o = (j * N + i) * 4;
+    img.data[o] = (nx * inv * 0.5 + 0.5) * 255;
+    img.data[o + 1] = (nz * inv * 0.5 + 0.5) * 255;
+    img.data[o + 2] = (inv * 0.5 + 0.5) * 255;
+    img.data[o + 3] = 255;
+  }
+  g.putImageData(img, 0, 0);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(5, 5); return t;
+}
+
+/* Soft radial sprite shared by glowworms and drifting motes. */
+function makeGlowSprite() {
+  const [c, g] = canvas2d(64, 64);
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, 'rgba(255,255,255,1)');
+  grd.addColorStop(0.28, 'rgba(200,255,238,0.72)');
+  grd.addColorStop(1, 'rgba(140,220,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* Dim equirectangular cave "sky" -> PMREM: keeps crystal + water speculars alive. */
+function makeEnvSource() {
+  const [c, g] = canvas2d(256, 128);
+  const grd = g.createLinearGradient(0, 0, 0, 128);
+  grd.addColorStop(0, '#3d2a68'); grd.addColorStop(0.5, '#1d1638'); grd.addColorStop(1, '#0b2230');
+  g.fillStyle = grd; g.fillRect(0, 0, 256, 128);
+  for (const [x, y, col] of [[40, 78, '#7b45ff'], [120, 70, '#3ce4f0'],
+                             [200, 82, '#e070c0'], [168, 40, '#6ae6ff']]) {
+    const b = g.createRadialGradient(x, y, 0, x, y, 46);
+    b.addColorStop(0, col); b.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = b; g.beginPath(); g.arc(x, y, 46, 0, TAU); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping;
+  t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+/* ===== 4. RENDERER / SCENE / CAMERA / CONTROLS ======================================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.fog);
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0125);
+
+const pmrem = new THREE.PMREMGenerator(renderer), envSrc = makeEnvSource();
+scene.environment = pmrem.fromEquirectangular(envSrc).texture;
+envSrc.dispose(); pmrem.dispose();
+
+const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.1, 260);
+camera.position.set(22.75, 15.9, 25.27);         // 36 units out, well inside the dome
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 4.2, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.85;
+controls.minDistance = 14; controls.maxDistance = 38;
+controls.minPolarAngle = 0.5; controls.maxPolarAngle = 1.36;
+controls.update();
+
+/* ===== 5. MATERIAL LIBRARY =========================================================== */
+const rockTex = makeRockTexture(), rippleTex = makeRippleNormals(), glowTex = makeGlowSprite();
+const additive = { transparent: true, blending: THREE.AdditiveBlending, fog: false,
+                   depthWrite: false, side: THREE.DoubleSide };
+const MAT = {
+  rock: new THREE.MeshStandardMaterial({ color: PAL.rock, map: rockTex, roughness: 0.92,
+    metalness: 0.05, flatShading: true, envMapIntensity: 0.35, side: THREE.BackSide }),
+  rockShore: new THREE.MeshStandardMaterial({ color: PAL.rockLit, map: rockTex,
+    roughness: 0.86, metalness: 0.08, flatShading: true, envMapIntensity: 0.45 }),
+  geode: new THREE.MeshStandardMaterial({ color: 0x2b2145, roughness: 0.85,
+    metalness: 0.08, flatShading: true, side: THREE.DoubleSide }),
+  islet: new THREE.MeshStandardMaterial({ color: 0x2e2447, roughness: 0.88,
+    metalness: 0.06, flatShading: true }),
+  water: new THREE.MeshStandardMaterial({ color: PAL.water, roughness: 0.16,
+    metalness: 0.8, transparent: true, opacity: 0.58, normalMap: rippleTex,
+    emissive: 0x0e3446, emissiveIntensity: 0.55, envMapIntensity: 2.6,
+    normalScale: new THREE.Vector2(0.18, 0.18) }),
+  beam: new THREE.MeshBasicMaterial({ color: 0x8fe0ff, opacity: 0.02, ...additive }),
+  ripple: new THREE.MeshBasicMaterial({ color: 0x8ef0ff, opacity: 0.5, ...additive })
+};
+
+/* Crystal shells: `mirror` variants are the flipped copies read through the water. */
+function crystalMat(hue, mirror) {
+  const col = new THREE.Color(PAL[hue]), em = new THREE.Color(PAL[hue + 'Deep']);
+  if (mirror) { col.multiplyScalar(0.86); em.multiplyScalar(0.8); }
+  return new THREE.MeshStandardMaterial({
+    color: col, emissive: em, emissiveIntensity: mirror ? 1.0 : 1.05,
+    roughness: mirror ? 0.25 : 0.17, metalness: 0.32, flatShading: true,
+    side: mirror ? THREE.BackSide : THREE.FrontSide, envMapIntensity: mirror ? 0.9 : 1.15 });
+}
+function coreMat(hue, mirror) {
+  const c = new THREE.Color({ amethyst: 0xd8b4ff, aqua: 0xc4fff8, rose: 0xffd0ea }[hue]);
+  if (mirror) c.multiplyScalar(0.7);
+  return new THREE.MeshBasicMaterial({ color: c, transparent: true,
+    opacity: mirror ? 0.7 : 0.9, side: mirror ? THREE.BackSide : THREE.FrontSide });
+}
+const CRY = {};
+for (const h of ['amethyst', 'aqua', 'rose'])
+  CRY[h] = { shell: crystalMat(h, false), core: coreMat(h, false),
+             mShell: crystalMat(h, true), mCore: coreMat(h, true) };
+const pulsing = [CRY.amethyst.shell, CRY.aqua.shell, CRY.rose.shell];
+
+/* ===== 6. BUILDERS =================================================================== */
+/* Hexagonal quartz prism with a tapered point — one geometry per crystal. */
+function crystalGeometry(rBot, rTop, h, tipFrac) {
+  return new THREE.LatheGeometry([new THREE.Vector2(0.001, 0), new THREE.Vector2(rBot, 0.02),
+    new THREE.Vector2(rTop, h * (1 - tipFrac)), new THREE.Vector2(0.001, h)], 6);
+}
+
+/* -- the cavern shell: a rugged inward-facing rock dome enclosing everything -- */
+function buildCavernShell() {
+  const g = new THREE.Group();
+  const geo = new THREE.SphereGeometry(1, 60, 40);
+  geo.scale(CFG.domeR, CFG.domeH, CFG.domeR);
+  const pos = geo.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const n = fbm(v.x * 0.075, v.z * 0.075) + 0.5 * fbm(v.y * 0.13, v.x * 0.09);
+    v.multiplyScalar(1 + (n * 2.4) / Math.max(0.001, v.length()));
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  const dome = new THREE.Mesh(geo, MAT.rock);
+  dome.castShadow = dome.receiveShadow = false;
+  g.add(dome);
+  return g;
+}
+
+/* -- rocky shore ring rising from the waterline out to the cavern walls -- */
+function buildShore() {
+  const g = new THREE.Group();
+  const geo = new THREE.RingGeometry(CFG.shoreIn, CFG.shoreOut, 96, 14);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setY(i, terrainY(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  const shore = new THREE.Mesh(geo, MAT.rockShore);
+  shore.receiveShadow = true;
+  g.add(shore);
+  const im = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1, 0), MAT.islet, 64);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  for (let i = 0; i < 64; i++) {           // a lip of boulders where rock meets water
+    const a = (i / 64) * TAU + rr(-0.04, 0.04), rad = CFG.shoreIn + rr(-0.6, 1.9);
+    const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+    q.setFromEuler(new THREE.Euler(rr(0, TAU), rr(0, TAU), rr(0, TAU)));
+    m.compose(new THREE.Vector3(x, terrainY(x, z) + rr(-0.1, 0.5), z), q,
+              new THREE.Vector3(rr(0.5, 1.5), rr(0.35, 0.9), rr(0.5, 1.5)));
+    im.setMatrixAt(i, m);
+  }
+  im.castShadow = im.receiveShadow = true;
+  g.add(im);
+  return g;
+}
+
+/* -- the glassy lake: a mirror-still disc floating over a dark flooded void -- */
+function buildLake() {
+  const disc = new THREE.Mesh(new THREE.CircleGeometry(CFG.lakeR, 128), MAT.water);
+  disc.rotation.x = -Math.PI / 2;
+  disc.position.y = CFG.waterY;
+  disc.renderOrder = 3;
+  return new THREE.Group().add(disc);
+}
+
+/* -- hero crystal cluster: prism spire, satellites, inner glow core, islet -- */
+function buildCrystalCluster(spec, mirror) {
+  const g = new THREE.Group(), mats = CRY[spec.hue], S = spec.s;
+  const shell = mirror ? mats.mShell : mats.shell, core = mirror ? mats.mCore : mats.core;
+  const H = 7.2 * S;
+  if (!mirror) {                                   // rocky islet only on the real copy
+    const islet = new THREE.Mesh(new THREE.IcosahedronGeometry(2.1 * S, 1), MAT.islet);
+    islet.scale.set(1.3, 0.2, 1.3);
+    islet.position.y = -0.3;
+    islet.castShadow = islet.receiveShadow = true;
+    g.add(islet);
+  }
+  const main = new THREE.Mesh(crystalGeometry(1.05 * S, 0.72 * S, H, 0.26), shell);
+  main.castShadow = main.receiveShadow = !mirror;
+  const glow = new THREE.Mesh(crystalGeometry(0.5 * S, 0.3 * S, H * 0.66, 0.3), core);
+  glow.position.y = H * 0.14;
+  g.add(main, glow);
+
+  const n = ri(6, 9);
+  for (let i = 0; i < n; i++) {                    // satellite spires fanning outward
+    const a = (i / n) * TAU + rr(-0.28, 0.28), rad = rr(0.85, 2.15) * S;
+    const sat = new THREE.Mesh(crystalGeometry(rr(0.3, 0.62) * S, rr(0.2, 0.42) * S,
+      rr(0.28, 0.68) * H, rr(0.2, 0.34)), shell);
+    sat.position.set(Math.cos(a) * rad, rr(-0.15, 0.35), Math.sin(a) * rad);
+    sat.rotation.set(Math.cos(a) * rr(0.08, 0.3), rr(0, TAU), -Math.sin(a) * rr(0.08, 0.3));
+    sat.castShadow = !mirror;
+    g.add(sat);
+  }
+  for (let i = 0; i < 3; i++) {                    // low shoulder shards hugging the base
+    const a = rr(0, TAU), rad = rr(1.6, 2.6) * S;
+    const chip = new THREE.Mesh(
+      crystalGeometry(rr(0.3, 0.5) * S, 0.12 * S, rr(0.7, 1.6) * S, 0.4), shell);
+    chip.position.set(Math.cos(a) * rad, -0.2, Math.sin(a) * rad);
+    chip.rotation.set(rr(-0.9, -0.3), rr(0, TAU), rr(-0.4, 0.4));
+    g.add(chip);
+  }
+  g.rotation.y = spec.yaw;
+  return g;
+}
+
+/* -- natural crystal bridge arching over the far half of the lake -- */
+function buildCrystalBridge(mirror) {
+  const g = new THREE.Group(), segs = 22, S = CFG.bridgeSpan;
+  const shell = mirror ? CRY.amethyst.mShell : CRY.amethyst.shell;
+  const shellB = mirror ? CRY.aqua.mShell : CRY.aqua.shell;
+  const yAt = x => CFG.bridgeBase + CFG.bridgeRise * (1 - (x / S) * (x / S));
+  for (let i = 0; i < segs; i++) {                 // faceted slabs following a parabola
+    const t0 = -S + (2 * S * i) / segs, t1 = -S + (2 * S * (i + 1)) / segs;
+    const y0 = yAt(t0), y1 = yAt(t1);
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(
+      Math.hypot(t1 - t0, y1 - y0) * 1.06, rr(0.6, 0.9), rr(3.8, 4.6)), shell);
+    slab.position.set((t0 + t1) / 2, (y0 + y1) / 2, rr(-0.12, 0.12));
+    slab.rotation.set(0, rr(-0.035, 0.035), Math.atan2(y1 - y0, t1 - t0));
+    slab.castShadow = slab.receiveShadow = !mirror;
+    g.add(slab);
+  }
+  /* crystalline balustrade teeth along both edges, batched into one instance set */
+  const teeth = new THREE.InstancedMesh(crystalGeometry(0.2, 0.11, 1, 0.34), shellB, 52);
+  const tm = new THREE.Matrix4(), tq = new THREE.Quaternion();
+  for (let i = 0; i < 26; i++) {
+    const t = -S + (2 * S * (i + 0.5)) / 26;
+    for (let k = 0; k < 2; k++) {
+      const side = k === 0 ? -1 : 1;
+      tq.setFromEuler(new THREE.Euler(side * rr(0.05, 0.2), rr(0, TAU), rr(-0.12, 0.12)));
+      tm.compose(new THREE.Vector3(t, yAt(t) + 0.3, side * 2.0), tq,
+                 new THREE.Vector3(1.3, rr(0.7, 1.6), 1.3));
+      teeth.setMatrixAt(i * 2 + k, tm);
+    }
+  }
+  teeth.castShadow = !mirror;
+  g.add(teeth);
+  for (let i = 0; i < 9; i++) {                    // shards hanging under the arch
+    const t = rr(-S * 0.8, S * 0.8);
+    const drop = new THREE.Mesh(crystalGeometry(0.28, 0.12, rr(0.9, 2.4), 0.45), shellB);
+    drop.position.set(t, yAt(t) - 0.3, rr(-1.1, 1.1));
+    drop.rotation.z = Math.PI;
+    g.add(drop);
+  }
+  for (const side of mirror ? [] : [-1, 1]) {       // rock abutments on the shore
+    const ab = new THREE.Mesh(new THREE.IcosahedronGeometry(2.6, 1), MAT.islet);
+    ab.position.set(side * (S + 0.6), CFG.bridgeBase - 1.6, 0);
+    ab.scale.set(1.1, 0.95, 1.35);
+    ab.castShadow = ab.receiveShadow = true;
+    g.add(ab);
+  }
+  g.position.copy(CFG.bridgeMid);
+  g.rotation.y = CFG.bridgeYaw;
+  return g;
+}
+
+/* -- stalactites (and their floor-borne twins) as instanced cones -- */
+function buildStalactites() {
+  const g = new THREE.Group(), m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  const flip = new THREE.Quaternion().setFromEuler(new THREE.Euler(Math.PI, 0, 0));
+  const im = new THREE.InstancedMesh(crystalGeometry(0.62, 0.2, 1, 0.55), MAT.rockShore, 78);
+  for (let i = 0; i < 78; i++) {
+    const a = rr(0, TAU), rad = Math.sqrt(rr(0.02, 1)) * 44;
+    const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+    const top = ceilingY(rad) - rr(0.2, 1.1);
+    const len = rr(2.0, 7.5) * (rad > 34 ? 0.5 : rad < 10 ? 0.45 : 1), wid = rr(0.5, 1.35);
+    q.copy(flip).multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, rr(0, TAU), 0)));
+    m.compose(new THREE.Vector3(x, top, z), q, new THREE.Vector3(wid, len, wid));
+    im.setMatrixAt(i, m);
+    if (rad < 14 && len > 3.2 && dripSources.length < 11)
+      dripSources.push(new THREE.Vector3(x, top - len, z));
+  }
+  im.castShadow = true;
+  const im2 = new THREE.InstancedMesh(crystalGeometry(0.7, 0.18, 1, 0.5), MAT.rockShore, 60);
+  for (let i = 0; i < 60; i++) {                   // stalagmites rising from the shore
+    const a = rr(0, TAU), rad = rr(CFG.shoreIn + 0.8, 42), wid = rr(0.4, 1.2);
+    const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+    q.setFromEuler(new THREE.Euler(rr(-0.09, 0.09), rr(0, TAU), rr(-0.09, 0.09)));
+    m.compose(new THREE.Vector3(x, terrainY(x, z) - 0.2, z), q,
+              new THREE.Vector3(wid, rr(1.3, 5.2), wid));
+    im2.setMatrixAt(i, m);
+  }
+  im2.castShadow = im2.receiveShadow = true;
+  g.add(im, im2);
+  return g;
+}
+
+/* -- glowworm constellations clinging to the ceiling -- */
+function buildGlowworms() {
+  const g = new THREE.Group(), stars = [];
+  for (let i = 0; i < 520; i++) {
+    const a = rr(0, TAU), rad = Math.sqrt(rr(0, 1)) * 46, y = ceilingY(rad) - rr(0.3, 2.2);
+    if (y > 5) stars.push(new THREE.Vector3(Math.cos(a) * rad, y, Math.sin(a) * rad));
+  }
+  const mk = (list, size, opacity) => {
+    const arr = new Float32Array(list.length * 3), col = new Float32Array(list.length * 3);
+    const geo = new THREE.BufferGeometry(), c = new THREE.Color();
+    list.forEach((p, i) => {
+      arr[i * 3] = p.x; arr[i * 3 + 1] = p.y; arr[i * 3 + 2] = p.z;
+      c.setHSL(rr(0.42, 0.58), 0.75, rr(0.6, 0.85));
+      col[i * 3] = c.r; col[i * 3 + 1] = c.g; col[i * 3 + 2] = c.b;
+    });
+    geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+    geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return new THREE.Points(geo, new THREE.PointsMaterial({ size, map: glowTex,
+      vertexColors: true, transparent: true, opacity, sizeAttenuation: true,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  };
+  const half = Math.floor(stars.length / 2);
+  glowA = mk(stars.slice(0, half), 0.72, 0.95);
+  glowB = mk(stars.slice(half), 1.25, 0.7);
+  const segs = [];                                 // faint threads joining nearby worms
+  for (let i = 0; i < stars.length; i += 3) {
+    let best = null, bd = 8;
+    for (let j = i + 1; j < Math.min(stars.length, i + 26); j++) {
+      const d = stars[i].distanceTo(stars[j]);
+      if (d < bd) { bd = d; best = stars[j]; }
+    }
+    if (best) segs.push(stars[i].x, stars[i].y, stars[i].z, best.x, best.y, best.z);
+  }
+  const lg = new THREE.BufferGeometry();
+  lg.setAttribute('position', new THREE.BufferAttribute(new Float32Array(segs), 3));
+  g.add(glowA, glowB, new THREE.LineSegments(lg, new THREE.LineBasicMaterial({
+    color: 0x5fd9ff, transparent: true, opacity: 0.16,
+    blending: THREE.AdditiveBlending, depthWrite: false })));
+  return g;
+}
+
+/* -- mineral shards scattered across the shore and shallows -- */
+function buildShardScatter() {
+  const g = new THREE.Group(), geo = new THREE.TetrahedronGeometry(0.5, 0);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion();
+  for (const hue of ['amethyst', 'aqua', 'rose']) {
+    const im = new THREE.InstancedMesh(geo, CRY[hue].shell, 62);
+    for (let i = 0; i < 62; i++) {
+      const a = rr(0, TAU), rad = rr(CFG.shoreIn + 0.4, 42), s = rr(0.35, 1.25);
+      const x = Math.cos(a) * rad, z = Math.sin(a) * rad;
+      q.setFromEuler(new THREE.Euler(rr(0, TAU), rr(0, TAU), rr(0, TAU)));
+      m.compose(new THREE.Vector3(x, terrainY(x, z) + s * 0.2, z), q,
+                new THREE.Vector3(s, s * rr(1, 2.2), s));
+      im.setMatrixAt(i, m);
+    }
+    im.castShadow = im.receiveShadow = true;
+    g.add(im);
+  }
+  return g;
+}
+
+/* -- glowing geode basin resting on the shore -- */
+function buildGeodePool() {
+  const g = new THREE.Group();
+  const bowl = new THREE.Mesh(
+    new THREE.SphereGeometry(3.1, 20, 12, 0, TAU, 0, Math.PI * 0.55), MAT.geode);
+  bowl.rotation.x = Math.PI;
+  bowl.castShadow = bowl.receiveShadow = true;
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(2.45, 40),
+    new THREE.MeshBasicMaterial({ color: 0x7ef7ff, transparent: true, opacity: 0.72 }));
+  pool.rotation.x = -Math.PI / 2; pool.position.y = -0.6;
+  g.add(bowl, pool);
+  for (let i = 0; i < 12; i++) {                   // crystal teeth around the rim
+    const a = (i / 12) * TAU + rr(-0.1, 0.1);
+    const t = new THREE.Mesh(crystalGeometry(rr(0.18, 0.34), 0.1, rr(0.7, 1.8), 0.35),
+                             CRY[i % 2 ? 'aqua' : 'rose'].shell);
+    t.position.set(Math.cos(a) * 2.7, -0.35, Math.sin(a) * 2.7);
+    t.rotation.set(Math.cos(a) * 0.42, 0, -Math.sin(a) * 0.42);
+    t.castShadow = true;
+    g.add(t);
+  }
+  return g;
+}
+
+/* -- shards levitating over the lake on slow bobbing orbits -- */
+function buildFloatingShards() {
+  const g = new THREE.Group();
+  for (let i = 0; i < 13; i++) {
+    const a = rr(0, TAU), rad = rr(3.5, 13.5), s = rr(0.35, 0.85);
+    const hue = ['amethyst', 'aqua', 'rose'][ri(0, 2)];
+    const m = new THREE.Mesh(crystalGeometry(s * 0.6, s * 0.3, s * 2.6, 0.4), CRY[hue].shell);
+    m.position.set(Math.cos(a) * rad, rr(1.6, 6.5), Math.sin(a) * rad);
+    m.userData = { base: m.position.y, ph: rr(0, TAU), sp: rr(0.16, 0.4) };
+    m.castShadow = true;
+    floaters.push(m); g.add(m);
+  }
+  return g;
+}
+
+/* -- drips falling from stalactite tips and the rings they leave on the lake -- */
+function buildDrips() {
+  const g = new THREE.Group();
+  dripMesh = new THREE.InstancedMesh(new THREE.SphereGeometry(0.14, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xd8fbff }), Math.max(1, dripSources.length));
+  dripMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  g.add(dripMesh);
+  for (const src of dripSources) {
+    const ring = new THREE.Mesh(new THREE.RingGeometry(0.72, 0.92, 40), MAT.ripple.clone());
+    ring.rotation.x = -Math.PI / 2;
+    ring.position.set(src.x, CFG.waterY + 0.03, src.z);
+    ring.renderOrder = 4;
+    rings.push(ring); g.add(ring);
+  }
+  return g;
+}
+
+/* -- drifting spore motes that catch the crystal light -- */
+function buildMotes() {
+  const N = 300, arr = new Float32Array(N * 3);
+  moteSeeds = [];
+  for (let i = 0; i < N; i++) {
+    const a = rr(0, TAU), rad = Math.sqrt(rr(0, 1)) * 34;
+    arr[i * 3] = Math.cos(a) * rad; arr[i * 3 + 1] = rr(0.3, 16); arr[i * 3 + 2] = Math.sin(a) * rad;
+    moteSeeds.push({ sp: rr(0.15, 0.6), ph: rr(0, TAU), amp: rr(0.4, 1.6) });
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  motes = new THREE.Points(geo, new THREE.PointsMaterial({ size: 0.3, map: glowTex,
+    color: PAL.glowworm, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false }));
+  return motes;
+}
+
+/* -- a thin shaft of pale light falling through a crack in the roof -- */
+function buildLightShaft() {
+  const g = new THREE.Group();
+  const cone = new THREE.Mesh(new THREE.CylinderGeometry(0.6, 3.4, 17, 24, 1, true), MAT.beam);
+  cone.position.set(-14.5, 9.0, -16.0);
+  cone.rotation.set(-0.06, 0, 0.07);
+  cone.renderOrder = 2;
+  const crack = new THREE.Mesh(new THREE.CircleGeometry(1.2, 20), new THREE.MeshBasicMaterial({
+    color: 0xdff6ff, transparent: true, opacity: 0.55, fog: false }));
+  crack.rotation.x = Math.PI / 2;
+  crack.position.set(-15.0, 22.6, -16.6);
+  g.add(cone, crack);
+  return g;
+}
+
+/* ===== 7. ASSEMBLY =================================================================== */
+const dripSources = [], floaters = [], rings = [];
+let glowA, glowB, motes, dripMesh, moteSeeds;
+scene.add(buildCavernShell(), buildShore(), buildLake());
+
+const BASE_Y = CFG.waterY - 0.35;            // clusters sit just under the waterline
+const heroReal = new THREE.Group(), heroMirror = new THREE.Group();
+CLUSTERS.forEach((spec, i) => {
+  const s = 9001 + i * 137;                  // one private stream per cluster pair
+  const real = withSeed(s, () => buildCrystalCluster(spec, false));
+  const refl = withSeed(s, () => buildCrystalCluster(spec, true));
+  real.position.set(spec.x, BASE_Y, spec.z);
+  refl.position.set(spec.x, -BASE_Y, spec.z);   // reflected through the water plane
+  refl.scale.y = -1;
+  heroReal.add(real); heroMirror.add(refl);
+});
+scene.add(heroReal, heroMirror);
+
+const bridgeRefl = withSeed(4242, () => buildCrystalBridge(true));
+bridgeRefl.scale.y = -1;                     // the arch mirrored in the still water
+scene.add(withSeed(4242, () => buildCrystalBridge(false)), bridgeRefl);
+
+scene.add(buildStalactites(), buildGlowworms(), buildShardScatter());
+scene.add(buildFloatingShards(), buildDrips(), buildMotes(), buildLightShaft());
+
+/* two geode basins glowing on opposite banks */
+for (const [gx, gz, gs] of [[22.0, 16.0, 1], [-19.0, -18.0, 0.8]]) {
+  const geode = buildGeodePool();
+  geode.position.set(gx, terrainY(gx, gz) + 0.85, gz);
+  geode.scale.setScalar(gs);
+  scene.add(geode);
+}
+
+/* ===== 8. LIGHTING RIG =============================================================== */
+/* Key: a cold shaft of daylight leaking in through the cracked roof. */
+const key = new THREE.DirectionalLight(0xcfeaff, 2.1);
+key.position.set(20, 34, 24);
+key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -34; key.shadow.camera.right = 34;
+key.shadow.camera.top = 34; key.shadow.camera.bottom = -34;
+key.shadow.camera.near = 4; key.shadow.camera.far = 100;
+key.shadow.bias = -0.0007; key.shadow.normalBias = 0.05;
+scene.add(key, key.target);
+scene.add(new THREE.HemisphereLight(0x7d5ee6, 0x14506a, 0.85));
+scene.add(new THREE.AmbientLight(0x4a3c78, 0.5));
+
+/* Accent: hue-cycling lamps buried inside the four biggest clusters. */
+const accents = CLUSTERS.slice(0, 4).map((s, i) => {
+  const l = new THREE.PointLight(0xffffff, 40, 34, 2);
+  l.position.set(s.x, 3.2 * s.s, s.z);
+  l.userData = { hue: i * 0.23, ph: i * 1.7 };
+  scene.add(l);
+  return l;
+});
+const poolLight = new THREE.PointLight(0x7ef7ff, 12, 20, 2);
+poolLight.position.set(22.0, terrainY(22.0, 16.0) + 1.6, 16.0);
+scene.add(poolLight);
+
+/* ===== 9. ANIMATION LOOP ============================================================= */
+const clock = new THREE.Clock();
+const tmpM = new THREE.Matrix4(), tmpQ = new THREE.Quaternion();
+const tmpV = new THREE.Vector3(), tmpS = new THREE.Vector3(1, 1, 1);
+const moteBase = motes.geometry.attributes.position.array.slice();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  /* 1. slow hue drift + breathing glow through the whole cavern */
+  const breathe = 0.85 + 0.35 * Math.sin(t * 0.42);
+  for (const m of pulsing) m.emissiveIntensity = 0.75 * breathe + 0.35;
+  for (const l of accents) {
+    const h = (l.userData.hue + t * 0.028) % 1;
+    l.color.setHSL(h, 0.72, 0.6);
+    l.intensity = 32 + 16 * Math.sin(t * 0.7 + l.userData.ph);
+  }
+  poolLight.intensity = 12 + 5 * Math.sin(t * 1.3);
+  /* 2. lake ripples: two normal layers scrolling against each other */
+  rippleTex.offset.set(t * 0.006, t * 0.0042);
+  MAT.water.normalScale.set(0.15 + 0.05 * Math.sin(t * 0.5), 0.15 + 0.05 * Math.cos(t * 0.43));
+  /* 3. drips falling from stalactite tips, then ripple rings on the water */
+  for (let i = 0; i < dripSources.length; i++) {
+    const src = dripSources[i], ring = rings[i], local = (t * 0.28 + i * 0.37) % 1;
+    const falling = local < 0.62, p = falling ? local / 0.62 : (local - 0.62) / 0.38;
+    tmpV.set(src.x, falling ? src.y + (CFG.waterY - src.y) * p * p : -60, src.z);
+    tmpM.compose(tmpV, tmpQ.identity(), tmpS);
+    dripMesh.setMatrixAt(i, tmpM);
+    ring.visible = !falling;
+    if (!falling) { ring.scale.setScalar(0.25 + 3.1 * p); ring.material.opacity = 0.42 * (1 - p); }
+  }
+  dripMesh.instanceMatrix.needsUpdate = true;
+  /* 4. levitating shards bob and turn */
+  for (const f of floaters) {
+    f.position.y = f.userData.base + Math.sin(t * f.userData.sp + f.userData.ph) * 0.55;
+    f.rotation.y += 0.0035 + f.userData.sp * 0.002;
+    f.rotation.x = Math.sin(t * 0.25 + f.userData.ph) * 0.25;
+  }
+  /* 5. glowworms twinkle out of phase */
+  glowA.material.opacity = 0.72 + 0.26 * Math.sin(t * 1.1);
+  glowB.material.opacity = 0.5 + 0.24 * Math.sin(t * 0.8 + 2.1);
+  glowA.rotation.y = Math.sin(t * 0.02) * 0.01;
+  /* 6. spore motes drift upward and recycle */
+  const arr = motes.geometry.attributes.position.array;
+  for (let i = 0; i < moteSeeds.length; i++) {
+    const s = moteSeeds[i], o = i * 3;
+    arr[o] = moteBase[o] + Math.sin(t * s.sp * 0.7 + s.ph) * s.amp;
+    arr[o + 1] = 0.3 + ((moteBase[o + 1] + t * s.sp * 0.55) % 16.5);
+    arr[o + 2] = moteBase[o + 2] + Math.cos(t * s.sp * 0.6 + s.ph) * s.amp;
+  }
+  motes.geometry.attributes.position.needsUpdate = true;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ===== 10. RESIZE ==================================================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

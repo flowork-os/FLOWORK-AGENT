@@ -1,0 +1,769 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Mechanical Wristwatch — Procedural Three.js Model</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #c9ccd0; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.4 system-ui, sans-serif; color: #333a44;
+    background: rgba(255,255,255,0.55); padding: 6px 10px; border-radius: 6px;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="info">Mechanical Wristwatch — drag to orbit • scroll to zoom</div>
+
+<!-- ONLY three.js + OrbitControls, via jsDelivr importmap -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ============================================================================
+//  Units are in millimetres (1 unit = 1 mm) to keep real-world proportions.
+//  A ~42 mm dive-style watch head with a segmented steel bracelet.
+// ============================================================================
+const TAU = Math.PI * 2;
+
+// ----- Key dimensions -------------------------------------------------------
+const CASE_R      = 21.0;   // case-band outer radius
+const CASE_TOP    = 10.0;   // top of the case band (where the bezel sits)
+const BEZEL_OUT   = 22.5;   // bezel outer radius
+const BEZEL_IN    = 16.5;   // bezel inner radius (the crystal opening)
+const BEZEL_TOP   = 13.0;   // top of the bezel
+const DIAL_R      = 16.0;   // printed dial radius
+const DIAL_Y      = 10.0;   // dial face height
+
+// ============================================================================
+//  RENDERER / SCENE / CAMERA
+// ============================================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+
+// Neutral studio background — soft radial gradient
+scene.background = makeBackgroundTexture();
+
+// Procedural environment for realistic metal / glass reflections (no assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 1, 5000);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 60;
+controls.maxDistance = 600;
+
+// ============================================================================
+//  LIGHTING
+// ============================================================================
+const hemi = new THREE.HemisphereLight(0xf2f5ff, 0x9aa0a8, 0.55);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 2.4);
+keyLight.position.set(-70, 130, 90);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 20;
+keyLight.shadow.camera.far = 500;
+keyLight.shadow.camera.left   = -140;
+keyLight.shadow.camera.right  =  140;
+keyLight.shadow.camera.top    =  140;
+keyLight.shadow.camera.bottom = -140;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.radius = 4;
+scene.add(keyLight);
+scene.add(keyLight.target);
+
+const fillLight = new THREE.DirectionalLight(0xdfe6ff, 0.6);
+fillLight.position.set(90, 60, -80);
+scene.add(fillLight);
+
+// ============================================================================
+//  SHARED PROCEDURAL TEXTURES
+// ============================================================================
+const brushedTex = makeBrushedTexture();        // linear brushed steel (roughness map)
+
+// ============================================================================
+//  MATERIALS
+// ============================================================================
+const matSteelBrushed = new THREE.MeshStandardMaterial({
+  color: 0xd8dde2, metalness: 1.0, roughness: 0.42,
+  roughnessMap: brushedTex, envMapIntensity: 1.0
+});
+const matSteelPolished = new THREE.MeshStandardMaterial({
+  color: 0xe4e8ec, metalness: 1.0, roughness: 0.14, envMapIntensity: 1.15
+});
+const matSteelDark = new THREE.MeshStandardMaterial({
+  color: 0x6f767d, metalness: 1.0, roughness: 0.35, envMapIntensity: 0.9
+});
+const matBezel = new THREE.MeshStandardMaterial({
+  color: 0xcfd4da, metalness: 1.0, roughness: 0.30,
+  roughnessMap: brushedTex, envMapIntensity: 1.0
+});
+const matDial = new THREE.MeshStandardMaterial({
+  map: makeDialTexture(), metalness: 0.55, roughness: 0.5, envMapIntensity: 0.9
+});
+const matBezelInsert = new THREE.MeshStandardMaterial({
+  map: makeBezelTexture(), metalness: 0.85, roughness: 0.4, envMapIntensity: 1.0
+});
+const matCrystal = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff, metalness: 0.0, roughness: 0.02,
+  transmission: 1.0, thickness: 1.5, ior: 1.52,
+  clearcoat: 1.0, clearcoatRoughness: 0.02,
+  transparent: true, envMapIntensity: 1.4
+});
+const matLume = new THREE.MeshStandardMaterial({
+  color: 0xf4f1e2, metalness: 0.0, roughness: 0.6,
+  emissive: 0x27405a, emissiveIntensity: 0.35
+});
+const matRed = new THREE.MeshStandardMaterial({
+  color: 0xd23b31, metalness: 0.2, roughness: 0.45
+});
+
+// ============================================================================
+//  GEOMETRY HELPERS
+// ============================================================================
+
+// A rounded-rectangle THREE.Shape centred on the origin (dims in X and Y).
+function roundedRectShape(w, h, r) {
+  r = Math.min(r, w / 2, h / 2);
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r);
+  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r);
+  s.quadraticCurveTo(x, y, x + r, y);
+  return s;
+}
+
+// A rounded box centred at the origin with world dims (sx, sy, sz).
+function roundedBoxGeo(sx, sy, sz, r = 0.4) {
+  const shape = roundedRectShape(sx, sz, r);   // shape lives in X (=sx) / Y (=sz)
+  const bevel = Math.min(0.25, sy * 0.25);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: Math.max(0.01, sy - bevel * 2),
+    bevelEnabled: true, bevelThickness: bevel, bevelSize: bevel,
+    bevelSegments: 2, curveSegments: 6
+  });
+  geo.rotateX(-Math.PI / 2);   // extrude(Z) becomes world Y (height)
+  geo.center();
+  return geo;
+}
+
+function mesh(geo, material, name, cast = true, receive = false) {
+  const m = new THREE.Mesh(geo, material);
+  m.name = name;
+  m.castShadow = cast;
+  m.receiveShadow = receive;
+  return m;
+}
+
+// ============================================================================
+//  BUILD THE WATCH  (a single named THREE.Group)
+// ============================================================================
+const watch = new THREE.Group();
+watch.name = 'MechanicalWristwatch';
+
+// ---- 1. Case back (screw-down, slightly narrower) --------------------------
+const caseBack = mesh(
+  new THREE.CylinderGeometry(18.0, 17.2, 1.6, 72),
+  matSteelBrushed, 'caseBack'
+);
+caseBack.position.y = 0.8;
+caseBack.receiveShadow = true;
+watch.add(caseBack);
+
+// ---- 2. Case band (main brushed-steel body) --------------------------------
+const caseBand = mesh(
+  new THREE.CylinderGeometry(CASE_R, 20.4, CASE_TOP - 1.4, 96),
+  matSteelBrushed, 'caseBand'
+);
+caseBand.position.y = 1.4 + (CASE_TOP - 1.4) / 2;
+caseBand.receiveShadow = true;
+watch.add(caseBand);
+
+// Thin polished chamfer ring where the case meets the bezel
+const chamfer = mesh(
+  new THREE.CylinderGeometry(CASE_R, CASE_R - 0.6, 0.8, 96),
+  matSteelPolished, 'caseChamfer'
+);
+chamfer.position.y = CASE_TOP - 0.4;
+watch.add(chamfer);
+
+// ---- 3. Rotating bezel (steel ring) with engraved insert -------------------
+const bezelGroup = new THREE.Group();
+bezelGroup.name = 'bezel';
+
+// Steel bezel body — an extruded annulus with real thickness
+const bezelShape = new THREE.Shape();
+bezelShape.absarc(0, 0, BEZEL_OUT, 0, TAU, false);
+const bezelHole = new THREE.Path();
+bezelHole.absarc(0, 0, BEZEL_IN, 0, TAU, true);
+bezelShape.holes.push(bezelHole);
+const bezelBodyGeo = new THREE.ExtrudeGeometry(bezelShape, {
+  depth: BEZEL_TOP - CASE_TOP, bevelEnabled: true,
+  bevelThickness: 0.4, bevelSize: 0.4, bevelSegments: 2, curveSegments: 96
+});
+bezelBodyGeo.rotateX(-Math.PI / 2);
+const bezelBody = mesh(bezelBodyGeo, matBezel, 'bezelBody');
+bezelBody.position.y = CASE_TOP;
+bezelGroup.add(bezelBody);
+
+// Engraved / tick-marked insert on the bezel top face
+const bezelInsert = mesh(
+  new THREE.RingGeometry(BEZEL_IN + 0.15, BEZEL_OUT - 0.4, 128),
+  matBezelInsert, 'bezelInsert', false
+);
+bezelInsert.rotation.x = -Math.PI / 2;
+bezelInsert.position.y = BEZEL_TOP + 0.06;
+bezelGroup.add(bezelInsert);
+
+// Coin-edge grip teeth around the bezel outer wall (for rotating grip)
+const grip = new THREE.Group();
+grip.name = 'bezelGrip';
+const toothGeo = roundedBoxGeo(0.7, BEZEL_TOP - CASE_TOP + 0.4, 1.6, 0.2);
+const NTEETH = 90;
+for (let i = 0; i < NTEETH; i++) {
+  const a = (i / NTEETH) * TAU;
+  const t = mesh(toothGeo, matSteelBrushed, 'bezelTooth', true);
+  t.position.set(Math.sin(a) * (BEZEL_OUT - 0.1), (CASE_TOP + BEZEL_TOP) / 2, Math.cos(a) * (BEZEL_OUT - 0.1));
+  t.rotation.y = a;
+  grip.add(t);
+}
+bezelGroup.add(grip);
+watch.add(bezelGroup);
+
+// ---- 4. Rehaut (inner flange) between dial and bezel -----------------------
+const rehaut = mesh(
+  new THREE.CylinderGeometry(BEZEL_IN, DIAL_R - 0.2, 1.0, 96, 1, true),
+  matSteelPolished, 'rehaut', false
+);
+rehaut.position.y = DIAL_Y + 0.5;
+watch.add(rehaut);
+
+// ---- 5. Dial (readable face) -----------------------------------------------
+const dialBase = mesh(
+  new THREE.CylinderGeometry(DIAL_R, DIAL_R, 1.2, 96),
+  matSteelDark, 'dialBase'
+);
+dialBase.position.y = DIAL_Y - 0.6;
+watch.add(dialBase);
+
+const dialFace = mesh(
+  new THREE.CircleGeometry(DIAL_R, 96),
+  matDial, 'dialFace', false, true
+);
+dialFace.rotation.x = -Math.PI / 2;
+dialFace.position.y = DIAL_Y + 0.001;
+watch.add(dialFace);
+
+// ---- 6. Applied 3D hour markers (batons) + lume pip at 12 ------------------
+const markers = new THREE.Group();
+markers.name = 'hourMarkers';
+const batonGeo = roundedBoxGeo(1.6, 0.7, 3.0, 0.25);
+for (let h = 0; h < 12; h++) {
+  if (h === 3) continue;                         // 3 o'clock leaves room for the date window
+  const th = (h / 12) * TAU;
+  const rr = 12.6;
+  const isTwelve = (h === 0);
+
+  const m = mesh(isTwelve ? roundedBoxGeo(1.4, 0.7, 3.4, 0.2) : batonGeo, matSteelPolished, 'marker');
+  m.position.set(Math.sin(th) * rr, DIAL_Y + 0.45, Math.cos(th) * rr);
+  m.rotation.y = th;
+  markers.add(m);
+
+  // little lume face on top of each marker
+  const l = mesh(
+    new THREE.BoxGeometry(1.0, 0.15, isTwelve ? 2.6 : 2.2),
+    matLume, 'markerLume', false
+  );
+  l.position.set(Math.sin(th) * rr, DIAL_Y + 0.9, Math.cos(th) * rr);
+  l.rotation.y = th;
+  markers.add(l);
+
+  // second baton at 12 for orientation
+  if (isTwelve) {
+    const m2 = m.clone(); m2.position.x += 2.0; markers.add(m2);
+    const l2 = l.clone(); l2.position.x += 2.0; markers.add(l2);
+    m.position.x -= 2.0; l.position.x -= 2.0;
+  }
+}
+watch.add(markers);
+
+// ---- 7. Hands (hour / minute / second) -------------------------------------
+// A tapered hand pointing along +X, pivoting near the dial centre.
+function makeHand(len, w, thick, tail, material) {
+  const shape = roundedRectShape(len + tail, w, w * 0.5);
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thick, bevelEnabled: false, curveSegments: 8
+  });
+  geo.rotateX(-Math.PI / 2);                     // extrude -> world Y (thickness)
+  geo.translate((len - tail) / 2, 0, 0);         // shift so pivot sits near centre
+  return mesh(geo, material, 'hand');
+}
+
+const now = { h: 10, m: 9, s: 37 };
+const hourAngle = ((now.h % 12) + now.m / 60) / 12 * TAU;
+const minAngle  = (now.m + now.s / 60) / 60 * TAU;
+
+const handsGroup = new THREE.Group();
+handsGroup.name = 'hands';
+
+const hourHand = makeHand(8.0, 1.9, 0.55, 2.2, matSteelPolished);
+hourHand.position.y = DIAL_Y + 1.3;
+hourHand.rotation.y = hourAngle - Math.PI / 2;
+handsGroup.add(hourHand);
+
+const minHand = makeHand(12.0, 1.4, 0.55, 2.6, matSteelPolished);
+minHand.position.y = DIAL_Y + 1.9;
+minHand.rotation.y = minAngle - Math.PI / 2;
+handsGroup.add(minHand);
+
+// Second hand — thin needle + red tip + counterweight, held in a pivot group
+const secondPivot = new THREE.Group();
+secondPivot.name = 'secondHand';
+const secNeedle = makeHand(13.2, 0.55, 0.35, 3.4, matSteelPolished);
+secondPivot.add(secNeedle);
+const secTip = mesh(new THREE.BoxGeometry(2.4, 0.4, 0.6), matRed, 'secondTip', false);
+secTip.position.x = 11.0;
+secondPivot.add(secTip);
+const secWeight = mesh(new THREE.CylinderGeometry(1.3, 1.3, 0.5, 20), matSteelPolished, 'secondWeight');
+secWeight.rotation.x = Math.PI / 2;
+secWeight.position.x = -2.6;
+secondPivot.add(secWeight);
+secondPivot.position.y = DIAL_Y + 2.5;
+handsGroup.add(secondPivot);
+
+// Centre cap covering the hand stack
+const centreCap = mesh(new THREE.CylinderGeometry(1.3, 1.6, 1.4, 24), matSteelPolished, 'centreCap');
+centreCap.position.y = DIAL_Y + 2.9;
+handsGroup.add(centreCap);
+watch.add(handsGroup);
+
+// ---- 8. Crystal (domed sapphire) -------------------------------------------
+// Shallow spherical cap so the rim matches the bezel opening.
+const CRYSTAL_R = 60;
+const capAngle = Math.asin(BEZEL_IN / CRYSTAL_R);
+const crystalGeo = new THREE.SphereGeometry(CRYSTAL_R, 96, 32, 0, TAU, 0, capAngle);
+const crystal = mesh(crystalGeo, matCrystal, 'crystal', false);
+const rimY = DIAL_Y + 0.6;
+crystal.position.y = rimY - CRYSTAL_R * Math.cos(capAngle);   // rim sits at rimY
+watch.add(crystal);
+
+// ---- 9. Crown guards + knurled crown (on the +X / 3 o'clock side) ----------
+const crownGroup = new THREE.Group();
+crownGroup.name = 'crown';
+const crownY = 5.4;
+
+// Two crown guards flanking the crown
+const guardGeo = roundedBoxGeo(4.0, 6.0, 3.2, 1.0);
+for (const dz of [-4.4, 4.4]) {
+  const g = mesh(guardGeo, matSteelBrushed, 'crownGuard');
+  g.position.set(CASE_R - 0.5, crownY, dz);
+  crownGroup.add(g);
+}
+
+// Stem tube linking case to the crown
+const stem = mesh(new THREE.CylinderGeometry(1.5, 1.5, 2.4, 20), matSteelDark, 'crownStem');
+stem.rotation.z = Math.PI / 2;
+stem.position.set(CASE_R + 1.0, crownY, 0);
+crownGroup.add(stem);
+
+// Crown body
+const crownBody = mesh(new THREE.CylinderGeometry(3.4, 3.2, 3.4, 40), matSteelPolished, 'crownBody');
+crownBody.rotation.z = Math.PI / 2;
+crownBody.position.set(CASE_R + 3.4, crownY, 0);
+crownGroup.add(crownBody);
+
+// Knurling — a ring of fine teeth around the crown
+const crownX = CASE_R + 3.4;
+const kGeo = roundedBoxGeo(0.55, 3.4, 0.9, 0.1);
+const NKNURL = 22;
+for (let i = 0; i < NKNURL; i++) {
+  const a = (i / NKNURL) * TAU;
+  const k = mesh(kGeo, matSteelPolished, 'crownKnurl');
+  k.position.set(crownX, crownY + Math.cos(a) * 3.3, Math.sin(a) * 3.3);
+  k.rotation.set(a, 0, 0);
+  k.rotation.z = Math.PI / 2;                    // orient teeth along the crown axis
+  // recompute placement so teeth wrap the cylinder wall (axis = X)
+  k.position.set(crownX, crownY + Math.cos(a) * 3.35, Math.sin(a) * 3.35);
+  k.rotation.set(a, 0, Math.PI / 2);
+  crownGroup.add(k);
+}
+// Crown end cap with an engraved logo dot
+const crownCap = mesh(new THREE.CylinderGeometry(3.2, 3.2, 0.4, 40), matSteelBrushed, 'crownCap');
+crownCap.rotation.z = Math.PI / 2;
+crownCap.position.set(crownX + 1.9, crownY, 0);
+crownGroup.add(crownCap);
+const crownDot = mesh(new THREE.CylinderGeometry(1.1, 1.1, 0.3, 24), matSteelDark, 'crownLogo');
+crownDot.rotation.z = Math.PI / 2;
+crownDot.position.set(crownX + 2.15, crownY, 0);
+crownGroup.add(crownDot);
+watch.add(crownGroup);
+
+// ---- 10. Lugs (bridges from the case to the bracelet) ----------------------
+const lugGeo = roundedBoxGeo(6.5, 4.2, 8.0, 1.2);
+const LUG_X = 9.5;
+for (const sz of [1, -1]) {          // +Z (12 side) and -Z (6 side) strands
+  for (const sx of [-1, 1]) {
+    const lug = mesh(lugGeo, matSteelBrushed, 'lug');
+    lug.position.set(sx * LUG_X, 3.0, sz * (CASE_R - 0.5));
+    watch.add(lug);
+  }
+}
+
+// ---- 11. Segmented metal bracelet (Oyster-style 3-link rows) ---------------
+const LINK_THICK  = 3.6;
+const LINK_LEN_Z  = 7.6;         // length of each row along Z
+const LINK_PITCH  = 9.4;         // spacing between rows
+const ROWS        = 5;           // rows per side
+const bracelet = new THREE.Group();
+bracelet.name = 'bracelet';
+
+function makeLinkRow(width, zCenter) {
+  const row = new THREE.Group();
+  const centerW = width * 0.40;
+  const sideW   = width * 0.26;
+  const gap     = 0.6;
+  const offset  = centerW / 2 + gap + sideW / 2;
+
+  // centre link (polished), two outer links (brushed) — classic look
+  const cGeo = roundedBoxGeo(centerW, LINK_THICK, LINK_LEN_Z, 0.9);
+  const sGeo = roundedBoxGeo(sideW,   LINK_THICK, LINK_LEN_Z, 0.9);
+
+  const c = mesh(cGeo, matSteelPolished, 'linkCenter');
+  c.position.set(0, LINK_THICK / 2, zCenter);
+  row.add(c);
+  for (const s of [-1, 1]) {
+    const l = mesh(sGeo, matSteelBrushed, 'linkSide');
+    l.position.set(s * offset, LINK_THICK / 2, zCenter);
+    row.add(l);
+  }
+  return row;
+}
+
+for (const dir of [1, -1]) {                    // both strands
+  for (let i = 0; i < ROWS; i++) {
+    const z = dir * (CASE_R + 4 + i * LINK_PITCH);
+    const width = THREE.MathUtils.lerp(28, 23, i / (ROWS - 1));
+    bracelet.add(makeLinkRow(width, z));
+  }
+}
+watch.add(bracelet);
+
+// ---- 12. Folding clasp at the end of the -Z strand -------------------------
+const clasp = new THREE.Group();
+clasp.name = 'foldingClasp';
+const claspZ = -(CASE_R + 4 + (ROWS - 1) * LINK_PITCH + LINK_PITCH + 4);
+
+// Base cover plate (the deployant cover)
+const coverGeo = roundedBoxGeo(23, 2.6, 26, 2.0);
+const cover = mesh(coverGeo, matSteelBrushed, 'claspCover');
+cover.position.set(0, 1.6, claspZ);
+clasp.add(cover);
+
+// Raised centre fliplock with a stamped groove
+const fliplock = mesh(roundedBoxGeo(12, 1.2, 18, 1.5), matSteelPolished, 'claspFliplock');
+fliplock.position.set(0, 3.3, claspZ);
+clasp.add(fliplock);
+const groove = mesh(new THREE.BoxGeometry(8, 0.2, 0.6), matSteelDark, 'claspGroove', false);
+groove.position.set(0, 3.95, claspZ);
+clasp.add(groove);
+
+// Side push-buttons (release the folding clasp)
+for (const s of [-1, 1]) {
+  const btn = mesh(roundedBoxGeo(1.6, 2.2, 6, 0.6), matSteelPolished, 'claspButton');
+  btn.position.set(s * 12.0, 1.7, claspZ + 3);
+  clasp.add(btn);
+}
+// Small hinge blade joining the clasp to the last link
+const hinge = mesh(roundedBoxGeo(20, 2.0, 8, 1.2), matSteelBrushed, 'claspHinge');
+hinge.position.set(0, 1.3, claspZ + 15);
+clasp.add(hinge);
+watch.add(clasp);
+
+// ============================================================================
+//  CENTRE THE MODEL AT THE ORIGIN AND REST IT ON THE GROUND (y = 0)
+// ============================================================================
+watch.updateMatrixWorld(true);
+let box = new THREE.Box3().setFromObject(watch);
+const center = box.getCenter(new THREE.Vector3());
+watch.position.x -= center.x;
+watch.position.z -= center.z;
+watch.position.y -= box.min.y;           // sit exactly on the plane
+scene.add(watch);
+
+// Recompute the final bounding box for framing / shadows / ground
+watch.updateMatrixWorld(true);
+box = new THREE.Box3().setFromObject(watch);
+const size = box.getSize(new THREE.Vector3());
+const target = box.getCenter(new THREE.Vector3());
+
+// ============================================================================
+//  GROUND / CONTACT-SHADOW PLANE
+// ============================================================================
+const ground = mesh(
+  new THREE.CircleGeometry(Math.max(size.x, size.z) * 2.2, 96),
+  new THREE.MeshStandardMaterial({ color: 0xcbced2, metalness: 0.0, roughness: 0.95 }),
+  'ground', false, true
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+scene.add(ground);
+
+keyLight.target.position.copy(target);
+
+// ============================================================================
+//  AUTO-FRAME THE CAMERA TO THE BOUNDING BOX
+// ============================================================================
+const maxDim = Math.max(size.x, size.y, size.z);
+const fov = camera.fov * Math.PI / 180;
+let dist = (maxDim / 2) / Math.tan(fov / 2);
+dist *= 1.35;                                    // a little breathing room
+
+const dir = new THREE.Vector3(0.75, 0.72, 1.0).normalize();
+camera.position.copy(target).add(dir.multiplyScalar(dist));
+camera.near = dist / 100;
+camera.far = dist * 20;
+camera.updateProjectionMatrix();
+controls.target.copy(target);
+controls.update();
+
+// ============================================================================
+//  ANIMATION LOOP  (sweeping second hand for life + gentle auto-rotate)
+// ============================================================================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // second hand sweeps once every 60 s, starting from its set position
+  const secStart = (now.s / 60) * TAU;
+  secondPivot.rotation.y = (secStart + (t / 60) * TAU) - Math.PI / 2;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ============================================================================
+//  RESIZE HANDLING
+// ============================================================================
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ============================================================================
+//  PROCEDURAL TEXTURE GENERATORS
+// ============================================================================
+
+// Neutral studio gradient for the scene background
+function makeBackgroundTexture() {
+  const s = 1024;
+  const cvs = document.createElement('canvas'); cvs.width = cvs.height = s;
+  const ctx = cvs.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s * 0.42, s * 0.05, s / 2, s / 2, s * 0.75);
+  g.addColorStop(0, '#e9ebee');
+  g.addColorStop(0.6, '#cfd2d6');
+  g.addColorStop(1, '#a9adb3');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+// Linear brushed-steel roughness map
+function makeBrushedTexture() {
+  const w = 1024, h = 256;
+  const cvs = document.createElement('canvas'); cvs.width = w; cvs.height = h;
+  const ctx = cvs.getContext('2d');
+  ctx.fillStyle = '#b0b0b0'; ctx.fillRect(0, 0, w, h);
+  for (let i = 0; i < 5000; i++) {
+    const y = Math.random() * h;
+    const v = 120 + Math.floor(Math.random() * 110);
+    ctx.strokeStyle = `rgba(${v},${v},${v},0.10)`;
+    ctx.lineWidth = Math.random() * 1.4;
+    ctx.beginPath();
+    ctx.moveTo(Math.random() * w, y);
+    ctx.lineTo(Math.random() * w, y + (Math.random() - 0.5) * 2);
+    ctx.stroke();
+  }
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(3, 1);
+  return tex;
+}
+
+// Readable dial: sunburst blue, minute track, brand text, date window
+function makeDialTexture() {
+  const S = 1024, c = S / 2, Rref = DIAL_R;
+  const cvs = document.createElement('canvas'); cvs.width = cvs.height = S;
+  const ctx = cvs.getContext('2d');
+
+  // world(mm, angle) -> canvas pixel (12 o'clock at top; flipY=false on texture)
+  const place = (rr, th) => [
+    c + (rr / Rref) * c * Math.sin(th),
+    c - (rr / Rref) * c * Math.cos(th)
+  ];
+
+  // base blue radial gradient
+  const g = ctx.createRadialGradient(c, c, 10, c, c, c);
+  g.addColorStop(0, '#2a4472');
+  g.addColorStop(0.55, '#16294c');
+  g.addColorStop(1, '#0a1730');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, S, S);
+
+  // subtle sunburst rays
+  ctx.save(); ctx.translate(c, c);
+  for (let i = 0; i < 160; i++) {
+    ctx.rotate(TAU / 160);
+    ctx.strokeStyle = 'rgba(255,255,255,0.045)';
+    ctx.lineWidth = 1.2;
+    ctx.beginPath(); ctx.moveTo(0, 0); ctx.lineTo(0, -c); ctx.stroke();
+  }
+  ctx.restore();
+
+  // minute / second track near the edge
+  for (let m = 0; m < 60; m++) {
+    const th = (m / 60) * TAU;
+    const major = (m % 5 === 0);
+    const r1 = major ? 14.4 : 14.9;
+    const r2 = 15.6;
+    const [x1, y1] = place(r1, th);
+    const [x2, y2] = place(r2, th);
+    ctx.strokeStyle = major ? '#eef2f7' : 'rgba(210,222,236,0.75)';
+    ctx.lineWidth = major ? 4 : 2;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+
+  // brand + text
+  ctx.fillStyle = '#eef2f7';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 62px Georgia, serif';
+  let [bx, by] = place(7.5, 0);
+  ctx.fillText('MERIDIAN', bx, by);
+  ctx.font = '26px Georgia, serif';
+  [bx, by] = place(5.6, 0);
+  ctx.fillStyle = 'rgba(210,222,236,0.85)';
+  ctx.fillText('GENÈVE', bx, by);
+
+  ctx.font = '22px Arial, sans-serif';
+  ctx.fillStyle = 'rgba(210,222,236,0.8)';
+  let [ax, ay] = place(7.2, Math.PI);
+  ctx.fillText('AUTOMATIC', ax, ay);
+  [ax, ay] = place(5.4, Math.PI);
+  ctx.font = '18px Arial, sans-serif';
+  ctx.fillText('25 JEWELS', ax, ay);
+
+  // date window at 3 o'clock
+  const [dx, dy] = place(11, Math.PI / 2);
+  const dw = 62, dh = 78;
+  ctx.fillStyle = '#f5f6f8';
+  ctx.strokeStyle = '#cfd3d8'; ctx.lineWidth = 4;
+  ctx.fillRect(dx - dw / 2, dy - dh / 2, dw, dh);
+  ctx.strokeRect(dx - dw / 2, dy - dh / 2, dw, dh);
+  ctx.fillStyle = '#1a1d22';
+  ctx.font = 'bold 48px Arial, sans-serif';
+  ctx.fillText('06', dx, dy + 2);
+
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = false;                 // align 12 o'clock with world +Z
+  tex.anisotropy = 8;
+  return tex;
+}
+
+// Engraved rotating-bezel insert: 60-min dive scale with numerals + pip
+function makeBezelTexture() {
+  const S = 1024, c = S / 2, Rref = BEZEL_OUT;
+  const cvs = document.createElement('canvas'); cvs.width = cvs.height = S;
+  const ctx = cvs.getContext('2d');
+
+  const place = (rr, th) => [
+    c + (rr / Rref) * c * Math.sin(th),
+    c - (rr / Rref) * c * Math.cos(th)
+  ];
+
+  ctx.clearRect(0, 0, S, S);
+
+  // brushed-steel ring background
+  const g = ctx.createRadialGradient(c, c, (BEZEL_IN / Rref) * c, c, c, c);
+  g.addColorStop(0, '#c6ccd3');
+  g.addColorStop(0.5, '#dfe4e9');
+  g.addColorStop(1, '#b6bcc3');
+  ctx.beginPath(); ctx.arc(c, c, c, 0, TAU); ctx.fillStyle = g; ctx.fill();
+
+  // engraved tick marks (dark, recessed look)
+  for (let m = 0; m < 60; m++) {
+    const th = (m / 60) * TAU;
+    const major = (m % 5 === 0);
+    const r1 = major ? 17.4 : 18.4;
+    const r2 = 21.4;
+    const [x1, y1] = place(r1, th);
+    const [x2, y2] = place(r2, th);
+    ctx.strokeStyle = '#20242a';
+    ctx.lineWidth = major ? 6 : 2.5;
+    ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+
+  // numerals every 10 minutes
+  ctx.fillStyle = '#20242a';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = 'bold 40px Arial, sans-serif';
+  for (let m = 10; m < 60; m += 10) {
+    const th = (m / 60) * TAU;
+    const [x, y] = place(19.6, th);
+    ctx.fillText(String(m), x, y);
+  }
+
+  // luminous triangle pip at 0 / 60 (12 o'clock)
+  const [tx, ty] = place(19.2, 0);
+  ctx.fillStyle = '#c9302c';
+  ctx.beginPath();
+  ctx.moveTo(tx, ty - 26);
+  ctx.lineTo(tx - 16, ty + 12);
+  ctx.lineTo(tx + 16, ty + 12);
+  ctx.closePath(); ctx.fill();
+
+  const tex = new THREE.CanvasTexture(cvs);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.flipY = false;
+  tex.anisotropy = 8;
+  return tex;
+}
+</script>
+</body>
+</html>

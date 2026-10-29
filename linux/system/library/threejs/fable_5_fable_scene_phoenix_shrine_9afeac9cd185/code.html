@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Phoenix Ember Shrine</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a1428}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   CONFIG & PALETTE
+   ============================================================ */
+const CONFIG = {
+  seed: 91307,
+  plazaHeight: 3.05,       // top of the shrine mound
+  plazaRadius: 7,
+  pathTopZ: 7.2,           // stairs begin at the plaza rim
+  pathBottomZ: 20.4,       // stairs meet the valley floor
+  fogColor: 0x47223a
+};
+const PALETTE = {
+  stone: 0x9b9188, stoneDark: 0x6f665f,
+  vermilion: 0xc93a1d, lacquerBlack: 0x241a18,
+  gold: 0xd8a133, copper: 0xb5652a,
+  woodDark: 0x5a3a26, woodLight: 0xd9b98a,
+  flameOuter: 0xff5a1f, flameInner: 0xffc93c, ember: 0xffb054,
+  foliage: [0xb2261c, 0xd45420, 0xe08a2a, 0x8f1f1f],
+  skyTop: 0x1c0f2e, horizon: 0xd1703f,
+  glow: 0xffa53c
+};
+
+/* ============================================================
+   SEEDED PRNG & SMALL HELPERS
+   ============================================================ */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CONFIG.seed);
+const rand = (a, b) => a + (b - a) * rng();
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+const smoothstep = (a, b, x) => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/* Mesh factory: geometry + material + {p:position, r:rotation, s:scale, cast, recv}. */
+function mesh(geo, mat, o = {}) {
+  const m = new THREE.Mesh(geo, mat);
+  if (o.p) m.position.set(o.p[0], o.p[1], o.p[2]);
+  if (o.r) m.rotation.set(o.r[0], o.r[1], o.r[2]);
+  if (o.s !== undefined) { typeof o.s === 'number' ? m.scale.setScalar(o.s) : m.scale.set(o.s[0], o.s[1], o.s[2]); }
+  m.castShadow = !!o.cast; m.receiveShadow = !!o.recv;
+  return m;
+}
+/* Height of the stair path centreline at world z. */
+function pathY(z) {
+  const t = (z - CONFIG.pathTopZ) / (CONFIG.pathBottomZ - CONFIG.pathTopZ);
+  return CONFIG.plazaHeight * (1 - Math.min(1, Math.max(0, t)));
+}
+/* Shared terrain height field: shrine mound + rolling slope + rim rise. */
+function terrainHeight(x, z) {
+  const r = Math.hypot(x, z);
+  let h = CONFIG.plazaHeight * (1 - smoothstep(6.2, 13.5, r));
+  h += 0.32 * Math.sin(x * 0.23 + 1) * Math.sin(z * 0.19 + 4) * smoothstep(6, 10, r);
+  h += 1.7 * smoothstep(24, 38, r) * (1 + 0.4 * Math.sin(x * 0.1) * Math.sin(z * 0.13));
+  if (z > 5 && z < 22.5) {                             // carve the stair channel
+    const w = smoothstep(2.4, 3.6, Math.abs(x));
+    const target = pathY(z) - 0.28;
+    h = target + (h - target) * w;
+  }
+  return h;
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA / CONTROLS
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(CONFIG.fogColor, 32, 88);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 220);
+camera.position.set(15, 9.5, 17);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 3.4, 2.5);
+controls.minDistance = 12;
+controls.maxDistance = 30;
+controls.maxPolarAngle = 1.45;
+
+/* ============================================================
+   CANVAS TEXTURES (all procedural)
+   ============================================================ */
+function canvasTex(cnv, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(cnv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+function makeSkyCanvas() {
+  const c = document.createElement('canvas'); c.width = 512; c.height = 512;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.0, '#1c0f2e'); grad.addColorStop(0.34, '#45204d');
+  grad.addColorStop(0.55, '#8a3a52'); grad.addColorStop(0.68, '#d1703f');
+  grad.addColorStop(0.76, '#f0a05a'); grad.addColorStop(0.85, '#6b2f42');
+  grad.addColorStop(1.0, '#241018');
+  g.fillStyle = grad; g.fillRect(0, 0, 512, 512);
+  const sun = g.createRadialGradient(150, 372, 4, 150, 372, 110);
+  sun.addColorStop(0, 'rgba(255,214,150,0.85)'); sun.addColorStop(1, 'rgba(255,190,120,0)');
+  g.fillStyle = sun; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 26; i++) {                       // wisps of dusk cloud
+    g.fillStyle = `rgba(240,150,110,${rand(0.03, 0.1).toFixed(2)})`;
+    g.beginPath();
+    g.ellipse(rand(0, 512), rand(150, 330), rand(40, 120), rand(4, 12), 0, 0, 6.3);
+    g.fill();
+  }
+  return c;
+}
+function makeStoneCanvas() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#8f867d'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 420; i++) {
+    const v = randInt(-26, 22);
+    g.fillStyle = `rgba(${143 + v},${134 + v},${125 + v},${rand(0.2, 0.5).toFixed(2)})`;
+    g.beginPath();
+    g.ellipse(rand(0, 256), rand(0, 256), rand(2, 18), rand(2, 10), rand(0, 3.1), 0, 6.3);
+    g.fill();
+  }
+  g.strokeStyle = 'rgba(70,62,56,0.5)'; g.lineWidth = 1.4;
+  for (let i = 0; i < 14; i++) {                       // hairline cracks
+    g.beginPath();
+    let x = rand(0, 256), y = rand(0, 256);
+    g.moveTo(x, y);
+    for (let s = 0; s < 5; s++) { x += rand(-24, 24); y += rand(-24, 24); g.lineTo(x, y); }
+    g.stroke();
+  }
+  return c;
+}
+function makeGroundCanvas() {
+  const c = document.createElement('canvas'); c.width = c.height = 256;
+  const g = c.getContext('2d');
+  g.fillStyle = '#77653c'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 900; i++) {
+    const p = pick(['#8a5a33', '#6c5a35', '#93683b', '#5c4a2c']);
+    g.fillStyle = p; g.globalAlpha = rand(0.25, 0.6);
+    g.fillRect(rand(0, 256), rand(0, 256), rand(1.5, 5), rand(1.5, 5));
+  }
+  g.globalAlpha = 1;
+  for (let i = 0; i < 40; i++) {                       // scattered fallen leaves
+    g.fillStyle = pick(['#a5301f', '#c0502a', '#b2261c']);
+    g.globalAlpha = rand(0.3, 0.8);
+    g.beginPath(); g.ellipse(rand(0, 256), rand(0, 256), rand(1.5, 3.4), rand(1, 2.2), rand(0, 3.1), 0, 6.3); g.fill();
+  }
+  g.globalAlpha = 1;
+  return c;
+}
+function makeBarkCanvas() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#4c3423'; g.fillRect(0, 0, 128, 128);
+  for (let i = 0; i < 70; i++) {
+    g.strokeStyle = `rgba(${randInt(30, 60)},${randInt(20, 40)},${randInt(12, 26)},0.7)`;
+    g.lineWidth = rand(1, 3);
+    const x = rand(0, 128);
+    g.beginPath(); g.moveTo(x, 0); g.lineTo(x + rand(-10, 10), 128); g.stroke();
+  }
+  return c;
+}
+function makePlaqueCanvas() {
+  const c = document.createElement('canvas'); c.width = c.height = 128;
+  const g = c.getContext('2d');
+  g.fillStyle = '#d9b98a'; g.fillRect(0, 0, 128, 128);
+  g.strokeStyle = 'rgba(150,110,60,0.5)';
+  for (let i = 0; i < 7; i++) { g.beginPath(); g.moveTo(0, 18 * i + 6); g.lineTo(128, 18 * i + rand(0, 10)); g.stroke(); }
+  g.strokeStyle = 'rgba(30,22,18,0.85)'; g.lineWidth = 4; g.lineCap = 'round';
+  for (let i = 0; i < 6; i++) {                        // brushed wish strokes
+    const x = rand(24, 104), y = rand(28, 100);
+    g.beginPath(); g.moveTo(x, y);
+    g.quadraticCurveTo(x + rand(-22, 22), y + rand(-16, 16), x + rand(-26, 26), y + rand(-24, 24));
+    g.stroke();
+  }
+  g.fillStyle = 'rgba(190,40,30,0.9)';
+  g.beginPath(); g.arc(102, 22, 9, 0, 6.3); g.fill();  // red seal stamp
+  return c;
+}
+const skyTex = canvasTex(makeSkyCanvas());
+const stoneTex = canvasTex(makeStoneCanvas(), 2, 2);
+const groundTex = canvasTex(makeGroundCanvas(), 10, 10);
+const barkTex = canvasTex(makeBarkCanvas(), 1, 2);
+const plaqueTex = canvasTex(makePlaqueCanvas());
+
+/* ============================================================
+   MATERIALS (single palette pass)
+   ============================================================ */
+const MAT = {
+  ground: new THREE.MeshStandardMaterial({ map: groundTex, color: 0xb99a6a, roughness: 1 }),
+  stone: new THREE.MeshStandardMaterial({ map: stoneTex, color: PALETTE.stone, roughness: 0.9 }),
+  stoneDark: new THREE.MeshStandardMaterial({ map: stoneTex, color: PALETTE.stoneDark, roughness: 0.95 }),
+  vermilion: new THREE.MeshStandardMaterial({ color: PALETTE.vermilion, roughness: 0.45 }),
+  lacquer: new THREE.MeshStandardMaterial({ color: PALETTE.lacquerBlack, roughness: 0.35 }),
+  gold: new THREE.MeshStandardMaterial({ color: PALETTE.gold, metalness: 0.9, roughness: 0.32 }),
+  copper: new THREE.MeshStandardMaterial({ color: PALETTE.copper, metalness: 0.85, roughness: 0.4 }),
+  woodDark: new THREE.MeshStandardMaterial({ map: barkTex, color: PALETTE.woodDark, roughness: 0.85 }),
+  bark: new THREE.MeshStandardMaterial({ map: barkTex, color: 0x8a6a4a, roughness: 0.95 }),
+  plaque: new THREE.MeshStandardMaterial({ map: plaqueTex, color: 0xffffff, roughness: 0.8, side: THREE.DoubleSide }),
+  chestGem: new THREE.MeshStandardMaterial({ color: 0xffc668, emissive: PALETTE.glow, emissiveIntensity: 3, roughness: 0.3 }),
+  flameOuter: new THREE.MeshBasicMaterial({ color: PALETTE.flameOuter, transparent: true, opacity: 0.7, blending: THREE.AdditiveBlending, depthWrite: false }),
+  flameInner: new THREE.MeshBasicMaterial({ color: PALETTE.flameInner, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
+  ember: new THREE.MeshBasicMaterial({ color: PALETTE.ember, transparent: true, opacity: 0.9, blending: THREE.AdditiveBlending, depthWrite: false }),
+  coals: new THREE.MeshBasicMaterial({ color: 0xff7a26 }),
+  lanternGlow: new THREE.MeshStandardMaterial({ color: 0xffe0a8, emissive: 0xffbe6a, emissiveIntensity: 1.6 }),
+  mountain: new THREE.MeshStandardMaterial({ color: 0x351c38, roughness: 1 }),
+  leaf: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.9, side: THREE.DoubleSide })
+};
+const foliageMats = PALETTE.foliage.map(c => new THREE.MeshStandardMaterial({ color: c, roughness: 0.85, flatShading: true }));
+
+/* ============================================================
+   BUILDER FUNCTIONS (each returns a THREE.Group)
+   ============================================================ */
+
+/* --- hillside terrain, dusk sky dome, far mountain silhouettes */
+function buildEnvironment() {
+  const grp = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(84, 84, 72, 72);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) pos.setY(i, terrainHeight(pos.getX(i), pos.getZ(i)));
+  geo.computeVertexNormals();
+  grp.add(mesh(geo, MAT.ground, { recv: true }));
+
+  const sky = new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false });
+  grp.add(mesh(new THREE.SphereGeometry(95, 32, 20), sky));
+
+  for (let i = 0; i < 9; i++) {                        // silhouetted ridge line
+    const a = (i / 9) * Math.PI * 2 + rand(-0.15, 0.15);
+    const r = rand(38, 46);
+    grp.add(mesh(new THREE.ConeGeometry(rand(9, 15), rand(9, 16), 5), MAT.mountain,
+      { p: [Math.cos(a) * r, 0, Math.sin(a) * r], r: [0, rand(0, 3), 0] }));
+  }
+  return grp;
+}
+
+/* --- flagstone plaza platform on the mound top ---------------- */
+function buildPlaza() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(CONFIG.plazaRadius, CONFIG.plazaRadius + 0.6, 0.5, 40), MAT.stone,
+    { p: [0, CONFIG.plazaHeight + 0.05, 0], cast: true, recv: true }));
+  const rim = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.35, 0.5), MAT.stoneDark, 30);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 30; i++) {                       // low guard stones around the rim
+    const a = (i / 30) * Math.PI * 2;
+    if (Math.abs(Math.cos(a)) < 0.35 && Math.sin(a) > 0) { dummy.scale.setScalar(0.001); }  // leave the stair opening clear
+    else { dummy.scale.setScalar(rand(0.8, 1.15)); }
+    dummy.position.set(Math.cos(a) * (CONFIG.plazaRadius - 0.3), CONFIG.plazaHeight + 0.45, Math.sin(a) * (CONFIG.plazaRadius - 0.3));
+    dummy.rotation.set(0, -a, 0);
+    dummy.updateMatrix();
+    rim.setMatrixAt(i, dummy.matrix);
+  }
+  rim.castShadow = true;
+  grp.add(rim);
+  return grp;
+}
+
+/* --- stone stairway descending the slope ---------------------- */
+function buildStairs() {
+  const grp = new THREE.Group();
+  const steps = 12, depth = (CONFIG.pathBottomZ - CONFIG.pathTopZ) / steps;
+  for (let i = 0; i < steps; i++) {
+    const z = CONFIG.pathTopZ + (i + 0.5) * depth;
+    const y = CONFIG.plazaHeight - ((i + 1) / steps) * CONFIG.plazaHeight;
+    grp.add(mesh(new THREE.BoxGeometry(4.6, 0.4, depth + 0.06), MAT.stone, { p: [0, y + 0.1, z], cast: true, recv: true }));
+  }
+  return grp;
+}
+
+/* --- vermilion torii gate ------------------------------------- */
+function buildTorii(scale = 1) {
+  const grp = new THREE.Group();
+  for (const sgn of [-1, 1]) {
+    grp.add(mesh(new THREE.CylinderGeometry(0.16, 0.19, 3.0, 12), MAT.vermilion,
+      { p: [sgn * 1.55, 1.5, 0], r: [0, 0, -sgn * 0.04], cast: true }));
+    grp.add(mesh(new THREE.CylinderGeometry(0.24, 0.26, 0.22, 12), MAT.lacquer, { p: [sgn * 1.58, 0.11, 0] }));
+  }
+  grp.add(mesh(new THREE.BoxGeometry(4.3, 0.22, 0.3), MAT.vermilion, { p: [0, 3.02, 0], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(4.6, 0.14, 0.36), MAT.lacquer, { p: [0, 3.2, 0], r: [0, 0, 0.008], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(3.5, 0.16, 0.2), MAT.vermilion, { p: [0, 2.35, 0], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(0.16, 0.45, 0.18), MAT.vermilion, { p: [0, 2.68, 0] }));
+  grp.scale.setScalar(scale);
+  return grp;
+}
+
+/* --- stone brazier with layered dancing flame ----------------- */
+const flames = [];
+function buildBrazier(withLight) {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.34, 0.44, 0.9, 10), MAT.stoneDark, { p: [0, 0.45, 0], cast: true }));
+  const bowlPts = [[0.12, 0], [0.5, 0.08], [0.62, 0.3], [0.56, 0.44]].map(([x, y]) => new THREE.Vector2(x, y));
+  grp.add(mesh(new THREE.LatheGeometry(bowlPts, 14), MAT.stone, { p: [0, 0.9, 0], cast: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.08, 12), MAT.coals, { p: [0, 1.24, 0] }));
+  const outer = mesh(new THREE.ConeGeometry(0.34, 0.9, 10), MAT.flameOuter, { p: [0, 1.68, 0] });
+  const inner = mesh(new THREE.ConeGeometry(0.18, 0.55, 8), MAT.flameInner, { p: [0, 1.55, 0] });
+  grp.add(outer, inner);
+  let light = null;
+  if (withLight) {
+    light = new THREE.PointLight(0xff8c3a, 14, 11, 1.8);
+    light.position.set(0, 1.7, 0);
+    grp.add(light);
+  }
+  flames.push({ outer, inner, light, phase: rand(0, Math.PI * 2) });
+  return grp;
+}
+
+/* --- stone lantern (toro) with warm windows ------------------- */
+function buildLantern() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.BoxGeometry(0.8, 0.3, 0.8), MAT.stoneDark, { p: [0, 0.15, 0], cast: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(0.16, 0.2, 1.0, 8), MAT.stone, { p: [0, 0.8, 0], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(0.66, 0.14, 0.66), MAT.stone, { p: [0, 1.37, 0] }));
+  grp.add(mesh(new THREE.BoxGeometry(0.42, 0.42, 0.42), MAT.lanternGlow, { p: [0, 1.65, 0] }));
+  for (const sgn of [-1, 1]) {                         // stone mullions over the glow
+    grp.add(mesh(new THREE.BoxGeometry(0.1, 0.46, 0.5), MAT.stone, { p: [sgn * 0.22, 1.65, 0] }));
+    grp.add(mesh(new THREE.BoxGeometry(0.5, 0.46, 0.1), MAT.stone, { p: [0, 1.65, sgn * 0.22] }));
+  }
+  grp.add(mesh(new THREE.ConeGeometry(0.55, 0.4, 4), MAT.stone, { p: [0, 2.08, 0], r: [0, Math.PI / 4, 0], cast: true }));
+  grp.add(mesh(new THREE.SphereGeometry(0.11, 8, 8), MAT.stone, { p: [0, 2.36, 0] }));
+  const glow = new THREE.PointLight(0xffc678, 6, 7, 1.8);
+  glow.position.set(0, 1.66, 0);
+  grp.add(glow);
+  return grp;
+}
+
+/* --- tiered stone altar --------------------------------------- */
+function buildAltar() {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(1.7, 1.95, 0.45, 20), MAT.stone, { p: [0, 0.22, 0], cast: true, recv: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(1.25, 1.4, 0.65, 16), MAT.stoneDark, { p: [0, 0.77, 0], cast: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(1.5, 1.5, 0.22, 20), MAT.stone, { p: [0, 1.2, 0], cast: true, recv: true }));
+  for (let i = 0; i < 8; i++) {                        // carved rim studs
+    const a = (i / 8) * Math.PI * 2;
+    grp.add(mesh(new THREE.SphereGeometry(0.1, 8, 8), MAT.gold, { p: [Math.cos(a) * 1.42, 1.33, Math.sin(a) * 1.42] }));
+  }
+  return grp;
+}
+
+/* --- gilded phoenix, wings spread, ember-lit chest ------------ */
+function buildPhoenix() {
+  const grp = new THREE.Group();
+  for (const sgn of [-1, 1])                           // legs
+    grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.09, 0.6, 8), MAT.gold, { p: [sgn * 0.24, 0.3, 0], cast: true }));
+  const body = mesh(new THREE.SphereGeometry(1, 24, 18), MAT.gold, { p: [0, 1.05, 0], r: [0.25, 0, 0], s: [0.58, 0.85, 0.5], cast: true });
+  grp.add(body);
+  const gem = mesh(new THREE.SphereGeometry(0.21, 16, 12), MAT.chestGem, { p: [0, 1.12, 0.42] });
+  grp.add(gem);
+  grp.add(mesh(new THREE.TorusGeometry(0.27, 0.05, 8, 20), MAT.copper, { p: [0, 1.12, 0.4], r: [0.35, 0, 0] }));
+  grp.add(mesh(new THREE.CylinderGeometry(0.13, 0.17, 0.85, 10), MAT.gold, { p: [0, 1.85, 0.18], r: [0.5, 0, 0], cast: true }));
+  const head = mesh(new THREE.SphereGeometry(0.27, 16, 12), MAT.gold, { p: [0, 2.28, 0.42], cast: true });
+  grp.add(head);
+  grp.add(mesh(new THREE.ConeGeometry(0.09, 0.38, 8), MAT.copper, { p: [0, 2.26, 0.74], r: [Math.PI / 2, 0, 0] }));
+  for (let i = 0; i < 3; i++)                          // head crest plumes
+    grp.add(mesh(new THREE.ConeGeometry(0.05, 0.5, 6), MAT.copper,
+      { p: [(i - 1) * 0.09, 2.55, 0.26], r: [-0.7 - i * 0.12, 0, (i - 1) * 0.2] }));
+
+  const feather = new THREE.BoxGeometry(1, 0.15, 0.05);
+  function wing(side) {                                // fan of tapered gold feathers
+    const w = new THREE.Group();
+    for (let i = 0; i < 7; i++) {
+      const ang = 0.12 + (i / 6) * 1.35;
+      const len = 1.25 + Math.sin((i / 6) * Math.PI) * 1.15;
+      const pivot = new THREE.Group();
+      pivot.rotation.z = side > 0 ? ang : Math.PI - ang;
+      pivot.rotation.y = side * -0.12;
+      const f = mesh(feather, i % 2 ? MAT.gold : MAT.copper, { p: [len / 2, 0, 0], s: [len, 1 - i * 0.06, 1], cast: true });
+      pivot.add(f);
+      w.add(pivot);
+    }
+    w.position.set(side * 0.34, 1.45, 0.05);
+    w.rotation.x = -0.18;
+    return w;
+  }
+  grp.add(wing(1), wing(-1));
+
+  for (let i = 0; i < 4; i++)                          // trailing tail feathers
+    grp.add(mesh(new THREE.ConeGeometry(0.09, 1.9 + (i % 2) * 0.5, 6), i % 2 ? MAT.copper : MAT.gold,
+      { p: [(i - 1.5) * 0.16, 0.35, -0.75], r: [2.35 + (i % 2) * 0.15, 0, (i - 1.5) * 0.1], cast: true }));
+
+  const glow = new THREE.PointLight(PALETTE.glow, 18, 10, 1.8);
+  glow.position.set(0, 1.2, 0.9);
+  grp.add(glow);
+  grp.userData = { gem, glow };
+  return grp;
+}
+
+/* --- prayer plaque (ema) rack --------------------------------- */
+function buildEmaRack() {
+  const grp = new THREE.Group();
+  for (const sgn of [-1, 1])
+    grp.add(mesh(new THREE.BoxGeometry(0.16, 2.1, 0.16), MAT.woodDark, { p: [sgn * 1.7, 1.05, 0], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(3.9, 0.14, 0.2), MAT.woodDark, { p: [0, 2.1, 0], cast: true }));
+  for (const sgn of [-1, 1])                           // little gable roof
+    grp.add(mesh(new THREE.BoxGeometry(4.1, 0.06, 0.55), MAT.lacquer, { p: [0, 2.39, sgn * 0.21], r: [sgn * 0.5, 0, 0], cast: true }));
+  grp.add(mesh(new THREE.BoxGeometry(3.6, 0.08, 0.1), MAT.woodDark, { p: [0, 1.62, 0] }));
+  grp.add(mesh(new THREE.BoxGeometry(3.6, 0.08, 0.1), MAT.woodDark, { p: [0, 1.05, 0] }));
+  const plaques = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.36, 0.3), MAT.plaque, 18);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 18; i++) {
+    const row = i < 9 ? 0 : 1, col = i % 9;
+    dummy.position.set(-1.55 + col * 0.39, row === 0 ? 1.42 : 0.85, 0.06);
+    dummy.rotation.set(rand(-0.06, 0.06), rand(-0.16, 0.16), rand(-0.08, 0.08));
+    dummy.scale.setScalar(rand(0.92, 1.05));
+    dummy.updateMatrix();
+    plaques.setMatrixAt(i, dummy.matrix);
+  }
+  plaques.castShadow = true;
+  grp.add(plaques);
+  return grp;
+}
+
+/* --- autumn maple with layered crimson canopy ----------------- */
+const maples = [];
+function buildMaple(scale) {
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.14, 0.24, 2.3, 8), MAT.bark, { p: [0, 1.15, 0], r: [rand(-0.06, 0.06), 0, rand(-0.06, 0.06)], cast: true }));
+  grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.1, 1.1, 6), MAT.bark, { p: [0.45, 2.2, 0.1], r: [0, 0, -0.7], cast: true }));
+  const blobs = randInt(4, 5);
+  for (let i = 0; i < blobs; i++) {
+    const a = (i / blobs) * Math.PI * 2;
+    grp.add(mesh(new THREE.IcosahedronGeometry(rand(0.75, 1.1), 1), pick(foliageMats), {
+      p: [Math.cos(a) * rand(0.3, 0.95), 2.6 + rand(0, 0.9), Math.sin(a) * rand(0.3, 0.95)],
+      s: [1, rand(0.7, 0.9), 1], cast: true
+    }));
+  }
+  grp.add(mesh(new THREE.CircleGeometry(rand(1.1, 1.6), 14), foliageMats[3],
+    { p: [rand(-0.3, 0.3), 0.03, rand(-0.3, 0.3)], r: [-Math.PI / 2, 0, 0] }));
+  grp.scale.setScalar(scale);
+  maples.push(grp);
+  return grp;
+}
+
+/* --- drifting particles: embers rising, leaves falling -------- */
+const emberData = [], leafData = [];
+function buildEmbers(count, sources) {
+  const inst = new THREE.InstancedMesh(new THREE.TetrahedronGeometry(0.075), MAT.ember, count);
+  for (let i = 0; i < count; i++) {
+    const s = pick(sources);
+    emberData.push({
+      x: s[0] + rand(-0.4, 0.4), y0: s[1], z: s[2] + rand(-0.4, 0.4),
+      rise: rand(1.4, 2.6), span: rand(3.5, 6.5), phase: rand(0, Math.PI * 2), sway: rand(0.2, 0.55)
+    });
+  }
+  inst.frustumCulled = false;
+  return inst;
+}
+function buildLeaves(count, trees) {
+  const inst = new THREE.InstancedMesh(new THREE.PlaneGeometry(0.16, 0.12), MAT.leaf, count);
+  const tints = [0xd23a1f, 0xe0662a, 0xf0952f, 0xa82418];
+  for (let i = 0; i < count; i++) {
+    const t = pick(trees);
+    leafData.push({
+      x: t.position.x + rand(-1.6, 1.6), z: t.position.z + rand(-1.6, 1.6),
+      top: t.position.y + 3.4 * t.scale.x, floor: t.position.y + 0.05,
+      fall: rand(0.35, 0.7), phase: rand(0, Math.PI * 2), spin: rand(1, 3)
+    });
+    inst.setColorAt(i, new THREE.Color(pick(tints)));
+  }
+  inst.instanceColor.needsUpdate = true;
+  inst.frustumCulled = false;
+  return inst;
+}
+
+/* ============================================================
+   ASSEMBLY / LAYOUT
+   ============================================================ */
+scene.add(buildEnvironment());
+scene.add(buildPlaza());
+scene.add(buildStairs());
+
+const altar = buildAltar();
+altar.position.set(0, CONFIG.plazaHeight + 0.3, -1);
+scene.add(altar);
+const phoenix = buildPhoenix();
+phoenix.position.set(0, CONFIG.plazaHeight + 1.6, -1);
+phoenix.rotation.y = Math.PI * 0.06;                    // gazes down the gate path
+scene.add(phoenix);
+
+for (const z of [8.4, 11.6, 14.8, 18, 21.6]) {          // climbing torii procession
+  const gate = buildTorii(z > 20 ? 1.25 : 1);
+  gate.position.set(0, z > CONFIG.pathBottomZ ? terrainHeight(0, z) + 0.02 : pathY(z) - 0.06, z);
+  scene.add(gate);
+}
+
+const brazierSpots = [[-4.6, 0, -4.6], [4.6, 0, -4.6], [-5.6, 0, 1.8], [5.6, 0, 1.8]];
+for (const [x, , z] of brazierSpots) {
+  const b = buildBrazier(true);
+  b.position.set(x, CONFIG.plazaHeight + 0.3, z);
+  scene.add(b);
+}
+for (const sgn of [-1, 1]) {                            // flame pair guarding the stair base
+  const b = buildBrazier(sgn > 0);
+  b.position.set(sgn * 3.4, terrainHeight(sgn * 3.4, 20.5), 20.5);
+  scene.add(b);
+}
+for (const sgn of [-1, 1]) {                            // lanterns at the stair crest
+  const l = buildLantern();
+  l.position.set(sgn * 2.9, CONFIG.plazaHeight + 0.28, 6.3);
+  scene.add(l);
+}
+
+const rack = buildEmaRack();
+rack.position.set(-5.2, CONFIG.plazaHeight + 0.3, -0.9);
+rack.rotation.y = Math.PI / 2.4;
+scene.add(rack);
+
+const mapleSpots = [[-11.2, 7.6, 1.1], [10.4, 6.2, 1.2], [-8.6, 13.5, 0.95], [7.9, 15.6, 1.05], [-5.2, 20.5, 1.0], [12.6, -5.4, 1.15]];
+const mapleRefs = [];
+for (const [x, z, s] of mapleSpots) {
+  const tree = buildMaple(s);
+  tree.position.set(x, terrainHeight(x, z), z);
+  tree.rotation.y = rand(0, Math.PI * 2);
+  scene.add(tree);
+  mapleRefs.push(tree);
+}
+
+const emberSources = brazierSpots.map(([x, , z]) => [x, CONFIG.plazaHeight + 1.9, z]);
+emberSources.push([0, CONFIG.plazaHeight + 3.2, -1], [0, CONFIG.plazaHeight + 3.2, -1]);
+const embers = buildEmbers(90, emberSources);
+scene.add(embers);
+const leaves = buildLeaves(80, mapleRefs);
+scene.add(leaves);
+
+/* ============================================================
+   LIGHTING RIG
+   ============================================================ */
+scene.add(new THREE.HemisphereLight(0x8a5a80, 0x3a2420, 0.9));
+scene.add(new THREE.AmbientLight(0x5c3048, 0.75));
+
+const sun = new THREE.DirectionalLight(0xff9450, 3.0);  // low dusk sun
+sun.position.set(-26, 13, -9);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.near = 6;
+sun.shadow.camera.far = 70;
+sun.shadow.camera.left = sun.shadow.camera.bottom = -26;
+sun.shadow.camera.right = sun.shadow.camera.top = 26;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+const duskFill = new THREE.DirectionalLight(0x7a6ab8, 0.7);
+duskFill.position.set(18, 20, 24);
+scene.add(duskFill);
+
+/* ============================================================
+   ANIMATION LOOP
+   ============================================================ */
+const clock = new THREE.Clock();
+const animDummy = new THREE.Object3D();
+
+function tick() {
+  requestAnimationFrame(tick);
+  const t = clock.getElapsedTime();
+
+  // 1) dancing brazier flames + firelight flicker
+  for (const f of flames) {
+    const n = Math.sin(t * 9 + f.phase) * 0.5 + Math.sin(t * 23 + f.phase * 2) * 0.5;
+    f.outer.scale.set(1 + n * 0.12, 1 + n * 0.26, 1 + n * 0.12);
+    f.inner.scale.set(1 - n * 0.1, 1 + n * 0.34, 1 - n * 0.1);
+    f.outer.rotation.y = t * 1.4 + f.phase;
+    f.inner.rotation.y = -t * 1.8 + f.phase;
+    if (f.light) f.light.intensity = 13 + n * 4;
+  }
+
+  // 2) embers spiralling upward like loosed feathers
+  for (let i = 0; i < emberData.length; i++) {
+    const e = emberData[i];
+    const life = ((t * e.rise + e.phase * 2) % e.span) / e.span;
+    animDummy.position.set(
+      e.x + Math.sin(t * 1.3 + e.phase) * e.sway * (1 + life),
+      e.y0 + life * 5.2,
+      e.z + Math.cos(t * 1.1 + e.phase) * e.sway * (1 + life));
+    animDummy.rotation.set(t * 2 + e.phase, t * 1.5, 0);
+    animDummy.scale.setScalar(Math.max(0.06, 1 - life * 0.85));
+    animDummy.updateMatrix();
+    embers.setMatrixAt(i, animDummy.matrix);
+  }
+  embers.instanceMatrix.needsUpdate = true;
+
+  // 3) maple leaves fluttering down, then recycling to the canopy
+  for (let i = 0; i < leafData.length; i++) {
+    const L = leafData[i];
+    const drop = L.top - L.floor;
+    const life = ((t * L.fall + L.phase) % drop) ;
+    animDummy.position.set(
+      L.x + Math.sin(t * 1.2 + L.phase * 3) * 0.5,
+      L.top - life,
+      L.z + Math.cos(t * 0.9 + L.phase * 2) * 0.5);
+    animDummy.rotation.set(t * L.spin + L.phase, L.phase, t * L.spin * 0.7);
+    animDummy.scale.setScalar(1);
+    animDummy.updateMatrix();
+    leaves.setMatrixAt(i, animDummy.matrix);
+  }
+  leaves.instanceMatrix.needsUpdate = true;
+
+  // 4) phoenix chest-glow pulse and gentle canopy sway
+  const pulse = 0.5 + 0.5 * Math.sin(t * 1.6);
+  phoenix.userData.gem.material.emissiveIntensity = 1.8 + pulse * 2.6;
+  phoenix.userData.gem.scale.setScalar(1 + pulse * 0.12);
+  phoenix.userData.glow.intensity = 12 + pulse * 14;
+  for (let i = 0; i < mapleRefs.length; i++) mapleRefs[i].rotation.z = Math.sin(t * 0.7 + i * 1.7) * 0.016;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

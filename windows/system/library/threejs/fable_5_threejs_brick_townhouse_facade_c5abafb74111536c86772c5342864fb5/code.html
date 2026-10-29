@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Brick Townhouse Facade</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16181c; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer / scene / camera
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181c);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5.6, 1.4, 10.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+controls.minDistance = 4;
+controls.maxDistance = 26;
+controls.maxPolarAngle = 1.65;
+controls.target.set(0, 0, 0);
+
+// ---------------------------------------------------------------------------
+// Facade dimensions (meters, realistic townhouse proportions)
+// ---------------------------------------------------------------------------
+const WALL_W = 5.4;          // narrow terrace frontage
+const WALL_H = 7.2;          // two storeys + parapet zone (96 brick courses)
+const WALL_D = 0.36;         // 1.5-brick wall thickness
+const HX = WALL_W / 2;
+
+const BRICK_L = 0.215, BRICK_H = 0.065, JOINT = 0.010;
+const PITCH = BRICK_H + JOINT;   // 0.075 course pitch
+const UNIT  = BRICK_L + JOINT;   // 0.225 horizontal module
+const N_COURSES = Math.round(WALL_H / PITCH); // 96
+const STRING_COURSES = new Set([40, 78]);     // projecting string-course bands
+
+// Openings (front-face rectangles). Door stacked under one upper window.
+const DOOR  = { x0: -2.15, x1: -1.10, y0: 0.00, y1: 2.30 };
+const WIN_G = { x0:  0.45, x1:  1.80, y0: 0.85, y1: 2.30 };
+const WIN_A = { x0: -2.20, x1: -1.05, y0: 3.95, y1: 5.30 };
+const WIN_B = { x0:  0.55, x1:  1.70, y0: 3.95, y1: 5.30 };
+const OPENINGS = [DOOR, WIN_G, WIN_A, WIN_B];
+const WINDOWS = [WIN_G, WIN_A, WIN_B];
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const mortarMat = new THREE.MeshStandardMaterial({ color: 0x9a8f81, roughness: 0.96, metalness: 0.0 });
+const brickMat  = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.88, metalness: 0.0 });
+const stoneMat  = new THREE.MeshStandardMaterial({ color: 0xcdc4b3, roughness: 0.78, metalness: 0.0 });
+const paintMat  = new THREE.MeshStandardMaterial({ color: 0xe9e5da, roughness: 0.48, metalness: 0.0 });
+const doorMat   = new THREE.MeshStandardMaterial({ color: 0x24452f, roughness: 0.34, metalness: 0.0 });
+const brassMat  = new THREE.MeshStandardMaterial({ color: 0xb98f3e, roughness: 0.32, metalness: 1.0 });
+const glassMat  = new THREE.MeshStandardMaterial({ color: 0x131c22, roughness: 0.10, metalness: 0.85, side: THREE.DoubleSide });
+const darkMat   = new THREE.MeshStandardMaterial({ color: 0x05070a, roughness: 1.0, metalness: 0.0, side: THREE.DoubleSide });
+
+// ---------------------------------------------------------------------------
+// The single centered object
+// ---------------------------------------------------------------------------
+const house = new THREE.Group();
+scene.add(house);
+
+function addBox(w, h, d, mat, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  house.add(m);
+  return m;
+}
+
+// --- Wall body: extruded shape with real openings (mortar-toned backing) ---
+{
+  const shape = new THREE.Shape();
+  shape.moveTo(-HX, 0); shape.lineTo(HX, 0); shape.lineTo(HX, WALL_H);
+  shape.lineTo(-HX, WALL_H); shape.closePath();
+  for (const o of OPENINGS) {
+    const hole = new THREE.Path();
+    hole.moveTo(o.x0, o.y0); hole.lineTo(o.x0, o.y1);
+    hole.lineTo(o.x1, o.y1); hole.lineTo(o.x1, o.y0); hole.closePath();
+    shape.holes.push(hole);
+  }
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: WALL_D, bevelEnabled: false });
+  const wall = new THREE.Mesh(geo, mortarMat);
+  wall.position.z = -WALL_D; // front face at z = 0
+  wall.castShadow = true;
+  wall.receiveShadow = true;
+  house.add(wall);
+}
+
+// --- Procedural brickwork: instanced running bond with per-brick color ------
+function brickColor(isString) {
+  const c = new THREE.Color();
+  if (isString) {
+    c.setHSL(0.025 + Math.random() * 0.008, 0.46 + Math.random() * 0.08, 0.22 + Math.random() * 0.04);
+    return c;
+  }
+  const r = Math.random();
+  if (r < 0.07)      c.setHSL(0.02 + Math.random() * 0.02, 0.34 + Math.random() * 0.15, 0.13 + Math.random() * 0.05); // burnt headers
+  else if (r < 0.15) c.setHSL(0.05 + Math.random() * 0.02, 0.50 + Math.random() * 0.10, 0.40 + Math.random() * 0.07); // pale orange
+  else               c.setHSL(0.022 + Math.random() * 0.020, 0.50 + Math.random() * 0.16, 0.26 + Math.random() * 0.09); // red stock
+  return c;
+}
+
+function subtractSeg(segs, a, b) {
+  const out = [];
+  for (const [s0, s1] of segs) {
+    if (b <= s0 || a >= s1) { out.push([s0, s1]); continue; }
+    if (a > s0) out.push([s0, a]);
+    if (b < s1) out.push([b, s1]);
+  }
+  return out;
+}
+
+const clipRects = OPENINGS.map(o => ({
+  x0: o.x0 - 0.012, x1: o.x1 + 0.012,
+  y0: o.y0 - 0.012, y1: o.y1 + 0.245   // includes the soldier-course lintel band
+}));
+
+const items = [];
+
+// Running-bond field + projecting string courses
+for (let i = 0; i < N_COURSES; i++) {
+  const cy0 = i * PITCH, cy1 = cy0 + BRICK_H, cyC = cy0 + BRICK_H / 2;
+  const isString = STRING_COURSES.has(i);
+  const depth = isString ? 0.075 : 0.032;
+  const zC = isString ? 0.012 : -0.006;
+  const startX = -HX - (i % 2) * (UNIT / 2);
+  const active = clipRects.filter(r => r.y0 < cy1 && r.y1 > cy0);
+  for (let k = 0; ; k++) {
+    const bx0 = startX + k * UNIT;
+    if (bx0 >= HX) break;
+    const bx1 = bx0 + BRICK_L;
+    let segs = [[Math.max(bx0, -HX), Math.min(bx1, HX)]];
+    for (const r of active) segs = subtractSeg(segs, r.x0, r.x1);
+    for (const [s0, s1] of segs) {
+      const len = s1 - s0;
+      if (len < 0.03) continue;
+      items.push({ x: (s0 + s1) / 2, y: cyC, z: zC, sx: len, sy: BRICK_H, sz: depth, c: brickColor(isString) });
+    }
+  }
+}
+
+// Soldier-course brick lintels above every opening (slightly proud)
+for (const o of OPENINGS) {
+  const a = o.x0 - 0.02, b = o.x1 + 0.02;
+  const span = b - a;
+  const n = Math.round(span / 0.0755);
+  const pitch = span / n;
+  const bw = pitch - 0.011;
+  for (let j = 0; j < n; j++) {
+    items.push({
+      x: a + pitch * (j + 0.5), y: o.y1 + 0.008 + 0.1075, z: 0.0,
+      sx: bw, sy: 0.215, sz: 0.05, c: brickColor(false)
+    });
+  }
+}
+
+{
+  const bricks = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 1, 1), brickMat, items.length);
+  const dummy = new THREE.Object3D();
+  items.forEach((it, idx) => {
+    dummy.position.set(it.x, it.y, it.z);
+    dummy.scale.set(it.sx, it.sy, it.sz);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    bricks.setMatrixAt(idx, dummy.matrix);
+    bricks.setColorAt(idx, it.c);
+  });
+  bricks.instanceMatrix.needsUpdate = true;
+  if (bricks.instanceColor) bricks.instanceColor.needsUpdate = true;
+  bricks.castShadow = true;
+  bricks.receiveShadow = true;
+  house.add(bricks);
+}
+
+// --- Windows: recessed sashes, glazing bars, protruding stone sills ---------
+function buildWindow(o) {
+  const w = o.x1 - o.x0, h = o.y1 - o.y0;
+  const cx = (o.x0 + o.x1) / 2, cy = (o.y0 + o.y1) / 2;
+  // outer frame (recessed ~0.13 m)
+  addBox(w, 0.075, 0.075, paintMat, cx, o.y1 - 0.0375, -0.13);
+  addBox(w, 0.075, 0.075, paintMat, cx, o.y0 + 0.0375, -0.13);
+  addBox(0.075, h, 0.075, paintMat, o.x0 + 0.0375, cy, -0.13);
+  addBox(0.075, h, 0.075, paintMat, o.x1 - 0.0375, cy, -0.13);
+  // meeting rail + muntin grid (sash-window look)
+  addBox(w - 0.1, 0.055, 0.06, paintMat, cx, cy, -0.125);
+  addBox(0.025, h - 0.1, 0.045, paintMat, o.x0 + w / 3, cy, -0.135);
+  addBox(0.025, h - 0.1, 0.045, paintMat, o.x0 + 2 * w / 3, cy, -0.135);
+  addBox(w - 0.1, 0.025, 0.045, paintMat, cx, cy - h * 0.25, -0.135);
+  addBox(w - 0.1, 0.025, 0.045, paintMat, cx, cy + h * 0.25, -0.135);
+  // glass + dark interior backing
+  const glass = new THREE.Mesh(new THREE.PlaneGeometry(w - 0.09, h - 0.09), glassMat);
+  glass.position.set(cx, cy, -0.165);
+  house.add(glass);
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(w + 0.2, h + 0.2), darkMat);
+  back.position.set(cx, cy, -0.30);
+  house.add(back);
+  // protruding stone sill
+  addBox(w + 0.2, 0.085, 0.24, stoneMat, cx, o.y0 - 0.032, -0.01);
+}
+WINDOWS.forEach(buildWindow);
+
+// --- Recessed doorway: frame, transom light, paneled door, step -------------
+{
+  const cx = (DOOR.x0 + DOOR.x1) / 2; // -1.625
+  // painted frame lining the recess
+  addBox(0.08, DOOR.y1, 0.10, paintMat, DOOR.x0 + 0.04, DOOR.y1 / 2, -0.20);
+  addBox(0.08, DOOR.y1, 0.10, paintMat, DOOR.x1 - 0.04, DOOR.y1 / 2, -0.20);
+  addBox(1.05, 0.08, 0.10, paintMat, cx, DOOR.y1 - 0.04, -0.20);
+  // transom bar + transom light
+  addBox(1.05, 0.09, 0.09, paintMat, cx, 2.00, -0.23);
+  const tGlass = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 0.26), glassMat);
+  tGlass.position.set(cx, 2.16, -0.26);
+  house.add(tGlass);
+  addBox(0.025, 0.26, 0.04, paintMat, cx - 0.16, 2.16, -0.245);
+  addBox(0.025, 0.26, 0.04, paintMat, cx + 0.16, 2.16, -0.245);
+  // door leaf (recessed 0.25 m) with four raised panels
+  addBox(0.94, 1.82, 0.06, doorMat, cx, 1.05, -0.25);
+  for (const px of [-0.215, 0.215]) {
+    addBox(0.335, 0.62, 0.02, doorMat, cx + px, 0.55, -0.215);
+    addBox(0.335, 0.66, 0.02, doorMat, cx + px, 1.50, -0.215);
+  }
+  // brass knob + backplate
+  const plate = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.012, 24), brassMat);
+  plate.rotation.x = Math.PI / 2;
+  plate.position.set(cx + 0.36, 1.02, -0.212);
+  plate.castShadow = true;
+  house.add(plate);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.032, 20, 16), brassMat);
+  knob.position.set(cx + 0.36, 1.02, -0.185);
+  knob.castShadow = true;
+  house.add(knob);
+  // dark backing behind the doorway
+  const back = new THREE.Mesh(new THREE.PlaneGeometry(1.05, DOOR.y1), darkMat);
+  back.position.set(cx, DOOR.y1 / 2, -0.34);
+  house.add(back);
+  // stone threshold step, protruding onto the pavement
+  addBox(1.35, 0.13, 0.62, stoneMat, cx, 0.065, -0.15);
+}
+
+// --- Flat-roof parapet coping cap -------------------------------------------
+addBox(WALL_W + 0.08, 0.08, WALL_D + 0.08, stoneMat, 0, WALL_H + 0.04, -WALL_D / 2);
+addBox(WALL_W + 0.20, 0.10, WALL_D + 0.20, stoneMat, 0, WALL_H + 0.13, -WALL_D / 2);
+
+// Center the object at the origin
+const TOTAL_H = WALL_H + 0.18;
+house.position.y = -TOTAL_H / 2;
+const BASE_Y = -TOTAL_H / 2;
+
+// ---------------------------------------------------------------------------
+// Ground: shadow-catcher only
+// ---------------------------------------------------------------------------
+{
+  const ground = new THREE.Mesh(
+    new THREE.CircleGeometry(16, 64),
+    new THREE.ShadowMaterial({ opacity: 0.38 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.y = BASE_Y - 0.001;
+  ground.receiveShadow = true;
+  scene.add(ground);
+}
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambience + warm key, cool fill, rim
+// ---------------------------------------------------------------------------
+scene.add(new THREE.HemisphereLight(0x9db4d6, 0x453931, 0.55));
+
+const key = new THREE.DirectionalLight(0xfff0dc, 2.7);
+key.position.set(-7, 10, 8);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.left = -7; key.shadow.camera.right = 7;
+key.shadow.camera.top = 7;   key.shadow.camera.bottom = -6;
+key.shadow.camera.near = 1;  key.shadow.camera.far = 40;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.03;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbcd0ff, 0.45);
+fill.position.set(7, 2.5, 5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdfe8ff, 1.5);
+rim.position.set(2, 7, -9);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

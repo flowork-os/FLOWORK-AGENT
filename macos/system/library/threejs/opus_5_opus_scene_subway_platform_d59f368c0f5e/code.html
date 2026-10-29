@@ -1,0 +1,681 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Underground Subway Platform</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0d1014}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ================================================================
+   1. CONFIG & PALETTE  —  a tired mid-century station, 11:40 pm
+   ================================================================ */
+const CONFIG = {
+  seed: 428117,
+  vaultR: 15, vaultRise: 0.62, vaultY: 0.6,   // barrel ceiling geometry
+  trackZ: -6.2,                               // centre line of the running rail
+  pillarX: [14, 6, -6, -14, -22, -30, -38],
+  lightX: [14, 8, 2, -4, -10, -16, -22, -28, -34],
+  flickerIndex: 3                             // which tube is on its way out
+};
+
+const PAL = {
+  fog: 0x0d1216, concrete: 0x9a9791,
+  ballast: 0x33322f, steel: 0x8d9299, darkSteel: 0x4b4f55, rubber: 0x1b1c1f,
+  yellow: 0xe8b423, trainBody: 0xb9bec4, trainSkirt: 0x3b4148, trainStripe: 0xc0392b,
+  glass: 0x121a20, tube: 0xf2f7ff, warm: 0xffd9a2, exit: 0x3fe08a, grime: 0x2a2b28
+};
+
+/* ================================================================
+   2. SEEDED PRNG & GEOMETRY HELPERS  (never Math.random)
+   ================================================================ */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + (b - a) * rand(), ri = (a, b) => Math.floor(rr(a, b + 1));
+
+// Build + place + parent a mesh in one call. Object3D.add() returns the PARENT,
+// so binding the mesh here keeps every transform on the object we mean.
+function put(parent, geo, mat, x = 0, y = 0, z = 0, cast = true, receive = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = cast; m.receiveShadow = receive;
+  parent.add(m);
+  return m;
+}
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, s = 12) => new THREE.CylinderGeometry(rt, rb, h, s);
+const plane = (w, h) => new THREE.PlaneGeometry(w, h);
+
+/* ================================================================
+   3. PROCEDURAL CANVAS TEXTURES
+   ================================================================ */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return { c, x: c.getContext('2d') };
+}
+function finish(c, rx, ry) {
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  if (rx) { t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry); }
+  return t;
+}
+
+// Glazed brick tiles with dark grout, soot streaks and a few cracked units.
+function tileTexture(rx, ry) {
+  const { c, x } = makeCanvas(512, 512);
+  x.fillStyle = '#4a4a44'; x.fillRect(0, 0, 512, 512);
+  const cols = 8, rows = 16, tw = 512 / cols, th = 512 / rows;
+  for (let r = 0; r < rows; r++) {
+    for (let i = 0; i < cols; i++) {
+      const off = (r % 2) * tw * 0.5;
+      const px = (i * tw + off) % 512, py = r * th;
+      const v = ri(196, 226) - (rand() < 0.08 ? 46 : 0);
+      x.fillStyle = `rgb(${v},${v - 4},${(v * 0.94) | 0})`;
+      x.fillRect(px + 2, py + 2, tw - 4, th - 4);
+      x.fillStyle = `rgba(255,255,255,0.16)`;
+      x.fillRect(px + 2, py + 2, tw - 4, th * 0.22);
+    }
+  }
+  for (let i = 0; i < 42; i++) {                       // soot running down the wall
+    const px = rr(0, 512), w = rr(3, 20);
+    const g = x.createLinearGradient(0, 0, 0, 512);
+    g.addColorStop(0, 'rgba(40,40,34,0.20)');
+    g.addColorStop(rr(0.4, 0.9), 'rgba(40,40,34,0)');
+    x.fillStyle = g; x.fillRect(px, 0, w, 512);
+  }
+  for (let i = 0; i < 260; i++) {
+    x.fillStyle = `rgba(${ri(60, 130)},${ri(60, 120)},${ri(55, 110)},${rr(0.05, 0.3)})`;
+    x.beginPath(); x.arc(rr(0, 512), rr(0, 512), rr(1, 7), 0, Math.PI * 2); x.fill();
+  }
+  return finish(c, rx, ry);
+}
+
+// Poured concrete platform deck: aggregate speckle, stains, cracks, old gum.
+function concreteTexture() {
+  const { c, x } = makeCanvas(512, 512);
+  x.fillStyle = '#8f8d86'; x.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 6000; i++) {
+    const v = ri(96, 176);
+    x.fillStyle = `rgba(${v},${v - 3},${v - 10},${rr(0.15, 0.6)})`;
+    x.fillRect(rr(0, 512), rr(0, 512), rr(1, 3), rr(1, 3));
+  }
+  for (let i = 0; i < 26; i++) {                        // damp stains
+    const px = rr(0, 512), py = rr(0, 512), rad = rr(18, 80);
+    const g = x.createRadialGradient(px, py, 0, px, py, rad);
+    g.addColorStop(0, `rgba(58,56,52,${rr(0.16, 0.4)})`);
+    g.addColorStop(1, 'rgba(58,56,52,0)');
+    x.fillStyle = g; x.beginPath(); x.arc(px, py, rad, 0, Math.PI * 2); x.fill();
+  }
+  x.strokeStyle = 'rgba(70,68,63,0.28)';
+  for (let i = 0; i < 10; i++) {
+    x.lineWidth = rr(0.5, 1.4); x.beginPath();
+    let px = rr(0, 512), py = rr(0, 512);
+    x.moveTo(px, py);
+    for (let k = 0; k < 4; k++) { px += rr(-50, 50); py += rr(-50, 50); x.lineTo(px, py); }
+    x.stroke();
+  }
+  for (let i = 0; i < 30; i++) {                        // flattened gum
+    x.fillStyle = `rgba(${ri(40, 70)},${ri(38, 66)},${ri(36, 62)},0.75)`;
+    x.beginPath(); x.arc(rr(0, 512), rr(0, 512), rr(2, 5), 0, Math.PI * 2); x.fill();
+  }
+  return finish(c, 14, 3);
+}
+
+// Coarse track ballast between the sleepers.
+function ballastTexture() {
+  const { c, x } = makeCanvas(256, 256);
+  x.fillStyle = '#2a2926'; x.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 2600; i++) {
+    const v = ri(40, 108);
+    x.fillStyle = `rgba(${v},${v - 2},${v - 6},${rr(0.3, 0.9)})`;
+    x.beginPath(); x.arc(rr(0, 256), rr(0, 256), rr(1.2, 4), 0, Math.PI * 2); x.fill();
+  }
+  return finish(c, 22, 3);
+}
+
+// Back-lit route map: four coloured lines, interchange dots, a title band.
+function routeMapTexture() {
+  const { c, x } = makeCanvas(512, 320);
+  x.fillStyle = '#f2eee2'; x.fillRect(0, 0, 512, 320);
+  x.fillStyle = '#1d2430'; x.fillRect(0, 0, 512, 46);
+  x.fillStyle = '#f4f1e6'; x.font = 'bold 26px Helvetica, Arial, sans-serif';
+  x.textAlign = 'center'; x.fillText('SYSTEM  ROUTE  MAP', 256, 32);
+  const cols = ['#c0392b', '#2471a3', '#27ae60', '#e0a020'];
+  for (let l = 0; l < 4; l++) {
+    x.strokeStyle = cols[l]; x.lineWidth = 8; x.lineCap = 'round';
+    x.beginPath();
+    let px = 30, py = 90 + l * 52;
+    x.moveTo(px, py);
+    for (let k = 0; k < 6; k++) {
+      px += rr(50, 90); py += rr(-30, 30);
+      py = Math.max(64, Math.min(300, py));
+      x.lineTo(px, py);
+    }
+    x.stroke();
+    x.fillStyle = '#f8f6ee'; x.strokeStyle = '#222'; x.lineWidth = 3;
+    for (let k = 0; k < 7; k++) {
+      const dx = 40 + k * 70, dy = 90 + l * 52 + Math.sin(k * 1.4 + l) * 22;
+      x.beginPath(); x.arc(dx, dy, 6, 0, Math.PI * 2); x.fill(); x.stroke();
+    }
+  }
+  x.fillStyle = 'rgba(30,30,26,0.18)'; x.fillRect(0, 300, 512, 20);
+  return finish(c);
+}
+
+// Faded platform advertising: colour field, big shape, blocked-out copy.
+function posterTexture(hue) {
+  const { c, x } = makeCanvas(256, 384);
+  const g = x.createLinearGradient(0, 0, 0, 384);
+  g.addColorStop(0, `hsl(${hue},46%,62%)`); g.addColorStop(1, `hsl(${hue + 28},40%,32%)`);
+  x.fillStyle = g; x.fillRect(0, 0, 256, 384);
+  x.fillStyle = `hsla(${hue + 180},60%,86%,0.9)`;
+  x.beginPath(); x.arc(128, 150, 68, 0, Math.PI * 2); x.fill();
+  x.fillStyle = 'rgba(20,18,16,0.7)';
+  for (let i = 0; i < 4; i++) x.fillRect(34, 258 + i * 26, rr(90, 188), 12);
+  x.fillStyle = `hsla(${hue + 200},70%,60%,0.9)`; x.fillRect(34, 232, 150, 16);
+  for (let i = 0; i < 22; i++) {                          // torn corners and scuffs
+    x.fillStyle = `rgba(0,0,0,${rr(0.05, 0.25)})`;
+    x.fillRect(rr(0, 256), rr(0, 384), rr(4, 40), rr(2, 14));
+  }
+  return finish(c);
+}
+
+// Enamel signage panel (station name, direction arrows, exit).
+function signTexture(w, h, bg, fg, lines) {
+  const { c, x } = makeCanvas(w, h);
+  x.fillStyle = bg; x.fillRect(0, 0, w, h);
+  x.strokeStyle = 'rgba(255,255,255,0.35)'; x.lineWidth = 4;
+  x.strokeRect(5, 5, w - 10, h - 10);
+  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = fg;
+  for (const ln of lines) {
+    x.font = `${ln.b ? 'bold ' : ''}${ln.size}px Helvetica, Arial, sans-serif`;
+    x.fillText(ln.t, w / 2, ln.y * h);
+  }
+  return finish(c);
+}
+
+// Lit carriage window band: bright interiors behind dark mullions.
+function windowStripTexture() {
+  const { c, x } = makeCanvas(1024, 128);
+  x.fillStyle = '#191d22'; x.fillRect(0, 0, 1024, 128);
+  for (let i = 0; i < 16; i++) {
+    const px = 14 + i * 63;
+    const g = x.createLinearGradient(0, 0, 0, 128);
+    g.addColorStop(0, '#fff6dd'); g.addColorStop(0.55, '#ffe9bd'); g.addColorStop(1, '#c9b184');
+    x.fillStyle = g; x.fillRect(px, 16, 48, 96);
+    x.fillStyle = 'rgba(40,36,30,0.55)';                  // seated silhouettes
+    if (rand() < 0.55) { x.beginPath(); x.arc(px + rr(14, 34), rr(62, 78), rr(8, 13), 0, Math.PI * 2); x.fill(); }
+  }
+  return finish(c);
+}
+
+/* ================================================================
+   4. MATERIAL PALETTE
+   ================================================================ */
+const std = (c, r, m, extra) => new THREE.MeshStandardMaterial(
+  Object.assign({ color: c, roughness: r, metalness: m, envMapIntensity: 0.35 }, extra || {}));
+const glow = c => new THREE.MeshBasicMaterial({ color: c, toneMapped: false });
+const panel = tex => new THREE.MeshBasicMaterial({ map: tex, toneMapped: false, side: THREE.DoubleSide });
+
+const MAT = {
+  vault:    std(0xdedbd0, 0.95, 0.02, { map: tileTexture(26, 4), side: THREE.BackSide }),
+  wall:     std(0xc8c5b8, 0.9, 0.03, { map: tileTexture(16, 2) }),
+  pillar:   std(0xcac7ba, 0.85, 0.04, { map: tileTexture(2, 4) }),
+  deck:     std(0xffffff, 0.96, 0.02, { map: concreteTexture() }),
+  ballast:  std(0xffffff, 1, 0, { map: ballastTexture() }),
+  concrete: std(PAL.concrete, 0.95, 0.02),
+  steel:    std(PAL.steel, 0.42, 0.85, { envMapIntensity: 0.8 }),
+  dark:     std(PAL.darkSteel, 0.55, 0.7, { envMapIntensity: 0.6 }),
+  rubber:   std(PAL.rubber, 0.9, 0.05),
+  yellow:   std(PAL.yellow, 0.6, 0.05),
+  body:     std(PAL.trainBody, 0.35, 0.75, { envMapIntensity: 0.75 }),
+  skirt:    std(PAL.trainSkirt, 0.7, 0.4),
+  stripe:   std(PAL.trainStripe, 0.5, 0.2),
+  glass:    std(PAL.glass, 0.12, 0.5, { envMapIntensity: 0.9 }),
+  grime:    std(PAL.grime, 1, 0),
+  tube:     glow(PAL.tube),
+  warm:     glow(PAL.warm),
+  exit:     glow(PAL.exit),
+  red:      glow(0xff4436),
+  green:    glow(0x54ff9a),
+  windows:  panel(windowStripTexture()),
+  map:      panel(routeMapTexture())
+};
+
+/* ================================================================
+   5. BUILDERS  —  each returns a THREE.Group
+   ================================================================ */
+
+// 5.1 The station shell: barrel vault, track bed, rails, platform, back wall.
+function buildStationShell() {
+  const g = new THREE.Group();
+  const vg = new THREE.CylinderGeometry(CONFIG.vaultR, CONFIG.vaultR, 108, 44, 1, true, 0, Math.PI);
+  vg.rotateZ(Math.PI / 2); vg.scale(1, CONFIG.vaultRise, 1);
+  const vault = put(g, vg, MAT.vault, -10, CONFIG.vaultY, 0, false, false);
+  vault.name = 'vault';
+  put(g, plane(104, 10), MAT.ballast, -10, -2.4, -8, false, true).rotation.x = -Math.PI / 2;
+  put(g, box(104, 2.4, 14), MAT.deck, -10, -1.2, 4);              // platform block
+  put(g, box(104, 0.06, 1.0), MAT.yellow, -10, 0.02, -2.55, false, false);
+  const nubs = new THREE.InstancedMesh(cyl(0.08, 0.08, 0.05, 8), MAT.yellow, 150);
+  const m4 = new THREE.Matrix4();
+  for (let i = 0; i < 150; i++) { m4.setPosition(-60 + i * 0.7, 0.06, -2.55); nubs.setMatrixAt(i, m4); }
+  nubs.instanceMatrix.needsUpdate = true;
+  g.add(nubs);
+  for (const rz of [-5.0, -7.4]) {                                 // running rails
+    put(g, box(104, 0.16, 0.22), MAT.steel, -10, -2.16, rz);
+    put(g, box(104, 0.1, 0.34), MAT.dark, -10, -2.3, rz);
+  }
+  const sleepers = new THREE.InstancedMesh(box(0.34, 0.18, 3.6), MAT.grime, 78);
+  for (let i = 0; i < 78; i++) { m4.setPosition(-60 + i * 1.35, -2.34, -6.2); sleepers.setMatrixAt(i, m4); }
+  sleepers.instanceMatrix.needsUpdate = true;
+  sleepers.receiveShadow = true;
+  g.add(sleepers);
+  put(g, box(104, 7.0, 0.6), MAT.wall, -10, 1.1, -13.6);           // tunnel side kerb
+  // back wall, split around the stairwell opening (x -3.4 .. 1.4)
+  put(g, box(56.6, 6.9, 1), MAT.wall, -31.7, 3.45, 11.5);
+  put(g, box(32.6, 6.9, 1), MAT.wall, 17.7, 3.45, 11.5);
+  put(g, box(4.8, 2.5, 1), MAT.wall, -1, 5.65, 11.5);
+  put(g, box(4.8, 4.4, 0.4), MAT.grime, -1, 2.2, 12.6, false, false);
+  put(g, box(104, 0.35, 1.3), MAT.concrete, -10, 6.95, 11.4);      // cornice
+  return g;
+}
+
+// 5.2 Tiled platform column with a granite plinth and a flared capital.
+function buildPillar() {
+  const g = new THREE.Group();
+  put(g, box(1.5, 0.5, 1.5), MAT.dark, 0, 0.25, 0);
+  put(g, box(1.25, 5.6, 1.25), MAT.pillar, 0, 3.3, 0);
+  put(g, box(1.45, 0.34, 1.45), MAT.concrete, 0, 6.25, 0);
+  put(g, box(1.7, 0.5, 1.7), MAT.concrete, 0, 6.6, 0);
+  put(g, box(1.32, 1.1, 1.32), MAT.grime, 0, 1.05, 0);             // scuffed base band
+  put(g, box(1.3, 0.12, 1.3), MAT.steel, 0, 1.62, 0);
+  return g;
+}
+
+// 5.3 Arriving train: cab nose, lit window bands, aligned doors, bogies.
+function buildTrain() {
+  const g = new THREE.Group();
+  const L = 44, halfW = 1.55;
+  put(g, box(L, 3.2, halfW * 2), MAT.body, -L / 2 + 1, 1.7, 0);
+  put(g, box(L - 0.4, 0.34, halfW * 2 - 0.2), MAT.body, -L / 2 + 1, 3.45, 0);
+  put(g, box(L, 0.9, halfW * 2 - 0.24), MAT.skirt, -L / 2 + 1, -0.35, 0);
+  put(g, box(L, 0.3, halfW * 2 + 0.06), MAT.stripe, -L / 2 + 1, 0.4, 0);
+  for (const s of [-1, 1]) {                                       // window bands + doors
+    put(g, plane(L - 6, 1.15), MAT.windows, -L / 2 + 1, 2.15, s * (halfW + 0.02), false, false)
+      .rotation.y = s > 0 ? 0 : Math.PI;
+    for (let d = 0; d < 4; d++) {
+      const dx = -5 - d * 10;
+      put(g, box(2.2, 2.7, 0.12), MAT.dark, dx, 1.55, s * (halfW + 0.05));
+      put(g, box(0.9, 1.5, 0.06), MAT.glass, dx - 0.5, 2.1, s * (halfW + 0.13), false, false);
+      put(g, box(0.9, 1.5, 0.06), MAT.glass, dx + 0.5, 2.1, s * (halfW + 0.13), false, false);
+      put(g, box(2.4, 0.14, 0.1), MAT.green, dx, 3.05, s * (halfW + 0.1), false, false);
+    }
+  }
+  put(g, box(2.0, 3.0, halfW * 2 - 0.1), MAT.body, 0.4, 1.6, 0);
+  put(g, box(0.3, 1.4, 2.3), MAT.glass, 1.45, 2.3, 0, false, false);
+  put(g, plane(1.6, 0.42), panel(signTexture(256, 64, '#101418', '#ffd47a',
+      [{ t: 'DOWNTOWN  LOCAL', y: 0.55, size: 30, b: true }])), 1.46, 3.05, 0, false, false)
+    .rotation.y = Math.PI / 2;
+  for (const s of [-1, 1]) {
+    put(g, cyl(0.2, 0.2, 0.16, 12), MAT.tube, 1.44, 0.85, s * 0.95, false, false)
+      .rotation.z = Math.PI / 2;
+    put(g, cyl(0.12, 0.12, 0.12, 10), MAT.red, 1.44, 2.9, s * 1.05, false, false)
+      .rotation.z = Math.PI / 2;
+  }
+  for (let b = 0; b < 4; b++) {                                    // bogies and wheels
+    const bx = -3 - b * 12;
+    put(g, box(2.6, 0.7, 2.4), MAT.dark, bx, -1.1, 0);
+    for (const s of [-1, 1]) for (const o of [-0.9, 0.9])
+      put(g, cyl(0.52, 0.52, 0.2, 14), MAT.rubber, bx + o, -1.4, s * 1.05).rotation.x = Math.PI / 2;
+  }
+  for (let r = 0; r < 7; r++) put(g, box(1.4, 0.3, 1.5), MAT.dark, -3 - r * 6, 3.75, 0);
+  return g;
+}
+
+// 5.4 Platform bench: slatted timber seat on cast iron frames.
+function buildBench() {
+  const g = new THREE.Group();
+  const wood = std(0x6d4c31, 0.85, 0.04);
+  for (let i = 0; i < 4; i++) put(g, box(3.4, 0.1, 0.26), wood, 0, 0.62, -0.45 + i * 0.3);
+  for (let i = 0; i < 3; i++) put(g, box(3.4, 0.26, 0.1), wood, 0, 1.0 + i * 0.3, 0.52);
+  for (const s of [-1, 1]) {
+    put(g, box(0.14, 0.62, 1.3), MAT.dark, s * 1.5, 0.31, 0.05);
+    put(g, box(0.14, 1.0, 0.16), MAT.dark, s * 1.5, 1.1, 0.52);
+    put(g, box(0.18, 0.1, 1.5), MAT.dark, s * 1.5, 0.03, 0.05);
+  }
+  return g;
+}
+
+// 5.5 Vending machine: lit product window, selection keypad, coin return.
+function buildVendingMachine(hue) {
+  const g = new THREE.Group();
+  const shell = std(new THREE.Color().setHSL(hue, 0.5, 0.36), 0.5, 0.35);
+  put(g, box(1.8, 2.5, 0.9), shell, 0, 1.25, 0);
+  put(g, box(1.5, 1.5, 0.1), MAT.warm, 0, 1.75, -0.46, false, false);
+  for (let r = 0; r < 3; r++) for (let i = 0; i < 5; i++)          // product rows
+    put(g, box(0.2, 0.3, 0.06), std(new THREE.Color().setHSL((hue + i * 0.13) % 1, 0.7, 0.5), 0.6, 0.1),
+        -0.56 + i * 0.28, 1.28 + r * 0.44, -0.52, false, false);
+  put(g, box(0.36, 0.9, 0.08), MAT.dark, 0.66, 1.7, -0.48);
+  for (let i = 0; i < 6; i++)
+    put(g, box(0.1, 0.1, 0.05), MAT.steel, 0.58 + (i % 2) * 0.16, 2.0 - Math.floor(i / 2) * 0.18, -0.53);
+  put(g, box(1.5, 0.32, 0.08), MAT.dark, 0, 0.4, -0.47);
+  put(g, box(1.86, 0.16, 0.96), MAT.dark, 0, 2.58, 0);
+  put(g, plane(1.4, 0.22), panel(signTexture(256, 40, '#7a1d1a', '#ffe4b0',
+      [{ t: 'REFRESHMENTS', y: 0.55, size: 22, b: true }])), 0, 2.4, -0.46, false, false)
+    .rotation.y = Math.PI;
+  return g;
+}
+
+// 5.6 Back-lit route map in a stainless frame.
+function buildRouteMapBox() {
+  const g = new THREE.Group();
+  put(g, box(4.6, 3.0, 0.24), MAT.steel, 0, 0, 0);
+  put(g, plane(4.2, 2.6), MAT.map, 0, 0, -0.14, false, false).rotation.y = Math.PI;
+  put(g, box(4.8, 0.14, 0.34), MAT.steel, 0, 1.62, -0.05);
+  put(g, box(4.8, 0.14, 0.34), MAT.steel, 0, -1.62, -0.05);
+  put(g, plane(4.4, 0.1), MAT.tube, 0, 1.5, -0.16, false, false);
+  return g;
+}
+
+// 5.7 Exit stairway with kick walls, tube handrails and a lit sign.
+function buildStairs() {
+  const g = new THREE.Group();
+  for (let i = 0; i < 12; i++)
+    put(g, box(4.4, 0.32 + i * 0.32, 0.44), MAT.concrete, 0, (0.32 + i * 0.32) / 2, 5.4 + i * 0.42);
+  for (const s of [-1, 1]) {
+    put(g, box(0.36, 4.2, 5.6), MAT.wall, s * 2.4, 2.1, 7.9);
+    for (let i = 0; i < 5; i++)
+      put(g, cyl(0.06, 0.06, 1.2, 8), MAT.steel, s * 2.0, 1.15 + i * 0.78, 5.7 + i * 1.02);
+    put(g, cyl(0.08, 0.08, 6.0, 10), MAT.steel, s * 2.0, 3.0, 7.9).rotation.x = Math.PI / 2 - 0.65;
+  }
+  put(g, box(5.2, 0.5, 1.4), MAT.concrete, 0, 4.05, 10.8);
+  put(g, box(2.2, 0.8, 0.14), MAT.dark, 0, 5.2, 10.98);
+  put(g, plane(1.9, 0.55), panel(signTexture(256, 64, '#12331f', '#7dffb4',
+      [{ t: 'EXIT', y: 0.55, size: 40, b: true }])), 0, 5.2, 10.9, false, false).rotation.y = Math.PI;
+  put(g, box(4.6, 0.1, 0.12), MAT.exit, 0, 4.45, 10.6, false, false);
+  return g;
+}
+
+// 5.8 Suspended fluorescent batten hung from the vault on two rods.
+function buildCeilingLight() {
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) put(g, cyl(0.035, 0.035, 1.9, 6), MAT.dark, s * 1.1, 0.95, 0);
+  put(g, box(3.2, 0.24, 0.7), MAT.dark, 0, -0.1, 0);
+  const tube = put(g, box(3.0, 0.18, 0.4), MAT.tube.clone(), 0, -0.26, 0, false, false);
+  tube.name = 'tube';
+  return g;
+}
+
+// 5.9 Double-sided hanging direction sign on a drop rod.
+function buildHangingSign(top, bottom) {
+  const g = new THREE.Group();
+  put(g, cyl(0.05, 0.05, 3.0, 6), MAT.dark, 0, 1.5, 0);
+  put(g, box(4.4, 1.5, 0.16), MAT.dark, 0, -0.4, 0);
+  const tex = signTexture(384, 128, '#12233a', '#eaf1ff', [
+    { t: top, y: 0.34, size: 40, b: true }, { t: bottom, y: 0.72, size: 26 }]);
+  for (const s of [-1, 1])
+    put(g, plane(4.1, 1.25), panel(tex), 0, -0.4, s * 0.1, false, false).rotation.y = s > 0 ? 0 : Math.PI;
+  return g;
+}
+
+// 5.10 Loose dressing: bins, posters, a clock, an extinguisher, litter.
+function buildPlatformProps() {
+  const g = new THREE.Group();
+  for (const bx of [10, -6, -22]) {                                // wire waste bins
+    put(g, cyl(0.42, 0.36, 1.0, 12), MAT.dark, bx, 0.5, 9.4);
+    put(g, cyl(0.46, 0.46, 0.1, 12), MAT.steel, bx, 1.02, 9.4);
+    put(g, box(0.5, 0.4, 0.5), std(0x6f6a5c, 0.95, 0), bx, 1.18, 9.4);
+  }
+  for (let i = 0; i < 5; i++) {                                    // wall posters
+    const px = 4 - i * 11;
+    put(g, box(1.8, 2.6, 0.12), MAT.dark, px, 3.1, 10.95);
+    put(g, plane(1.62, 2.42), panel(posterTexture(ri(0, 340))), px, 3.1, 10.87, false, false)
+      .rotation.y = Math.PI;
+  }
+  put(g, cyl(0.62, 0.62, 0.22, 20), MAT.dark, -13, 5.4, 10.9).rotation.x = Math.PI / 2;
+  put(g, plane(1.06, 1.06), panel(signTexture(128, 128, '#f4f1e4', '#20242c',
+      [{ t: '11:40', y: 0.55, size: 34, b: true }])), -13, 5.4, 10.74, false, false).rotation.y = Math.PI;
+  put(g, box(0.5, 0.9, 0.34), std(0xa8291f, 0.6, 0.2), 8, 1.3, 10.7);   // extinguisher
+  put(g, box(0.62, 0.06, 0.42), MAT.steel, 8, 0.82, 10.7);
+  for (let i = 0; i < 9; i++) {                                    // pooled water + grit
+    const px = rr(-40, 12), pz = rr(-12.4, -3.6);
+    put(g, plane(rr(1.2, 3.4), rr(0.8, 2.2)), std(0x171b1e, 0.12, 0.6), px, -2.36, pz, false, false)
+      .rotation.x = -Math.PI / 2;
+  }
+  const stanchion = std(0x9aa0a6, 0.4, 0.8);
+  for (const sx of [16, -30]) {
+    put(g, cyl(0.09, 0.14, 1.1, 10), stanchion, sx, 0.55, 8.4);
+    put(g, new THREE.SphereGeometry(0.13, 10, 8), stanchion, sx, 1.14, 8.4);
+  }
+  return g;
+}
+
+/* ================================================================
+   6. RENDERER, CAMERA, CONTROLS
+   ================================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.fog);
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0115);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.4, 400);
+camera.position.set(24.3, 5.0, -10.8);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.0, 1);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.62;
+controls.minDistance = 18;
+controls.maxDistance = 46;
+controls.minPolarAngle = Math.PI * 0.22;
+controls.maxPolarAngle = Math.PI * 0.5;
+controls.update();
+
+/* ================================================================
+   7. ASSEMBLY / LAYOUT
+   ================================================================ */
+scene.add(buildStationShell());
+
+for (const px of CONFIG.pillarX) {
+  const p = buildPillar();
+  p.position.set(px, 0, 1.8);
+  scene.add(p);
+}
+put(scene, box(96, 0.42, 1.9), MAT.concrete, -12, 7.05, 1.8);      // longitudinal beam
+
+const train = buildTrain();
+train.position.set(-2, 0, CONFIG.trackZ);
+scene.add(train);
+
+for (const b of [[6, 0.03], [-8, -0.02], [-24, 0.04]]) {
+  const bench = buildBench();
+  bench.position.set(b[0], 0, 9.0);
+  bench.rotation.y = b[1];
+  scene.add(bench);
+}
+
+const vend1 = buildVendingMachine(0.58); vend1.position.set(-18.4, 0, 10.4); scene.add(vend1);
+const vend2 = buildVendingMachine(0.03); vend2.position.set(-16.4, 0, 10.4); scene.add(vend2);
+
+const routeBox = buildRouteMapBox();
+routeBox.position.set(-27, 3.2, 10.85);
+scene.add(routeBox);
+
+const stairs = buildStairs();
+stairs.position.set(-1, 0, 0);
+scene.add(stairs);
+
+const tubes = [];
+for (let i = 0; i < CONFIG.lightX.length; i++) {
+  const f = buildCeilingLight();
+  f.position.set(CONFIG.lightX[i], 7.9, -0.4);
+  scene.add(f);
+  tubes.push(f.getObjectByName('tube'));
+}
+
+const signA = buildHangingSign('EXIT  TO  STREET', 'stair at rear of platform');
+signA.position.set(4, 6.4, 0.4); scene.add(signA);
+const signB = buildHangingSign('UPTOWN  TRAINS', 'platform 2 — rear stair');
+signB.position.set(-14, 6.4, 0.4); scene.add(signB);
+
+scene.add(buildPlatformProps());
+
+// Discarded papers stirred by the arriving train's push of air.
+const PAPERS = 26;
+const papers = new THREE.InstancedMesh(plane(0.3, 0.42),
+  new THREE.MeshStandardMaterial({ color: 0xcfc9b6, roughness: 0.95, side: THREE.DoubleSide }), PAPERS);
+const paperSeed = [];
+for (let i = 0; i < PAPERS; i++)
+  paperSeed.push({ x: rr(-38, 14), z: rr(-2.2, 9.6), p: rr(0, 6.3), s: rr(0.5, 1.5), h: rr(0.01, 0.1) });
+papers.castShadow = true;
+scene.add(papers);
+
+// Slow dust motes hanging in the tube light.
+const MOTES = 130;
+const motePos = new Float32Array(MOTES * 3);
+for (let i = 0; i < MOTES; i++) {
+  motePos[i * 3] = rr(-40, 18); motePos[i * 3 + 1] = rr(0.4, 7.6); motePos[i * 3 + 2] = rr(-10, 10);
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({
+  color: 0xcfd8e2, size: 0.055, transparent: true, opacity: 0.5, depthWrite: false }));
+scene.add(motes);
+
+/* ================================================================
+   8. LIGHTING RIG
+   ================================================================ */
+// Key: a broad wash from the ceiling line, angled so platform faces that
+// point back toward the camera stay readable. Only shadow caster.
+const key = new THREE.DirectionalLight(0xd6e2ec, 1.15);
+key.position.set(26, 26, -6);
+key.target.position.set(-8, 0, 3);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+const shadowCam = key.shadow.camera;
+shadowCam.near = 2; shadowCam.far = 120;
+shadowCam.left = -46; shadowCam.right = 46; shadowCam.top = 34; shadowCam.bottom = -26;
+key.shadow.bias = -0.0006; key.shadow.normalBias = 0.035;
+scene.add(key, key.target);
+
+const bounce = new THREE.DirectionalLight(0x8398ad, 0.55);         // damp fill off the tiles
+bounce.position.set(-30, 12, -26);
+scene.add(bounce);
+scene.add(new THREE.HemisphereLight(0x6d7d8c, 0x6a655c, 1.05), new THREE.AmbientLight(0x4c5764, 0.62));
+const uplight = new THREE.DirectionalLight(0xa9b8c8, 0.5);         // throws the vault back at us
+uplight.position.set(2, -18, 3);
+scene.add(uplight);
+
+// Practical lamps: fluorescent battens, carriage interior, signage boxes.
+function lamp(col, int, dist, x, y, z) {
+  const l = new THREE.PointLight(col, int, dist, 1.7);
+  l.position.set(x, y, z);
+  scene.add(l); return l;
+}
+const tubeLights = [];
+for (let i = 0; i < CONFIG.lightX.length; i += 2)
+  tubeLights.push(lamp(0xdfeaf6, 26, 30, CONFIG.lightX[i], 7.3, 0.6));
+const flickerLight = lamp(0xdfeaf6, 26, 28, CONFIG.lightX[CONFIG.flickerIndex], 7.3, 0.6);
+for (let i = 0; i < 4; i++) lamp(0xffdca8, 14, 16, -7 - i * 10, 1.9, -4.0);   // door spill
+lamp(0xffe9c6, 10, 14, -17.4, 2.1, 9.4);                           // vending glow
+lamp(0xe8f2ff, 9, 14, -27, 3.2, 9.9);                              // route map box
+const exitLight = lamp(PAL.exit, 9, 15, -1, 4.6, 9.6);
+lamp(0xffcf9a, 9, 18, 10, 3.0, -8.5);                              // tunnel-side wash
+
+/* ================================================================
+   9. ANIMATION LOOP
+   ================================================================ */
+const clock = new THREE.Clock();
+const tmpObj = new THREE.Object3D();
+const moteArr = moteGeo.attributes.position.array;
+const flickerTube = tubes[CONFIG.flickerIndex];
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // (a) one batten is failing: a stuttering strobe on tube and lamp together
+  const s = Math.sin(t * 21.0) * Math.sin(t * 3.7) + Math.sin(t * 47.0) * 0.3;
+  const on = s > -0.25 ? 1 : 0.08 + 0.2 * Math.abs(Math.sin(t * 60));
+  flickerLight.intensity = 28 * on;
+  flickerTube.material.color.setRGB(0.95 * on + 0.05, 0.97 * on + 0.05, on + 0.06);
+  for (let i = 0; i < tubeLights.length; i++)                      // healthy tubes hum
+    tubeLights[i].intensity = 25 + 1.4 * Math.sin(t * 5.3 + i * 2.1);
+
+  // (b) the train eases the last metre in and rocks gently on its springs
+  train.position.x = -2 + Math.sin(t * 0.32) * 0.55 - 0.55;
+  train.rotation.z = Math.sin(t * 0.62) * 0.0028;
+  train.position.y = Math.sin(t * 0.9) * 0.018;
+
+  // (c) papers skitter along the platform in the draught from the tunnel
+  for (let i = 0; i < PAPERS; i++) {
+    const p = paperSeed[i];
+    const px = -38 + ((p.x + 38 + t * p.s * 0.9 + p.p * 3) % 52);
+    tmpObj.position.set(px, p.h + Math.abs(Math.sin(t * p.s * 2 + p.p)) * 0.16, p.z);
+    tmpObj.rotation.set(-Math.PI / 2 + Math.sin(t * 1.6 + p.p) * 0.7, t * p.s * 1.4 + p.p, 0);
+    tmpObj.updateMatrix();
+    papers.setMatrixAt(i, tmpObj.matrix);
+  }
+  papers.instanceMatrix.needsUpdate = true;
+
+  // (d) dust motes turn slowly in the still, warm air
+  for (let i = 0; i < MOTES; i++) {
+    moteArr[i * 3 + 1] += 0.0035 * Math.sin(t * 0.5 + i);
+    moteArr[i * 3] += 0.006 * Math.sin(t * 0.31 + i * 0.7);
+    if (moteArr[i * 3 + 1] > 7.8) moteArr[i * 3 + 1] = 0.4;
+  }
+  moteGeo.attributes.position.needsUpdate = true;
+
+  // (e) the exit sign and door lamps breathe very slightly
+  exitLight.intensity = 8.5 + 1.2 * Math.sin(t * 1.9);
+  MAT.green.color.setHSL(0.38, 0.85, 0.58 + 0.1 * Math.sin(t * 2.6));
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================================================
+   10. RESIZE
+   ================================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

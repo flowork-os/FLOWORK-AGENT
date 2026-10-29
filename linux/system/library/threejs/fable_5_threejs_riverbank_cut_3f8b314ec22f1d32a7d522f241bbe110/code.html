@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Riverbank Cut — Survey Section</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#dfe9ee}canvas{display:block}</style>
+<script type="importmap">
+{"imports":{"three":"https://unpkg.com/three@0.160.0/build/three.module.js","three/addons/":"https://unpkg.com/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import {OrbitControls} from 'three/addons/controls/OrbitControls.js';
+
+// Units: meters. North = -Z (forward): bank crest to the north, river to the south.
+let s=42;const rnd=()=>(s=(s*1103515245+12345)&0x7fffffff,s/0x7fffffff);
+const clamp=THREE.MathUtils.clamp,sst=THREE.MathUtils.smoothstep;
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0xdfe9ee);
+scene.fog=new THREE.Fog(0xdfe9ee,20,45);
+const camera=new THREE.PerspectiveCamera(45,innerWidth/innerHeight,0.1,100);
+camera.position.set(7.5,5,9.5);
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setSize(innerWidth,innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio,2));
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+document.body.appendChild(renderer.domElement);
+
+// Lighting
+scene.add(new THREE.HemisphereLight(0xcfe4f0,0x8a7a5f,0.75));
+const sun=new THREE.DirectionalLight(0xfff1dc,2.4);
+sun.position.set(7,10,5);
+sun.castShadow=true;
+sun.shadow.mapSize.set(2048,2048);
+sun.shadow.camera.left=sun.shadow.camera.bottom=-8;
+sun.shadow.camera.right=sun.shadow.camera.top=8;
+sun.shadow.camera.far=30;
+sun.shadow.bias=-0.0005;
+scene.add(sun);
+
+// Bank surface height: crest (north, -Z) ~ +1.65 m, river bed ~ -0.35 m
+function H(x,z){
+  const t=sst(-z,-1.2,2.6);
+  let y=-0.35+2.0*t;
+  const g=Math.max(0,Math.sin(x*2.1+1.3)*0.6+Math.sin(x*4.7+0.5)*0.4);
+  y-=g*0.26*Math.sin(Math.PI*t); // eroded gullies mid-slope
+  y+=0.05*Math.sin(x*3.1+z*2.7)+0.03*Math.sin(x*7.3-z*5.1)+0.02*Math.sin(x*13.7+z*9.2);
+  return y;
+}
+
+const bank=new THREE.Group();
+scene.add(bank);
+
+// Terrain block (10 m E-W x 8 m N-S cut) with displaced top and strata sides
+const tg=new THREE.BoxGeometry(10,0.6,8,120,1,96).translate(0,-0.3,0);
+const p=tg.attributes.position,n0=tg.attributes.normal,N=p.count;
+const side=new Uint8Array(N);
+for(let i=0;i<N;i++){
+  side[i]=Math.abs(n0.getY(i))<0.5?1:0;
+  if(p.getY(i)>-0.01)p.setY(i,H(p.getX(i),p.getZ(i)));
+}
+tg.computeVertexNormals();
+const col=new Float32Array(N*3),C=new THREE.Color();
+const mud=new THREE.Color(0x6a5036),loam=new THREE.Color(0x8d7150),grass=new THREE.Color(0x5f7c3a);
+for(let i=0;i<N;i++){
+  const x=p.getX(i),y=p.getY(i),z=p.getZ(i);
+  if(side[i]){ // exposed cut faces: soil strata banding
+    C.setHSL(0.072,0.34,clamp(0.24+0.08*Math.sin(y*16+Math.sin(x+z))+0.04*Math.sin(y*47),0.12,0.4));
+  }else{
+    const u=clamp((y+0.35)/2,0,1);
+    C.copy(mud).lerp(loam,sst(u,0.12,0.55)).lerp(grass,sst(u,0.7,0.95));
+    C.multiplyScalar(0.9+0.2*Math.abs(Math.sin(x*12.9+z*17.7)));
+  }
+  if(y<0.08)C.multiplyScalar(0.5+0.5*sst(y,-0.15,0.08)); // wet mud band at waterline
+  C.toArray(col,i*3);
+}
+tg.setAttribute('color',new THREE.BufferAttribute(col,3));
+const terr=new THREE.Mesh(tg,new THREE.MeshStandardMaterial({vertexColors:true,roughness:0.95}));
+terr.castShadow=terr.receiveShadow=true;
+bank.add(terr);
+
+// Water plane (river surface at 0.02 m)
+const water=new THREE.Mesh(
+  new THREE.PlaneGeometry(9.96,5.0),
+  new THREE.MeshStandardMaterial({color:0x3a6472,transparent:true,opacity:0.86,roughness:0.12,metalness:0.1})
+);
+water.rotation.x=-Math.PI/2;
+water.position.set(0,0.02,1.48);
+water.receiveShadow=true;
+bank.add(water);
+
+// Reed clumps along the shoreline
+function shoreZ(x){for(let z=-1;z<3;z+=0.04)if(H(x,z)<=0.02)return z;return 1}
+const reedGeo=new THREE.CylinderGeometry(0.006,0.016,1,4).translate(0,0.5,0);
+const headGeo=new THREE.CylinderGeometry(0.02,0.007,0.16,5).translate(0,0.08,0);
+const reeds=[],heads=[];
+const d=new THREE.Object3D(),tip=new THREE.Vector3(),q=new THREE.Quaternion(),e=new THREE.Euler();
+for(let c=0;c<15;c++){
+  const cx=-4.5+9*rnd(),cz=shoreZ(cx)+rnd()*0.5-0.1,nr=8+(rnd()*10|0);
+  for(let i=0;i<nr;i++){
+    const a=rnd()*Math.PI*2,r=Math.sqrt(rnd())*0.3;
+    const x=clamp(cx+Math.cos(a)*r,-4.85,4.85),z=clamp(cz+Math.sin(a)*r,-3.9,3.9);
+    const hgt=0.8+rnd()*0.8;
+    e.set((rnd()-0.5)*0.3,rnd()*Math.PI,(rnd()-0.5)*0.3);
+    q.setFromEuler(e);
+    d.position.set(x,H(x,z)-0.05,z);d.quaternion.copy(q);d.scale.set(1,hgt,1);d.updateMatrix();
+    reeds.push(d.matrix.clone());
+    if(rnd()<0.4){ // seed heads on some reeds
+      tip.set(0,hgt,0).applyQuaternion(q).add(d.position);
+      d.position.copy(tip);d.scale.set(1,1,1);d.updateMatrix();
+      heads.push(d.matrix.clone());
+    }
+  }
+}
+const rc=new THREE.Color();
+function inst(geo,mat,mats,cf){
+  const m=new THREE.InstancedMesh(geo,mat,mats.length);
+  mats.forEach((M,i)=>{m.setMatrixAt(i,M);m.setColorAt(i,cf())});
+  m.castShadow=m.receiveShadow=true;
+  bank.add(m);
+}
+inst(reedGeo,new THREE.MeshStandardMaterial({roughness:0.8}),reeds,()=>rc.setHSL(0.21+rnd()*0.07,0.45,0.28+rnd()*0.16));
+inst(headGeo,new THREE.MeshStandardMaterial({roughness:0.9}),heads,()=>rc.setHSL(0.08,0.4,0.26+rnd()*0.12));
+
+// Survey stakes along the crest
+const wood=new THREE.MeshStandardMaterial({color:0xcbb18d,roughness:0.85});
+const paint=new THREE.MeshStandardMaterial({color:0xe8662a,roughness:0.6});
+const flagM=new THREE.MeshStandardMaterial({color:0xe8662a,roughness:0.7,side:THREE.DoubleSide});
+for(let i=0;i<9;i++){
+  const x=-4+i+(rnd()-0.5)*0.3,z=-3.35+(rnd()-0.5)*0.25;
+  const st=new THREE.Group();
+  st.position.set(x,H(x,z)-0.08,z);
+  st.rotation.set((rnd()-0.5)*0.08,rnd()*Math.PI,(rnd()-0.5)*0.08);
+  const post=new THREE.Mesh(new THREE.BoxGeometry(0.035,0.95,0.035),wood);
+  post.position.y=0.475;post.castShadow=true;
+  const band=new THREE.Mesh(new THREE.BoxGeometry(0.04,0.08,0.04),paint);
+  band.position.y=0.88;band.castShadow=true;
+  st.add(post,band);
+  if(i%2===0){
+    const f=new THREE.Mesh(new THREE.PlaneGeometry(0.16,0.09),flagM);
+    f.position.set(0.1,0.78,0);f.castShadow=true;st.add(f);
+  }
+  bank.add(st);
+}
+
+// Soft ground shadow catcher
+const gnd=new THREE.Mesh(new THREE.CircleGeometry(10,48),new THREE.ShadowMaterial({opacity:0.28}));
+gnd.rotation.x=-Math.PI/2;
+gnd.position.y=-0.61;
+gnd.receiveShadow=true;
+scene.add(gnd);
+
+// Controls
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.target.set(0,0.55,0);
+controls.enableDamping=true;
+controls.autoRotate=true;
+controls.autoRotateSpeed=1.2;
+controls.minDistance=4;
+controls.maxDistance=30;
+controls.maxPolarAngle=Math.PI*0.495;
+
+addEventListener('resize',()=>{
+  camera.aspect=innerWidth/innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth,innerHeight);
+});
+renderer.setAnimationLoop(()=>{controls.update();renderer.render(scene,camera)});
+</script>
+</body>
+</html>

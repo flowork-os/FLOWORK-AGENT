@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Roman Senator — Marble Portrait Bust</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0f1012;}
+  #c{display:block;width:100%;height:100%;}
+  .caption{
+    position:fixed;left:16px;bottom:14px;z-index:2;
+    font-family:Georgia,'Times New Roman',serif;color:#cfc9bd;
+    letter-spacing:.06em;opacity:.55;font-size:13px;pointer-events:none;
+    text-shadow:0 1px 3px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div class="caption">PORTRAIT OF A ROMAN SENATOR · marble · procedural three.js</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { ConvexGeometry } from 'three/addons/geometries/ConvexGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------- small math helpers ---------- */
+const clamp = (x,a,b)=>Math.min(b,Math.max(a,x));
+const mix   = (a,b,t)=>a+(b-a)*t;
+const smooth= (t)=>{t=clamp(t,0,1);return t*t*(3-2*t);};
+const smoother=(t)=>{t=clamp(t,0,1);return t*t*t*(t*(t*6-15)+10);};
+const gg = (a,c)=>Math.exp(-(a*a)/(c*c));            // gaussian
+const V  = (x,y,z)=>new THREE.Vector3(x,y,z);
+
+/* ---------- renderer / scene / camera ---------- */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+
+const camera = new THREE.PerspectiveCamera(35, window.innerWidth/window.innerHeight, 0.05, 100);
+camera.position.set(0.78, 0.86, 1.5);
+
+/* neutral dark studio backdrop (procedural gradient) */
+scene.background = makeBackgroundTexture();
+scene.fog = new THREE.Fog(0x121316, 3.4, 8.5);
+
+/* image-based environment for soft marble reflections */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------- lighting: hemisphere + key + fill + rim ---------- */
+const hemi = new THREE.HemisphereLight(0xbcc8d8, 0x2b2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.9);
+key.position.set(1.7, 2.7, 1.9);
+key.castShadow = true;
+key.shadow.mapSize.set(2048,2048);
+key.shadow.camera.near = 0.1;
+key.shadow.camera.far = 9;
+key.shadow.camera.left = -1.3; key.shadow.camera.right = 1.3;
+key.shadow.camera.top = 1.4; key.shadow.camera.bottom = -0.3;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+const keyTarget = new THREE.Object3D(); keyTarget.position.set(0,0.55,0);
+scene.add(keyTarget); key.target = keyTarget;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xcdd8ff, 0.85);
+fill.position.set(-2.4, 1.1, 1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 2.1);
+rim.position.set(-1.3, 2.2, -2.6);
+scene.add(rim);
+
+/* ---------- ground plane: receives shadows only ---------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(24,24),
+  new THREE.ShadowMaterial({opacity:0.4})
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------- procedural marble materials ---------- */
+const maxAniso = renderer.capabilities.getMaxAnisotropy();
+const marbleTex = makeMarbleColorTexture();
+const bumpTex   = makeBumpTexture();
+marbleTex.repeat.set(1.5,1.5); marbleTex.anisotropy = maxAniso;
+bumpTex.repeat.set(3,3);
+
+const marbleMat = new THREE.MeshStandardMaterial({
+  color:0xece7dc, roughness:0.5, metalness:0.0,
+  map:marbleTex, bumpMap:bumpTex, bumpScale:0.0016,
+  envMapIntensity:0.65
+});
+const plinthMat = new THREE.MeshStandardMaterial({
+  color:0xdcd5c4, roughness:0.72, metalness:0.0,
+  map:marbleTex, bumpMap:bumpTex, bumpScale:0.0022,
+  envMapIntensity:0.5
+});
+
+/* ============================================================
+   BUILD THE ONE CENTERED OBJECT: the senator bust
+   Vertical layout (metres, ground at y=0):
+     plinth base .. cap  0.00 -> 0.245
+     bust foot           0.245 -> 0.32
+     draped torso        ~0.30 -> 0.72
+     neck                0.62 -> 0.78
+     head (centre 0.845) 0.74 -> 0.95
+   ============================================================ */
+const bust = new THREE.Group();
+
+/* ---- plinth (base + chipped die + cap) ---- */
+bust.add(buildPlinth());
+
+/* ---- bust foot / socle ---- */
+const foot = new THREE.Mesh(new THREE.CylinderGeometry(0.072,0.10,0.075,40), plinthMat);
+foot.position.y = 0.283; setShadow(foot); bust.add(foot);
+
+/* ---- toga-draped torso ---- */
+const torso = new THREE.Mesh(buildTorso(), marbleMat);
+setShadow(torso); bust.add(torso);
+
+/* ---- the diagonal toga sash (balteus) + a parallel fold ---- */
+bust.add(buildSash(
+  [V(0.168,0.612,0.05),V(0.08,0.575,0.155),V(-0.02,0.535,0.178),
+   V(-0.12,0.478,0.135),V(-0.176,0.432,0.03)], 0.03));
+bust.add(buildSash(
+  [V(0.128,0.552,0.075),V(0.04,0.515,0.155),V(-0.05,0.478,0.155),
+   V(-0.132,0.44,0.10)], 0.015));
+
+/* ---- neck ---- */
+const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.052,0.075,0.16,36), marbleMat);
+neck.position.set(0,0.70,0.004);
+setShadow(neck); bust.add(neck);
+
+/* ---- head group (cranium + nose + ears + carved hair) ---- */
+const headGroup = new THREE.Group();
+headGroup.position.set(0,0.845,0);
+
+const head = new THREE.Mesh(buildHead(), marbleMat);
+setShadow(head); headGroup.add(head);
+
+const nose = new THREE.Mesh(buildNose(), marbleMat);
+nose.position.set(0,-0.014,0.092); nose.rotation.x = -0.12;
+setShadow(nose); headGroup.add(nose);
+
+for(const s of [-1,1]){
+  const ear = new THREE.Mesh(buildEar(), marbleMat);
+  ear.position.set(s*0.083,-0.006,0.008);
+  ear.rotation.y = s*0.35;
+  setShadow(ear); headGroup.add(ear);
+}
+
+const hair = buildHair(marbleMat);
+headGroup.add(hair);
+
+bust.add(headGroup);
+scene.add(bust);
+
+/* ---------- controls ---------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.enablePan = false;
+controls.minDistance = 0.85;
+controls.maxDistance = 3.2;
+controls.maxPolarAngle = 1.56;
+controls.target.set(0,0.53,0);
+controls.update();
+
+/* ---------- render loop ---------- */
+function animate(){
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene,camera);
+}
+animate();
+
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ============================================================
+   GEOMETRY BUILDERS
+   ============================================================ */
+
+function setShadow(m){ m.castShadow = true; m.receiveShadow = true; }
+
+/* ----- Plinth: base slab, chipped die (convex hull), cap slab ----- */
+function buildPlinth(){
+  const g = new THREE.Group();
+
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.34,0.03,0.28), plinthMat);
+  base.position.y = 0.015; setShadow(base); g.add(base);
+
+  // die with one chipped top corner (front-right) via convex hull
+  const c = 0.055;
+  const pts = [
+    V(-0.13,0.03,-0.105), V(0.13,0.03,-0.105), V(0.13,0.03,0.105), V(-0.13,0.03,0.105),
+    V(-0.13,0.21,-0.105), V(0.13,0.21,-0.105), V(-0.13,0.21,0.105),
+    // the front-right top corner is removed; three chamfer points create the chip facet
+    V(0.13-c+0.004, 0.21, 0.105),
+    V(0.13, 0.21, 0.105-c-0.006),
+    V(0.132, 0.21-c+0.008, 0.108)
+  ];
+  const dieGeo = new ConvexGeometry(pts);
+  addPlanarUV(dieGeo, 0.5);
+  const die = new THREE.Mesh(dieGeo, plinthMat);
+  setShadow(die); g.add(die);
+
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.30,0.035,0.255), plinthMat);
+  cap.position.y = 0.2275; setShadow(cap); g.add(cap);
+
+  return g;
+}
+
+function addPlanarUV(geo, scale){
+  const p = geo.attributes.position;
+  const uv = new Float32Array(p.count*2);
+  for(let i=0;i<p.count;i++){
+    uv[i*2]   = p.getX(i)/scale + 0.5;
+    uv[i*2+1] = p.getZ(i)/scale + 0.5;
+  }
+  geo.setAttribute('uv', new THREE.BufferAttribute(uv,2));
+}
+
+/* ----- Torso: ellipsoid shoulders + shaped width profile + crisp toga folds ----- */
+function buildTorso(){
+  const geo = new THREE.SphereGeometry(1,120,90);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  const cX=0.255, cY=0.205, cZ=0.155, cy=0.52;
+
+  const tri = (u)=>{ u=u-Math.floor(u); const s=1-Math.abs(2*u-1); return Math.pow(s,0.6); };
+
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    const t = v.y;                       // -1 (bottom) .. 1 (top)
+
+    // width profile: widest at the shoulder line, narrowing to neck & truncated chest
+    let wm;
+    if(t>0.30){ wm = mix(1.0,0.30, smoother((t-0.30)/0.70)); }
+    else      { wm = mix(0.68,1.0, smooth((t+1)/1.30)); }
+
+    let x = v.x*wm, z = v.z*wm;
+    let px = x*cX, py = t*cY + cy, pz = z*cZ;
+
+    const ang = Math.atan2(v.z, v.x);
+    const frontMask = 0.5 + 0.5*Math.cos(ang);   // 1 at chest front
+    const backMask  = 0.5 - 0.5*Math.cos(ang);
+
+    // fuller chest
+    const chest = Math.exp(-Math.pow((t+0.05)/0.4,2));
+    pz += 0.022*chest*frontMask;
+
+    // crisp draped folds (radial displacement), diagonal on front, softer on back
+    const lower = clamp((0.55 - t)/1.0,0,1);
+    let d = 0;
+    d += 0.016*(tri(ang/(2*Math.PI)*7 + t*0.9)-0.42)*frontMask*lower;
+    d += 0.007*(tri(ang/(2*Math.PI)*15 + t*1.4)-0.42)*(0.3+0.7*frontMask)*lower;
+    d += 0.008*(tri(ang/(2*Math.PI)*9 - t*0.7)-0.42)*backMask*clamp((0.4-t)/1.0,0,1);
+
+    const r = Math.hypot(px,pz) || 1e-6;
+    px += (px/r)*d;
+    pz += (pz/r)*d;
+
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ----- diagonal toga roll / fold as a smooth tube ----- */
+function buildSash(points, radius){
+  const curve = new THREE.CatmullRomCurve3(points);
+  const geo = new THREE.TubeGeometry(curve, 60, radius, 14, false);
+  const m = new THREE.Mesh(geo, marbleMat);
+  setShadow(m);
+  return m;
+}
+
+/* ----- Head: cranium shaping + carved facial relief ----- */
+function buildHead(){
+  const geo = new THREE.SphereGeometry(1,80,60);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  const hx=0.080, hy=0.108, hz=0.100;
+
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    let dx=v.x, dy=v.y, dz=v.z;
+
+    // jaw & chin taper on the lower face
+    if(dy<0.15){
+      const jt = smooth((0.15-dy)/1.15);
+      dx *= (1 - 0.30*jt);
+      if(dz>0) dz *= (1 - 0.10*jt);
+    }
+    // rounder occiput
+    if(dz<-0.25) dz *= 1.05;
+
+    let px=dx*hx, py=dy*hy, pz=dz*hz;
+
+    // carved relief, only on the forward-facing surface
+    const ff = smooth((v.z-0.12)/0.5);
+    let a = 0;
+    a += 0.011*gg(py-0.030,0.018)*gg(px,0.050)*ff;                       // brow ridge
+    a -= 0.006*(gg(px-0.028,0.017)+gg(px+0.028,0.017))*gg(py-0.004,0.013)*ff; // eye sockets
+    a += 0.004*(gg(px-0.040,0.020)+gg(px+0.040,0.020))*gg(py+0.020,0.020)*ff; // cheekbones
+    a -= 0.004*gg(px,0.028)*gg(py+0.050,0.008)*ff;                       // mouth line
+    a += 0.009*gg(px,0.030)*gg(py+0.076,0.020)*ff;                       // chin
+    a -= 0.004*gg(px,0.010)*gg(py+0.008,0.028)*ff;                       // nasal base dip
+    pz += a;
+
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ----- nose (tapered, bridge recedes into the face) ----- */
+function buildNose(){
+  const geo = new THREE.SphereGeometry(1,22,18);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    const ty = (v.y+1)/2;
+    const px = v.x*0.016*mix(1.05,0.45,ty);
+    const py = v.y*0.034;
+    const pz = v.z*0.022*mix(1.0,0.55,ty);
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ----- ear (thin, gently cupped) ----- */
+function buildEar(){
+  const geo = new THREE.SphereGeometry(1,18,14);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for(let i=0;i<pos.count;i++){
+    v.fromBufferAttribute(pos,i);
+    let px = v.x*0.010, py = v.y*0.028, pz = v.z*0.020;
+    // hollow the outward face a touch
+    if(px>0) px *= mix(1.0,0.4, gg(py,0.016)*gg(pz,0.012));
+    pos.setXYZ(i, px, py, pz);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+/* ----- carved short Roman hair: rows of small locks combed forward/down ----- */
+function buildHair(mat){
+  const lockGeo = new THREE.CapsuleGeometry(0.5,1.0,3,8);
+
+  const n = new THREE.Vector3();
+  const down = new THREE.Vector3(0,-1,0);
+  const fwd  = new THREE.Vector3(0,0,1);
+  const g = new THREE.Vector3();
+  const yA = new THREE.Vector3(), zA = new THREE.Vector3(), xA = new THREE.Vector3();
+  const hx=0.081, hy=0.111, hz=0.101;
+
+  const isHair = (nn)=>{
+    const face = (nn.z>0.30) && (nn.y<0.30) && (nn.y>-0.75) && (Math.abs(nn.x)<0.66);
+    const ear  = (Math.abs(nn.x)>0.74) && (nn.y<0.22) && (nn.y>-0.38) && (Math.abs(nn.z)<0.5);
+    const lowFront = (nn.y<-0.30) && (nn.z>-0.15);
+    const tooLow = nn.y<-0.45;
+    return !(face||ear||lowFront||tooLow);
+  };
+
+  const mats = [];
+  for(let phi=0.05; phi<2.55; phi+=0.19){
+    const ring = Math.max(3, Math.round(2*Math.PI*Math.sin(phi)/0.20));
+    for(let j=0;j<ring;j++){
+      const th = (j/ring)*Math.PI*2 + phi*3.7 + (Math.random()-0.5)*0.10;
+      const ph = phi + (Math.random()-0.5)*0.06;
+      n.set(Math.sin(ph)*Math.cos(th), Math.cos(ph), Math.sin(ph)*Math.sin(th)).normalize();
+      if(!isHair(n)) continue;
+
+      let px=n.x*hx, py=n.y*hy, pz=n.z*hz;
+      px+=n.x*0.004; py+=n.y*0.004; pz+=n.z*0.004;   // sit proud of scalp
+
+      // comb direction: downhill along surface, forward at the crown
+      g.copy(down).addScaledVector(n,-down.dot(n));
+      if(g.lengthSq()<0.03){ g.copy(fwd).addScaledVector(n,-fwd.dot(n)); }
+      g.normalize();
+
+      yA.copy(g); zA.copy(n);
+      xA.crossVectors(yA,zA).normalize();
+      zA.crossVectors(xA,yA).normalize();
+
+      const basis = new THREE.Matrix4().makeBasis(xA,yA,zA);
+      const sw = 0.009*(0.8+Math.random()*0.5);
+      const sl = 0.012*(0.8+Math.random()*0.6);
+      const st = 0.006*(0.8+Math.random()*0.4);
+      const scale = new THREE.Matrix4().makeScale(sw,sl,st);
+      const trans = new THREE.Matrix4().makeTranslation(px,py,pz);
+      mats.push(new THREE.Matrix4().multiplyMatrices(trans,basis).multiply(scale));
+    }
+  }
+
+  const inst = new THREE.InstancedMesh(lockGeo, mat, mats.length);
+  for(let i=0;i<mats.length;i++) inst.setMatrixAt(i,mats[i]);
+  inst.instanceMatrix.needsUpdate = true;
+  inst.castShadow = true; inst.receiveShadow = true;
+  return inst;
+}
+
+/* ============================================================
+   PROCEDURAL TEXTURES (canvas — no external assets)
+   ============================================================ */
+function makeMarbleColorTexture(){
+  const s=1024;
+  const cv=document.createElement('canvas'); cv.width=cv.height=s;
+  const c=cv.getContext('2d');
+  c.fillStyle='#e9e4d9'; c.fillRect(0,0,s,s);
+
+  // soft tonal blotches
+  for(let i=0;i<44;i++){
+    const x=Math.random()*s, y=Math.random()*s, r=80+Math.random()*260;
+    const warm=Math.random()>0.5;
+    const col = warm ? 'rgba(228,221,205,' : 'rgba(212,213,214,';
+    const grd=c.createRadialGradient(x,y,0,x,y,r);
+    grd.addColorStop(0, col+(0.09+Math.random()*0.12)+')');
+    grd.addColorStop(1, col+'0)');
+    c.fillStyle=grd; c.beginPath(); c.arc(x,y,r,0,7); c.fill();
+  }
+  // faint wandering veins
+  for(let i=0;i<28;i++){
+    let x=Math.random()*s, y=Math.random()*s;
+    const ang=Math.random()*Math.PI*2, len=120+Math.random()*380, steps=10;
+    c.beginPath(); c.moveTo(x,y);
+    for(let k=0;k<steps;k++){
+      x+=Math.cos(ang)*len/steps+(Math.random()-0.5)*40;
+      y+=Math.sin(ang)*len/steps+(Math.random()-0.5)*40;
+      c.lineTo(x,y);
+    }
+    c.strokeStyle='rgba(150,144,130,'+(0.05+Math.random()*0.10)+')';
+    c.lineWidth=0.6+Math.random()*1.6; c.stroke();
+  }
+  // fine speckle
+  for(let i=0;i<2600;i++){
+    const val=(120+Math.random()*110)|0;
+    c.fillStyle='rgba('+val+','+val+','+(val-8)+',0.03)';
+    c.fillRect(Math.random()*s, Math.random()*s, 1.4, 1.4);
+  }
+
+  const t=new THREE.CanvasTexture(cv);
+  t.colorSpace=THREE.SRGBColorSpace;
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  return t;
+}
+
+function makeBumpTexture(){
+  const s=512;
+  const cv=document.createElement('canvas'); cv.width=cv.height=s;
+  const c=cv.getContext('2d');
+  c.fillStyle='#808080'; c.fillRect(0,0,s,s);
+  for(let i=0;i<2600;i++){
+    const x=Math.random()*s, y=Math.random()*s, r=4+Math.random()*22;
+    const v=(Math.random()*255)|0;
+    const grd=c.createRadialGradient(x,y,0,x,y,r);
+    grd.addColorStop(0,'rgba('+v+','+v+','+v+',0.045)');
+    grd.addColorStop(1,'rgba('+v+','+v+','+v+',0)');
+    c.fillStyle=grd; c.beginPath(); c.arc(x,y,r,0,7); c.fill();
+  }
+  const t=new THREE.CanvasTexture(cv);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;
+  return t;
+}
+
+function makeBackgroundTexture(){
+  const s=1024;
+  const cv=document.createElement('canvas'); cv.width=cv.height=s;
+  const c=cv.getContext('2d');
+  const grd=c.createRadialGradient(s*0.5,s*0.42,40, s*0.5,s*0.5,s*0.78);
+  grd.addColorStop(0.0,'#3a3c42');
+  grd.addColorStop(0.45,'#212328');
+  grd.addColorStop(1.0,'#0e0f11');
+  c.fillStyle=grd; c.fillRect(0,0,s,s);
+  const t=new THREE.CanvasTexture(cv);
+  t.colorSpace=THREE.SRGBColorSpace;
+  return t;
+}
+</script>
+</body>
+</html>

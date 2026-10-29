@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Claymation Layer Cake Slice</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #16161c; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 16px; transform: translateX(-50%);
+    font: 12px/1.4 system-ui, sans-serif; color: #b9b4bf; opacity: 0.55;
+    letter-spacing: 0.06em; text-transform: uppercase; pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer / Scene / Camera
+--------------------------------------------------------------------------- */
+const app = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16161c);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(3.5, 2.35, 4.3);
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key/fill/rim with soft shadows
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xffffff, 0x3a2a2a, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1e2, 2.3);
+key.position.set(4, 7, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 30;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.00025;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbfd4ff, 0.6);
+fill.position.set(-5, 2.5, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.05);
+rim.position.set(-2.5, 3.5, -5);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Shadow-only ground
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Procedural noise (deterministic) for the dented clay look
+--------------------------------------------------------------------------- */
+function noise3(x, y, z) {
+  return (
+    Math.sin(x * 1.7 + y * 2.3) * 0.5 +
+    Math.sin(y * 1.9 + z * 2.1 + 1.3) * 0.3 +
+    Math.sin(z * 2.5 + x * 1.3 + 2.7) * 0.2
+  );
+}
+function fbm(x, y, z) {
+  let s = 0, a = 0.5, f = 1.0;
+  for (let i = 0; i < 3; i++) {
+    s += a * noise3(x * f, y * f, z * f);
+    f *= 2.03;
+    a *= 0.5;
+  }
+  return s;
+}
+
+// Push vertices around with position-based vector noise (watertight: shared
+// positions get identical offsets, so no cracks) -> soft thumb-pressed clay.
+function claymorph(geo, amp, freq, vScale = 0.6) {
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const dx = fbm(x * freq + 1.1, y * freq + 2.2, z * freq + 3.3);
+    const dy = fbm(x * freq + 7.7, y * freq + 5.5, z * freq + 9.9);
+    const dz = fbm(x * freq + 4.4, y * freq + 8.8, z * freq + 6.6);
+    pos.setXYZ(i, x + dx * amp, y + dy * amp * vScale, z + dz * amp);
+  }
+  pos.needsUpdate = true;
+  geo.computeVertexNormals();
+}
+
+/* ---------------------------------------------------------------------------
+   Wedge (pie-slice sector) geometry with rounded clay edges
+--------------------------------------------------------------------------- */
+function sectorGeo(radius, theta, depth, bevel) {
+  const h = theta / 2;
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0);
+  shape.lineTo(radius * Math.cos(-h), radius * Math.sin(-h));
+  shape.absarc(0, 0, radius, -h, h, false);
+  shape.lineTo(0, 0);
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: depth,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 3,
+    curveSegments: 76,
+    steps: 3
+  });
+  geo.rotateX(-Math.PI / 2); // extrude axis -> up
+  return geo;
+}
+
+/* ---------------------------------------------------------------------------
+   Clay materials
+--------------------------------------------------------------------------- */
+function clayMat(color, rough, metal = 0) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color),
+    roughness: rough,
+    metalness: metal,
+    flatShading: false
+  });
+}
+
+const matSponge = [
+  clayMat(0xd9a15e, 0.95),
+  clayMat(0xe1ab68, 0.95),
+  clayMat(0xd59a55, 0.95)
+];
+const matCream = clayMat(0xf3a6c2, 0.9);
+const matChoc = clayMat(0x3d2416, 0.5);
+const matCherry = clayMat(0xb51f2e, 0.42);
+const matStem = clayMat(0x5b3a1f, 0.7);
+
+/* ---------------------------------------------------------------------------
+   Build the single cake slice
+--------------------------------------------------------------------------- */
+const R = 1.5;
+const THETA = THREE.MathUtils.degToRad(58);
+const cake = new THREE.Group();
+
+let yCursor = 0;
+
+function addLayer(radius, depth, bevel, mat, morphAmp, morphFreq) {
+  const geo = sectorGeo(radius, THETA, depth, bevel);
+  claymorph(geo, morphAmp, morphFreq);
+  geo.computeBoundingBox();
+  geo.translate(0, yCursor - geo.boundingBox.min.y, 0);
+  geo.computeBoundingBox();
+  const topY = geo.boundingBox.max.y;
+
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  cake.add(mesh);
+
+  yCursor = topY - 0.02; // slight overlap so layers read as pressed together
+  return topY;
+}
+
+// Sponge / cream / sponge / cream / sponge
+addLayer(R,        0.28, 0.035, matSponge[0], 0.035, 1.7);
+addLayer(R + 0.08, 0.06, 0.055, matCream,     0.055, 2.1); // squished filling
+addLayer(R,        0.28, 0.035, matSponge[1], 0.035, 1.7);
+addLayer(R + 0.08, 0.06, 0.055, matCream,     0.055, 2.1);
+addLayer(R,        0.28, 0.035, matSponge[2], 0.035, 1.7);
+
+// Chocolate glaze on top (overhangs a touch)
+const yGlazeBottom = yCursor;
+const glazeTop = addLayer(R + 0.05, 0.05, 0.045, matChoc, 0.03, 2.4);
+
+/* ---------------------------------------------------------------------------
+   Drippy chocolate running down the rim
+--------------------------------------------------------------------------- */
+const chocGroup = new THREE.Group();
+const h = THETA / 2;
+const Rd = R + 0.02;
+const dripPts = [];
+
+// along the curved front rim
+const nArc = 10;
+for (let i = 0; i <= nArc; i++) {
+  const phi = -h + (2 * h) * (i / nArc);
+  dripPts.push({ x: Rd * Math.cos(phi), z: -Rd * Math.sin(phi) });
+}
+// a few along each straight side near the rim
+for (const s of [-1, 1]) {
+  const phi = s * h;
+  for (let t = 0.42; t <= 0.92; t += 0.25) {
+    const r = R * t + 0.02;
+    dripPts.push({ x: r * Math.cos(phi), z: -r * Math.sin(phi) });
+  }
+}
+
+const dripTopY = yGlazeBottom + 0.03;
+for (let i = 0; i < dripPts.length; i++) {
+  const p = dripPts[i];
+  const n = fbm(p.x * 3.1 + 5, 1.3, p.z * 3.1 - 2); // -> length variation
+  const len = 0.12 + (n * 0.5 + 0.5) * 0.34;
+  const rr = 0.05 + (fbm(p.x * 5, 2, p.z * 5) * 0.5 + 0.5) * 0.02;
+
+  const drip = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(rr, len, 6, 14), matChoc);
+  body.position.y = dripTopY - len / 2 - rr;
+  body.castShadow = true;
+  body.receiveShadow = true;
+  drip.add(body);
+
+  const bead = new THREE.Mesh(new THREE.SphereGeometry(rr * 1.25, 16, 14), matChoc);
+  bead.position.y = dripTopY - len - rr * 1.4;
+  bead.castShadow = true;
+  bead.receiveShadow = true;
+  drip.add(bead);
+
+  drip.position.set(p.x, 0, p.z);
+  chocGroup.add(drip);
+}
+cake.add(chocGroup);
+
+/* ---------------------------------------------------------------------------
+   Fingerprinted cherry + stem
+--------------------------------------------------------------------------- */
+const cherryGroup = new THREE.Group();
+const cherryR = 0.17;
+const cherryGeo = new THREE.SphereGeometry(cherryR, 40, 32);
+claymorph(cherryGeo, 0.014, 3.2, 1.0); // little dents / thumb presses
+cherryGeo.computeVertexNormals();
+const cherry = new THREE.Mesh(cherryGeo, matCherry);
+cherry.castShadow = true;
+cherry.receiveShadow = true;
+cherryGroup.add(cherry);
+
+const stemCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0, cherryR * 0.85, 0),
+  new THREE.Vector3(0.03, cherryR + 0.10, 0.02),
+  new THREE.Vector3(-0.03, cherryR + 0.22, 0.0),
+  new THREE.Vector3(0.03, cherryR + 0.31, -0.03)
+]);
+const stem = new THREE.Mesh(new THREE.TubeGeometry(stemCurve, 24, 0.02, 8, false), matStem);
+stem.castShadow = true;
+cherryGroup.add(stem);
+
+cherryGroup.position.set(0.58, glazeTop + cherryR * 0.82, 0.12);
+cake.add(cherryGroup);
+
+/* ---------------------------------------------------------------------------
+   Center the single object over the origin
+--------------------------------------------------------------------------- */
+cake.position.x = -0.66;
+scene.add(cake);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 3.0;
+controls.maxDistance = 10;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.target.set(0, glazeTop * 0.52, 0);
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

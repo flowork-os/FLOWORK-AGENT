@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Voxel Amanita Toadstool</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #191b1f; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #7f8894; letter-spacing: .04em; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Amanita Toadstool · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & Camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x191b1f);
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 26, 64);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(11, 8.5, 13);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x9fb2c4, 0x2c3327, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.3);
+key.position.set(10, 17, 8);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 4;
+key.shadow.bias = -0.0004;
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 60;
+key.shadow.camera.left = -13;
+key.shadow.camera.right = 13;
+key.shadow.camera.top = 15;
+key.shadow.camera.bottom = -3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9db6d6, 0.55);
+fill.position.set(-9, 6, -3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe4c4, 0.9);
+rim.position.set(-5, 9, -11);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane that only receives shadows
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(240, 240),
+  new THREE.ShadowMaterial({ opacity: 0.36 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.001;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ===========================================================================
+// Voxel toadstool — fully procedural cube grid
+// ===========================================================================
+const VOX = 0.6;      // world size of a single voxel
+const MIN_Y = -8;     // lowest grid layer -> rests on ground
+
+// deterministic pseudo-random hash -> [0,1)
+function hash(x, y, z) {
+  let n = Math.imul(x | 0, 374761393) + Math.imul(y | 0, 668265263) + Math.imul(z | 0, 2147483647);
+  n = Math.imul(n ^ (n >>> 13), 1274126177);
+  n = n ^ (n >>> 16);
+  return (n >>> 0) / 4294967295;
+}
+const lit = (x, y, z) => hash(x, y, z) > 0.5; // choose between two palette shades
+
+// collected voxel positions, keyed by material bucket
+const G = {
+  capDark: [], capLite: [], gills: [], wart: [],
+  stalkLite: [], stalkDark: [], ring: [],
+  mossDark: [], mossLite: [], grass: []
+};
+
+// --- Cap: stepped dome, widest at the flaring rim ---
+const capProfile = [
+  { y: 0, r: 6.0 }, // underside (gills)
+  { y: 1, r: 6.4 }, // flaring rim (max width)
+  { y: 2, r: 6.0 },
+  { y: 3, r: 5.3 },
+  { y: 4, r: 4.4 },
+  { y: 5, r: 3.3 },
+  { y: 6, r: 2.1 },
+  { y: 7, r: 1.1 }
+];
+const columnTop = new Map();
+for (const L of capProfile) {
+  const rr = L.r * L.r;
+  for (let x = -7; x <= 7; x++) {
+    for (let z = -7; z <= 7; z++) {
+      if (x * x + z * z > rr) continue;
+      if (L.y === 0) {
+        G.gills.push([x, 0, z]); // ivory gills tucked under the rim
+      } else {
+        (lit(x, L.y, z) ? G.capLite : G.capDark).push([x, L.y, z]);
+        const k = x + ',' + z;
+        const cur = columnTop.get(k);
+        if (cur === undefined || L.y > cur) columnTop.set(k, L.y);
+      }
+    }
+  }
+}
+
+// --- White cube-warts studding the domed top surface ---
+columnTop.forEach((topY, k) => {
+  const [x, z] = k.split(',').map(Number);
+  if (hash(x + 101, topY, z - 57) < 0.30) G.wart.push([x, topY + 1, z]);
+});
+
+// --- Stubby ivory stalk with bulbous volva base ---
+const stalkProfile = [
+  { y: -1, r: 2.2 }, { y: -2, r: 2.0 }, { y: -3, r: 2.0 },
+  { y: -4, r: 2.3 }, { y: -5, r: 2.6 }, { y: -6, r: 3.0 }
+];
+for (const L of stalkProfile) {
+  const rr = L.r * L.r;
+  for (let x = -4; x <= 4; x++)
+    for (let z = -4; z <= 4; z++)
+      if (x * x + z * z <= rr)
+        (lit(x, L.y, z) ? G.stalkLite : G.stalkDark).push([x, L.y, z]);
+}
+
+// --- Annulus ring / skirt around the stalk ---
+for (let x = -4; x <= 4; x++) {
+  for (let z = -4; z <= 4; z++) {
+    const d2 = x * x + z * z;
+    if (d2 > 4.0 && d2 <= 12.25) G.ring.push([x, -2, z]);        // skirt
+    if (d2 > 9.0 && d2 <= 12.25) G.ring.push([x, -3, z]);        // drooping edge
+  }
+}
+
+// --- Mossy green voxel base ---
+const mossProfile = [{ y: -8, r: 7.0 }, { y: -7, r: 6.2 }];
+for (const L of mossProfile) {
+  const rr = L.r * L.r;
+  for (let x = -7; x <= 7; x++)
+    for (let z = -7; z <= 7; z++)
+      if (x * x + z * z <= rr)
+        (lit(x, L.y, z) ? G.mossLite : G.mossDark).push([x, L.y, z]);
+}
+// scattered grass tufts poking up around the stalk
+for (let x = -7; x <= 7; x++) {
+  for (let z = -7; z <= 7; z++) {
+    const d2 = x * x + z * z;
+    if (d2 > 12.25 && d2 <= 42.25 && hash(x - 13, -6, z + 29) < 0.16) {
+      G.grass.push([x, -6, z]);
+      if (hash(x + 7, -5, z - 3) < 0.30) G.grass.push([x, -5, z]);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Materials (limited retro palette, two shades per surface for stepped depth)
+// ---------------------------------------------------------------------------
+function mat(hex) {
+  return new THREE.MeshStandardMaterial({
+    color: hex, roughness: 0.9, metalness: 0.0, flatShading: true
+  });
+}
+const MATS = {
+  capDark: mat(0xb01e22), capLite: mat(0xd93a2b),
+  gills: mat(0xe9dcc0), wart: mat(0xf6f1e3),
+  stalkLite: mat(0xeadfc4), stalkDark: mat(0xd6c6a2), ring: mat(0xf0e6cf),
+  mossDark: mat(0x386030), mossLite: mat(0x4e8a3a), grass: mat(0x74bd4d)
+};
+
+// ---------------------------------------------------------------------------
+// Build instanced cubes
+// ---------------------------------------------------------------------------
+const toadstool = new THREE.Group();
+const _m = new THREE.Matrix4();
+
+function buildBucket(list, material, sizeScale = 1) {
+  if (!list.length) return;
+  const geo = new THREE.BoxGeometry(VOX * sizeScale, VOX * sizeScale, VOX * sizeScale);
+  const mesh = new THREE.InstancedMesh(geo, material, list.length);
+  for (let i = 0; i < list.length; i++) {
+    const [x, y, z] = list[i];
+    _m.makeTranslation(
+      x * VOX,
+      (y - MIN_Y) * VOX + VOX / 2,
+      z * VOX
+    );
+    mesh.setMatrixAt(i, _m);
+  }
+  mesh.instanceMatrix.needsUpdate = true;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  toadstool.add(mesh);
+}
+
+buildBucket(G.mossDark, MATS.mossDark);
+buildBucket(G.mossLite, MATS.mossLite);
+buildBucket(G.grass, MATS.grass);
+buildBucket(G.stalkDark, MATS.stalkDark);
+buildBucket(G.stalkLite, MATS.stalkLite);
+buildBucket(G.ring, MATS.ring);
+buildBucket(G.capDark, MATS.capDark);
+buildBucket(G.capLite, MATS.capLite);
+buildBucket(G.gills, MATS.gills);
+buildBucket(G.wart, MATS.wart, 1.22); // proud, studded warts
+
+scene.add(toadstool);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 8;
+controls.maxDistance = 34;
+controls.maxPolarAngle = Math.PI * 0.5 + 0.04;
+controls.target.set(0, 4.2, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ---------------------------------------------------------------------------
+// Render loop
+// ---------------------------------------------------------------------------
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

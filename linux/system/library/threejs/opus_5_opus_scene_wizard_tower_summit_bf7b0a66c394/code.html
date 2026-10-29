@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Wizard Tower Summit</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#0b1024}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   CONFIG + PALETTE — every tunable value lives here
+   ============================================================ */
+const CFG = {
+  seed: 77413,
+  camOffset: new THREE.Vector3(15.5, 10.8, 18.5),  // start azimuth faces the orb, telescope and raven
+  target: new THREE.Vector3(0, 3.0, 0),
+  autoRotateSpeed: 0.7,
+  fogNear: 42, fogFar: 175,
+  flashPeriod: 2.9,
+};
+
+const PAL = {
+  stone: 0x767b8b, stoneDark: 0x3b4050, floor: 0x5c6273, wood: 0x6d4a2e,
+  iron: 0x3c414f, brass: 0xd9a441, cloth: 0x51307f, moon: 0xa8c4ff,
+  arcane: 0x76e6ff, arcane2: 0xb07bff, fire: 0xff8a34, raven: 0x232838,
+  storm: 0x333c5c, crag: 0x28304a, fog: 0x121a33,
+};
+
+/* ============================================================
+   SEEDED PRNG + SMALL HELPERS — no Math.random anywhere
+   ============================================================ */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rr = (a, b) => a + (b - a) * rand();
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+
+// Mesh factory: geometry + material + position, shadow flags on by default.
+function mesh(geo, mat, x = 0, y = 0, z = 0, shadow = true){
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = m.receiveShadow = shadow; return m;
+}
+function warpGeometry(geo, fn){
+  const p = geo.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++){ v.fromBufferAttribute(p, i); fn(v); p.setXYZ(i, v.x, v.y, v.z); }
+  p.needsUpdate = true; geo.computeVertexNormals(); return geo;
+}
+
+/* ============================================================
+   PROCEDURAL CANVAS TEXTURES
+   ============================================================ */
+function canvas2d(w, h){ const c = document.createElement('canvas'); c.width = w; c.height = h; return [c, c.getContext('2d')]; }
+function toTexture(c, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4; return t;
+}
+const rgba = (r, g, b, a) => `rgba(${r | 0},${g | 0},${b | 0},${a})`;
+
+function skyTexture(){                                   // night gradient, stars, storm band, moon glow
+  const [c, g] = canvas2d(1024, 512);
+  const grd = g.createLinearGradient(0, 0, 0, 512);
+  for (const [s, col] of [[0, '#05070f'], [0.34, '#101a38'], [0.6, '#22305c'], [0.82, '#2d3a63'], [1, '#0a0e1c']])
+    grd.addColorStop(s, col);
+  g.fillStyle = grd; g.fillRect(0, 0, 1024, 512);
+  for (let i = 0; i < 340; i++){                         // stars, thinner near the storm band
+    const x = rand() * 1024, y = rand() * 250, a = 0.25 + rand() * 0.7;
+    g.fillStyle = rgba(210 + rand() * 45, 220 + rand() * 35, 255, a);
+    g.beginPath(); g.arc(x, y, rand() * 1.5 + 0.3, 0, 6.283); g.fill();
+  }
+  const moon = g.createRadialGradient(760, 120, 0, 760, 120, 170);
+  moon.addColorStop(0, 'rgba(215,230,255,0.75)'); moon.addColorStop(0.12, 'rgba(160,190,240,0.35)');
+  moon.addColorStop(1, 'rgba(120,150,220,0)');
+  g.fillStyle = moon; g.fillRect(560, 0, 400, 320);
+  for (let i = 0; i < 60; i++){                          // brooding cloud shelves near the horizon
+    const x = rand() * 1024, y = 230 + rand() * 170, r = 50 + rand() * 130;
+    const cg = g.createRadialGradient(x, y, 0, x, y, r);
+    cg.addColorStop(0, rgba(40 + rand() * 30, 50 + rand() * 30, 90 + rand() * 40, 0.5));
+    cg.addColorStop(1, 'rgba(20,26,50,0)');
+    g.fillStyle = cg; g.beginPath(); g.ellipse(x, y, r, r * 0.42, 0, 0, 6.283); g.fill();
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.mapping = THREE.EquirectangularReflectionMapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+function masonryTexture(){                               // coursed tower blocks with dark mortar
+  const [c, g] = canvas2d(256, 256);
+  g.fillStyle = '#2b2f3c'; g.fillRect(0, 0, 256, 256);
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 6; col++){
+    const x = col * 44 + (row % 2 ? 22 : 0) - 6, y = row * 32;
+    const v = 92 + rand() * 46;
+    g.fillStyle = rgba(v, v * 1.03, v * 1.2, 1);
+    g.fillRect(x + 2, y + 2, 40, 28);
+    g.fillStyle = rgba(v * 0.7, v * 0.72, v * 0.85, 0.6);
+    for (let k = 0; k < 5; k++) g.fillRect(x + 2 + rand() * 34, y + 2 + rand() * 24, 3 + rand() * 8, 2 + rand() * 4);
+  }
+  return toTexture(c, 6, 3);
+}
+function floorTexture(){                                 // radial flagstones for the platform deck
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#3c414f'; g.fillRect(0, 0, 512, 512);
+  g.translate(256, 256);
+  for (let ring = 0; ring < 5; ring++){
+    const r0 = 40 + ring * 44, r1 = r0 + 40, n = 8 + ring * 4;
+    for (let i = 0; i < n; i++){
+      const a0 = (i / n) * 6.283 + ring * 0.3, a1 = a0 + 6.283 / n - 0.035;
+      const v = 74 + rand() * 34;
+      g.fillStyle = rgba(v, v * 1.04, v * 1.22, 1);
+      g.beginPath(); g.arc(0, 0, r1, a0, a1); g.arc(0, 0, r0, a1, a0, true); g.closePath(); g.fill();
+    }
+  }
+  g.beginPath(); g.arc(0, 0, 38, 0, 6.283); g.fillStyle = '#4a5061'; g.fill();
+  for (let i = 0; i < 700; i++){
+    g.fillStyle = rgba(30 + rand() * 60, 34 + rand() * 60, 48 + rand() * 70, 0.35);
+    g.fillRect(rand() * 512 - 256, rand() * 512 - 256, 2 + rand() * 5, 2 + rand() * 5);
+  }
+  return toTexture(c);
+}
+function runeTexture(){                                  // glowing sigil circle, drawn on black for additive use
+  const [c, g] = canvas2d(512, 512);
+  g.fillStyle = '#000'; g.fillRect(0, 0, 512, 512);
+  g.translate(256, 256);
+  g.strokeStyle = '#a6e2ff'; g.shadowColor = '#59b6ff';
+  for (const [r, w, s] of [[238, 5, 18], [214, 2, 10], [152, 3, 12], [94, 2, 9]]){
+    g.lineWidth = w; g.shadowBlur = s; g.beginPath(); g.arc(0, 0, r, 0, 6.283); g.stroke();
+  }
+  for (let i = 0; i < 30; i++){                          // glyph band between the outer rings
+    g.save(); g.rotate((i / 30) * 6.283); g.translate(0, -226);
+    g.lineWidth = 3; g.shadowBlur = 12; g.beginPath();
+    for (let k = 0; k < 3; k++){ g.moveTo(rr(-7, 7), rr(-8, 8)); g.lineTo(rr(-7, 7), rr(-8, 8)); }
+    g.stroke(); g.restore();
+  }
+  g.lineWidth = 3; g.shadowBlur = 16; g.beginPath();     // heptagram inside
+  for (let i = 0; i <= 7; i++){
+    const a = ((i * 3) / 7) * 6.283, x = Math.cos(a) * 148, y = Math.sin(a) * 148;
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.closePath(); g.stroke();
+  return toTexture(c);
+}
+function woodTexture(){                                  // crate and pole planking
+  const [c, g] = canvas2d(256, 128);
+  g.fillStyle = '#6c4a2d'; g.fillRect(0, 0, 256, 128);
+  for (let i = 0; i < 60; i++){
+    const y = rand() * 128;
+    g.strokeStyle = rgba(70 + rand() * 50, 48 + rand() * 34, 26 + rand() * 24, 0.7); g.lineWidth = 1 + rand() * 2.4;
+    g.beginPath(); g.moveTo(0, y);
+    for (let x = 0; x <= 256; x += 32) g.lineTo(x, y + Math.sin(x * 0.05 + i) * 2.2);
+    g.stroke();
+  }
+  return toTexture(c, 2, 1);
+}
+function clothTexture(){                                 // banner weave with a gold sigil and trim
+  const [c, g] = canvas2d(256, 256);
+  g.fillStyle = '#ffffff'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 900; i++){
+    g.fillStyle = rgba(200 + rand() * 55, 200 + rand() * 55, 210 + rand() * 45, 0.25);
+    g.fillRect(rand() * 256, rand() * 256, 1 + rand() * 3, 1 + rand() * 8);
+  }
+  g.strokeStyle = '#e8c874'; g.lineWidth = 10;
+  g.strokeRect(14, 10, 228, 236);
+  g.strokeStyle = '#f0d894'; g.lineWidth = 7; g.shadowColor = '#c9a044'; g.shadowBlur = 8;
+  g.beginPath(); g.arc(128, 118, 52, 0, 6.283); g.stroke();
+  g.beginPath();
+  for (let i = 0; i <= 5; i++){
+    const a = ((i * 2) / 5) * 6.283 - 1.57, x = 128 + Math.cos(a) * 50, y = 118 + Math.sin(a) * 50;
+    if (i) g.lineTo(x, y); else g.moveTo(x, y);
+  }
+  g.closePath(); g.stroke();
+  return toTexture(c);
+}
+function softDotTexture(){                               // arcane mote / ember sprite
+  const [c, g] = canvas2d(64, 64);
+  const cg = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  cg.addColorStop(0, 'rgba(255,255,255,1)'); cg.addColorStop(0.35, 'rgba(190,235,255,0.5)');
+  cg.addColorStop(1, 'rgba(120,200,255,0)');
+  g.fillStyle = cg; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+const TEX = {
+  sky: skyTexture(), masonry: masonryTexture(), floor: floorTexture(),
+  rune: runeTexture(), wood: woodTexture(), cloth: clothTexture(), dot: softDotTexture(),
+};
+
+/* ============================================================
+   MATERIALS
+   ============================================================ */
+const MAT = {
+  masonry:  new THREE.MeshStandardMaterial({ map: TEX.masonry, color: PAL.stone, roughness: 0.92 }),
+  masonryIn:new THREE.MeshStandardMaterial({ map: TEX.masonry, color: PAL.stone, roughness: 0.92, side: THREE.DoubleSide }),
+  stone:    new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.9 }),
+  stoneDark:new THREE.MeshStandardMaterial({ color: PAL.stoneDark, roughness: 0.95 }),
+  floor:    new THREE.MeshStandardMaterial({ map: TEX.floor, color: PAL.floor, roughness: 0.88 }),
+  wood:     new THREE.MeshStandardMaterial({ map: TEX.wood, color: PAL.wood, roughness: 0.85 }),
+  iron:     new THREE.MeshStandardMaterial({ color: PAL.iron, roughness: 0.45, metalness: 0.7 }),
+  brass:    new THREE.MeshStandardMaterial({ color: PAL.brass, roughness: 0.28, metalness: 0.85 }),
+  raven:    new THREE.MeshStandardMaterial({ color: PAL.raven, roughness: 0.55, metalness: 0.15 }),
+  crag:     new THREE.MeshStandardMaterial({ color: PAL.crag, roughness: 1, flatShading: true }),
+  storm:    new THREE.MeshStandardMaterial({ color: PAL.storm, roughness: 1, flatShading: true,
+                                             emissive: 0x2a3660, emissiveIntensity: 0.4 }),
+  orb:      new THREE.MeshStandardMaterial({ color: 0x9beeff, emissive: PAL.arcane, emissiveIntensity: 2.4,
+                                             roughness: 0.1, transparent: true, opacity: 0.86 }),
+  orbCore:  new THREE.MeshBasicMaterial({ color: 0xf2ffff }),
+  halo:     new THREE.MeshBasicMaterial({ color: PAL.arcane, transparent: true, opacity: 0.13,
+                                          blending: THREE.AdditiveBlending, depthWrite: false }),
+  rune:     new THREE.MeshBasicMaterial({ map: TEX.rune, transparent: true, blending: THREE.AdditiveBlending,
+                                          depthWrite: false, opacity: 0.95 }),
+  bolt:     new THREE.MeshBasicMaterial({ color: 0xeef6ff, transparent: true, opacity: 0.55, fog: false }),
+  boltGlow: new THREE.MeshBasicMaterial({ color: 0x8fc8ff, transparent: true, opacity: 0.22, fog: false,
+                                          blending: THREE.AdditiveBlending, depthWrite: false }),
+  flame:    new THREE.MeshBasicMaterial({ color: 0xff8a2e, transparent: true, opacity: 0.55,
+                                          blending: THREE.AdditiveBlending, depthWrite: false }),
+  paper:    new THREE.MeshStandardMaterial({ color: 0xe6dcc0, roughness: 0.95 }),
+  glass:    new THREE.MeshStandardMaterial({ color: 0x8fb8c8, roughness: 0.12, transparent: true, opacity: 0.5 }),
+};
+
+/* ============================================================
+   BUILDERS — each returns a THREE.Group
+   ============================================================ */
+
+// The tower crown: shaft, flagstone deck, parapet wall and crenellated merlons.
+function buildTowerTop(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(6.5, 8.0, 16, 40, 1, true), MAT.masonry, 0, -8.3));
+  for (const y of [-2.4, -6.6, -11.2])
+    grp.add(mesh(new THREE.CylinderGeometry(6.8, 6.95, 0.45, 40), MAT.stoneDark, 0, y));
+  for (let i = 0; i < 5; i++){                             // lit arrow slits down the shaft
+    const a = i * 1.257 + 0.4;
+    grp.add(mesh(new THREE.BoxGeometry(0.3, 1.1, 0.2), MAT.flame,
+                 Math.cos(a) * 6.75, -4.2 - (i % 2) * 3.4, Math.sin(a) * 6.75, false));
+  }
+  const deck = new THREE.Mesh(new THREE.CylinderGeometry(7.0, 7.05, 0.6, 56), [MAT.stoneDark, MAT.floor, MAT.stoneDark]);
+  deck.position.y = -0.3; deck.castShadow = deck.receiveShadow = true; grp.add(deck);
+  grp.add(mesh(new THREE.CylinderGeometry(7.18, 7.28, 1.0, 56, 1, true), MAT.masonryIn, 0, 0.5));
+  const merlons = new THREE.InstancedMesh(new THREE.BoxGeometry(1.25, 1.15, 0.62), MAT.stone, 22);
+  merlons.castShadow = merlons.receiveShadow = true;
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), up = new THREE.Vector3(0, 1, 0), one = new THREE.Vector3(1, 1, 1);
+  for (let i = 0; i < 22; i++){
+    const a = (i / 22) * 6.283;
+    q.setFromAxisAngle(up, -a);
+    m.compose(new THREE.Vector3(Math.cos(a) * 7.24, 1.57, Math.sin(a) * 7.24), q, one);
+    merlons.setMatrixAt(i, m);
+  }
+  grp.add(merlons);
+  const hatch = mesh(new THREE.BoxGeometry(1.9, 0.16, 1.5), MAT.wood, -4.4, 0.08, -3.4);
+  hatch.rotation.y = 0.7; grp.add(hatch);
+  for (const [x, z] of [[-4.9, -2.7], [-3.9, -4.1]])
+    grp.add(mesh(new THREE.CylinderGeometry(0.05, 0.05, 0.24, 6), MAT.brass, x, 0.2, z, false));
+  return grp;
+}
+
+// Carved pedestal cradling the arcane orb, with its own light and halo.
+function buildPedestal(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(1.05, 1.3, 0.34, 6), MAT.stone, 0, 0.17));
+  grp.add(mesh(new THREE.CylinderGeometry(0.78, 1.0, 0.22, 6), MAT.stoneDark, 0, 0.44));
+  grp.add(mesh(new THREE.CylinderGeometry(0.4, 0.6, 1.7, 6), MAT.stone, 0, 1.4));
+  grp.add(mesh(new THREE.CylinderGeometry(0.8, 0.48, 0.4, 6), MAT.stone, 0, 2.45));
+  for (let i = 0; i < 3; i++){                             // brass claws gripping the orb
+    const a = i * 2.094 + 0.5;
+    const claw = mesh(new THREE.TorusGeometry(0.36, 0.07, 6, 12, 2.3), MAT.brass,
+                      Math.cos(a) * 0.46, 2.85, Math.sin(a) * 0.46);
+    claw.rotation.set(0, -a, 1.15); grp.add(claw);
+  }
+  const orb = mesh(new THREE.SphereGeometry(0.62, 26, 18), MAT.orb, 0, 3.2, 0, false);
+  const core = mesh(new THREE.IcosahedronGeometry(0.33, 1), MAT.orbCore, 0, 3.2, 0, false);
+  const halo = mesh(new THREE.SphereGeometry(1.05, 18, 14), MAT.halo, 0, 3.2, 0, false);
+  const light = new THREE.PointLight(PAL.arcane, 55, 26, 2);
+  light.position.set(0, 3.2, 0);
+  grp.add(orb, core, halo, light);
+  grp.userData = { orb, core, halo, light };
+  return grp;
+}
+
+// Brass refractor on a wooden tripod, tilted up into the storm.
+function buildTelescope(){
+  const grp = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const a = i * 2.094 + 0.5;
+    const leg = mesh(new THREE.CylinderGeometry(0.08, 0.11, 2.6, 8), MAT.brass,
+                     Math.cos(a) * 0.58, 1.2, Math.sin(a) * 0.58);
+    leg.rotation.set(Math.sin(a) * 0.44, 0, -Math.cos(a) * 0.44); grp.add(leg);
+  }
+  grp.add(mesh(new THREE.CylinderGeometry(0.32, 0.36, 0.3, 12), MAT.brass, 0, 2.4));
+  const yoke = new THREE.Group(); yoke.position.y = 2.6; yoke.rotation.y = 0.4;
+  for (const x of [0.44, -0.44]) yoke.add(mesh(new THREE.BoxGeometry(0.13, 0.8, 0.13), MAT.brass, x, 0.34, 0));
+  const arm = new THREE.Group(); arm.position.y = 0.66; arm.rotation.x = -0.85;
+  arm.add(mesh(new THREE.CylinderGeometry(0.32, 0.4, 3.3, 20), MAT.brass, 0, 0.25, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.46, 0.42, 0.5, 20), MAT.brass, 0, 1.9, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.45, 0.45, 0.16, 20), MAT.iron, 0, 1.62, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.42, 0.42, 0.14, 20), MAT.iron, 0, 0.4, 0));
+  arm.add(mesh(new THREE.CylinderGeometry(0.4, 0.4, 0.08, 20), MAT.glass, 0, 2.12, 0, false));
+  arm.add(mesh(new THREE.CylinderGeometry(0.14, 0.17, 0.6, 12), MAT.brass, 0, -1.7, 0));
+  const finder = mesh(new THREE.CylinderGeometry(0.09, 0.1, 1.0, 10), MAT.brass, 0.34, 0.9, 0.1);
+  arm.add(finder);
+  yoke.add(arm); grp.add(yoke);
+  grp.userData.arm = arm;
+  return grp;
+}
+
+// A leather-bound spellbook held open by the orb's pull.
+function buildSpellbook(coverColor){
+  const grp = new THREE.Group();
+  const coverMat = new THREE.MeshStandardMaterial({ color: coverColor, roughness: 0.7 });
+  const left = new THREE.Group(), right = new THREE.Group();
+  left.add(mesh(new THREE.BoxGeometry(0.62, 0.05, 0.82), coverMat, -0.31, 0, 0));
+  left.add(mesh(new THREE.BoxGeometry(0.56, 0.09, 0.76), MAT.paper, -0.3, 0.06, 0));
+  right.add(mesh(new THREE.BoxGeometry(0.62, 0.05, 0.82), coverMat, 0.31, 0, 0));
+  right.add(mesh(new THREE.BoxGeometry(0.56, 0.09, 0.76), MAT.paper, 0.3, 0.06, 0));
+  left.rotation.z = 0.42; right.rotation.z = -0.42;
+  grp.add(left, right);
+  grp.add(mesh(new THREE.BoxGeometry(0.1, 0.14, 0.84), coverMat, 0, -0.02, 0));
+  const ribbon = mesh(new THREE.BoxGeometry(0.05, 0.02, 0.5), MAT.flame, 0.18, 0.03, 0.45, false);
+  grp.add(ribbon);
+  grp.userData = { left, right };
+  return grp;
+}
+
+// Potion crate: planked box with glowing bottles racked on the lid.
+function buildCrate(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.BoxGeometry(1.5, 1.05, 1.2), MAT.wood, 0, 0.53));
+  for (const [x, z, w, d] of [[0, 0.61, 1.56, 0.06], [0, -0.61, 1.56, 0.06], [0.78, 0, 0.06, 1.26], [-0.78, 0, 0.06, 1.26]])
+    for (const y of [0.16, 0.9])
+      grp.add(mesh(new THREE.BoxGeometry(w, 0.12, d), MAT.iron, x, y, z, false));
+  const tints = [0x66ff9e, 0xff6ea8, 0x8fa8ff, 0xffd166];
+  for (let i = 0; i < 3; i++){
+    const col = tints[ri(0, 3)];
+    const liquid = new THREE.MeshStandardMaterial({ color: col, emissive: col, emissiveIntensity: 1.6,
+                                                    roughness: 0.2, transparent: true, opacity: 0.85 });
+    const x = -0.42 + i * 0.42, z = rr(-0.25, 0.25);
+    grp.add(mesh(new THREE.CylinderGeometry(0.16, 0.19, 0.36, 10), liquid, x, 1.24, z, false));
+    grp.add(mesh(new THREE.CylinderGeometry(0.06, 0.09, 0.22, 8), MAT.glass, x, 1.52, z, false));
+    grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.07, 0.07, 8), MAT.wood, x, 1.66, z, false));
+  }
+  return grp;
+}
+
+// Banner on an iron pole; its cloth is re-waved every frame.
+function buildBanner(color){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.09, 0.12, 6.6, 8), MAT.iron, 0, 3.3));
+  grp.add(mesh(new THREE.ConeGeometry(0.17, 0.5, 8), MAT.brass, 0, 6.85));
+  const geo = new THREE.PlaneGeometry(2.5, 3.3, 14, 9);
+  geo.translate(1.25, 0, 0);
+  geo.userData.base = geo.attributes.position.array.slice();
+  const cloth = mesh(geo, new THREE.MeshStandardMaterial({ map: TEX.cloth, color, roughness: 0.95,
+                                                           side: THREE.DoubleSide }), 0, 4.4, 0);
+  grp.add(cloth); grp.userData.cloth = cloth;
+  return grp;
+}
+
+// Iron brazier with an additive flame cluster and a flickering light.
+function buildBrazier(){
+  const grp = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const a = i * 2.094;
+    const leg = mesh(new THREE.CylinderGeometry(0.06, 0.08, 1.5, 6), MAT.iron,
+                     Math.cos(a) * 0.34, 0.72, Math.sin(a) * 0.34);
+    leg.rotation.set(Math.sin(a) * 0.32, 0, -Math.cos(a) * 0.32); grp.add(leg);
+  }
+  grp.add(mesh(new THREE.CylinderGeometry(0.62, 0.34, 0.5, 14, 1, true), MAT.iron, 0, 1.6));
+  grp.add(mesh(new THREE.TorusGeometry(0.62, 0.06, 6, 18), MAT.iron, 0, 1.84));
+  const flames = new THREE.Group(); flames.position.y = 1.85;
+  for (let i = 0; i < 5; i++){
+    const f = mesh(new THREE.ConeGeometry(rr(0.18, 0.34), rr(0.6, 1.15), 7), MAT.flame,
+                   rr(-0.24, 0.24), rr(0.24, 0.55), rr(-0.24, 0.24), false);
+    f.userData.phase = rand() * 6.28; flames.add(f);
+  }
+  const light = new THREE.PointLight(PAL.fire, 34, 17, 2); light.position.y = 2.4;
+  grp.add(flames, light);
+  grp.userData = { flames, light };
+  return grp;
+}
+
+// Raven perched on an iron stand, watching the storm.
+function buildRaven(){
+  const grp = new THREE.Group();
+  grp.add(mesh(new THREE.CylinderGeometry(0.07, 0.11, 2.3, 8), MAT.iron, 0, 1.15));
+  const bar = mesh(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 8), MAT.iron, 0, 2.3, 0);
+  bar.rotation.z = Math.PI / 2; grp.add(bar);
+  const bird = new THREE.Group(); bird.position.y = 2.42; bird.rotation.y = -1.1;
+  const body = mesh(new THREE.SphereGeometry(0.3, 14, 10), MAT.raven, 0, 0.22, 0);
+  body.scale.set(0.92, 1.0, 1.35); bird.add(body);
+  for (const s of [1, -1]){
+    const wing = mesh(new THREE.SphereGeometry(0.24, 10, 8), MAT.raven, s * 0.19, 0.24, -0.02);
+    wing.scale.set(0.42, 0.9, 1.25); bird.add(wing);
+  }
+  const tail = mesh(new THREE.BoxGeometry(0.24, 0.05, 0.5), MAT.raven, 0, 0.12, -0.5);
+  tail.rotation.x = 0.32; bird.add(tail);
+  const head = new THREE.Group(); head.position.set(0, 0.5, 0.22);
+  head.add(mesh(new THREE.SphereGeometry(0.17, 12, 9), MAT.raven));
+  head.add(mesh(new THREE.ConeGeometry(0.06, 0.3, 7), MAT.brass, 0, 0.0, 0.24, false).rotateX(Math.PI / 2));
+  for (const s of [1, -1])
+    head.add(mesh(new THREE.SphereGeometry(0.035, 8, 6), MAT.orbCore, s * 0.09, 0.05, 0.11, false));
+  bird.add(head);
+  grp.add(bird); grp.userData = { bird, head };
+  return grp;
+}
+
+// Dark swirling storm mass built from warped, flattened blobs.
+function buildStormCloud(scale, seed){
+  const grp = new THREE.Group();
+  for (let i = 0, n = ri(4, 6); i < n; i++){
+    const geo = new THREE.IcosahedronGeometry(rr(1.0, 2.0) * scale, 1);
+    warpGeometry(geo, v => v.multiplyScalar(1 + 0.2 * Math.sin(v.x * 1.7 + seed) * Math.cos(v.z * 1.5 - seed)));
+    const puff = mesh(geo, MAT.storm, rr(-2.2, 2.2) * scale, rr(-0.5, 0.5) * scale, rr(-2.2, 2.2) * scale, false);
+    puff.scale.y = rr(0.42, 0.66); grp.add(puff);
+  }
+  return grp;
+}
+
+// Distant rock spire, silhouetted in fog far below the tower.
+function buildCrag(height, radius, seed){
+  const grp = new THREE.Group();
+  const geo = new THREE.ConeGeometry(radius, height, 7, 4);
+  warpGeometry(geo, v => {
+    const a = Math.atan2(v.z, v.x);
+    const k = 1 + 0.24 * Math.sin(a * 3 + seed) + 0.15 * Math.sin(v.y * 0.5 + seed * 2);
+    v.x *= k; v.z *= k;
+  });
+  grp.add(mesh(geo, MAT.crag, 0, height * 0.5, 0, false));
+  return grp;
+}
+
+// Jagged lightning bolt: a bright core tube wrapped in an additive glow tube.
+function buildBolt(from, to, seed){
+  const grp = new THREE.Group(), pts = [];
+  for (let i = 0; i <= 10; i++){
+    const t = i / 10, p = new THREE.Vector3().lerpVectors(from, to, t);
+    const fade = 1 - Math.abs(t - 0.5) * 1.4;
+    p.x += Math.sin(i * 2.7 + seed) * 1.7 * fade;
+    p.z += Math.cos(i * 3.1 + seed) * 1.5 * fade;
+    pts.push(p);
+  }
+  const curve = new THREE.CatmullRomCurve3(pts);
+  grp.add(mesh(new THREE.TubeGeometry(curve, 48, 0.2, 5, false), MAT.bolt, 0, 0, 0, false));
+  grp.add(mesh(new THREE.TubeGeometry(curve, 48, 0.7, 5, false), MAT.boltGlow, 0, 0, 0, false));
+  return grp;
+}
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = TEX.sky;
+scene.fog = new THREE.Fog(PAL.fog, CFG.fogNear, CFG.fogFar);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromEquirectangular(TEX.sky).texture;
+
+const camera = new THREE.PerspectiveCamera(48, window.innerWidth / window.innerHeight, 0.4, 400);
+camera.position.copy(CFG.target).add(CFG.camOffset);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.copy(CFG.target);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = CFG.autoRotateSpeed;
+controls.minDistance = 20; controls.maxDistance = 70;
+controls.minPolarAngle = 0.55; controls.maxPolarAngle = 1.33;
+controls.update();
+
+/* ============================================================
+   ASSEMBLY / LAYOUT
+   ============================================================ */
+const world = new THREE.Group(); scene.add(world);
+world.add(buildTowerTop());
+
+// Rune circle etched in light, just above the flagstones.
+const runeRing = mesh(new THREE.PlaneGeometry(12.4, 12.4), MAT.rune, 0, 0.03, 0, false);
+runeRing.rotation.x = -Math.PI / 2; world.add(runeRing);
+const runeInner = mesh(new THREE.PlaneGeometry(6.4, 6.4), MAT.rune, 0, 0.05, 0, false);
+runeInner.rotation.x = -Math.PI / 2; world.add(runeInner);
+
+const pedestal = buildPedestal(); world.add(pedestal);
+const telescope = buildTelescope(); telescope.position.set(3.7, 0, -1.0);
+telescope.scale.setScalar(1.12); world.add(telescope);
+const brazier = buildBrazier(); brazier.position.set(-3.0, 0, 3.4); world.add(brazier);
+const raven = buildRaven(); raven.position.set(5.2, 0, -2.6);
+raven.scale.setScalar(1.35); world.add(raven);
+
+for (const [x, z, ry] of [[-2.6, -3.6, 0.5], [-4.4, -1.4, -0.3], [0.6, -4.6, 1.1]]){
+  const crate = buildCrate();
+  crate.position.set(x, 0, z); crate.rotation.y = ry;
+  crate.scale.setScalar(x > 0 ? 0.72 : 1); world.add(crate);
+}
+
+// Banners ring the far parapet so they never mask the hero props.
+const banners = [];
+for (const [a, color] of [[2.75, 0x51307f], [3.9, 0x2f4c86], [5.1, 0x6d2144]]){
+  const banner = buildBanner(color);
+  banner.position.set(Math.cos(a) * 6.7, 0, Math.sin(a) * 6.7);
+  banner.rotation.y = -a + Math.PI / 2;
+  banner.userData.ph = rr(0, 6.28);
+  world.add(banner); banners.push(banner);
+}
+
+// Spellbooks orbiting the orb at staggered radii and heights.
+const books = [];
+for (let i = 0; i < 6; i++){
+  const book = buildSpellbook([0x7a2230, 0x274a7a, 0x2d5a3a, 0x5a3a7a, 0x8a5a1e, 0x3a3a4a][i]);
+  Object.assign(book.userData, {
+    r: rr(1.9, 3.4), a: (i / 6) * 6.283, y: rr(2.4, 4.6),
+    spd: rr(0.16, 0.32) * (i % 2 ? 1 : -1), ph: rr(0, 6.28),
+  });
+  world.add(book); books.push(book);
+}
+
+// Swirling storm directly above the summit, in two counter-rotating shells.
+const stormOuter = new THREE.Group(), stormInner = new THREE.Group();
+world.add(stormOuter, stormInner);
+for (let i = 0; i < 11; i++){
+  const a = (i / 11) * 6.283 + rr(-0.25, 0.25), rad = rr(7.5, 19.0);
+  const cloud = buildStormCloud(rr(0.8, 1.3), i * 1.7);
+  cloud.position.set(Math.cos(a) * rad, 10.4 + rad * 0.2 + rr(-1.5, 1.5), Math.sin(a) * rad);
+  (i % 2 ? stormInner : stormOuter).add(cloud);
+}
+
+// Distant crags below, plus the bolts that light them up.
+for (let i = 0; i < 13; i++){
+  const a = (i / 13) * 6.283 + rr(-0.22, 0.22), rad = rr(34, 62);
+  const crag = buildCrag(rr(12, 18) + (rad - 34) * 0.4, rr(4.0, 9.0), i * 2.3);
+  crag.position.set(Math.cos(a) * rad, -34 + rr(-4, 2), Math.sin(a) * rad);
+  world.add(crag);
+}
+const bolts = [
+  buildBolt(new THREE.Vector3(-23, 13.5, -3.0), new THREE.Vector3(-27.5, -14.0, -0.5), 1.3),
+  buildBolt(new THREE.Vector3(3.5, 14.5, -23), new THREE.Vector3(0.5, -13.0, -27.5), 4.1),
+];
+for (const b of bolts) world.add(b);
+
+// Arcane motes drifting up off the rune circle.
+const moteCount = 220, motePos = new Float32Array(moteCount * 3), moteSeed = [];
+for (let i = 0; i < moteCount; i++){
+  const a = rr(0, 6.28), rad = rr(0.5, 6.3);
+  motePos[i * 3] = Math.cos(a) * rad; motePos[i * 3 + 1] = rr(0.1, 7.5); motePos[i * 3 + 2] = Math.sin(a) * rad;
+  moteSeed.push(rr(0.2, 0.7));
+}
+const moteGeo = new THREE.BufferGeometry();
+moteGeo.setAttribute('position', new THREE.BufferAttribute(motePos, 3));
+const motes = new THREE.Points(moteGeo, new THREE.PointsMaterial({ map: TEX.dot, size: 0.34, transparent: true,
+  opacity: 0.85, depthWrite: false, blending: THREE.AdditiveBlending, color: 0x9fe8ff }));
+world.add(motes);
+
+/* ============================================================
+   LIGHTING RIG — cool moon key, arcane and fire accents, storm flash
+   ============================================================ */
+const moon = new THREE.DirectionalLight(PAL.moon, 1.55);
+moon.position.set(20, 30, 24); moon.castShadow = true;
+moon.shadow.mapSize.set(2048, 2048);
+moon.shadow.camera.near = 8; moon.shadow.camera.far = 90;
+moon.shadow.camera.left = moon.shadow.camera.bottom = -16;
+moon.shadow.camera.right = moon.shadow.camera.top = 16;
+moon.shadow.bias = -0.0006; moon.shadow.normalBias = 0.03;
+scene.add(moon, new THREE.HemisphereLight(0x3d55a0, 0x0c1020, 0.62));
+const violet = new THREE.PointLight(PAL.arcane2, 16, 20, 2); violet.position.set(-2.5, 4.5, -3.5);
+const flash = new THREE.DirectionalLight(0xdce9ff, 0); flash.position.set(-26, 24, -12);
+scene.add(violet, flash);
+
+/* ============================================================
+   ANIMATION LOOP
+   ============================================================ */
+const clock = new THREE.Clock();
+const orbParts = pedestal.userData;
+const brazierParts = brazier.userData;
+
+function animate(){
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05), t = clock.getElapsedTime();
+
+  const pulse = 0.82 + Math.sin(t * 1.6) * 0.12 + Math.sin(t * 4.3) * 0.06;
+  orbParts.orb.material.emissiveIntensity = 2.2 * pulse;   // orb breathes
+  orbParts.light.intensity = 55 * pulse;
+  orbParts.halo.scale.setScalar(0.95 + Math.sin(t * 1.6) * 0.07);
+  orbParts.core.rotation.set(t * 0.5, t * 0.75, 0);
+
+  runeRing.rotation.z = t * 0.09;                          // sigils turn against each other
+  runeInner.rotation.z = -t * 0.16;
+  MAT.rune.opacity = 0.72 + Math.sin(t * 1.3) * 0.18;
+
+  for (const book of books){                               // spellbooks orbit and flutter
+    const u = book.userData, a = u.a + t * u.spd;
+    book.position.set(Math.cos(a) * u.r, u.y + Math.sin(t * 0.9 + u.ph) * 0.28, Math.sin(a) * u.r);
+    book.rotation.set(Math.sin(t * 0.5 + u.ph) * 0.22, -a + 1.2, Math.sin(t * 0.4 + u.ph) * 0.18);
+    const flap = 0.42 + Math.sin(t * 1.8 + u.ph) * 0.16;
+    u.left.rotation.z = flap; u.right.rotation.z = -flap;
+  }
+  for (const banner of banners){                           // cloth snaps in the wind
+    const g = banner.userData.cloth.geometry, p = g.attributes.position, base = g.userData.base;
+    for (let i = 0; i < p.count; i++){
+      const x = base[i * 3], y = base[i * 3 + 1], w = x / 2.5;
+      p.setZ(i, (Math.sin(x * 2.1 - t * 3.6 + banner.userData.ph) * 0.36 + Math.sin(y * 1.4 + t * 2.2) * 0.12) * w);
+      p.setY(i, y + Math.sin(x * 1.7 - t * 3.2) * 0.11 * w);
+    }
+    p.needsUpdate = true; g.computeVertexNormals();
+  }
+  stormOuter.rotation.y = t * 0.045;                       // storm swirls overhead
+  stormInner.rotation.y = -t * 0.075;
+  stormInner.position.y = Math.sin(t * 0.3) * 0.4;
+
+  const flicker = 0.78 + Math.sin(t * 9.1) * 0.14 + Math.sin(t * 21.3) * 0.08;
+  brazierParts.light.intensity = 34 * flicker;             // brazier gutters
+  for (const f of brazierParts.flames.children){
+    const k = 0.8 + Math.sin(t * 7 + f.userData.phase) * 0.22;
+    f.scale.set(k, 1 + (1 - k) * 1.4, k);
+    f.position.y = 0.2 + Math.sin(t * 5 + f.userData.phase) * 0.09;
+  }
+  raven.userData.head.rotation.set(Math.sin(t * 0.8) * 0.12, Math.sin(t * 0.55) * 0.35, 0);
+  raven.userData.bird.position.y = 2.42 + Math.sin(t * 1.7) * 0.02;
+  telescope.userData.arm.rotation.z = Math.sin(t * 0.25) * 0.05;
+
+  const k = t % CFG.flashPeriod;                           // periodic lightning
+  const strike = k < 0.85 ? Math.exp(-k * 4.2) * (0.62 + 0.38 * Math.sin(k * 44)) : 0;
+  flash.intensity = 0.3 + strike * 5.0;
+  const active = Math.floor(t / CFG.flashPeriod) % 2;
+  MAT.bolt.opacity = 0.5 + strike * 0.5;
+  MAT.boltGlow.opacity = 0.18 + strike * 0.55;
+  bolts[0].visible = active === 0; bolts[1].visible = active === 1;
+
+  const mp = motes.geometry.attributes.position;           // motes rise off the sigils
+  for (let i = 0; i < moteCount; i++){
+    const y = mp.getY(i) + moteSeed[i] * dt;
+    mp.setY(i, y > 8 ? 0.1 : y);
+    mp.setX(i, mp.getX(i) + Math.sin(t * 0.5 + i) * 0.0025);
+  }
+  mp.needsUpdate = true;
+  motes.material.opacity = 0.62 + Math.sin(t * 0.7) * 0.18;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================================================
+   RESIZE
+   ============================================================ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

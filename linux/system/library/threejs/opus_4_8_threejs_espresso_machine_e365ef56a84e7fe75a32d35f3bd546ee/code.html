@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Procedural Home Espresso Machine</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0e0f11; }
+  #app { width: 100vw; height: 100vh; display: block; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color: #8b9099; letter-spacing: .02em; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<div class="hint">drag to orbit &middot; scroll to zoom &middot; auto-rotating</div>
+<canvas id="app"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+
+/* ---------------------------------------------------------------------------
+   Scene & camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0e0f11);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(5.6, 3.2, 6.6);
+
+/* Environment for crisp metal reflections (procedural, no assets) */
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere fill + key + fill + rim
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xc4d6ff, 0x14100c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.4);
+key.position.set(6, 9, 7);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -5;
+key.shadow.camera.right = 5;
+key.shadow.camera.top = 5;
+key.shadow.camera.bottom = -5;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 5;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8ff, 0.6);
+fill.position.set(-6, 3.5, 4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.5);
+rim.position.set(-4, 5, -6);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Ground plane that ONLY receives shadows
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Materials
+--------------------------------------------------------------------------- */
+const steel      = new THREE.MeshStandardMaterial({ color: 0xd7dbe0, metalness: 1.0, roughness: 0.38 });
+const steelDark  = new THREE.MeshStandardMaterial({ color: 0xaab0b6, metalness: 1.0, roughness: 0.45 });
+const chrome     = new THREE.MeshStandardMaterial({ color: 0xf4f7fa, metalness: 1.0, roughness: 0.07, envMapIntensity: 1.25 });
+const blackPlastic = new THREE.MeshStandardMaterial({ color: 0x1a1c1f, metalness: 0.15, roughness: 0.5 });
+const rubber     = new THREE.MeshStandardMaterial({ color: 0x0f1012, metalness: 0.0, roughness: 0.9 });
+const recessMat  = new THREE.MeshStandardMaterial({ color: 0x111316, metalness: 0.3, roughness: 0.7 });
+const gaugeFace  = new THREE.MeshStandardMaterial({ color: 0xf1ede4, metalness: 0.0, roughness: 0.55 });
+const needleMat  = new THREE.MeshStandardMaterial({ color: 0xc12222, metalness: 0.0, roughness: 0.5 });
+const ledBlue    = new THREE.MeshStandardMaterial({ color: 0x39a0ff, emissive: 0x2f8fff, emissiveIntensity: 2.2, roughness: 0.4 });
+const ledGreen   = new THREE.MeshStandardMaterial({ color: 0x35d36a, emissive: 0x33cc66, emissiveIntensity: 2.0, roughness: 0.4 });
+
+/* ---------------------------------------------------------------------------
+   Helpers
+--------------------------------------------------------------------------- */
+function roundedRectShape(w, h, r) {
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y);
+  s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r);
+  s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h);
+  s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r);
+  s.quadraticCurveTo(x, y, x + r, y);
+  return s;
+}
+
+function roundedBoxGeo(w, h, d, r) {
+  const bevel = Math.min(r * 0.5, 0.06);
+  const geo = new THREE.ExtrudeGeometry(roundedRectShape(w, h, r), {
+    depth: d - bevel * 2,
+    bevelEnabled: true,
+    bevelThickness: bevel,
+    bevelSize: bevel,
+    bevelSegments: 3,
+    steps: 1,
+    curveSegments: 14
+  });
+  geo.translate(0, 0, -d / 2 + bevel);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function mesh(geo, mat, x = 0, y = 0, z = 0, cast = true, receive = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = cast;
+  m.receiveShadow = receive;
+  return m;
+}
+
+/* cylinder between two Vector3 points */
+function segment(from, to, rTop, mat, rBot) {
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const len = dir.length();
+  const geo = new THREE.CylinderGeometry(rTop, rBot ?? rTop, len, 22);
+  const m = new THREE.Mesh(geo, mat);
+  m.position.copy(from).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ---------------------------------------------------------------------------
+   Machine assembly
+--------------------------------------------------------------------------- */
+const machine = new THREE.Group();
+
+const feetH = 0.12;
+const bodyW = 2.4, bodyH = 3.0, bodyD = 2.6;
+const bodyCY = feetH + bodyH / 2;
+const frontZ = bodyD / 2;
+const topY = feetH + bodyH;
+
+/* ---- feet ---- */
+for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+  machine.add(mesh(
+    new THREE.CylinderGeometry(0.14, 0.14, feetH, 20),
+    rubber,
+    sx * (bodyW / 2 - 0.26), feetH / 2, sz * (bodyD / 2 - 0.26)
+  ));
+}
+
+/* ---- main stainless body ---- */
+const body = mesh(roundedBoxGeo(bodyW, bodyH, bodyD, 0.14), steel, 0, bodyCY, 0);
+machine.add(body);
+
+/* subtle brushed-steel front recess behind the group head */
+machine.add(mesh(roundedBoxGeo(0.95, 1.5, 0.06, 0.06), steelDark, 0, feetH + 1.55, frontZ - 0.005));
+
+/* ---- rear water-tank cover + seam (back = -Z) ---- */
+(() => {
+  const backZ = -bodyD / 2;
+  // dark seam recess frame
+  machine.add(mesh(roundedBoxGeo(2.12, 2.56, 0.05, 0.05), recessMat, 0, bodyCY + 0.08, backZ - 0.01));
+  // proud tank cover panel
+  const tank = mesh(roundedBoxGeo(1.96, 2.4, 0.14, 0.1), steel, 0, bodyCY + 0.08, backZ - 0.05);
+  machine.add(tank);
+  // recessed grip notch near the top of the tank lid
+  machine.add(mesh(roundedBoxGeo(0.7, 0.11, 0.08, 0.04), recessMat, 0, bodyCY + 1.14, backZ - 0.12));
+})();
+
+/* ---- top control area ---- */
+(() => {
+  // recessed cup-warming tray on the rear ~55% of the top
+  machine.add(mesh(roundedBoxGeo(1.9, 1.15, 0.07, 0.06), recessMat, 0, topY - 0.02, -0.4));
+  // chrome cup-warmer rails (run front-back, spaced across X)
+  for (let x = -0.7; x <= 0.7 + 1e-6; x += 0.28) {
+    machine.add(mesh(new THREE.BoxGeometry(0.05, 0.05, 1.02), chrome, x, topY + 0.03, -0.4));
+  }
+
+  // front control cluster: three backlit buttons + status LED
+  const btnZ = 0.86;
+  const makeButton = (x, topMat) => {
+    const ring = mesh(new THREE.CylinderGeometry(0.13, 0.13, 0.05, 28), chrome, x, topY + 0.02, btnZ);
+    const cap  = mesh(new THREE.CylinderGeometry(0.1, 0.1, 0.055, 28), topMat, x, topY + 0.03, btnZ);
+    machine.add(ring, cap);
+  };
+  makeButton(-0.42, blackPlastic);
+  makeButton(0.0,  blackPlastic);
+  makeButton(0.42, blackPlastic);
+  // status LEDs
+  machine.add(mesh(new THREE.SphereGeometry(0.045, 20, 20), ledGreen, 0.78, topY + 0.02, btnZ));
+  machine.add(mesh(new THREE.SphereGeometry(0.045, 20, 20), ledBlue, 0.78, topY + 0.02, btnZ + 0.2));
+})();
+
+/* ---- front pressure gauge ---- */
+(() => {
+  const g = new THREE.Group();
+  const faceZ = frontZ + 0.02;
+  const ring = mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.08, 36), chrome, 0, 0, 0);
+  ring.rotation.x = Math.PI / 2;
+  const face = mesh(new THREE.CylinderGeometry(0.21, 0.21, 0.02, 36), gaugeFace, 0, 0, 0.045);
+  face.rotation.x = Math.PI / 2;
+  const needle = mesh(new THREE.BoxGeometry(0.02, 0.18, 0.012), needleMat, 0, 0, 0.06);
+  needle.position.y = 0.05;
+  const pivot = new THREE.Group();
+  pivot.add(needle);
+  pivot.rotation.z = 0.7;
+  pivot.position.z = 0.0;
+  const hub = mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.03, 20), blackPlastic, 0, 0, 0.06);
+  hub.rotation.x = Math.PI / 2;
+  g.add(ring, face, pivot, hub);
+  g.position.set(-0.55, feetH + 2.35, faceZ);
+  machine.add(g);
+})();
+
+/* ---- group head + portafilter (front, lower-center) ---- */
+const groupY = feetH + 1.5;
+(() => {
+  // chrome group-head housing protruding from the front
+  machine.add(mesh(roundedBoxGeo(0.74, 0.5, 0.42, 0.08), chrome, 0, groupY, frontZ + 0.14));
+
+  // shower-screen disc under the housing
+  const shower = mesh(new THREE.CylinderGeometry(0.31, 0.31, 0.05, 36), chrome, 0, groupY - 0.27, frontZ + 0.34);
+  machine.add(shower);
+
+  const holderZ = frontZ + 0.4;
+  const holderY = groupY - 0.42;
+
+  // portafilter basket holder (chrome)
+  machine.add(mesh(new THREE.CylinderGeometry(0.36, 0.34, 0.24, 40), chrome, 0, holderY, holderZ));
+  machine.add(mesh(new THREE.CylinderGeometry(0.3, 0.36, 0.12, 40), chrome, 0, holderY - 0.17, holderZ));
+
+  // twin spouts
+  for (const sx of [-1, 1]) {
+    machine.add(mesh(new THREE.CylinderGeometry(0.05, 0.032, 0.2, 20), chrome, sx * 0.12, holderY - 0.32, holderZ));
+  }
+
+  // chrome ferrule + black handle pointing forward (+Z)
+  const holderFront = holderZ + 0.36;
+  const ferrule = mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.22, 28), chrome, 0, holderY, holderFront + 0.09);
+  ferrule.rotation.x = Math.PI / 2;
+  machine.add(ferrule);
+
+  const handle = mesh(new THREE.CylinderGeometry(0.085, 0.095, 0.82, 28), blackPlastic, 0, holderY, holderFront + 0.6);
+  handle.rotation.x = Math.PI / 2;
+  machine.add(handle);
+
+  // rounded handle end cap
+  machine.add(mesh(new THREE.SphereGeometry(0.1, 24, 24), blackPlastic, 0, holderY, holderFront + 1.02));
+})();
+
+/* ---- steam wand (right side, +X) ---- */
+(() => {
+  const jointX = bodyW / 2;
+  // swivel joint boss on the side
+  const joint = mesh(new THREE.SphereGeometry(0.12, 24, 24), chrome, jointX + 0.02, feetH + 1.78, 0.55);
+  machine.add(joint);
+  // steam valve knob just above the joint
+  const knob = mesh(new THREE.CylinderGeometry(0.13, 0.15, 0.14, 24), blackPlastic, jointX + 0.18, feetH + 2.05, 0.4);
+  knob.rotation.z = Math.PI / 2;
+  machine.add(knob);
+
+  const p0 = new THREE.Vector3(jointX + 0.02, feetH + 1.78, 0.55);
+  const p1 = new THREE.Vector3(jointX + 0.4, feetH + 1.5, 0.7);
+  const p2 = new THREE.Vector3(jointX + 0.46, feetH + 0.98, 0.78);
+  const p3 = new THREE.Vector3(jointX + 0.32, feetH + 0.6, 0.8);
+
+  const curve = new THREE.CatmullRomCurve3([p0, p1, p2, p3]);
+  const tube = new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.05, 16, false), chrome);
+  tube.castShadow = true; tube.receiveShadow = true;
+  machine.add(tube);
+
+  // black rubber grip near the top of the wand
+  const gripEnd = new THREE.Vector3().lerpVectors(p0, p1, 0.85);
+  machine.add(segment(p0, gripEnd, 0.075, rubber));
+
+  // steam tip
+  machine.add(mesh(new THREE.CylinderGeometry(0.06, 0.045, 0.12, 20), chrome, p3.x, p3.y - 0.06, p3.z));
+})();
+
+/* ---- drip tray + grille at the base ---- */
+(() => {
+  const trayW = 2.02, trayD = 1.0, trayH = 0.42;
+  const trayCZ = frontZ + 0.2;      // spans ~1.0 .. 2.0 in Z
+  const trayCY = feetH + trayH / 2; // spans feetH .. feetH+0.42
+
+  // tray body (stainless), hollow-looking with a dark inner floor
+  machine.add(mesh(roundedBoxGeo(trayW, trayH, trayD, 0.06), steel, 0, trayCY, trayCZ));
+  machine.add(mesh(new THREE.BoxGeometry(trayW - 0.16, 0.02, trayD - 0.16), recessMat, 0, trayCY + 0.16, trayCZ));
+
+  // chrome grille slats across the top (run left-right, spaced in Z)
+  const topGrilleY = trayCY + trayH / 2 - 0.02;
+  const zStart = trayCZ - trayD / 2 + 0.08;
+  const zEnd = trayCZ + trayD / 2 - 0.08;
+  for (let z = zStart; z <= zEnd + 1e-6; z += 0.13) {
+    machine.add(mesh(new THREE.BoxGeometry(trayW - 0.18, 0.035, 0.06), chrome, 0, topGrilleY, z));
+  }
+  // two side rails to tie the grille together
+  for (const sx of [-1, 1]) {
+    machine.add(mesh(new THREE.BoxGeometry(0.05, 0.035, trayD - 0.14), chrome, sx * (trayW / 2 - 0.11), topGrilleY, trayCZ));
+  }
+})();
+
+/* center the assembly nicely in view (offset for front protrusions) */
+machine.position.set(0, 0, -0.35);
+scene.add(machine);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 1.45, 0);
+controls.minDistance = 4;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

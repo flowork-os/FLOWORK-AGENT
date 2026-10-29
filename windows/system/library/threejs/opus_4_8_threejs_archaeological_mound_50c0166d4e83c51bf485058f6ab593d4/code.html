@@ -1,0 +1,333 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Archaeological Mound</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #17171a; }
+  #c { display: block; width: 100vw; height: 100vh; }
+  #cap {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, sans-serif;
+    color: #9a9188; letter-spacing: .3px; pointer-events: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="cap">Archaeological mound &middot; procedural terrain, worn footpaths &amp; marker posts (~22&nbsp;m across)</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer
+ * ------------------------------------------------------------------ */
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ------------------------------------------------------------------ *
+ *  Scene & camera
+ * ------------------------------------------------------------------ */
+const scene = new THREE.Scene();
+const BG = new THREE.Color(0x191a1d);          // neutral dark studio
+scene.background = BG;
+scene.fog = new THREE.Fog(BG, 46, 150);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(17.5, 11.5, 20);
+
+/* ------------------------------------------------------------------ *
+ *  Controls
+ * ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 1.35, 0);
+controls.minDistance = 12;
+controls.maxDistance = 55;
+controls.maxPolarAngle = Math.PI * 0.492;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (hemisphere ambient + key / fill / rim directional)
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xcfd4dc, 0x4a3d2c, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.5);
+key.position.set(15, 21, 9);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 80;
+key.shadow.camera.left = -20;
+key.shadow.camera.right = 20;
+key.shadow.camera.top = 20;
+key.shadow.camera.bottom = -20;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.03;
+scene.add(key);
+scene.add(key.target);
+
+const fill = new THREE.DirectionalLight(0x9fb4c9, 0.55);
+fill.position.set(-17, 9, -6);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 0.9);
+rim.position.set(-6, 7, -19);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural noise helpers
+ * ------------------------------------------------------------------ */
+function hash(x, z) {
+  const n = Math.sin(x * 127.1 + z * 311.7) * 43758.5453123;
+  return n - Math.floor(n);
+}
+function noise2(x, z) {
+  const xi = Math.floor(x), zi = Math.floor(z);
+  const xf = x - xi, zf = z - zi;
+  const u = xf * xf * (3 - 2 * xf);
+  const v = zf * zf * (3 - 2 * zf);
+  const a = hash(xi, zi), b = hash(xi + 1, zi);
+  const c = hash(xi, zi + 1), d = hash(xi + 1, zi + 1);
+  return a * (1 - u) * (1 - v) + b * u * (1 - v) + c * (1 - u) * v + d * u * v;
+}
+function fbm(x, z) {
+  let val = 0, amp = 0.5, freq = 1;
+  for (let i = 0; i < 4; i++) { val += amp * noise2(x * freq, z * freq); amp *= 0.5; freq *= 2; }
+  return val; // ~0..1
+}
+function smoothstep(e0, e1, x) {
+  let t = (x - e0) / (e1 - e0);
+  t = Math.min(Math.max(t, 0), 1);
+  return t * t * (3 - 2 * t);
+}
+const clamp01 = v => Math.min(Math.max(v, 0), 1);
+
+/* ------------------------------------------------------------------ *
+ *  Terrain description (metres)
+ * ------------------------------------------------------------------ */
+const R = 11.0;          // nominal mound radius  (~22 m across — broad)
+const H = 3.4;           // crest height          (low, rounded)
+const PATCH = 30;        // square earth patch side
+const SEG = 210;         // grid resolution
+
+const PATHS = [
+  { theta0: 0.55,             swirl: 1.15, hw: 1.20 },
+  { theta0: Math.PI + 0.30,   swirl: -0.85, hw: 1.05 }
+];
+
+function fallOff(t) { t = clamp01(t); return 0.5 * (1 + Math.cos(Math.PI * t)); }
+
+// returns { h, onPath, fo, r }
+function terrain(x, z) {
+  const r = Math.hypot(x, z);
+  const ang = Math.atan2(z, x);
+
+  const rn = fbm(x * 0.045 + 11.3, z * 0.045 + 7.1);   // large-scale outline wobble
+  const Reff = R * (0.88 + 0.24 * rn);
+  const fo = fallOff(r / Reff);
+
+  let h = H * fo;
+  h += (fbm(x * 0.16 + 3.0, z * 0.16 + 9.0) - 0.5) * 1.55 * fo;   // broad lumps
+  h += (fbm(x * 0.52 + 21.0, z * 0.52 + 2.0) - 0.5) * 0.42 * fo;  // fine surface
+
+  // worn footpaths
+  let onPath = 0;
+  for (const p of PATHS) {
+    const pa = p.theta0 + p.swirl * (r / R);
+    let da = ang - pa;
+    da = Math.atan2(Math.sin(da), Math.cos(da));
+    const lateral = Math.abs(da) * Math.max(r, 0.3);
+    const core = smoothstep(p.hw, p.hw * 0.35, lateral);
+    const nearTop = smoothstep(0.4, 2.3, r);
+    const nearEdge = smoothstep(Reff + 0.6, Reff - 2.6, r);
+    const w = core * nearTop * nearEdge;
+    if (w > onPath) onPath = w;
+  }
+  h -= onPath * (0.30 + 0.08 * (fbm(x * 1.3, z * 1.3) - 0.5));   // trodden depression + ruts
+
+  return { h, onPath, fo, r };
+}
+
+/* ------------------------------------------------------------------ *
+ *  Build the mound (ONE centred object)
+ * ------------------------------------------------------------------ */
+const mound = new THREE.Group();
+
+// palette (muted earth tones) — sRGB hex, colour-managed to linear internally
+const cDeep = new THREE.Color('#5a4632');
+const cMid  = new THREE.Color('#7a6144');
+const cDry  = new THREE.Color('#9d8760');
+const cPath = new THREE.Color('#b1a179');
+
+const positions = [];
+const colors = [];
+const indices = [];
+const stride = SEG + 1;
+const half = PATCH / 2;
+const tmp = new THREE.Color();
+
+for (let iz = 0; iz <= SEG; iz++) {
+  for (let ix = 0; ix <= SEG; ix++) {
+    const x = -half + (ix / SEG) * PATCH;
+    const z = -half + (iz / SEG) * PATCH;
+    const t = terrain(x, z);
+    positions.push(x, t.h, z);
+
+    const hn = clamp01(t.h / H);
+    const s1 = smoothstep(0.04, 0.5, hn);
+    const s2 = smoothstep(0.45, 1.0, hn);
+    tmp.copy(cDeep).lerp(cMid, s1).lerp(cDry, s2);
+
+    const mot = fbm(x * 0.3 + 50, z * 0.3 + 50);        // luminance mottling
+    tmp.multiplyScalar(0.82 + 0.36 * mot);
+
+    tmp.lerp(cPath, t.onPath * 0.85);                   // compacted path colour
+    colors.push(tmp.r, tmp.g, tmp.b);
+  }
+}
+for (let iz = 0; iz < SEG; iz++) {
+  for (let ix = 0; ix < SEG; ix++) {
+    const a = iz * stride + ix;
+    const b = a + 1;
+    const c = a + stride;
+    const d = c + 1;
+    indices.push(a, c, b, b, c, d);
+  }
+}
+
+const geo = new THREE.BufferGeometry();
+geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+geo.setIndex(indices);
+geo.computeVertexNormals();
+
+const earthMat = new THREE.MeshStandardMaterial({
+  vertexColors: true,
+  roughness: 0.97,
+  metalness: 0.0
+});
+const earthMesh = new THREE.Mesh(geo, earthMat);
+earthMesh.castShadow = true;
+earthMesh.receiveShadow = true;
+mound.add(earthMesh);
+
+/* ------------------------------------------------------------------ *
+ *  Slender marker posts on the crown
+ * ------------------------------------------------------------------ */
+const woodMat = new THREE.MeshStandardMaterial({ color: '#6d5f47', roughness: 0.85, metalness: 0.03 });
+const bandMat = new THREE.MeshStandardMaterial({ color: '#b25f30', roughness: 0.55, metalness: 0.08 });
+
+const postSpots = [
+  { x: 0.35,  z: 0.25,  h: 1.55, lean: 0.05, rot: 0.4 },
+  { x: -0.85, z: 0.65,  h: 1.72, lean: 0.03, rot: 2.1 },
+  { x: 0.70,  z: -0.95, h: 1.38, lean: 0.07, rot: 4.0 },
+  { x: -0.55, z: -0.55, h: 1.60, lean: 0.04, rot: 5.3 }
+];
+
+for (const s of postSpots) {
+  const g = new THREE.Group();
+  const gy = terrain(s.x, s.z).h;
+  g.position.set(s.x, gy, s.z);
+  g.rotation.set(s.lean * Math.cos(s.rot), s.rot, s.lean * Math.sin(s.rot));
+
+  const shaftGeo = new THREE.CylinderGeometry(0.035, 0.05, s.h, 12);
+  shaftGeo.translate(0, s.h / 2 - 0.12, 0);   // sink 12 cm into ground
+  const shaft = new THREE.Mesh(shaftGeo, woodMat);
+  shaft.castShadow = true;
+  shaft.receiveShadow = true;
+  g.add(shaft);
+
+  const bandGeo = new THREE.CylinderGeometry(0.052, 0.052, 0.13, 12);
+  bandGeo.translate(0, s.h - 0.22, 0);
+  const band = new THREE.Mesh(bandGeo, bandMat);
+  band.castShadow = true;
+  g.add(band);
+
+  const capGeo = new THREE.SphereGeometry(0.055, 12, 10);
+  capGeo.translate(0, s.h - 0.10, 0);
+  const cap = new THREE.Mesh(capGeo, woodMat);
+  cap.castShadow = true;
+  g.add(cap);
+
+  mound.add(g);
+}
+
+/* ------------------------------------------------------------------ *
+ *  Scattered stones for surface realism
+ * ------------------------------------------------------------------ */
+const rockMat = new THREE.MeshStandardMaterial({ color: '#6a655b', roughness: 0.92, metalness: 0.0, flatShading: true });
+let seed = 20260706;
+const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+
+for (let i = 0; i < 14; i++) {
+  const ang = rnd() * Math.PI * 2;
+  const rad = 2.5 + rnd() * 8.0;
+  const x = Math.cos(ang) * rad;
+  const z = Math.sin(ang) * rad;
+  const gy = terrain(x, z).h;
+  const size = 0.09 + rnd() * 0.22;
+  const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(size, 0), rockMat);
+  rock.position.set(x, gy + size * 0.28, z);
+  rock.rotation.set(rnd() * 6.28, rnd() * 6.28, rnd() * 6.28);
+  rock.scale.set(1, 0.6 + rnd() * 0.4, 1);
+  rock.castShadow = true;
+  rock.receiveShadow = true;
+  mound.add(rock);
+}
+
+scene.add(mound);
+
+/* ------------------------------------------------------------------ *
+ *  Subtle shadow-catcher ground plane
+ * ------------------------------------------------------------------ */
+const shadowGeo = new THREE.PlaneGeometry(240, 240);
+shadowGeo.rotateX(-Math.PI / 2);
+const shadowMat = new THREE.ShadowMaterial({ opacity: 0.34 });
+const shadowPlane = new THREE.Mesh(shadowGeo, shadowMat);
+shadowPlane.position.y = 0.001;
+shadowPlane.receiveShadow = true;
+scene.add(shadowPlane);
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

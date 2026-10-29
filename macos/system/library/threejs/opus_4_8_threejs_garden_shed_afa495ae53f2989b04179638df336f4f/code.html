@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Garden Shed</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d9d9; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #333; opacity: 0.7;
+    pointer-events: none; user-select: none;
+  }
+</style>
+
+<!-- Requirement 1: three.js + OrbitControls ONLY via importmap on jsDelivr, three@0.160.0 -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="info">Garden shed — procedural three.js • drag to orbit</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   SCENE, RENDERER, CAMERA
+   ========================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;   // req.3
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;      // req.3 (sRGB output)
+renderer.shadowMap.enabled = true;                     // req.3 (shadows)
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;      // req.3 (PCF soft)
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdadada);           // req.4 neutral studio bg
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 200);
+
+/* ============================================================================
+   LIGHTING  (req.4)
+   ========================================================================== */
+// Sky/ground hemisphere fill
+const hemi = new THREE.HemisphereLight(0xffffff, 0x9a8f7d, 0.55);
+hemi.position.set(0, 20, 0);
+scene.add(hemi);
+
+// Directional key light — casts shadows
+const key = new THREE.DirectionalLight(0xfff4e2, 2.5);
+key.position.set(6, 9, 5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -6;
+key.shadow.camera.right = 6;
+key.shadow.camera.top = 6;
+key.shadow.camera.bottom = -6;
+key.shadow.bias = -0.0002;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+// Subtle cool fill from the opposite side (no shadow)
+const fill = new THREE.DirectionalLight(0xbcd0ff, 0.5);
+fill.position.set(-7, 4, -4);
+scene.add(fill);
+
+/* ============================================================================
+   PROCEDURAL TEXTURES  (CanvasTexture — no external assets)
+   ========================================================================== */
+// Draws horizontal wooden-plank siding onto a canvas.
+function makeWoodCanvas(planks, base, dark, grain) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 512;
+  const ctx = c.getContext('2d');
+  const ph = c.height / planks;                     // plank height in px
+
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  for (let i = 0; i < planks; i++) {
+    const y = i * ph;
+    // slight per-plank tonal variation
+    const t = (Math.random() - 0.5) * 0.10;
+    ctx.fillStyle = shade(base, t);
+    ctx.fillRect(0, y, c.width, ph);
+
+    // wood grain streaks (horizontal, along the plank)
+    for (let g = 0; g < 26; g++) {
+      ctx.strokeStyle = shade(grain, (Math.random() - 0.5) * 0.25);
+      ctx.globalAlpha = 0.12 + Math.random() * 0.18;
+      ctx.lineWidth = 0.6 + Math.random();
+      const gy = y + Math.random() * ph;
+      ctx.beginPath();
+      ctx.moveTo(0, gy);
+      ctx.bezierCurveTo(c.width * 0.33, gy + (Math.random() - 0.5) * 4,
+                        c.width * 0.66, gy + (Math.random() - 0.5) * 4,
+                        c.width, gy);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    // shadowed groove between planks
+    ctx.fillStyle = dark;
+    ctx.fillRect(0, y, c.width, Math.max(2, ph * 0.05));
+    // subtle highlight on lower lip
+    ctx.fillStyle = shade(base, 0.14);
+    ctx.fillRect(0, y + ph - 2, c.width, 2);
+  }
+  return c;
+}
+
+// Lighten/darken a hex color by amount in [-1,1]
+function shade(hex, amt) {
+  const col = new THREE.Color(hex);
+  col.offsetHSL(0, 0, amt);
+  return '#' + col.getHexString();
+}
+
+// Build a repeating siding texture from a canvas
+function makeTexture(canvas) {
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+const sidingSrc = makeWoodCanvas(6, '#b9905a', '#5f4527', '#7a5a34'); // natural wood
+const roofSrc   = makeWoodCanvas(7, '#6a5240', '#2c2119', '#42332568'); // dark boards
+
+// Helper: siding-style MeshStandardMaterial with plank size kept constant in
+// world units regardless of panel size (per-panel cloned texture repeat).
+const PLANK_TILE = 1.2; // world size of one texture tile (6 planks -> 0.2 m each)
+function sidingMaterial(srcCanvas, uSize, vSize, { color = 0xffffff, roughness = 0.85, metalness = 0.0, tile = PLANK_TILE } = {}) {
+  const tex = makeTexture(srcCanvas);
+  tex.repeat.set(uSize / tile, vSize / tile);
+  return new THREE.MeshStandardMaterial({ map: tex, color, roughness, metalness });
+}
+
+/* ============================================================================
+   DIMENSIONS (meters)  — origin at front-left corner while building,
+   group is re-centered onto the origin afterwards.
+   ========================================================================== */
+const W = 2.4;          // width  (X)
+const D = 2.0;          // depth  (Z)
+const H = 2.0;          // wall height (Y)
+const WT = 0.06;        // wall thickness
+const OX = 0.18;        // eaves overhang in X
+const OZ = 0.20;        // eaves overhang in Z
+const RIDGE = 0.75;     // roof rise above wall top
+
+// Front wall lives at large Z (faces +Z), back wall at small Z.
+const FRONT_ZC = D - WT / 2;   // center Z of front-wall panels
+
+/* ============================================================================
+   MATERIALS shared across trims / details
+   ========================================================================== */
+const trimMat = new THREE.MeshStandardMaterial({ color: 0xeae4d2, roughness: 0.65, metalness: 0.0 }); // painted off-white
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xbfe0ee, roughness: 0.06, metalness: 0.0,
+  transmission: 0.85, thickness: 0.04, ior: 1.5,
+  transparent: true, opacity: 0.55, side: THREE.DoubleSide
+});
+const metalMat = new THREE.MeshStandardMaterial({ color: 0x3a3a3d, roughness: 0.4, metalness: 0.9 });
+const brassMat = new THREE.MeshStandardMaterial({ color: 0xb08d57, roughness: 0.35, metalness: 0.95 });
+const floorMat = new THREE.MeshStandardMaterial({ color: 0x6d5637, roughness: 0.95 });
+
+/* ============================================================================
+   BUILD THE SHED (THREE.Group of clearly-named sub-parts)  (req.2)
+   ========================================================================== */
+const shed = new THREE.Group();
+shed.name = 'gardenShed';
+
+// Utility: create a box panel (min/max box) with a material and shadows.
+function panel(name, x0, x1, y0, y1, z0, z1, mat) {
+  const dx = x1 - x0, dy = y1 - y0, dz = z1 - z0;
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(dx, dy, dz), mat);
+  mesh.position.set((x0 + x1) / 2, (y0 + y1) / 2, (z0 + z1) / 2);
+  mesh.name = name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  shed.add(mesh);
+  return mesh;
+}
+
+/* ---- Floor (thin, keeps interior from looking hollow through the glass) ---- */
+panel('floor', WT, W - WT, -0.02, 0.02, WT, D - WT, floorMat);
+
+/* ---------------------------------------------------------------------------
+   FRONT WALL — assembled from panels so the door & window are real openings.
+   Door opening:   x[0.35 , 1.15]  y[0.02 , 1.95]
+   Window opening: x[1.55 , 2.05]  y[1.00 , 1.50]
+   ------------------------------------------------------------------------- */
+const dX0 = 0.35, dX1 = 1.15, dTop = 1.95;             // door
+const wX0 = 1.55, wX1 = 2.05, wY0 = 1.00, wY1 = 1.50;  // window
+const fZ0 = D - WT, fZ1 = D;
+
+function frontPanel(name, x0, x1, y0, y1) {
+  return panel(name, x0, x1, y0, y1, fZ0, fZ1,
+    sidingMaterial(sidingSrc, x1 - x0, y1 - y0, { color: 0xffffff }));
+}
+frontPanel('frontWall_leftOfDoor',   0,   dX0, 0,    H);
+frontPanel('frontWall_aboveDoor',    dX0, dX1, dTop, H);
+frontPanel('frontWall_betweenDoorWin', dX1, wX0, 0,  H);
+frontPanel('frontWall_belowWindow',  wX0, wX1, 0,    wY0);
+frontPanel('frontWall_aboveWindow',  wX0, wX1, wY1,  H);
+frontPanel('frontWall_rightOfWindow',wX1, W,   0,    H);
+
+/* ---- Back wall (solid) ---- */
+panel('backWall', 0, W, 0, H, 0, WT,
+  sidingMaterial(sidingSrc, W, H, { color: 0xffffff }));
+
+/* ---- Side walls (solid) ---- */
+panel('leftWall',  0,      WT, 0, H, 0, D,
+  sidingMaterial(sidingSrc, D, H, { color: 0xffffff }));
+panel('rightWall', W - WT, W,  0, H, 0, D,
+  sidingMaterial(sidingSrc, D, H, { color: 0xffffff }));
+
+/* ---------------------------------------------------------------------------
+   GABLE TRIANGLES — fill the triangular tops of the front & back walls.
+   Extruded triangle shapes so they have wall thickness.
+   ------------------------------------------------------------------------- */
+function gable(name, zPos) {
+  const shape = new THREE.Shape();
+  shape.moveTo(0, H);
+  shape.lineTo(W, H);
+  shape.lineTo(W / 2, H + RIDGE);
+  shape.lineTo(0, H);
+  const geo = new THREE.ExtrudeGeometry(shape, { depth: WT, bevelEnabled: false });
+  // ExtrudeGeometry front-face UVs are in world (meter) units -> repeat = 1/tile
+  const tex = makeTexture(sidingSrc);
+  tex.repeat.set(1 / PLANK_TILE, 1 / PLANK_TILE);
+  const mesh = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ map: tex, roughness: 0.85 }));
+  mesh.position.z = zPos;
+  mesh.name = name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  shed.add(mesh);
+}
+gable('gableFront', D - WT);
+gable('gableBack', 0);
+
+/* ---------------------------------------------------------------------------
+   PITCHED GABLE ROOF — two sloped planes with eaves overhang + ridge cap.
+   ------------------------------------------------------------------------- */
+const eaveL = -OX;            // left eave x (at wall-top height H)
+const eaveR = W + OX;         // right eave x
+const ridgeX = W / 2;
+const roofDepth = D + 2 * OZ;
+const roofThk = 0.06;
+
+function roofPlane(name, xA, yA, xB, yB) {
+  const dx = xB - xA, dy = yB - yA;
+  const len = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx);
+  const mat = sidingMaterial(roofSrc, len, roofDepth, { color: 0xffffff, roughness: 0.92, tile: 0.5 });
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(len, roofThk, roofDepth), mat);
+  mesh.position.set((xA + xB) / 2, (yA + yB) / 2, D / 2);
+  mesh.rotation.z = angle;
+  mesh.name = name;
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  shed.add(mesh);
+}
+roofPlane('roofLeft',  eaveL, H, ridgeX, H + RIDGE);
+roofPlane('roofRight', ridgeX, H + RIDGE, eaveR, H);
+
+// Ridge cap board along the top
+const ridgeCap = new THREE.Mesh(
+  new THREE.BoxGeometry(0.16, 0.07, roofDepth),
+  new THREE.MeshStandardMaterial({ color: 0x3f3125, roughness: 0.9 })
+);
+ridgeCap.position.set(ridgeX, H + RIDGE + 0.02, D / 2);
+ridgeCap.name = 'ridgeCap';
+ridgeCap.castShadow = true;
+ridgeCap.receiveShadow = true;
+shed.add(ridgeCap);
+
+// Fascia boards along the two eaves (front & back edges of the roof)
+function fascia(name, z) {
+  const g = new THREE.Group();
+  g.name = name;
+  [[eaveL, H, ridgeX, H + RIDGE], [ridgeX, H + RIDGE, eaveR, H]].forEach((s, i) => {
+    const [xA, yA, xB, yB] = s;
+    const len = Math.hypot(xB - xA, yB - yA);
+    const m = new THREE.Mesh(new THREE.BoxGeometry(len, 0.14, 0.03), trimMat);
+    m.position.set((xA + xB) / 2, (yA + yB) / 2, z);
+    m.rotation.z = Math.atan2(yB - yA, xB - xA);
+    m.castShadow = true; m.receiveShadow = true;
+    g.add(m);
+  });
+  shed.add(g);
+}
+fascia('fasciaFront', D + OZ);
+fascia('fasciaBack', -OZ);
+
+/* ---------------------------------------------------------------------------
+   DOOR — single hinged plank door, mounted on a pivot and left slightly ajar.
+   ------------------------------------------------------------------------- */
+const doorPivot = new THREE.Group();
+doorPivot.name = 'doorHinge';
+doorPivot.position.set(dX0, 0, D);        // hinge on the left edge, at the outer face
+shed.add(doorPivot);
+
+const doorW = dX1 - dX0 - 0.02;           // small reveal gap
+const doorH = dTop - 0.03;
+const doorMat = sidingMaterial(sidingSrc, doorW, doorH, { color: 0x6f8560, roughness: 0.6 }); // sage-green paint over planks
+const door = new THREE.Mesh(new THREE.BoxGeometry(doorW, doorH, 0.05), doorMat);
+door.position.set(doorW / 2 + 0.01, doorH / 2 + 0.03, 0);
+door.name = 'door';
+door.castShadow = true;
+door.receiveShadow = true;
+doorPivot.add(door);
+
+// Ledged-brace battens on the door (two horizontal + one diagonal)
+const braceMat = new THREE.MeshStandardMaterial({ color: 0x5c6f4f, roughness: 0.6 });
+function batten(w, h, x, y, rot = 0) {
+  const b = new THREE.Mesh(new THREE.BoxGeometry(w, h, 0.02), braceMat);
+  b.position.set(x, y, 0.03);
+  b.rotation.z = rot;
+  b.castShadow = true; b.receiveShadow = true;
+  doorPivot.add(b);
+}
+batten(doorW - 0.04, 0.09, doorW / 2 + 0.01, 0.35, 0);
+batten(doorW - 0.04, 0.09, doorW / 2 + 0.01, 1.65, 0);
+batten(Math.hypot(doorW - 0.04, 1.3), 0.08, doorW / 2 + 0.01, 1.0,
+       Math.atan2(1.3, doorW - 0.04));
+
+// Door handle + hinges
+const handle = new THREE.Mesh(new THREE.SphereGeometry(0.035, 20, 16), brassMat);
+handle.position.set(doorW - 0.08, 1.0, 0.06);
+handle.name = 'doorHandle';
+handle.castShadow = true;
+doorPivot.add(handle);
+
+[0.35, 1.55].forEach((hy, i) => {
+  const hinge = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.16, 0.03), metalMat);
+  hinge.position.set(0.03, hy, 0.03);
+  hinge.name = 'doorHinge' + i;
+  hinge.castShadow = true;
+  doorPivot.add(hinge);
+});
+
+doorPivot.rotation.y = -0.55; // swing outward -> clearly ajar
+
+/* ---- Door casing trim ---- */
+function trimBox(name, w, h, d, x, y, z) {
+  const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), trimMat);
+  m.position.set(x, y, z);
+  m.name = name;
+  m.castShadow = true; m.receiveShadow = true;
+  shed.add(m);
+}
+trimBox('doorTrimLeft',  0.06, dTop + 0.06, 0.04, dX0 - 0.02, (dTop) / 2, D + 0.01);
+trimBox('doorTrimRight', 0.06, dTop + 0.06, 0.04, dX1 + 0.02, (dTop) / 2, D + 0.01);
+trimBox('doorTrimTop',   dX1 - dX0 + 0.16, 0.07, 0.04, (dX0 + dX1) / 2, dTop + 0.03, D + 0.01);
+
+/* ---------------------------------------------------------------------------
+   WINDOW — glass pane, cross mullions and painted casing trim.
+   ------------------------------------------------------------------------- */
+const winCX = (wX0 + wX1) / 2, winCY = (wY0 + wY1) / 2;
+const winW = wX1 - wX0, winH = wY1 - wY0;
+
+const glass = new THREE.Mesh(new THREE.BoxGeometry(winW, winH, 0.02), glassMat);
+glass.position.set(winCX, winCY, D - WT / 2);
+glass.name = 'windowGlass';
+shed.add(glass);
+
+// Mullions (a simple cross)
+const mullMat = trimMat;
+const mullV = new THREE.Mesh(new THREE.BoxGeometry(0.03, winH, 0.05), mullMat);
+mullV.position.set(winCX, winCY, D - 0.01);
+mullV.name = 'windowMullionV'; mullV.castShadow = true;
+shed.add(mullV);
+const mullH = new THREE.Mesh(new THREE.BoxGeometry(winW, 0.03, 0.05), mullMat);
+mullH.position.set(winCX, winCY, D - 0.01);
+mullH.name = 'windowMullionH'; mullH.castShadow = true;
+shed.add(mullH);
+
+// Window casing trim
+trimBox('winTrimLeft',  0.06, winH + 0.12, 0.04, wX0 - 0.03, winCY, D + 0.005);
+trimBox('winTrimRight', 0.06, winH + 0.12, 0.04, wX1 + 0.03, winCY, D + 0.005);
+trimBox('winTrimTop',   winW + 0.12, 0.06, 0.04, winCX, wY1 + 0.03, D + 0.005);
+trimBox('winTrimBottom',winW + 0.14, 0.05, 0.05, winCX, wY0 - 0.03, D + 0.02); // sill (proud)
+
+/* ---------------------------------------------------------------------------
+   CORNER TRIM POSTS — vertical boards hiding the wall seams at each corner.
+   ------------------------------------------------------------------------- */
+[[0, 0], [W, 0], [0, D], [W, D]].forEach(([x, z], i) => {
+  const post = new THREE.Mesh(new THREE.BoxGeometry(0.1, H, 0.1), trimMat);
+  post.position.set(x, H / 2, z);
+  post.name = 'cornerPost' + i;
+  post.castShadow = true; post.receiveShadow = true;
+  shed.add(post);
+});
+
+/* ============================================================================
+   CENTER THE SHED ON THE ORIGIN, RESTING ON THE GROUND  (req.6)
+   ========================================================================== */
+shed.updateMatrixWorld(true);
+let bbox = new THREE.Box3().setFromObject(shed);
+let center = bbox.getCenter(new THREE.Vector3());
+shed.position.set(-center.x, -bbox.min.y, -center.z); // XZ centered, base on y=0
+scene.add(shed);
+
+/* ============================================================================
+   GROUND / CONTACT-SHADOW PLANE  (req.4)
+   ========================================================================== */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.MeshStandardMaterial({ color: 0xc9c6c0, roughness: 1.0, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+ground.name = 'ground';
+scene.add(ground);
+
+/* ============================================================================
+   CONTROLS + AUTO-FRAMED CAMERA  (req.5)
+   ========================================================================== */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 2;
+controls.maxDistance = 30;
+controls.maxPolarAngle = Math.PI * 0.495; // don't dip under the ground
+
+// Frame the camera to the shed's bounding box
+shed.updateMatrixWorld(true);
+bbox = new THREE.Box3().setFromObject(shed);
+const size = bbox.getSize(new THREE.Vector3());
+center = bbox.getCenter(new THREE.Vector3());
+const maxDim = Math.max(size.x, size.y, size.z);
+const fitDist = (maxDim / 2) / Math.tan((camera.fov * Math.PI / 180) / 2);
+const dist = fitDist * 1.7;
+camera.position.set(center.x + dist * 0.85, center.y + dist * 0.5, center.z + dist * 0.95);
+camera.near = dist / 100;
+camera.far = dist * 100;
+camera.updateProjectionMatrix();
+controls.target.copy(center);
+controls.update();
+
+// Aim the shadow camera at the shed
+key.target.position.copy(center);
+scene.add(key.target);
+
+/* ============================================================================
+   RESIZE + RENDER LOOP  (req.5)
+   ========================================================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

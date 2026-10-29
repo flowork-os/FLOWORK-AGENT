@@ -1,0 +1,579 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Orbital Solar Farm</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#020409}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================================================
+   ORBITAL SOLAR FARM — hard sci-fi
+   Vast photovoltaic wings on a central truss spine with a habitat
+   module, relay dishes, a rail-crawling maintenance robot, tether
+   lines, a drifting cargo pod, the blue limb of Earth below and a
+   dense starfield behind.
+   ================================================================ */
+
+/* ----------------------------- CONFIG & PALETTE ----------------- */
+const SEED = 47210815;
+const SUN_DIR = new THREE.Vector3(0.72, 0.5, 0.34).normalize();  // toward the sun
+
+const PAL = {
+  space: 0x020409,
+  truss: 0xb7bec6, hull: 0xdfe3e6, gold: 0xd9a63b,
+  panelBase: '#0b2340', panelCell: '#16416f', panelGrid: '#8fa6bd',
+  ocean: '#17497f', land: '#3f7a45', desert: '#9a8a58', cloud: '#f4f8fb',
+  radiator: 0xf2f5f7, dish: 0xcfd6da,
+  robotBody: 0xe8e2d8, robotAccent: 0xff7a1f, sensor: 0x37f0ff,
+  tether: 0x6d7883, pod: 0xd88a3f,
+  sun: 0xfff2dd, fillSky: 0x0b1030, earthShine: 0x3f6ea8, rim: 0x557799
+};
+
+/* ----------------------------- SEEDED PRNG & HELPERS ------------ */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng  = mulberry32(SEED);
+const rand = (a, b) => a + rng() * (b - a);
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+const v3   = (x, y, z) => new THREE.Vector3(x, y, z);
+const Y_AXIS   = new THREE.Vector3(0, 1, 0);
+const UNIT_CYL = new THREE.CylinderGeometry(1, 1, 1, 6);
+const _m = new THREE.Matrix4(), _q = new THREE.Quaternion(), _v = new THREE.Vector3();
+
+// Solid strut between two points (shared unit cylinder, scaled).
+function barBetween(p1, p2, r, mat){
+  const dir = _v.subVectors(p2, p1), len = dir.length();
+  const mesh = new THREE.Mesh(UNIT_CYL, mat);
+  mesh.scale.set(r, len, r);
+  mesh.quaternion.setFromUnitVectors(Y_AXIS, dir.normalize());
+  mesh.position.copy(p1).add(p2).multiplyScalar(0.5);
+  return mesh;
+}
+// Same, but written into an InstancedMesh slot.
+function strut(inst, idx, p1, p2, r){
+  const dir = _v.subVectors(p2, p1), len = dir.length();
+  _q.setFromUnitVectors(Y_AXIS, dir.clone().normalize());
+  _m.compose(new THREE.Vector3().addVectors(p1, p2).multiplyScalar(0.5), _q, new THREE.Vector3(r, len, r));
+  inst.setMatrixAt(idx, _m);
+}
+
+/* ----------------------------- RENDERER / SCENE / CAMERA -------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.space);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 1500);
+camera.position.set(68, 30, 72);
+const clock = new THREE.Clock();
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, -1, 0); controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true;    controls.autoRotateSpeed = 0.8;
+controls.minDistance = 45;     controls.maxDistance = 220;
+controls.maxPolarAngle = Math.PI * 0.92;
+
+/* ----------------------------- CANVAS TEXTURES ------------------ */
+function makeCanvas(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h; return c;
+}
+
+// Photovoltaic cell grid with busbars and a faint specular sheen map.
+function makePanelTexture(){
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.fillStyle = PAL.panelBase; g.fillRect(0, 0, 256, 256);
+  const cell = 32;
+  for(let y = 0; y < 8; y++) for(let x = 0; x < 8; x++){
+    g.fillStyle = `rgb(${18 + Math.floor(rand(0, 14))},${58 + Math.floor(rand(0, 18))},${104 + Math.floor(rand(0, 24))})`;
+    g.fillRect(x * cell + 2, y * cell + 2, cell - 4, cell - 4);
+    g.fillStyle = 'rgba(255,255,255,0.10)';                       // cell glint corner
+    g.fillRect(x * cell + 4, y * cell + 4, 10, 3);
+  }
+  g.strokeStyle = PAL.panelGrid; g.lineWidth = 2;
+  for(let i = 0; i <= 8; i++){
+    g.beginPath(); g.moveTo(i * cell, 0); g.lineTo(i * cell, 256); g.stroke();
+    g.beginPath(); g.moveTo(0, i * cell); g.lineTo(256, i * cell); g.stroke();
+  }
+  g.strokeStyle = '#c9d6e2'; g.lineWidth = 5; g.strokeRect(1, 1, 254, 254);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+// White hull plating with seams, vents and small service markings.
+function makeHullTexture(){
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  g.fillStyle = '#dde2e6'; g.fillRect(0, 0, 256, 256);
+  g.strokeStyle = '#b3bcc3'; g.lineWidth = 2;
+  for(let i = 0; i < 12; i++){                                     // plate seams
+    const x = rand(0, 256), y = rand(0, 256);
+    g.strokeRect(x, y, rand(30, 90), rand(20, 70));
+  }
+  for(let i = 0; i < 40; i++){                                     // rivets
+    g.fillStyle = '#9aa4ab';
+    g.beginPath(); g.arc(rand(0, 256), rand(0, 256), rand(0.8, 1.6), 0, Math.PI * 2); g.fill();
+  }
+  for(let i = 0; i < 8; i++){                                      // service decals
+    g.fillStyle = pick(['#c33d2e', '#2d6fc3', '#d8a437', '#3f3f46']);
+    g.fillRect(rand(10, 230), rand(10, 230), rand(6, 18), rand(3, 7));
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+// Lit window strip for the habitat band (emissive map).
+function makeWindowTexture(){
+  const c = makeCanvas(256, 64), g = c.getContext('2d');
+  g.fillStyle = '#000'; g.fillRect(0, 0, 256, 64);
+  for(let i = 0; i < 12; i++){
+    const lit = rng() < 0.78;
+    g.fillStyle = lit ? pick(['#ffe9b8', '#fff6e0', '#cfe4ff']) : '#0c1118';
+    g.fillRect(8 + i * 21, 22, 12, 20);
+  }
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = THREE.RepeatWrapping; t.repeat.set(4, 1); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+// Blue marble: oceans, continents, swirled cloud decks, polar ice.
+function makeEarthTexture(){
+  const c = makeCanvas(1024, 512), g = c.getContext('2d');
+  const sea = g.createLinearGradient(0, 0, 0, 512);
+  sea.addColorStop(0, '#2a6ea8'); sea.addColorStop(0.5, PAL.ocean); sea.addColorStop(1, '#2a6ea8');
+  g.fillStyle = sea; g.fillRect(0, 0, 1024, 512);
+  for(let i = 0; i < 16; i++){                                     // continent blobs
+    const cx = rand(0, 1024), cy = rand(90, 422), col = pick([PAL.land, PAL.desert, '#5d7a3f']);
+    for(let b = 0; b < 14; b++){
+      g.fillStyle = col; g.globalAlpha = 0.85;
+      g.beginPath();
+      g.ellipse(cx + rand(-70, 70), cy + rand(-34, 34), rand(12, 55), rand(8, 30), rand(0, 3), 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  g.globalAlpha = 1;
+  for(let i = 0; i < 34; i++){                                     // cloud swirls
+    const cx = rand(0, 1024), cy = rand(30, 482), rot = rand(0, Math.PI * 2);
+    g.strokeStyle = 'rgba(244,248,251,0.55)'; g.lineWidth = rand(4, 10); g.lineCap = 'round';
+    g.beginPath();
+    for(let s = 0; s <= 26; s++){
+      const a = rot + s * 0.26, r = 2 + s * rand(1.4, 2.2);
+      const x = cx + Math.cos(a) * r, y = cy + Math.sin(a) * r * 0.5;
+      if(s === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    }
+    g.stroke();
+  }
+  for(let i = 0; i < 60; i++){                                     // cloud streaks
+    g.fillStyle = `rgba(244,248,251,${rand(0.2, 0.5)})`;
+    g.beginPath(); g.ellipse(rand(0, 1024), rand(20, 492), rand(20, 90), rand(3, 9), 0, 0, Math.PI * 2); g.fill();
+  }
+  g.fillStyle = '#eef6fb';                                         // polar caps
+  g.fillRect(0, 0, 1024, 26); g.fillRect(0, 486, 1024, 26);
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+// Radial sun flare sprite with cross streaks.
+function makeFlareTexture(){
+  const c = makeCanvas(256, 256), g = c.getContext('2d');
+  const grad = g.createRadialGradient(128, 128, 4, 128, 128, 128);
+  grad.addColorStop(0, 'rgba(255,255,245,1)');  grad.addColorStop(0.18, 'rgba(255,238,200,0.85)');
+  grad.addColorStop(0.45, 'rgba(255,214,150,0.25)'); grad.addColorStop(1, 'rgba(255,200,120,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  g.fillStyle = 'rgba(255,245,225,0.5)';
+  g.fillRect(0, 126, 256, 4); g.fillRect(126, 0, 4, 256);          // diffraction spikes
+  const t = new THREE.CanvasTexture(c); t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+
+const panelTex  = makePanelTexture(), hullTex = makeHullTexture();
+const windowTex = makeWindowTexture(), earthTex = makeEarthTexture(), flareTex = makeFlareTexture();
+
+/* ----------------------------- MATERIALS ------------------------ */
+const MAT = {
+  truss:    new THREE.MeshStandardMaterial({ color: PAL.truss, metalness: 0.65, roughness: 0.45 }),
+  panel:    new THREE.MeshStandardMaterial({ map: panelTex, metalness: 0.78, roughness: 0.18, emissive: 0x0a1e3a, emissiveIntensity: 0.35 }),
+  hull:     new THREE.MeshStandardMaterial({ map: hullTex, metalness: 0.25, roughness: 0.5 }),
+  gold:     new THREE.MeshStandardMaterial({ color: PAL.gold, metalness: 0.9, roughness: 0.32 }),
+  windows:  new THREE.MeshStandardMaterial({ color: 0x10161d, emissive: 0xffffff, emissiveMap: windowTex, emissiveIntensity: 1.25, roughness: 0.6 }),
+  radiator: new THREE.MeshStandardMaterial({ color: PAL.radiator, metalness: 0.15, roughness: 0.35, side: THREE.DoubleSide }),
+  dish:     new THREE.MeshStandardMaterial({ color: PAL.dish, metalness: 0.4, roughness: 0.4, side: THREE.DoubleSide }),
+  robot:    new THREE.MeshStandardMaterial({ color: PAL.robotBody, metalness: 0.3, roughness: 0.55 }),
+  accent:   new THREE.MeshStandardMaterial({ color: PAL.robotAccent, emissive: PAL.robotAccent, emissiveIntensity: 0.35, roughness: 0.5 }),
+  sensor:   new THREE.MeshBasicMaterial({ color: PAL.sensor }),
+  tether:   new THREE.MeshStandardMaterial({ color: PAL.tether, metalness: 0.5, roughness: 0.6 }),
+  pod:      new THREE.MeshStandardMaterial({ map: hullTex, color: PAL.pod, metalness: 0.3, roughness: 0.6 }),
+  thruster: new THREE.MeshBasicMaterial({ color: 0x86c8ff, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }),
+  earth:    new THREE.MeshStandardMaterial({ map: earthTex, emissive: 0xffffff, emissiveMap: earthTex, emissiveIntensity: 0.22, roughness: 0.95 }),
+  atmo:     new THREE.MeshBasicMaterial({ color: 0x6fb7ff, transparent: true, opacity: 0.16, side: THREE.BackSide, blending: THREE.AdditiveBlending, depthWrite: false }),
+  strobeRed:   new THREE.MeshBasicMaterial({ color: 0xff3b30, transparent: true }),
+  strobeGreen: new THREE.MeshBasicMaterial({ color: 0x35ff6a, transparent: true }),
+  strobeWhite: new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true })
+};
+
+/* ----------------------------- BUILDER FUNCTIONS ---------------- */
+// Dense starfield shell with a tilted galactic band and colored giants.
+function buildStarfield(){
+  const N = 2600, pos = new Float32Array(N * 3), col = new Float32Array(N * 3);
+  const bandN = v3(0.42, 1, 0.22).normalize(), p = new THREE.Vector3();
+  for(let i = 0; i < N; i++){
+    const u = rand(-1, 1), ph = rand(0, Math.PI * 2), s = Math.sqrt(1 - u * u);
+    p.set(s * Math.cos(ph), u, s * Math.sin(ph));
+    if(i % 3 === 0) p.addScaledVector(bandN, -p.dot(bandN) * 0.78).normalize(); // milky band
+    p.multiplyScalar(rand(470, 540));
+    pos.set([p.x, p.y, p.z], i * 3);
+    const b = rand(0.35, 1), tint = pick([[1, 1, 1], [0.75, 0.85, 1], [1, 0.9, 0.72], [1, 0.75, 0.7]]);
+    col.set([b * tint[0], b * tint[1], b * tint[2]], i * 3);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({ size: 1.7, vertexColors: true, sizeAttenuation: false, depthWrite: false }));
+}
+
+// The blue limb of Earth with a thin additive atmosphere shell.
+function buildEarth(){
+  const g = new THREE.Group();
+  const globe = new THREE.Mesh(new THREE.SphereGeometry(300, 64, 48), MAT.earth);
+  g.add(globe);
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(306, 48, 32), MAT.atmo));
+  g.position.set(0, -338, 0);
+  g.userData = { globe };
+  return g;
+}
+
+// Additive billboard flare marking the sun.
+function buildSunFlare(){
+  const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ map: flareTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false }));
+  sprite.position.copy(SUN_DIR).multiplyScalar(430);
+  sprite.scale.set(130, 130, 1);
+  return sprite;
+}
+
+// Central box truss spine: four chords with rings and alternating diagonals.
+function buildTrussSpine(){
+  const g = new THREE.Group(), L = 64, half = L / 2, s = 1.1;
+  for(const [y, z] of [[s, s], [s, -s], [-s, s], [-s, -s]]){
+    const chord = new THREE.Mesh(UNIT_CYL, MAT.truss);
+    chord.scale.set(0.09, L, 0.09); chord.rotation.z = Math.PI / 2;
+    chord.position.set(0, y, z);
+    chord.castShadow = true; g.add(chord);
+  }
+  const bays = 16, step = L / bays;
+  const inst = new THREE.InstancedMesh(UNIT_CYL, MAT.truss, (bays + 1) * 4 + bays * 4);
+  let k = 0;
+  for(let b = 0; b <= bays; b++){
+    const x = -half + b * step;
+    strut(inst, k++, v3(x, s, s), v3(x, s, -s), 0.05);
+    strut(inst, k++, v3(x, s, -s), v3(x, -s, -s), 0.05);
+    strut(inst, k++, v3(x, -s, -s), v3(x, -s, s), 0.05);
+    strut(inst, k++, v3(x, -s, s), v3(x, s, s), 0.05);
+    if(b < bays){
+      strut(inst, k++, v3(x, s, s), v3(x + step, s, -s), 0.04);
+      strut(inst, k++, v3(x, -s, -s), v3(x + step, -s, s), 0.04);
+      strut(inst, k++, v3(x, s, s), v3(x + step, -s, s), 0.04);
+      strut(inst, k++, v3(x, s, -s), v3(x + step, -s, -s), 0.04);
+    }
+  }
+  inst.castShadow = inst.receiveShadow = true; g.add(inst);
+  return g;
+}
+
+// One photovoltaic half-wing: boom, edge rails and a precise tile array.
+function buildPanelArray(side){
+  const g = new THREE.Group(), rows = 12, cols = 6, tile = 2.0, gap = 0.14;
+  const boomLen = rows * (tile + gap) + 3.6;
+  const boom = new THREE.Mesh(UNIT_CYL, MAT.truss);
+  boom.scale.set(0.14, boomLen, 0.14); boom.rotation.x = Math.PI / 2;
+  boom.position.z = side * boomLen / 2;
+  boom.castShadow = true; g.add(boom);
+  const tiles = new THREE.InstancedMesh(new THREE.BoxGeometry(tile, 0.08, tile), MAT.panel, rows * cols);
+  let k = 0;
+  for(let r = 0; r < rows; r++) for(let c = 0; c < cols; c++){
+    _m.makeTranslation((c - (cols - 1) / 2) * (tile + gap), 0, side * (2.6 + (r + 0.5) * (tile + gap)));
+    tiles.setMatrixAt(k++, _m);
+  }
+  tiles.castShadow = tiles.receiveShadow = true; g.add(tiles);
+  for(const sx of [-1, 1]){
+    const rail = new THREE.Mesh(UNIT_CYL, MAT.truss);
+    rail.scale.set(0.06, boomLen - 3, 0.06); rail.rotation.x = Math.PI / 2;
+    rail.position.set(sx * (cols / 2 * (tile + gap) + 0.25), 0, side * boomLen / 2);
+    g.add(rail);
+  }
+  return g;
+}
+
+// A full wing pair (both Z directions) on a rotary hinge collar.
+function buildWingPair(){
+  const g = new THREE.Group();
+  g.add(buildPanelArray(1), buildPanelArray(-1));
+  const collar = new THREE.Mesh(new THREE.BoxGeometry(2.6, 2.6, 2.6), MAT.hull);
+  collar.castShadow = true; g.add(collar);
+  return g;
+}
+
+// Habitat module: pressure hull, lit window band, gold MLI end domes,
+// cupola, docking node and RCS quads.
+function buildHabitat(){
+  const g = new THREE.Group();
+  const hull = new THREE.Mesh(new THREE.CylinderGeometry(3, 3, 10, 24), MAT.hull);
+  hull.rotation.z = Math.PI / 2;
+  hull.castShadow = hull.receiveShadow = true; g.add(hull);
+  const band = new THREE.Mesh(new THREE.CylinderGeometry(3.04, 3.04, 6.8, 24, 1, true), MAT.windows);
+  band.rotation.z = Math.PI / 2; g.add(band);
+  for(const e of [-1, 1]){
+    const cap = new THREE.Mesh(new THREE.SphereGeometry(3, 20, 12, 0, Math.PI * 2, 0, Math.PI / 2), MAT.gold);
+    cap.scale.y = 0.55; cap.rotation.z = -e * Math.PI / 2; cap.position.x = e * 5;
+    cap.castShadow = true; g.add(cap);
+  }
+  const cupola = new THREE.Mesh(new THREE.SphereGeometry(0.9, 14, 10, 0, Math.PI * 2, 0, Math.PI / 2), MAT.sensor);
+  cupola.position.set(1.2, 2.95, 0); g.add(cupola);
+  const node = new THREE.Mesh(new THREE.SphereGeometry(1.7, 16, 12), MAT.hull);
+  node.position.x = -7.2; node.castShadow = true; g.add(node);
+  const port = new THREE.Mesh(new THREE.CylinderGeometry(1.0, 1.2, 0.9, 12), MAT.gold);
+  port.rotation.z = Math.PI / 2; port.position.x = -8.6; g.add(port);
+  for(const [py, pz] of [[2.2, 2.2], [2.2, -2.2], [-2.2, 2.2], [-2.2, -2.2]]){
+    const rcs = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.5, 0.5), MAT.accent);
+    rcs.position.set(4.2, py, pz); g.add(rcs);
+  }
+  const mast = new THREE.Mesh(UNIT_CYL, MAT.truss);
+  mast.scale.set(0.06, 3.6, 0.06); mast.position.set(0, 4.6, 0); g.add(mast);
+  return g;
+}
+
+// Steerable relay dish on a gimbal pedestal.
+function buildRelayDish(r){
+  const g = new THREE.Group(), aim = new THREE.Group();
+  const pts = [];
+  for(let i = 0; i <= 10; i++){ const u = i / 10 * r; pts.push(new THREE.Vector2(u, u * u * 0.17)); }
+  const dish = new THREE.Mesh(new THREE.LatheGeometry(pts, 26), MAT.dish);
+  dish.castShadow = true; aim.add(dish);
+  const feed = new THREE.Mesh(UNIT_CYL, MAT.truss);
+  feed.scale.set(0.03, r * 0.95, 0.03); feed.position.y = r * 0.5; aim.add(feed);
+  const horn = new THREE.Mesh(new THREE.SphereGeometry(0.12, 8, 6), MAT.accent);
+  horn.position.y = r * 0.95; aim.add(horn);
+  const yoke = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.22, 0.8, 8), MAT.truss);
+  yoke.position.y = -0.5; g.add(yoke);
+  aim.position.y = 0.1; g.add(aim);
+  g.userData = { aim };
+  return g;
+}
+
+// Maintenance robot: clamped chassis, articulated arm, sensor head.
+function buildRobot(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.6, 1.1), MAT.robot);
+  body.position.y = 0.55; body.castShadow = true; g.add(body);
+  for(const [cx, cz] of [[-0.55, 0.36], [-0.55, -0.36], [0.55, 0.36], [0.55, -0.36]]){
+    const clamp = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.34, 0.2), MAT.accent);
+    clamp.position.set(cx, 0.15, cz); g.add(clamp);
+  }
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.34, 0.5), MAT.robot);
+  head.position.set(0.62, 1.02, 0); g.add(head);
+  const eye = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.12, 0.34), MAT.sensor);
+  eye.position.set(0.9, 1.02, 0); g.add(eye);
+  const shoulder = new THREE.Group();
+  shoulder.position.set(-0.45, 0.9, 0); g.add(shoulder);
+  const upper = new THREE.Mesh(UNIT_CYL, MAT.accent);
+  upper.scale.set(0.07, 1.3, 0.07); upper.position.y = 0.65; shoulder.add(upper);
+  const elbow = new THREE.Group();
+  elbow.position.y = 1.3; shoulder.add(elbow);
+  const fore = new THREE.Mesh(UNIT_CYL, MAT.robot);
+  fore.scale.set(0.055, 1.0, 0.055); fore.position.y = 0.5; elbow.add(fore);
+  const grip = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.22, 0.3), MAT.sensor);
+  grip.position.y = 1.05; elbow.add(grip);
+  const strobe = new THREE.Mesh(new THREE.SphereGeometry(0.09, 8, 6), MAT.strobeWhite);
+  strobe.position.set(-0.6, 0.95, 0); g.add(strobe);
+  g.userData = { shoulder, elbow };
+  return g;
+}
+
+// Twin service rails running the length of the spine.
+function buildServiceRail(){
+  const g = new THREE.Group();
+  for(const z of [-0.36, 0.36]){
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(60, 0.12, 0.12), MAT.truss);
+    rail.position.set(0, 1.42, z); g.add(rail);
+  }
+  const ties = new THREE.InstancedMesh(new THREE.BoxGeometry(0.1, 0.06, 0.92), MAT.truss, 21);
+  for(let i = 0; i < 21; i++){
+    _m.makeTranslation(-30 + i * 3, 1.38, 0);
+    ties.setMatrixAt(i, _m);
+  }
+  g.add(ties);
+  return g;
+}
+
+// Deployable white thermal radiator on a mount arm.
+function buildRadiator(){
+  const g = new THREE.Group();
+  const fin = new THREE.Mesh(new THREE.BoxGeometry(3.4, 7, 0.1), MAT.radiator);
+  fin.position.y = 5.2;
+  fin.castShadow = fin.receiveShadow = true; g.add(fin);
+  const arm = new THREE.Mesh(UNIT_CYL, MAT.truss);
+  arm.scale.set(0.08, 1.8, 0.08); arm.position.y = 1.0; g.add(arm);
+  return g;
+}
+
+// Drifting cargo pod: ribbed container, grapple bar, cold-gas thruster.
+function buildCargoPod(){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(2, 2, 3.6), MAT.pod);
+  body.castShadow = true; g.add(body);
+  for(const z of [-1.2, 0, 1.2]){
+    const rib = new THREE.Mesh(new THREE.BoxGeometry(2.14, 2.14, 0.16), MAT.truss);
+    rib.position.z = z; g.add(rib);
+  }
+  const bar = new THREE.Mesh(UNIT_CYL, MAT.gold);
+  bar.scale.set(0.05, 1.6, 0.05); bar.rotation.x = Math.PI / 2; bar.position.y = 1.2; g.add(bar);
+  const nozzle = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.7, 10), MAT.truss);
+  nozzle.rotation.x = Math.PI / 2; nozzle.position.z = -2.1; g.add(nozzle);
+  const plume = new THREE.Mesh(new THREE.ConeGeometry(0.2, 1.1, 8), MAT.thruster);
+  plume.rotation.x = -Math.PI / 2; plume.position.z = -2.9; g.add(plume);
+  g.userData = { plume };
+  return g;
+}
+
+// Blinking navigation strobe.
+function buildStrobe(mat){
+  return new THREE.Mesh(new THREE.SphereGeometry(0.22, 8, 6), mat);
+}
+
+/* ----------------------------- ASSEMBLY / LAYOUT ---------------- */
+scene.add(buildStarfield());
+const earth = buildEarth(); scene.add(earth);
+scene.add(buildSunFlare());
+const flare = scene.children[scene.children.length - 1];
+
+const station = new THREE.Group(); scene.add(station);
+station.add(buildTrussSpine());
+station.add(buildServiceRail());
+
+const habitat = buildHabitat();
+habitat.position.set(-8, 0, 0); station.add(habitat);
+
+// Vast photovoltaic wings on rotary hinges either side of the spine.
+const wingL = buildWingPair(); wingL.position.set(-20, 0, 0); station.add(wingL);
+const wingR = buildWingPair(); wingR.position.set(20, 0, 0);  station.add(wingR);
+
+// Relay dishes: main gimbal above the habitat, spare at the spine tip.
+const dishA = buildRelayDish(2.0);
+dishA.position.set(-8, 7.2, 0); dishA.rotation.x = 0.55; station.add(dishA);
+const dishB = buildRelayDish(1.3);
+dishB.position.set(30.8, 2.8, 0); dishB.rotation.z = -0.85; station.add(dishB);
+
+// Maintenance robot riding the service rail.
+const robot = buildRobot();
+robot.position.set(0, 1.45, 0); station.add(robot);
+
+// King-posts and tether lines bracing the wing booms.
+for(const ky of [1, -1]){
+  const post = new THREE.Mesh(UNIT_CYL, MAT.truss);
+  post.scale.set(0.09, 5.4, 0.09); post.position.set(6, ky * 3.9, 0);
+  station.add(post);
+  for(const wx of [-20, 20]) for(const wz of [-15, 15]){
+    station.add(barBetween(v3(6, ky * 6.6, 0), v3(wx, 0.15 * ky, wz), 0.03, MAT.tether));
+  }
+  station.add(barBetween(v3(6, ky * 6.6, 0), v3(-31.5, ky * 1.1, 0), 0.03, MAT.tether));
+  station.add(barBetween(v3(6, ky * 6.6, 0), v3(31.5, ky * 1.1, 0), 0.03, MAT.tether));
+}
+
+// Thermal radiators mounted clear of the arrays.
+const radA = buildRadiator(); radA.position.set(13, 1.1, 0); station.add(radA);
+const radB = buildRadiator(); radB.position.set(-18, -1.1, 0); radB.rotation.x = Math.PI; station.add(radB);
+
+// Cargo pod adrift on station-keeping thrusters.
+const pod = buildCargoPod();
+pod.position.set(16, -7, 14); scene.add(pod);
+
+// Navigation strobes at the extremities.
+const strobes = [];
+for(const [x, y, z, mat, ph] of [
+  [-32.4, 0, 0, MAT.strobeRed, 0.0], [32.4, 0, 0, MAT.strobeGreen, 0.3],
+  [-20, 0, 29.5, MAT.strobeRed, 0.55], [-20, 0, -29.5, MAT.strobeGreen, 0.8],
+  [20, 0, 29.5, MAT.strobeGreen, 0.15], [20, 0, -29.5, MAT.strobeRed, 0.45],
+  [6, 7.0, 0, MAT.strobeWhite, 0.7], [-8, 9.6, 0, MAT.strobeWhite, 0.05]
+]){
+  const s = buildStrobe(mat.clone());
+  s.position.set(x, y, z); s.userData.phase = ph;
+  strobes.push(s); station.add(s);
+}
+
+/* ----------------------------- LIGHTING RIG --------------------- */
+const sun = new THREE.DirectionalLight(PAL.sun, 3.2);              // hard vacuum key
+sun.position.copy(SUN_DIR).multiplyScalar(180);
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -50; sun.shadow.camera.right = 50;
+sun.shadow.camera.top = 50;   sun.shadow.camera.bottom = -50;
+sun.shadow.camera.near = 60;  sun.shadow.camera.far = 340;
+sun.shadow.bias = -0.0003;
+scene.add(sun);
+
+scene.add(new THREE.HemisphereLight(PAL.fillSky, PAL.earthShine, 0.5)); // earthshine bounce
+scene.add(new THREE.AmbientLight(0x1a2130, 0.55));
+
+const rim = new THREE.DirectionalLight(PAL.rim, 0.35);             // cold anti-sun rim
+rim.position.set(-90, -30, -70);
+scene.add(rim);
+
+const podGlow = new THREE.PointLight(0x86c8ff, 6, 10, 2);          // thruster spill
+pod.add(podGlow); podGlow.position.set(0, 0, -3);
+
+/* ----------------------------- ANIMATION LOOP ------------------- */
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // 1) maintenance robot crawls the rail, working its arm
+  const u = (t * 0.05) % 2;
+  robot.position.x = -26 + (u < 1 ? u : 2 - u) * 52;
+  robot.rotation.y = u < 1 ? 0 : Math.PI;
+  robot.userData.shoulder.rotation.z = 0.55 + Math.sin(t * 0.5) * 0.3;
+  robot.userData.elbow.rotation.z = -1.0 + Math.sin(t * 0.4 + 1.2) * 0.3;
+  // 2) cargo pod drifts and slowly tumbles, plume flickering
+  const pa = t * 0.06;
+  pod.position.set(16 + Math.cos(pa) * 3, -7 + Math.sin(t * 0.11) * 1.6, 14 + Math.sin(pa) * 3);
+  pod.rotation.x = t * 0.05; pod.rotation.y = t * 0.083;
+  pod.userData.plume.scale.y = 1 + Math.sin(t * 6) * 0.25;
+  // 3) wings feather to track the sun — glint sweeps the arrays
+  const track = Math.sin(t * 0.12) * 0.09 + 0.05;
+  wingL.rotation.z = track; wingR.rotation.z = track;
+  // 4) main relay dish sweeps its gimbal
+  dishA.rotation.y = t * 0.12;
+  dishB.userData.aim.rotation.y = Math.sin(t * 0.2) * 0.4;
+  // 5) Earth turns beneath the station
+  earth.userData.globe.rotation.y = t * 0.008;
+  // 6) navigation strobes blink in sequence
+  for(const s of strobes) s.material.opacity = ((t * 0.9 + s.userData.phase) % 1) < 0.12 ? 1 : 0.07;
+  // 7) sun flare breathes gently
+  flare.material.opacity = 0.85 + Math.sin(t * 0.7) * 0.12;
+  controls.update(); renderer.render(scene, camera);
+}
+animate();
+
+/* ----------------------------- RESIZE --------------------------- */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

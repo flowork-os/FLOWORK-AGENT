@@ -1,0 +1,754 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dragon Hoard Cave</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #120805; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ============================================================
+// CONFIG / PALETTE
+// ============================================================
+const CONFIG = { seed: 29307, fogColor: 0x150a05, fogDensity: 0.0165, autoRotateSpeed: 0.85 };
+const PAL = {
+  gold: 0xd9a338, goldDeep: 0x9a6a14,
+  dragon: 0x8c2020, dragonDark: 0x571010, bone: 0xc2ad83,
+  iron: 0x707880, steel: 0xb9c2cc,
+  ruby: 0xd41f3c, emerald: 0x1fae5c, sapphire: 0x2f5fd8,
+  flame: 0xff8c2a, flameCore: 0xffd97a, smoke: 0x9a8d80
+};
+// gaussian bumps describing the treasure-mound height field: [x, z, radius, height]
+const MOUNDS = [
+  [0, 0, 9.0, 3.1], [6, 4, 5.0, 1.6], [-6, 3, 5.0, 1.5],
+  [0, -6.5, 5.5, 1.8], [-4.5, -4, 4.0, 1.2], [5, -3, 4.5, 1.3],
+  [8.3, 4.2, 4.4, 1.0] // gold pillow the dragon's head rests on
+];
+
+// ============================================================
+// PRNG / HELPERS
+// ============================================================
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(CONFIG.seed);
+const rand = (lo, hi) => lo + rng() * (hi - lo);
+const randInt = (lo, hi) => Math.floor(rand(lo, hi + 1));
+const pick = (arr) => arr[Math.floor(rng() * arr.length)];
+
+// height of the gold mounds at any (x, z) — every prop rests on this field
+function moundH(x, z) {
+  let h = 0;
+  for (const [mx, mz, r, hh] of MOUNDS) {
+    const dx = x - mx, dz = z - mz, s = r / 2.2;
+    h += hh * Math.exp(-(dx * dx + dz * dz) / (2 * s * s));
+  }
+  return h;
+}
+// mesh factory: build, position, optionally parent
+function M(geo, mat, x = 0, y = 0, z = 0, parent = null) {
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  if (parent) parent.add(m);
+  return m;
+}
+const castAll = (grp) => grp.traverse(m => { if (m.isMesh) { m.castShadow = true; m.receiveShadow = true; } });
+const dummy = new THREE.Object3D();
+function setInstance(inst, i, x, y, z, rx, ry, rz, s) {
+  dummy.position.set(x, y, z);
+  dummy.rotation.set(rx, ry, rz);
+  dummy.scale.setScalar(s);
+  dummy.updateMatrix();
+  inst.setMatrixAt(i, dummy.matrix);
+}
+
+// ============================================================
+// PROCEDURAL CANVAS TEXTURES
+// ============================================================
+function canvasTex(size, draw, repeatX = 1, repeatY = 1) {
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  draw(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(repeatX, repeatY);
+  return t;
+}
+const rockTex = canvasTex(512, (g, s) => {
+  g.fillStyle = '#43332a'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 900; i++) {
+    const sh = 38 + rng() * 46;
+    g.fillStyle = `rgba(${sh + 20},${sh + 6},${sh - 8},${0.16 + rng() * 0.3})`;
+    g.beginPath(); g.arc(rng() * s, rng() * s, 3 + rng() * 26, 0, 7); g.fill();
+  }
+  g.strokeStyle = 'rgba(16,10,6,0.55)';
+  for (let i = 0; i < 40; i++) { // jagged crevice cracks
+    g.lineWidth = 1 + rng() * 2;
+    g.beginPath();
+    let x = rng() * s, y = rng() * s;
+    g.moveTo(x, y);
+    for (let k = 0; k < 6; k++) { x += rand(-50, 50); y += rand(10, 60); g.lineTo(x, y); }
+    g.stroke();
+  }
+}, 5, 3);
+const coinFieldTex = canvasTex(512, (g, s) => {
+  g.fillStyle = '#7c5a10'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 520; i++) { // heaps of overlapping coin discs
+    const x = rng() * s, y = rng() * s, r = 6 + rng() * 11;
+    const grad = g.createRadialGradient(x - r * 0.3, y - r * 0.3, r * 0.15, x, y, r);
+    grad.addColorStop(0, '#ffe9a0');
+    grad.addColorStop(0.5, pick(['#e8b83f', '#d5a127', '#c08d1c', '#f0cc66']));
+    grad.addColorStop(1, '#8a6410');
+    g.fillStyle = grad;
+    g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    g.strokeStyle = 'rgba(90,60,8,0.6)'; g.lineWidth = 1.4;
+    g.beginPath(); g.arc(x, y, r * 0.7, 0, 7); g.stroke();
+  }
+}, 3, 3);
+const woodTex = canvasTex(256, (g, s) => {
+  g.fillStyle = '#6b4526'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 70; i++) {
+    g.strokeStyle = `rgba(${30 + rng() * 40},${18 + rng() * 22},8,${0.25 + rng() * 0.4})`;
+    g.lineWidth = 1 + rng() * 3;
+    const y = rng() * s;
+    g.beginPath(); g.moveTo(0, y);
+    g.bezierCurveTo(s * 0.3, y + rand(-9, 9), s * 0.7, y + rand(-9, 9), s, y + rand(-6, 6));
+    g.stroke();
+  }
+}, 2, 1);
+const scaleTex = canvasTex(256, (g, s) => { // overlapping crescent dragon scales
+  g.fillStyle = '#8c2020'; g.fillRect(0, 0, s, s);
+  for (let row = 0; row < 23; row++)
+    for (let col = 0; col < 14; col++) {
+      const x = col * 21 + (row % 2) * 10.5 - 10, y = row * 12, r = 12.5;
+      const grad = g.createRadialGradient(x, y - 3, 2, x, y, r);
+      grad.addColorStop(0, '#a63028'); grad.addColorStop(0.75, '#7e1a1c'); grad.addColorStop(1, '#500e12');
+      g.fillStyle = grad; g.beginPath(); g.arc(x, y, r, 0, 7); g.fill();
+    }
+}, 26, 3);
+const emblemTex = canvasTex(256, (g, s) => { // crimson field, gold ring and fang
+  g.fillStyle = '#701420'; g.fillRect(0, 0, s, s);
+  g.fillStyle = '#4d0c14'; g.fillRect(0, 0, s, s * 0.12);
+  g.fillStyle = '#e8b83f';
+  g.beginPath(); g.arc(s / 2, s * 0.42, s * 0.2, 0, 7); g.fill();
+  g.fillStyle = '#701420';
+  g.beginPath(); g.arc(s / 2, s * 0.42, s * 0.13, 0, 7); g.fill();
+  g.fillStyle = '#e8b83f';
+  g.beginPath();
+  g.moveTo(s * 0.5, s * 0.62); g.lineTo(s * 0.62, s * 0.88); g.lineTo(s * 0.38, s * 0.88);
+  g.closePath(); g.fill();
+});
+const glowTex = canvasTex(128, (g, s) => {
+  const grad = g.createRadialGradient(s / 2, s / 2, 2, s / 2, s / 2, s / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.35, 'rgba(255,230,170,0.45)');
+  grad.addColorStop(1, 'rgba(255,200,100,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, s, s);
+});
+
+// ============================================================
+// MATERIALS — one shared palette
+// ============================================================
+const MAT = {
+  gold:     new THREE.MeshStandardMaterial({ color: PAL.gold, metalness: 0.95, roughness: 0.3, envMapIntensity: 0.7 }),
+  goldOld:  new THREE.MeshStandardMaterial({ color: PAL.goldDeep, metalness: 0.9, roughness: 0.45, envMapIntensity: 0.5 }),
+  coinBed:  new THREE.MeshStandardMaterial({ map: coinFieldTex, metalness: 0.85, roughness: 0.42, envMapIntensity: 0.55 }),
+  rock:     new THREE.MeshStandardMaterial({ map: rockTex, color: 0x8a7460, roughness: 0.97, metalness: 0, envMapIntensity: 0.12 }),
+  rockDark: new THREE.MeshStandardMaterial({ map: rockTex, color: 0x5c4a3c, roughness: 1, metalness: 0, envMapIntensity: 0.08 }),
+  dragon:   new THREE.MeshStandardMaterial({ color: PAL.dragon, roughness: 0.52, metalness: 0.15, envMapIntensity: 0.35 }),
+  dragonDk: new THREE.MeshStandardMaterial({ color: PAL.dragonDark, roughness: 0.6, metalness: 0.1, envMapIntensity: 0.3 }),
+  scale:    new THREE.MeshStandardMaterial({ map: scaleTex, bumpMap: scaleTex, bumpScale: 0.35, roughness: 0.55, metalness: 0.12, envMapIntensity: 0.3 }),
+  bone:     new THREE.MeshStandardMaterial({ color: PAL.bone, roughness: 0.55, metalness: 0.05 }),
+  wood:     new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.85, metalness: 0, envMapIntensity: 0.15 }),
+  iron:     new THREE.MeshStandardMaterial({ color: PAL.iron, metalness: 0.85, roughness: 0.5, envMapIntensity: 0.45 }),
+  steel:    new THREE.MeshStandardMaterial({ color: PAL.steel, metalness: 0.95, roughness: 0.28, envMapIntensity: 0.8 }),
+  ruby:     new THREE.MeshStandardMaterial({ color: PAL.ruby, emissive: PAL.ruby, emissiveIntensity: 0.35, roughness: 0.15, metalness: 0.1, envMapIntensity: 0.9 }),
+  emerald:  new THREE.MeshStandardMaterial({ color: PAL.emerald, emissive: PAL.emerald, emissiveIntensity: 0.35, roughness: 0.15, metalness: 0.1, envMapIntensity: 0.9 }),
+  sapphire: new THREE.MeshStandardMaterial({ color: PAL.sapphire, emissive: PAL.sapphire, emissiveIntensity: 0.35, roughness: 0.15, metalness: 0.1, envMapIntensity: 0.9 }),
+  flame:    new THREE.MeshBasicMaterial({ color: PAL.flame, transparent: true, opacity: 0.92 }),
+  flameCore: new THREE.MeshBasicMaterial({ color: PAL.flameCore }),
+  banner:   new THREE.MeshStandardMaterial({ map: emblemTex, roughness: 0.9, side: THREE.DoubleSide, envMapIntensity: 0.1 }),
+  dark:     new THREE.MeshStandardMaterial({ color: 0x14100c, roughness: 0.8 })
+};
+const gemMats = [MAT.ruby, MAT.emerald, MAT.sapphire];
+
+// ============================================================
+// RENDERER / SCENE / CAMERA / CONTROLS
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.25;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x120805);
+scene.fog = new THREE.FogExp2(CONFIG.fogColor, CONFIG.fogDensity);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 220);
+camera.position.set(19, 12.5, 21);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = CONFIG.autoRotateSpeed;
+controls.minDistance = 15;
+controls.maxDistance = 33;
+controls.maxPolarAngle = 1.42;
+controls.minPolarAngle = 0.55;
+controls.enablePan = false;
+
+// ============================================================
+// BUILDER FUNCTIONS — each returns a THREE.Group
+// ============================================================
+// --- cave shell: squashed rock dome, floor, boulder ring -----------------
+function buildCaveShell() {
+  const grp = new THREE.Group();
+  const domeMat = MAT.rockDark.clone();
+  domeMat.side = THREE.BackSide;
+  const dome = M(new THREE.SphereGeometry(45, 48, 26), domeMat, 0, 4, 0, grp);
+  dome.scale.set(1, 0.42, 1);
+  const floorGeo = new THREE.CircleGeometry(46, 64);
+  floorGeo.rotateX(-Math.PI / 2);
+  M(floorGeo, MAT.rock, 0, -0.04, 0, grp).receiveShadow = true;
+  const boulders = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(1, 0), MAT.rockDark, 26);
+  for (let i = 0; i < 26; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(24, 36);
+    setInstance(boulders, i, Math.cos(a) * r, rand(0.2, 0.8), Math.sin(a) * r, rand(0, 3), rand(0, 6), rand(0, 3), rand(0.8, 2.6));
+  }
+  boulders.castShadow = boulders.receiveShadow = true;
+  grp.add(boulders);
+  return grp;
+}
+// --- stalactites from the ceiling, stalagmites around the fringe ---------
+function buildStalactites() {
+  const grp = new THREE.Group();
+  const geo = new THREE.ConeGeometry(1, 1, 7);
+  const tites = new THREE.InstancedMesh(geo, MAT.rockDark, 46);
+  for (let i = 0; i < 46; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(4, 26), len = rand(2.5, 7);
+    const ceilY = 4 + 0.42 * Math.sqrt(Math.max(1, 45 * 45 - r * r));
+    dummy.position.set(Math.cos(a) * r, ceilY - len / 2 + 0.5, Math.sin(a) * r);
+    dummy.rotation.set(Math.PI + rand(-0.06, 0.06), rand(0, 6), 0);
+    dummy.scale.set(rand(0.5, 1.3), len, rand(0.5, 1.3));
+    dummy.updateMatrix();
+    tites.setMatrixAt(i, dummy.matrix);
+  }
+  grp.add(tites);
+  const mites = new THREE.InstancedMesh(geo, MAT.rock, 30);
+  for (let i = 0; i < 30; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(20, 32), len = rand(1.2, 4.2);
+    dummy.position.set(Math.cos(a) * r, len / 2 - 0.2, Math.sin(a) * r);
+    dummy.rotation.set(rand(-0.05, 0.05), rand(0, 6), 0);
+    dummy.scale.set(rand(0.5, 1.4), len, rand(0.5, 1.4));
+    dummy.updateMatrix();
+    mites.setMatrixAt(i, dummy.matrix);
+  }
+  mites.castShadow = true;
+  grp.add(mites);
+  return grp;
+}
+// --- treasure field: bumpy coin-bed surface + instanced loose coins ------
+function buildTreasureField() {
+  const grp = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(34, 34, 88, 88);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, moundH(x, z) + Math.sin(x * 1.7) * Math.cos(z * 1.9) * 0.05);
+  }
+  geo.computeVertexNormals();
+  M(geo, MAT.coinBed, 0, 0, 0, grp).receiveShadow = true;
+  const coins = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.22, 0.22, 0.055, 14), MAT.gold, 760);
+  let i = 0;
+  while (i < 620) { // coins strewn across the mound slopes
+    const x = rand(-14, 14), z = rand(-14, 14), h = moundH(x, z);
+    if (h < 0.15) continue;
+    setInstance(coins, i++, x, h + 0.05, z, rand(-0.35, 0.35), rand(0, 6), rand(-0.35, 0.35), rand(0.8, 1.4));
+  }
+  while (i < 760) { // stragglers on the bare cave floor
+    const a = rand(0, Math.PI * 2), r = rand(11, 21);
+    setInstance(coins, i++, Math.cos(a) * r, 0.05, Math.sin(a) * r, rand(-0.1, 0.1), rand(0, 6), rand(-0.1, 0.1), rand(0.8, 1.3));
+  }
+  coins.castShadow = coins.receiveShadow = true;
+  grp.add(coins);
+  return grp;
+}
+// --- tapered tube: scales every ring of a TubeGeometry by radiusAt(t) ----
+function taperedTubeGeo(curve, segs, radial, radiusAt) {
+  const geo = new THREE.TubeGeometry(curve, segs, 1, radial, false);
+  const pos = geo.attributes.position, ringVerts = radial + 1;
+  const centers = [];
+  for (let r = 0; r <= segs; r++) centers.push(curve.getPointAt(r / segs));
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    const ring = Math.min(segs, Math.floor(i / ringVerts));
+    v.fromBufferAttribute(pos, i).sub(centers[ring]).multiplyScalar(radiusAt(ring / segs)).add(centers[ring]);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+// --- the sleeping dragon: head at rest on the outer coil's gold pillow,
+//     wings folded tent-like on the flanks, bone spine plates, tail spade --
+function buildDragon() {
+  const grp = new THREE.Group();
+  const A0 = 0.61, TOT = 12.88; // ~2.05 turns; head lands facing the start camera
+  const bodyR = t => t < 0.3 ? 0.88 + 1.15 * t : 1.23 - 1.15 * Math.pow((t - 0.3) / 0.7, 1.3);
+  const pts = []; // spine: neck root (t=0, outer) -> torso -> tapering tail (t=1, crest)
+  for (let i = 0; i <= 80; i++) {
+    const t = i / 80, ang = A0 + t * TOT, rad = 9.3 - 7.4 * t;
+    const x = Math.cos(ang) * rad, z = Math.sin(ang) * rad;
+    pts.push(new THREE.Vector3(x, moundH(x, z) * 0.92 + bodyR(t) * 0.8, z));
+  }
+  const spine = new THREE.CatmullRomCurve3(pts);
+  grp.add(new THREE.Mesh(taperedTubeGeo(spine, 150, 14, bodyR), MAT.scale));
+  const chest = M(new THREE.SphereGeometry(1.32, 18, 14), MAT.scale, 0, 0, 0, grp); // breathing ribcage
+  chest.position.copy(spine.getPointAt(0.18)).add(new THREE.Vector3(0, 0.12, 0));
+  chest.rotation.y = Math.atan2(spine.getTangentAt(0.18).x, spine.getTangentAt(0.18).z);
+  chest.scale.set(1.0, 0.95, 1.35); // ribcage's long axis follows the body
+  const hDir = spine.getTangentAt(0).negate(); hDir.y = 0; hDir.normalize();
+  const perp = new THREE.Vector3(-hDir.z, 0, hDir.x);
+  const S = 1.66; // head scale
+  const headPos = pts[0].clone().addScaledVector(hDir, 2.75);
+  headPos.y = moundH(headPos.x, headPos.z) * 0.92 + 0.55 * S; // skull centre; chin meets the gold
+  const neck = new THREE.CatmullRomCurve3([pts[2].clone(), pts[0].clone(), // tapered neck out of the coil
+    pts[0].clone().addScaledVector(hDir, 1.45).add(new THREE.Vector3(0, 0.3, 0)),
+    headPos.clone().addScaledVector(hDir, -0.7 * S).add(new THREE.Vector3(0, 0.12, 0))]);
+  grp.add(new THREE.Mesh(taperedTubeGeo(neck, 40, 12, t => 0.92 - 0.34 * t), MAT.scale));
+  const plateGeo = new THREE.ConeGeometry(0.62, 1.3, 4); // dorsal ridge plates, neck to tail
+  plateGeo.rotateY(Math.PI / 4); plateGeo.scale(0.22, 1, 1);
+  const plates = new THREE.InstancedMesh(plateGeo, MAT.bone, 34);
+  for (let i = 0; i < 30; i++) {
+    const t = 0.02 + 0.9 * (i / 29), p = spine.getPointAt(t), tn = spine.getTangentAt(t);
+    setInstance(plates, i, p.x, p.y + bodyR(t) * 0.88, p.z, rand(-0.05, 0.05), Math.atan2(tn.x, tn.z), rand(-0.05, 0.05), (0.42 + bodyR(t) * 0.72) * (i % 2 ? 0.72 : 1));
+  }
+  for (let i = 0; i < 4; i++) { // ...continuing up the neck
+    const t = 0.3 + i * 0.2, p = neck.getPointAt(t), tn = neck.getTangentAt(t);
+    setInstance(plates, 30 + i, p.x, p.y + (0.92 - 0.34 * t) * 0.9, p.z, 0, Math.atan2(tn.x, tn.z), 0, 0.62 - i * 0.05);
+  }
+  grp.add(plates);
+  const tipP = spine.getPointAt(1), tipDir = spine.getTangentAt(1).normalize();
+  const spadeShape = new THREE.Shape(); // flat barbed arrowhead for the tail tip
+  [[0, 1.2], [0.66, -0.34], [0.18, -0.1], [0, -0.52], [-0.18, -0.1], [-0.66, -0.34]]
+    .forEach((p, i) => i ? spadeShape.lineTo(p[0], p[1]) : spadeShape.moveTo(p[0], p[1]));
+  const spadeGeo = new THREE.ExtrudeGeometry(spadeShape, { depth: 0.1, bevelEnabled: false });
+  spadeGeo.translate(0, 0.32, -0.05); // base overlaps the tail tip
+  const spade = new THREE.Mesh(spadeGeo, MAT.dragonDk);
+  spade.position.copy(tipP).addScaledVector(tipDir, 0.3);
+  spade.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tipDir);
+  grp.add(spade);
+  const head = new THREE.Group(); // head: local muzzle along +z, origin at skull centre
+  M(new THREE.SphereGeometry(0.78, 20, 16), MAT.dragon, 0, 0.16, -0.1, head).scale.set(1.06, 0.8, 1.2); // cranium
+  const snoutGeo = new THREE.CylinderGeometry(0.33, 0.6, 1.5, 4, 1, true); // tapering square muzzle
+  snoutGeo.rotateY(Math.PI / 4); snoutGeo.rotateX(Math.PI / 2);
+  M(snoutGeo, MAT.dragon, 0, 0.04, 1.0, head).scale.set(1.06, 0.62, 1);
+  M(new THREE.SphereGeometry(0.36, 12, 10), MAT.dragon, 0, 0.02, 1.78, head).scale.set(1.02, 0.6, 0.8); // blunt nose
+  M(new THREE.BoxGeometry(0.74, 0.22, 1.42), MAT.dragonDk, 0, -0.3, 0.9, head); // lower jaw, shut
+  M(new THREE.SphereGeometry(0.4, 10, 8), MAT.dragonDk, 0, -0.18, -0.15, head).scale.set(1.5, 0.8, 1.3); // jowls
+  for (const s of [-1, 1]) {
+    M(new THREE.SphereGeometry(0.075, 8, 6), MAT.dark, s * 0.15, 0.13, 1.98, head); // nostril
+    M(new THREE.SphereGeometry(0.05, 6, 5), MAT.flameCore, s * 0.15, 0.1, 2.02, head); // ember pinprick
+    M(new THREE.BoxGeometry(0.5, 0.22, 0.62), MAT.dragonDk, s * 0.38, 0.44, 0.42, head).rotation.set(0.12, s * 0.35, s * -0.15); // heavy brow ridge
+    M(new THREE.SphereGeometry(0.2, 10, 8), MAT.dragonDk, s * 0.45, 0.24, 0.52, head).scale.set(0.8, 0.6, 1); // shut eyelid
+    M(new THREE.BoxGeometry(0.36, 0.05, 0.1), MAT.dark, s * 0.5, 0.17, 0.56, head).rotation.set(0.1, s * 0.5, s * 0.12); // closed-eye seam
+    const horn = new THREE.Group(); // two-segment horn, swept back
+    M(new THREE.CylinderGeometry(0.13, 0.21, 0.75, 8), MAT.bone, 0, 0.35, 0, horn);
+    M(new THREE.CylinderGeometry(0.025, 0.13, 0.95, 8), MAT.bone, 0, 1.12, -0.19, horn).rotation.x = -0.42;
+    horn.position.set(s * 0.38, 0.52, -0.6); horn.rotation.set(-1.02, 0, s * -0.24);
+    head.add(horn);
+    for (let k = 0; k < 2; k++) // jaw frill spikes sweeping back
+      M(new THREE.ConeGeometry(0.09, 0.6 - k * 0.18, 6), MAT.bone, s * (0.6 + k * 0.08), -0.02 - k * 0.24, -0.72, head).rotation.set(-1.95, 0, s * -0.45);
+    M(new THREE.ConeGeometry(0.055, 0.24, 5), MAT.bone, s * 0.28, -0.36, 1.42, head).rotation.x = Math.PI; // fang past the shut jaw
+  }
+  for (let k = 0; k < 3; k++) { // crest plates over the skull midline
+    const cp = M(new THREE.ConeGeometry(0.16, 0.42, 4), MAT.bone, 0, 0.66 - k * 0.06, -0.35 - k * 0.34, head);
+    cp.rotation.x = -0.35 - k * 0.2; cp.scale.x = 0.3;
+  }
+  head.scale.setScalar(S); head.position.copy(headPos);
+  head.lookAt(headPos.clone().add(hDir)); head.rotateX(-0.05); // muzzle settled into the coins
+  grp.add(head);
+  const wingShape = new THREE.Shape(); // folded wing: raised carpal peak, blade swept to the tail
+  wingShape.moveTo(0, 0.1); wingShape.quadraticCurveTo(0.5, 1.2, 1.05, 1.52);
+  wingShape.quadraticCurveTo(2.7, 1.15, 4.8, 0.25);
+  wingShape.quadraticCurveTo(2.4, -0.42, 0.7, -0.48);
+  const memGeo = new THREE.ExtrudeGeometry(wingShape, { depth: 0.07, bevelEnabled: false });
+  memGeo.rotateY(-Math.PI / 2); // shape +x now runs along local +z (toward the tail)
+  for (const side of [-1, 1]) {
+    const tW = 0.12, p = spine.getPointAt(tW), tn = spine.getTangentAt(tW), rW = bodyR(tW);
+    const wing = new THREE.Group();
+    const mem = new THREE.Mesh(memGeo, MAT.dragonDk);
+    mem.position.set(side * rW * 0.55, 0.5, -0.4);
+    mem.rotation.z = side * 0.72; // membrane draped tent-like over the flank
+    wing.add(mem);
+    M(new THREE.CylinderGeometry(0.07, 0.12, 1.8, 7), MAT.dragon, 0, 0.78, 0.52, mem).rotation.x = 0.64; // arm bone, leading edge
+    M(new THREE.ConeGeometry(0.09, 0.5, 6), MAT.bone, 0, 1.66, 1.0, mem).rotation.x = -0.5; // carpal claw hooked forward
+    for (const [len, tilt] of [[3.3, 1.72], [2.9, 1.94]]) { // finger spars fanned across the membrane
+      const rib = M(new THREE.CylinderGeometry(0.03, 0.055, len, 6), MAT.dragon, 0, 0, 0, mem);
+      rib.rotation.x = tilt;
+      rib.position.set(0, 1.5, 1.0).add(new THREE.Vector3(0, Math.cos(tilt), Math.sin(tilt)).multiplyScalar(len / 2));
+    }
+    M(new THREE.SphereGeometry(0.42, 10, 8), MAT.dragon, side * rW * 0.62, 0.42, -0.62, wing); // shoulder
+    wing.position.set(p.x, p.y + 0.1, p.z); wing.rotation.y = Math.atan2(tn.x, tn.z);
+    grp.add(wing);
+  }
+  for (const side of [-1, 1]) { // forepaws tucked beside the muzzle
+    const pw = headPos.clone().addScaledVector(hDir, 1.15).addScaledVector(perp, side * 1.4);
+    const py = moundH(pw.x, pw.z) * 0.92, paw = new THREE.Group();
+    M(new THREE.SphereGeometry(0.5, 12, 9), MAT.dragon, 0, 0.3, -0.25, paw).scale.set(0.95, 0.6, 1.4); // forefoot
+    for (let c = -1; c <= 1; c++) {
+      M(new THREE.SphereGeometry(0.17, 8, 6), MAT.dragon, c * 0.27, 0.17, 0.42, paw); // toe
+      M(new THREE.ConeGeometry(0.085, 0.42, 6), MAT.bone, c * 0.27, 0.1, 0.66, paw).rotation.x = 1.75; // claw raking the coins
+    }
+    paw.position.set(pw.x, py, pw.z); paw.lookAt(pw.x + hDir.x, py, pw.z + hDir.z);
+    grp.add(paw);
+  }
+  castAll(grp);
+  grp.userData = { chest, head, headBaseY: head.position.y, hDir };
+  return grp;
+}
+// --- treasure chest, lid thrown back, gold overflowing -------------------
+function buildChest() {
+  const grp = new THREE.Group();
+  M(new THREE.BoxGeometry(1.9, 1.1, 1.2), MAT.wood, 0, 0.55, 0, grp);
+  const lid = new THREE.Group();
+  const lidTop = M(new THREE.CylinderGeometry(0.62, 0.62, 1.9, 14, 1, false, 0, Math.PI), MAT.wood, 0, 0, 0, lid);
+  lidTop.rotation.z = Math.PI / 2;
+  lid.position.set(0, 1.1, -0.6);
+  lid.rotation.x = -2.1;
+  grp.add(lid);
+  for (const dx of [-0.75, 0, 0.75]) M(new THREE.BoxGeometry(0.14, 1.14, 1.26), MAT.iron, dx, 0.55, 0, grp);
+  M(new THREE.BoxGeometry(0.22, 0.3, 0.08), MAT.gold, 0, 0.9, 0.62, grp); // hasp
+  M(new THREE.SphereGeometry(0.85, 14, 10), MAT.coinBed, 0, 1.12, 0, grp).scale.set(1.05, 0.55, 0.6); // heaped gold
+  const spill = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.16, 0.16, 0.045, 12), MAT.gold, 26);
+  for (let i = 0; i < 26; i++) { // cascade of coins pouring over the lip
+    const t = i / 26;
+    setInstance(spill, i, rand(-0.8, 0.8), Math.max(0.06, 1.15 - t * 1.3), 0.65 + t * rand(0.3, 1.0),
+      rand(-0.5, 0.5), rand(0, 6), rand(-0.5, 0.5), rand(0.85, 1.2));
+  }
+  grp.add(spill);
+  castAll(grp);
+  return grp;
+}
+// --- standing torch with flickering flame --------------------------------
+function buildTorch() {
+  const grp = new THREE.Group();
+  M(new THREE.CylinderGeometry(0.42, 0.55, 0.3, 10), MAT.rockDark, 0, 0.15, 0, grp);
+  M(new THREE.CylinderGeometry(0.09, 0.13, 3.4, 8), MAT.wood, 0, 1.9, 0, grp).castShadow = true;
+  M(new THREE.CylinderGeometry(0.3, 0.14, 0.42, 10), MAT.iron, 0, 3.7, 0, grp);
+  const flame = M(new THREE.ConeGeometry(0.26, 0.95, 8), MAT.flame, 0, 4.3, 0, grp);
+  const core = M(new THREE.ConeGeometry(0.13, 0.5, 8), MAT.flameCore, 0, 4.15, 0, grp);
+  const glow = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xffa040, transparent: true, opacity: 0.85, blending: THREE.AdditiveBlending, depthWrite: false }));
+  glow.scale.setScalar(2.6);
+  glow.position.y = 4.3;
+  grp.add(glow);
+  const light = new THREE.PointLight(0xff7f2b, 240, 30, 2);
+  light.position.y = 4.35;
+  grp.add(light);
+  grp.userData = { flame, core, glow, light, phase: rand(0, 20) };
+  return grp;
+}
+// --- broken pillar, fallen drum, optional hanging banner -----------------
+function buildPillar(height, withBanner) {
+  const grp = new THREE.Group();
+  M(new THREE.BoxGeometry(1.7, 0.5, 1.7), MAT.rock, 0, 0.25, 0, grp);
+  M(new THREE.CylinderGeometry(0.52, 0.6, height, 14), MAT.rock, 0, 0.5 + height / 2, 0, grp);
+  const crack = M(new THREE.CylinderGeometry(0.55, 0.5, 0.7, 14), MAT.rockDark, 0, 0.5 + height + 0.28, 0, grp);
+  crack.rotation.set(rand(-0.22, 0.22), 0, rand(-0.22, 0.22)); // sheared-off cap
+  const drum = M(new THREE.CylinderGeometry(0.5, 0.5, 1.1, 14), MAT.rock, rand(1.4, 2.2), 0.5, rand(-0.8, 0.8), grp);
+  drum.rotation.set(0, rand(0, 6), Math.PI / 2);
+  if (withBanner) {
+    const rod = M(new THREE.CylinderGeometry(0.05, 0.05, 1.7, 6), MAT.iron, 0, 0.5 + height - 0.4, 0.62, grp);
+    rod.rotation.z = Math.PI / 2;
+    grp.userData.banner = M(new THREE.PlaneGeometry(1.45, 2.3), MAT.banner, 0, 0.5 + height - 1.56, 0.63, grp);
+  }
+  castAll(grp);
+  return grp;
+}
+// --- gem pile mixing the three jewel tones -------------------------------
+function buildGemPile(count) {
+  const grp = new THREE.Group();
+  const geo = new THREE.OctahedronGeometry(0.24, 0);
+  for (let m = 0; m < 3; m++) {
+    const inst = new THREE.InstancedMesh(geo, gemMats[m], count);
+    for (let i = 0; i < count; i++) {
+      const a = rand(0, Math.PI * 2), r = Math.sqrt(rng()) * 1.1;
+      setInstance(inst, i, Math.cos(a) * r, 0.16 + Math.max(0, 0.5 - r) * rand(0.2, 1.2), Math.sin(a) * r,
+        rand(0, 3), rand(0, 6), rand(0, 3), rand(0.6, 1.5));
+    }
+    inst.castShadow = true;
+    grp.add(inst);
+  }
+  return grp;
+}
+// --- goblet / crown / sword / shield scatter props -----------------------
+function buildGoblet(tipped) {
+  const grp = new THREE.Group();
+  const profile = [[0, 0], [0.3, 0.02], [0.3, 0.06], [0.09, 0.1], [0.07, 0.34], [0.24, 0.46], [0.31, 0.62], [0.32, 0.78], [0.28, 0.8]]
+    .map(p => new THREE.Vector2(p[0], p[1]));
+  M(new THREE.LatheGeometry(profile, 16), MAT.gold, 0, 0, 0, grp).castShadow = true;
+  M(new THREE.OctahedronGeometry(0.07), pick(gemMats), 0, 0.5, 0.3, grp);
+  if (tipped) { grp.rotation.z = Math.PI / 2 - 0.12; grp.position.y = 0.3; }
+  return grp;
+}
+function buildCrown() {
+  const grp = new THREE.Group();
+  M(new THREE.CylinderGeometry(0.44, 0.48, 0.24, 16, 1, true), MAT.gold, 0, 0.12, 0, grp);
+  for (let i = 0; i < 7; i++) {
+    const a = (i / 7) * Math.PI * 2;
+    M(new THREE.ConeGeometry(0.09, 0.3, 6), MAT.gold, Math.cos(a) * 0.44, 0.36, Math.sin(a) * 0.44, grp);
+    if (i % 2 === 0) M(new THREE.OctahedronGeometry(0.06), gemMats[i % 3], Math.cos(a) * 0.47, 0.14, Math.sin(a) * 0.47, grp);
+  }
+  castAll(grp);
+  return grp;
+}
+function buildSword() {
+  const grp = new THREE.Group();
+  M(new THREE.BoxGeometry(0.17, 2.1, 0.05), MAT.steel, 0, 1.05, 0, grp);
+  const tip = M(new THREE.ConeGeometry(0.1, 0.3, 4), MAT.steel, 0, -0.1, 0, grp);
+  tip.rotation.x = Math.PI;
+  tip.scale.set(1.2, 1, 0.36);
+  M(new THREE.BoxGeometry(0.62, 0.09, 0.12), MAT.goldOld, 0, 2.12, 0, grp); // crossguard
+  M(new THREE.CylinderGeometry(0.055, 0.055, 0.44, 8), MAT.wood, 0, 2.38, 0, grp); // grip
+  M(new THREE.SphereGeometry(0.09, 8, 8), MAT.gold, 0, 2.62, 0, grp); // pommel
+  castAll(grp);
+  return grp;
+}
+function buildShield() {
+  const grp = new THREE.Group();
+  M(new THREE.CylinderGeometry(0.85, 0.85, 0.09, 22), MAT.banner, 0, 0, 0, grp).rotation.x = Math.PI / 2;
+  M(new THREE.TorusGeometry(0.85, 0.07, 8, 24), MAT.iron, 0, 0, 0, grp);
+  M(new THREE.SphereGeometry(0.2, 12, 8), MAT.gold, 0, 0, 0.1, grp); // central boss
+  castAll(grp);
+  return grp;
+}
+// --- glinting jewels tucked into wall crevices ---------------------------
+function buildWallJewels() {
+  const grp = new THREE.Group();
+  const geo = new THREE.OctahedronGeometry(0.3, 0);
+  for (let m = 0; m < 3; m++) {
+    const inst = new THREE.InstancedMesh(geo, gemMats[m], 22);
+    for (let i = 0; i < 22; i++) {
+      const a = rand(0, Math.PI * 2), y = rand(1.5, 12);
+      const wallR = Math.sqrt(Math.max(4, 45 * 45 - ((y - 4) / 0.42) ** 2)) * 0.975;
+      setInstance(inst, i, Math.cos(a) * wallR, y, Math.sin(a) * wallR, rand(0, 3), rand(0, 6), rand(0, 3), rand(0.5, 1.4));
+    }
+    grp.add(inst);
+  }
+  return grp;
+}
+// --- nostril smoke: a recycling curl of soft particles -------------------
+function buildSmoke(origin) {
+  const N = 42, posArr = new Float32Array(N * 3), seeds = [];
+  for (let i = 0; i < N; i++) seeds.push({ off: rng(), speed: rand(0.05, 0.09), ph: rand(0, 6), amp: rand(0.12, 0.3) });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+  const points = new THREE.Points(geo, new THREE.PointsMaterial({ color: PAL.smoke, size: 0.55, map: glowTex, transparent: true, opacity: 0.32, depthWrite: false }));
+  points.frustumCulled = false;
+  function update(t) {
+    for (let i = 0; i < N; i++) {
+      const s = seeds[i], life = (t * s.speed + s.off) % 1;
+      posArr[i * 3] = origin.x + Math.sin(life * 7 + s.ph) * s.amp * (0.3 + life);
+      posArr[i * 3 + 1] = origin.y + life * 3.4;
+      posArr[i * 3 + 2] = origin.z + Math.cos(life * 6 + s.ph) * s.amp * (0.3 + life);
+    }
+    geo.attributes.position.needsUpdate = true;
+  }
+  return { points, update };
+}
+// --- drifting golden dust motes ------------------------------------------
+function buildDust() {
+  const N = 130, arr = new Float32Array(N * 3);
+  for (let i = 0; i < N; i++) {
+    const a = rand(0, Math.PI * 2), r = rand(2, 22);
+    arr[i * 3] = Math.cos(a) * r; arr[i * 3 + 1] = rand(1, 13); arr[i * 3 + 2] = Math.sin(a) * r;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  return new THREE.Points(geo, new THREE.PointsMaterial({ color: 0xffd98a, size: 0.09, map: glowTex, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+}
+
+// ============================================================
+// ASSEMBLY / LAYOUT
+// ============================================================
+scene.add(buildCaveShell(), buildStalactites(), buildTreasureField(), buildWallJewels());
+const dragon = buildDragon();
+scene.add(dragon);
+
+const torches = [];
+for (const a of [0.55, 1.75, 2.95, 4.25, 5.45]) {
+  const t = buildTorch(), r = rand(12.4, 14.6);
+  t.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  scene.add(t);
+  torches.push(t.userData);
+}
+const banners = [];
+for (const [r, a, withBanner] of [[16, 0.25, true], [15.5, 2.35, true], [16.5, 4.1, false]]) {
+  const p = buildPillar(rand(3.6, 5.4), withBanner);
+  p.position.set(Math.cos(a) * r, 0, Math.sin(a) * r);
+  p.rotation.y = -a + Math.PI;
+  scene.add(p);
+  if (p.userData.banner) banners.push(p.userData.banner);
+}
+for (const [r, a] of [[10.4, 5.75], [10.6, 2.6], [9.8, 3.9]]) {
+  const c = buildChest(), x = Math.cos(a) * r, z = Math.sin(a) * r;
+  c.position.set(x, moundH(x, z) * 0.85, z);
+  c.rotation.set(0, -a + Math.PI + rand(-0.4, 0.4), rand(-0.06, 0.06));
+  scene.add(c);
+}
+for (const [r, a] of [[7.6, 0.9], [8.4, 4.8], [6.9, 3.3], [9.2, 1.6]]) {
+  const g = buildGemPile(randInt(14, 22)), x = Math.cos(a) * r, z = Math.sin(a) * r;
+  g.position.set(x, moundH(x, z) * 0.95, z);
+  scene.add(g);
+}
+for (let i = 0; i < 7; i++) {
+  const gob = buildGoblet(i % 3 === 0), a = rand(0, Math.PI * 2), r = rand(6, 12.5);
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  gob.position.x = x; gob.position.z = z;
+  gob.position.y += moundH(x, z) * 0.95 + 0.02;
+  gob.rotation.y = rand(0, 6);
+  scene.add(gob);
+}
+for (const [r, a] of [[6.4, 2.15], [8.8, 5.9], [7.4, 4.15]]) {
+  const crown = buildCrown(), x = Math.cos(a) * r, z = Math.sin(a) * r;
+  crown.position.set(x, moundH(x, z) * 0.95 + 0.03, z);
+  crown.rotation.set(rand(-0.2, 0.2), rand(0, 6), rand(-0.2, 0.2));
+  scene.add(crown);
+}
+for (const [r, a, lean] of [[5.9, 1.35, 0.42], [7.0, 5.25, -0.36], [7.2, 2.6, 0.3], [6.6, 3.75, -0.45]]) {
+  const sw = buildSword(), x = Math.cos(a) * r, z = Math.sin(a) * r;
+  sw.position.set(x, moundH(x, z) * 0.95 - 0.55, z); // blade sunk into the gold
+  sw.rotation.set(lean, rand(0, 6), lean * 0.7);
+  scene.add(sw);
+}
+for (const [r, a] of [[10.8, 4.5], [11.6, 1.1]]) {
+  const sh = buildShield(), x = Math.cos(a) * r, z = Math.sin(a) * r;
+  sh.position.set(x, moundH(x, z) * 0.9 + 0.8, z);
+  sh.rotation.y = -a + Math.PI;
+  sh.rotation.x = -0.42; // leaning back against the slope
+  scene.add(sh);
+}
+// silver ingot stacks for variety
+const ingots = new THREE.InstancedMesh(new THREE.BoxGeometry(0.6, 0.2, 0.3), MAT.steel, 22);
+{
+  let k = 0;
+  for (const [cx, cz] of [[-9.6, -4.4], [4.4, -9.8]])
+    for (let i = 0; i < 11; i++) {
+      const lx = cx + rand(-0.7, 0.7), lz = cz + rand(-0.5, 0.5);
+      setInstance(ingots, k++, lx, moundH(lx, lz) * 0.95 + 0.12 + (i % 3) * 0.2, lz, 0, rand(0, 6), 0, 1);
+    }
+  ingots.castShadow = true;
+  scene.add(ingots);
+}
+// smoke curling from each nostril
+dragon.userData.head.updateMatrixWorld(true);
+const nostrilL = dragon.userData.head.localToWorld(new THREE.Vector3(-0.15, 0.16, 2.05));
+const nostrilR = dragon.userData.head.localToWorld(new THREE.Vector3(0.15, 0.16, 2.05));
+const smokeL = buildSmoke(nostrilL), smokeR = buildSmoke(nostrilR);
+const dust = buildDust();
+scene.add(smokeL.points, smokeR.points, dust);
+// sparkling glints that wink across the hoard
+const sparkles = [];
+for (let i = 0; i < 14; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xfff2c0, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false }));
+  const x = rand(-11, 11), z = rand(-11, 11);
+  s.position.set(x, moundH(x, z) + 0.35, z);
+  s.scale.setScalar(rand(0.5, 1.1));
+  scene.add(s);
+  sparkles.push({ s, ph: rand(0, 20), sp: rand(0.5, 1.1) });
+}
+
+// ============================================================
+// LIGHTING RIG
+// ============================================================
+scene.add(new THREE.HemisphereLight(0x4a3524, 0x120a06, 0.55));
+const key = new THREE.SpotLight(0xffc07a, 4200, 80, 0.85, 0.55, 1.9);
+key.position.set(7, 24, 9);
+key.target.position.set(0, 2, 0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 5;
+key.shadow.camera.far = 60;
+key.shadow.bias = -0.0004;
+scene.add(key, key.target);
+const emberGlow = new THREE.PointLight(0xff4a18, 26, 14, 2); // faint furnace glow at the snout
+emberGlow.position.copy(nostrilL).add(new THREE.Vector3(0, 0.4, 0));
+const bounce = new THREE.PointLight(0xffb659, 90, 26, 2); // warm bounce rising off the gold
+bounce.position.set(0, 4.5, 0);
+scene.add(emberGlow, bounce);
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+const clock = new THREE.Clock();
+const chestBase = dragon.userData.chest.scale.clone();
+const flicker = (t, ph) => 0.72 + 0.17 * Math.sin(t * 11.3 + ph) + 0.11 * Math.sin(t * 17.7 + ph * 1.7);
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  for (const td of torches) { // 1) torch flames flicker
+    const f = flicker(t, td.phase);
+    td.light.intensity = 240 * f;
+    td.flame.scale.set(1, 0.85 + 0.3 * f, 1);
+    td.flame.rotation.y = t * 2 + td.phase;
+    td.core.scale.setScalar(0.8 + 0.35 * f);
+    td.glow.material.opacity = 0.55 + 0.35 * f;
+  }
+  const breath = Math.sin(t * 0.85); // 2) the dragon breathes
+  dragon.userData.chest.scale.set(chestBase.x * (1 + 0.05 * breath), chestBase.y * (1 + 0.08 * breath), chestBase.z * (1 + 0.05 * breath));
+  dragon.userData.head.position.y = dragon.userData.headBaseY + 0.07 * breath;
+  emberGlow.intensity = 20 + 10 * Math.max(0, breath);
+  smokeL.update(t); // 3) nostril smoke curls upward
+  smokeR.update(t + 3.7);
+  MAT.ruby.emissiveIntensity = 0.3 + 0.22 * Math.sin(t * 1.6); // 4) jewels pulse softly
+  MAT.emerald.emissiveIntensity = 0.3 + 0.22 * Math.sin(t * 1.9 + 2.1);
+  MAT.sapphire.emissiveIntensity = 0.3 + 0.22 * Math.sin(t * 1.4 + 4.2);
+  for (const sp of sparkles) { // 5) glints wink across the coins
+    sp.s.material.opacity = Math.max(0, Math.sin(t * sp.sp + sp.ph)) ** 6 * 0.9;
+  }
+  for (const b of banners) b.rotation.x = 0.06 * Math.sin(t * 0.9 + b.position.x); // 6) banners sway
+  dust.rotation.y = t * 0.012;
+  dust.position.y = 0.25 * Math.sin(t * 0.3);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ============================================================
+// RESIZE
+// ============================================================
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

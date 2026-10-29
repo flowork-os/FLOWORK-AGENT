@@ -1,0 +1,655 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rooftop Garden Terrace</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#161a28}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+/* ============================================================================
+   ROOFTOP GARDEN TERRACE  —  contemporary cozy, dusk
+   A decked roof with raised vegetable beds, a vine-wrapped pergola strung
+   with lights, loungers around a low fire table, a glass greenhouse cabinet,
+   a water tank on a steel stand, potted trees, and a silhouetted skyline of
+   lit windows beyond the parapet. Fully procedural — no external assets.
+   ========================================================================== */
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ---------------------------- 1. CONFIG & PALETTE ------------------------- */
+const CFG = {
+  seed: 82531,
+  deckX: 11.0,     // half width of the roof deck
+  deckZ: 9.0,      // half depth of the roof deck
+  parapetH: 1.05,  // parapet wall height above the deck
+  drop: 26         // how far the host building falls away below the deck
+};
+const PAL = {
+  deckDark: 0x5f452f, concrete: 0x9a978f, coping: 0xb4b1a8, steel: 0x3a3d46,
+  teak: 0x9c7248, cushion: 0xe6dccb, cushionAlt: 0xb9c4bb, terracotta: 0xb1633f,
+  soil: 0x3a2b21, leafA: 0x4e7a43, leafB: 0x6d9451, leafC: 0x39603a,
+  blooms: [0xe07a6a, 0xe9c168, 0xd9d3e4], glow: 0xffc98a, fire: 0xff8a3c, fog: 0x2b3450
+};
+
+/* ------------------------ 2. PRNG & GEOMETRY HELPERS ---------------------- */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CFG.seed);
+const rng = (a, b) => a + (b - a) * rand();
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+const V = (x, y, z) => new THREE.Vector3(x, y, z);
+const std = (o) => new THREE.MeshStandardMaterial(o);
+
+/** Mesh factory that also sets the shadow flags every prop wants. */
+function mesh(geo, mat, x = 0, y = 0, z = 0, cast = true) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = cast; m.receiveShadow = true;
+  return m;
+}
+const box = (w, h, d, mat, x, y, z) => mesh(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, mat, x, y, z, s = 12) => mesh(new THREE.CylinderGeometry(rt, rb, h, s), mat, x, y, z);
+const sph = (r, mat, x, y, z, s = 10) => mesh(new THREE.SphereGeometry(r, s, s - 2), mat, x, y, z);
+
+/** Thin cylinder stretched between two points — cords, braces, rails. */
+function strut(a, b, radius, mat) {
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const m = mesh(new THREE.CylinderGeometry(radius, radius, Math.max(dir.length(), 1e-4), 6), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(V(0, 1, 0), dir.clone().normalize());
+  return m;
+}
+/** Instanced blobs scattered through a box volume — foliage, crops, gravel. */
+function scatter(geo, mat, n, w, d, y0, y1) {
+  const im = new THREE.InstancedMesh(geo, mat, n), m = new THREE.Matrix4();
+  for (let i = 0; i < n; i++) {
+    m.makeTranslation(rng(-w, w), rng(y0, y1), rng(-d, d));
+    im.setMatrixAt(i, m);
+  }
+  im.castShadow = true; im.receiveShadow = true;
+  return im;
+}
+
+/* ---------------------------- 3. CANVAS TEXTURES -------------------------- */
+function canvas2d(w = 256, h = w) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+function finish(c, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(c); t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry); t.anisotropy = 4;
+  return t;
+}
+/** Weathered decking boards with grain, knots and shadowed gaps. */
+function plankTexture(repeat) {
+  const [c, g] = canvas2d(512), r = mulberry32(7);
+  g.fillStyle = '#4a3422'; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 8; i++) {
+    const y = i * 64, k = 0.78 + r() * 0.4;
+    g.fillStyle = `rgb(${168 * k | 0},${126 * k | 0},${88 * k | 0})`;
+    g.fillRect(0, y + 3, 512, 58);
+    for (let j = 0; j < 50; j++) {
+      g.strokeStyle = `rgba(60,40,26,${0.05 + r() * 0.15})`; g.lineWidth = 1 + r() * 2;
+      const gy = y + 6 + r() * 52, gx = r() * 512;
+      g.beginPath(); g.moveTo(gx, gy); g.lineTo(gx + 40 + r() * 90, gy + r() * 4 - 2); g.stroke();
+    }
+    g.fillStyle = 'rgba(52,34,22,0.5)';
+    g.beginPath(); g.ellipse(r() * 512, y + 32, 3 + r() * 4, 2 + r() * 3, 0, 0, 6.283); g.fill();
+  }
+  return finish(c, repeat, repeat);
+}
+/** Poured concrete with fine speckle and form lines. */
+function concreteTexture(hex) {
+  const [c, g] = canvas2d(256), r = mulberry32(23);
+  g.fillStyle = '#' + new THREE.Color(hex).getHexString(); g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 1500; i++) {
+    g.fillStyle = r() > 0.5 ? `rgba(255,255,255,${r() * 0.13})` : `rgba(40,42,48,${r() * 0.15})`;
+    g.fillRect(r() * 256, r() * 256, 1 + r() * 3, 1 + r() * 3);
+  }
+  for (let i = 0; i < 6; i++) {
+    g.strokeStyle = 'rgba(70,70,74,0.18)'; g.lineWidth = 1 + r() * 2;
+    g.beginPath(); g.moveTo(r() * 256, 0); g.lineTo(r() * 256, 256); g.stroke();
+  }
+  return finish(c, 3, 3);
+}
+/** Dark tower facade with a grid of lit windows — used as map and emissiveMap. */
+function cityFacadeTexture(seed, warm) {
+  const [c, g] = canvas2d(128, 256), r = mulberry32(seed);
+  g.fillStyle = '#0b0f1c'; g.fillRect(0, 0, 128, 256);
+  for (let row = 0; row < 26; row++) for (let col = 0; col < 10; col++) {
+    const lit = r();
+    if (lit < 0.45) continue;
+    const a = (0.3 + r() * 0.7).toFixed(2);
+    g.fillStyle = lit > 0.9 ? `rgba(186,214,255,${a})` : `rgba(255,${190 + warm * 30 | 0},${130 + warm * 20 | 0},${a})`;
+    g.fillRect(col * 12 + 4, row * 9.4 + 3, 7, 5.4);
+  }
+  return finish(c);
+}
+/** Flat-woven outdoor rug with stripes and a bound edge. */
+function rugTexture() {
+  const [c, g] = canvas2d(256), r = mulberry32(91);
+  g.fillStyle = '#c9bda6'; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 8; i++) {
+    g.fillStyle = i % 2 ? 'rgba(126,110,92,0.55)' : 'rgba(168,150,124,0.5)';
+    g.fillRect(0, i * 32 + 6, 256, 10);
+  }
+  g.strokeStyle = 'rgba(90,78,64,0.6)'; g.lineWidth = 8; g.strokeRect(8, 8, 240, 240);
+  for (let i = 0; i < 2000; i++) {
+    g.fillStyle = `rgba(255,255,255,${r() * 0.08})`;
+    g.fillRect(r() * 256, r() * 256, 2, 1);
+  }
+  return finish(c);
+}
+
+/* --------------------------- 4. MATERIAL PALETTE -------------------------- */
+const MAT = {
+  deck: std({ map: plankTexture(7), color: 0xb08a63, roughness: 0.88 }),
+  plank: std({ map: plankTexture(1), color: 0xa8825c, roughness: 0.85 }),
+  teak: std({ color: PAL.teak, roughness: 0.7 }), darkWood: std({ color: PAL.deckDark, roughness: 0.8 }),
+  concrete: std({ map: concreteTexture(PAL.concrete), roughness: 0.95 }),
+  coping: std({ color: PAL.coping, roughness: 0.85 }),
+  steel: std({ color: PAL.steel, roughness: 0.5, metalness: 0.7 }),
+  brass: std({ color: 0xc39a52, roughness: 0.32, metalness: 0.85 }),
+  cord: std({ color: 0x2a2a30, roughness: 0.8 }),
+  terracotta: std({ color: PAL.terracotta, roughness: 0.9 }),
+  soil: std({ color: PAL.soil, roughness: 1 }),
+  leafA: std({ color: PAL.leafA, roughness: 0.85 }), leafB: std({ color: PAL.leafB, roughness: 0.85 }),
+  leafC: std({ color: PAL.leafC, roughness: 0.88 }),
+  cushion: std({ color: PAL.cushion, roughness: 0.95 }),
+  cushionAlt: std({ color: PAL.cushionAlt, roughness: 0.95 }),
+  rug: std({ map: rugTexture(), roughness: 0.98 }),
+  glass: std({ color: 0xaecad6, roughness: 0.08, metalness: 0.1, transparent: true,
+    opacity: 0.24, depthWrite: false, side: THREE.DoubleSide }),
+  water: std({ color: 0x2e4b58, roughness: 0.15, metalness: 0.3 }),
+  bulb: std({ color: 0xfff2d2, emissive: PAL.glow, emissiveIntensity: 2.6, roughness: 0.4 }),
+  flame: std({ color: 0xff9a52, emissive: PAL.fire, emissiveIntensity: 2.1, transparent: true,
+    opacity: 0.85, roughness: 0.6 }),
+  charcoal: std({ color: 0x33302f, roughness: 1 }),
+  lantern: std({ color: 0xffe2b0, emissive: 0xffcf94, emissiveIntensity: 2.2, roughness: 0.6 })
+};
+const cityMat = (seed, warm, rx, ry) => {
+  const tex = cityFacadeTexture(seed, warm); tex.repeat.set(rx, ry);
+  return std({ map: tex, emissiveMap: tex, emissive: 0xffffff, emissiveIntensity: 0.9,
+    color: 0x11172a, roughness: 0.95 });
+};
+const cityMats = [0, 1, 2].map(i => cityMat(101 + i * 37, i, 2, 2));
+const hostMat = cityMat(233, 1, 4.2, 2.6); hostMat.emissiveIntensity = 0.6;
+
+/* --------------------- 5. SCENE, CAMERA, RENDERER, CONTROLS --------------- */
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.011);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.5, 500);
+camera.position.set(22, 13.2, 22);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.12;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.85;
+controls.target.set(0, 2.2, 0);
+controls.minDistance = 24; controls.maxDistance = 42;
+controls.minPolarAngle = 0.6; controls.maxPolarAngle = 1.36;
+
+/* --------------- 6. BUILDERS — sky, host building, parapet, skyline ------- */
+function buildSkyDome() {
+  const [c, g] = canvas2d(8, 256), grd = g.createLinearGradient(0, 0, 0, 256);
+  [[0, '#0d1226'], [0.4, '#222a4c'], [0.68, '#4a4067'], [0.86, '#95607a'], [1, '#e08f66']]
+    .forEach(([p, col]) => grd.addColorStop(p, col));
+  g.fillStyle = grd; g.fillRect(0, 0, 8, 256);
+  return new THREE.Mesh(new THREE.SphereGeometry(220, 32, 20), new THREE.MeshBasicMaterial(
+    { map: new THREE.CanvasTexture(c), side: THREE.BackSide, fog: false }));
+}
+/** The deck slab plus the storeys of lit windows falling away beneath it. */
+function buildHost() {
+  const g = new THREE.Group(), X = CFG.deckX, Z = CFG.deckZ;
+  g.add(box(X * 2, 0.32, Z * 2, MAT.deck, 0, -0.16, 0));
+  g.add(box(X * 2 + 0.9, CFG.drop, Z * 2 + 0.9, hostMat, 0, -0.32 - CFG.drop / 2, 0));
+  g.add(box(X * 2 + 1.2, 0.4, Z * 2 + 1.2, MAT.concrete, 0, -0.5, 0));
+  return g;
+}
+/** Parapet wall with a pale coping cap and a run of deck lights. */
+function buildParapet() {
+  const g = new THREE.Group(), X = CFG.deckX, Z = CFG.deckZ, h = CFG.parapetH, t = 0.42;
+  for (const s of [-1, 1]) {
+    g.add(box(X * 2 + t, h, t, MAT.concrete, 0, h / 2, s * Z),
+          box(t, h, Z * 2 - t, MAT.concrete, s * X, h / 2, 0),
+          box(X * 2 + t + 0.14, 0.14, t + 0.14, MAT.coping, 0, h + 0.07, s * Z),
+          box(t + 0.14, 0.14, Z * 2 - t, MAT.coping, s * X, h + 0.07, 0));
+  }
+  return g;
+}
+/** A ring of silhouetted towers with lit window grids, fading into the haze. */
+function buildSkyline() {
+  const g = new THREE.Group();
+  const floor = mesh(new THREE.PlaneGeometry(600, 600), std({ color: 0x1a2033, roughness: 1 }),
+    0, -CFG.drop - 0.6, 0, false);
+  floor.rotation.x = -Math.PI / 2; g.add(floor);
+  for (let i = 0; i < 40; i++) {
+    const ang = (i / 40) * 6.283 + rng(-0.04, 0.04), rad = rng(48, 104);
+    const w = rng(7, 15), d = rng(7, 15), h = rng(22, 56);
+    const tower = box(w, h, d, cityMats[i % 3], Math.cos(ang) * rad, h / 2 - CFG.drop, Math.sin(ang) * rad);
+    tower.rotation.y = rng(0, 1.5); tower.castShadow = false;
+    g.add(tower);
+    if (rand() > 0.6) {                                     // rooftop plant boxes and masts
+      const capY = h - CFG.drop + 0.5;
+      g.add(box(w * 0.35, 1.2, d * 0.35, MAT.steel, Math.cos(ang) * rad, capY, Math.sin(ang) * rad));
+      g.add(cyl(0.08, 0.08, 3.4, MAT.steel, Math.cos(ang) * rad, capY + 2.2, Math.sin(ang) * rad, 5));
+    }
+  }
+  return g;
+}
+
+/* ------------------- 7. BUILDERS — pergola and string lights -------------- */
+/** Timber pergola: posts, beams, rafters, and vines climbing the frame. */
+function buildPergola(w, d, h) {
+  const g = new THREE.Group(), vines = new THREE.Group();
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    g.add(box(0.24, h, 0.24, MAT.teak, sx * w / 2, h / 2, sz * d / 2));
+    g.add(box(0.5, 0.5, 0.14, MAT.teak, sx * (w / 2 - 0.3), h - 0.45, sz * (d / 2 - 0.06)));
+  }
+  for (const sz of [-1, 1]) g.add(box(w + 0.7, 0.26, 0.18, MAT.teak, 0, h + 0.12, sz * d / 2));
+  for (let i = 0; i <= 7; i++) {
+    g.add(box(0.14, 0.2, d + 0.8, MAT.teak, -w / 2 + (i / 7) * w, h + 0.36, 0));
+  }
+  // vines: clusters of leaves following the posts and the top rafters
+  for (const sx of [-1, 1]) {
+    vines.add(scatter(new THREE.IcosahedronGeometry(0.17, 0), MAT.leafC, 26, 0.22, 0.22, 0.6, h - 0.1)
+      .translateX(sx * w / 2));
+  }
+  vines.add(scatter(new THREE.IcosahedronGeometry(0.19, 0), MAT.leafA, 46, w / 2, d / 2, h + 0.2, h + 0.5));
+  for (let i = 0; i < 7; i++) {                             // hanging tendrils
+    const x = rng(-w / 2, w / 2), z = pick([-d / 2, d / 2]) * rng(0.7, 1);
+    vines.add(scatter(new THREE.IcosahedronGeometry(0.13, 0), MAT.leafB, 7, 0.1, 0.1, h - rng(0.8, 1.8), h + 0.2)
+      .translateX(x).translateZ(z));
+  }
+  g.add(vines);
+  g.userData = { vines, phase: rng(0, 6.28) };
+  return g;
+}
+/** A swagged strand of bulbs between two anchor points; swings in the breeze. */
+function buildLightString(a, b, sag, n) {
+  const outer = new THREE.Group(), swing = new THREE.Group(), m = new THREE.Matrix4();
+  const len = a.distanceTo(b);
+  for (let i = 0; i < n; i++) {
+    const u0 = i / n, u1 = (i + 1) / n;
+    swing.add(strut(V(u0 * len, -Math.sin(u0 * Math.PI) * sag, 0),
+                    V(u1 * len, -Math.sin(u1 * Math.PI) * sag, 0), 0.02, MAT.cord));
+  }
+  const bulbs = new THREE.InstancedMesh(new THREE.SphereGeometry(0.115, 8, 6), MAT.bulb, n);
+  for (let i = 0; i < n; i++) {
+    const u = (i + 0.5) / n;
+    m.makeTranslation(u * len, -Math.sin(u * Math.PI) * sag - 0.15, 0);
+    bulbs.setMatrixAt(i, m);
+  }
+  swing.add(bulbs);
+  outer.position.copy(a);
+  outer.quaternion.setFromUnitVectors(V(1, 0, 0), new THREE.Vector3().subVectors(b, a).normalize());
+  outer.add(swing);
+  outer.userData = { swing, phase: rng(0, 6.28) };
+  return outer;
+}
+
+/* ---------------------- 8. BUILDERS — the growing things ------------------ */
+/** Raised bed: plank sides, corner posts, soil, mixed crops and cane stakes. */
+function buildPlanterBed(w, d) {
+  const g = new THREE.Group(), h = 0.62;
+  for (const sz of [-1, 1]) g.add(box(w, h, 0.1, MAT.plank, 0, h / 2, sz * d / 2));
+  for (const sx of [-1, 1]) g.add(box(0.1, h, d, MAT.plank, sx * w / 2, h / 2, 0));
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) {
+    g.add(box(0.18, h + 0.14, 0.18, MAT.darkWood, sx * w / 2, (h + 0.14) / 2, sz * d / 2));
+  }
+  g.add(box(w - 0.16, 0.1, d - 0.16, MAT.soil, 0, h - 0.06, 0));
+  const crop = new THREE.Group();
+  crop.add(scatter(new THREE.IcosahedronGeometry(0.21, 0), MAT.leafB, Math.round(w * 3), w / 2 - 0.3, d / 2 - 0.2, h + 0.06, h + 0.16));
+  crop.add(scatter(new THREE.IcosahedronGeometry(0.15, 1), MAT.leafA, Math.round(w * 4), w / 2 - 0.25, d / 2 - 0.2, h + 0.1, h + 0.34));
+  crop.add(scatter(new THREE.ConeGeometry(0.09, 0.34, 5), MAT.leafC, Math.round(w * 3), w / 2 - 0.3, d / 2 - 0.2, h + 0.18, h + 0.3));
+  crop.add(scatter(new THREE.IcosahedronGeometry(0.07, 0), std({ color: pick(PAL.blooms), roughness: 0.7 }),
+    Math.round(w * 2), w / 2 - 0.3, d / 2 - 0.2, h + 0.3, h + 0.55));
+  g.add(crop);
+  for (let i = 0; i < 3; i++) {                              // bean canes with a tomato vine
+    const x = -w / 2 + 0.6 + i * (w - 1.2) / 2;
+    g.add(cyl(0.035, 0.035, 1.5, MAT.darkWood, x, h + 0.7, 0, 5));
+    crop.add(scatter(new THREE.IcosahedronGeometry(0.12, 0), MAT.leafC, 9, 0.14, 0.14, h + 0.4, h + 1.35).translateX(x));
+  }
+  g.userData = { crop, phase: rng(0, 6.28) };
+  return g;
+}
+/** Potted tree: terracotta pot, slim trunk, a crown of leafy blobs. */
+function buildPottedTree(scale) {
+  const g = new THREE.Group(), crown = new THREE.Group();
+  g.add(cyl(0.58, 0.44, 0.78, MAT.terracotta, 0, 0.39, 0), cyl(0.62, 0.62, 0.12, MAT.terracotta, 0, 0.76, 0),
+        cyl(0.5, 0.5, 0.08, MAT.soil, 0, 0.79, 0), cyl(0.09, 0.13, 1.7, MAT.darkWood, 0, 1.6, 0, 8));
+  for (let i = 0; i < 7; i++) {
+    crown.add(mesh(new THREE.IcosahedronGeometry(rng(0.42, 0.72), 1), i % 2 ? MAT.leafA : MAT.leafC,
+      rng(-0.62, 0.62), 2.5 + rng(-0.35, 0.5), rng(-0.62, 0.62)));
+  }
+  g.add(crown);
+  g.scale.setScalar(scale);
+  g.userData = { crown, phase: rng(0, 6.28) };
+  return g;
+}
+/** Glass-fronted greenhouse cabinet with shelves of seedlings and a soft glow. */
+function buildGreenhouse() {
+  const w = 2.1, d = 1.15, h = 2.35, g = new THREE.Group();
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.add(box(0.1, h, 0.1, MAT.steel, sx * w / 2, h / 2, sz * d / 2));
+  g.add(box(w, 0.16, d, MAT.darkWood, 0, 0.08, 0), box(w + 0.14, 0.1, d + 0.14, MAT.steel, 0, h, 0));
+  for (const sz of [-1, 1]) g.add(mesh(new THREE.BoxGeometry(w - 0.12, h - 0.3, 0.04), MAT.glass, 0, h / 2, sz * d / 2, false));
+  for (const sx of [-1, 1]) g.add(mesh(new THREE.BoxGeometry(0.04, h - 0.3, d - 0.12), MAT.glass, sx * w / 2, h / 2, 0, false));
+  for (const sx of [-1, 1]) {                                // pitched glass roof
+    const pane = mesh(new THREE.BoxGeometry(w + 0.1, 0.05, d * 0.62), MAT.glass, 0, h + 0.28, sx * d * 0.26, false);
+    pane.rotation.x = sx * 0.62;
+    g.add(pane);
+  }
+  g.add(box(w + 0.12, 0.08, 0.1, MAT.steel, 0, h + 0.55, 0));
+  for (let s = 0; s < 2; s++) {                              // shelves of seedling trays
+    const y = 0.7 + s * 0.72;
+    g.add(box(w - 0.2, 0.06, d - 0.2, MAT.darkWood, 0, y, 0));
+    g.add(scatter(new THREE.IcosahedronGeometry(0.1, 0), MAT.leafB, 12, w / 2 - 0.25, d / 2 - 0.2, y + 0.1, y + 0.22));
+    for (let i = 0; i < 3; i++) g.add(cyl(0.11, 0.09, 0.16, MAT.terracotta, -w / 2 + 0.35 + i * 0.55, y + 0.11, 0, 8));
+  }
+  const lamp = new THREE.PointLight(0xffd9a0, 5, 6, 2); lamp.position.set(0, 1.6, 0);
+  g.add(lamp, mesh(new THREE.SphereGeometry(0.1, 8, 6), MAT.lantern, 0, 2.05, 0, false));
+  return g;
+}
+/** Cedar water tank on a braced steel stand, with hoops, a lid and a ladder. */
+function buildWaterTank() {
+  const g = new THREE.Group(), legH = 2.6, r = 1.35;
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2 + Math.PI / 4, x = Math.cos(a) * r * 0.78, z = Math.sin(a) * r * 0.78;
+    g.add(box(0.16, legH, 0.16, MAT.steel, x, legH / 2, z));
+    const b = a + Math.PI / 2;
+    g.add(strut(V(x, 0.35, z), V(Math.cos(b) * r * 0.78, legH - 0.35, Math.sin(b) * r * 0.78), 0.045, MAT.steel));
+  }
+  g.add(box(r * 2.1, 0.16, r * 2.1, MAT.steel, 0, legH + 0.08, 0));
+  g.add(cyl(r, r, 2.5, MAT.plank, 0, legH + 1.4, 0, 18));
+  for (const y of [legH + 0.5, legH + 1.4, legH + 2.3]) {
+    const hoop = mesh(new THREE.TorusGeometry(r + 0.03, 0.055, 6, 20), MAT.steel, 0, y, 0);
+    hoop.rotation.x = Math.PI / 2;
+    g.add(hoop);
+  }
+  g.add(cyl(r * 0.75, r + 0.08, 0.5, MAT.steel, 0, legH + 2.85, 0, 18));
+  g.add(cyl(0.09, 0.09, legH + 0.9, MAT.steel, r * 0.5, (legH + 0.9) / 2, r * 0.85, 6));
+  for (let i = 0; i < 6; i++) {                              // access ladder
+    g.add(box(0.5, 0.05, 0.05, MAT.steel, -r - 0.2, 0.4 + i * 0.55, 0));
+  }
+  for (const s of [-1, 1]) g.add(cyl(0.045, 0.045, 3.4, MAT.steel, -r - 0.2 + s * 0.24, 1.7, 0, 5));
+  return g;
+}
+
+/* -------------------- 9. BUILDERS — furniture and props ------------------- */
+/** Low-slung teak lounger with a reclining back and thick cushions. */
+function buildLounger() {
+  const g = new THREE.Group();
+  for (const sx of [-1, 1]) {
+    g.add(box(0.1, 0.34, 1.9, MAT.teak, sx * 0.42, 0.17, 0));
+    g.add(box(0.1, 0.1, 0.5, MAT.teak, sx * 0.42, 0.5, -0.72));
+  }
+  g.add(box(0.92, 0.12, 1.9, MAT.teak, 0, 0.38, 0));
+  const back = box(0.92, 0.12, 0.86, MAT.teak, 0, 0.62, -0.86);
+  back.rotation.x = -0.62; g.add(back);
+  g.add(box(0.86, 0.16, 1.75, MAT.cushion, 0, 0.52, 0.02));
+  const pad = box(0.86, 0.16, 0.82, MAT.cushion, 0, 0.78, -0.9);
+  pad.rotation.x = -0.62; g.add(pad);
+  const pillow = box(0.5, 0.18, 0.34, MAT.cushionAlt, 0, 1.0, -1.06);
+  pillow.rotation.x = -0.5; g.add(pillow);
+  return g;
+}
+/** Concrete fire table: glowing bed of coals under flickering flames. */
+function buildFireTable() {
+  const g = new THREE.Group(), flames = [];
+  g.add(box(2.2, 0.42, 1.3, MAT.concrete, 0, 0.21, 0), box(2.35, 0.1, 1.45, MAT.coping, 0, 0.46, 0));
+  g.add(box(1.5, 0.12, 0.62, MAT.charcoal, 0, 0.5, 0));
+  g.add(scatter(new THREE.IcosahedronGeometry(0.09, 0), MAT.charcoal, 26, 0.7, 0.26, 0.54, 0.6));
+  for (let i = 0; i < 5; i++) {
+    const f = mesh(new THREE.ConeGeometry(0.16, 0.62, 6), MAT.flame, rng(-0.6, 0.6), 0.88, rng(-0.18, 0.18), false);
+    flames.push(f); g.add(f);
+  }
+  const light = new THREE.PointLight(PAL.fire, 12, 10, 2); light.position.set(0, 1.0, 0);
+  light.castShadow = false;
+  g.add(light);
+  g.userData = { flames, light };
+  return g;
+}
+/** Small round side table carrying two mugs. */
+function buildSideTable() {
+  const g = new THREE.Group();
+  g.add(cyl(0.44, 0.44, 0.07, MAT.teak, 0, 0.52, 0, 16), cyl(0.07, 0.07, 0.5, MAT.steel, 0, 0.27, 0, 8),
+        cyl(0.3, 0.34, 0.05, MAT.steel, 0, 0.03, 0, 12),
+        cyl(0.07, 0.06, 0.11, MAT.cushion, 0.14, 0.61, 0.05, 10),
+        cyl(0.07, 0.06, 0.11, MAT.cushionAlt, -0.12, 0.61, -0.08, 10));
+  return g;
+}
+/** Glass hurricane lantern with a candle inside. */
+function buildLantern() {
+  const g = new THREE.Group();
+  g.add(box(0.28, 0.04, 0.28, MAT.steel, 0, 0.02, 0), box(0.3, 0.05, 0.3, MAT.steel, 0, 0.46, 0));
+  g.add(mesh(new THREE.BoxGeometry(0.24, 0.42, 0.24), MAT.glass, 0, 0.24, 0, false));
+  const flame = cyl(0.05, 0.07, 0.22, MAT.lantern, 0, 0.16, 0, 8);
+  flame.castShadow = false;
+  g.add(flame, cyl(0.02, 0.02, 0.16, MAT.steel, 0, 0.54, 0, 5));
+  g.userData = { flame, phase: rng(0, 6.28) };
+  return g;
+}
+/** Stack of spare terracotta pots with a watering can beside them. */
+function buildPotCorner() {
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++) g.add(cyl(0.32 - i * 0.02, 0.24, 0.34, MAT.terracotta, 0, 0.18 + i * 0.26, 0, 12));
+  for (let i = 0; i < 2; i++) {
+    g.add(cyl(0.3, 0.22, 0.32, MAT.terracotta, 0.78 + i * 0.1, 0.16, -0.5 + i * 0.62, 12));
+  }
+  const can = new THREE.Group();
+  can.add(cyl(0.21, 0.24, 0.42, MAT.steel, 0, 0.21, 0, 12));
+  const spout = cyl(0.05, 0.09, 0.6, MAT.steel, 0.3, 0.34, 0, 8);
+  spout.rotation.z = -0.7; can.add(spout);
+  can.add(mesh(new THREE.TorusGeometry(0.12, 0.025, 6, 12), MAT.steel, -0.16, 0.44, 0));
+  can.position.set(-0.72, 0, 0.5);
+  g.add(can);
+  return g;
+}
+/** Slim steel pole that anchors a run of string lights. */
+function buildLightPole() {
+  const g = new THREE.Group();
+  g.add(cyl(0.075, 0.11, 3.0, MAT.steel, 0, 1.5, 0, 8), cyl(0.28, 0.34, 0.14, MAT.steel, 0, 0.07, 0, 10),
+        mesh(new THREE.TorusGeometry(0.1, 0.022, 6, 10), MAT.brass, 0, 3.02, 0));
+  return g;
+}
+/** Wall-mounted herb shelf for the parapet. */
+function buildHerbShelf() {
+  const g = new THREE.Group();
+  g.add(box(2.4, 0.08, 0.42, MAT.plank, 0, 0.7, 0), box(2.4, 0.08, 0.42, MAT.plank, 0, 0.06, 0));
+  for (const sx of [-1, 1]) g.add(box(0.09, 0.78, 0.42, MAT.darkWood, sx * 1.16, 0.39, 0));
+  for (let i = 0; i < 5; i++) {
+    const x = -0.95 + i * 0.48;
+    g.add(cyl(0.15, 0.12, 0.22, MAT.terracotta, x, 0.85, 0, 10));
+    g.add(scatter(new THREE.IcosahedronGeometry(0.09, 0), i % 2 ? MAT.leafB : MAT.leafA, 7, 0.11, 0.11, 0.95, 1.1).translateX(x));
+  }
+  return g;
+}
+
+/* -------------------- 10. ASSEMBLY — dressing the terrace ----------------- */
+scene.add(buildSkyDome(), buildHost(), buildParapet(), buildSkyline());
+
+// lounge corner: rug, pergola, loungers, fire table, side table
+const rug = mesh(new THREE.PlaneGeometry(7.4, 5.6), MAT.rug, -3.6, 0.02, -1.4, false);
+rug.rotation.x = -Math.PI / 2;
+scene.add(rug);
+const pergola = buildPergola(7.6, 5.8, 3.1);
+pergola.position.set(-3.6, 0, -1.4);
+scene.add(pergola);
+const fire = buildFireTable();
+fire.position.set(-3.6, 0, -1.4);
+scene.add(fire);
+const loungers = [];
+for (const [lx, lz, ry] of [[-3.7, 1.6, Math.PI], [-6.4, -2.6, 1.35], [-0.9, -2.5, -1.35]]) {
+  const l = buildLounger();
+  l.position.set(lx, 0, lz); l.rotation.y = ry;
+  scene.add(l); loungers.push(l);
+}
+const side = buildSideTable();
+side.position.set(-6.2, 0, 0.9);
+scene.add(side);
+
+// kitchen garden: three raised beds along the east side
+const beds = [];
+for (const [bx, bz, bw, bd] of [[6.4, -4.6, 4.6, 1.8], [6.4, -1.6, 4.6, 1.8], [7.1, 2.6, 3.4, 1.8]]) {
+  const bed = buildPlanterBed(bw, bd);
+  bed.position.set(bx, 0, bz);
+  scene.add(bed); beds.push(bed);
+}
+const greenhouse = buildGreenhouse();
+greenhouse.position.set(7.6, 0, 6.0);
+greenhouse.rotation.y = -0.35;
+scene.add(greenhouse);
+
+// service corner: water tank on its stand, spare pots, herb shelf
+const tank = buildWaterTank();
+tank.position.set(-7.6, 0, 5.6);
+scene.add(tank);
+const pots = buildPotCorner();
+pots.position.set(-9.2, 0, 1.4);
+scene.add(pots);
+const herbs = buildHerbShelf();
+herbs.position.set(1.8, 0, -8.1);
+herbs.rotation.y = 0.05;
+scene.add(herbs);
+
+// potted trees softening the corners
+const trees = [];
+for (const [tx, tz, ts] of [[-9.2, -6.8, 1.15], [2.4, 6.8, 1.0], [8.4, -7.7, 0.85], [-2.4, 7.4, 0.9]]) {
+  const tree = buildPottedTree(ts);
+  tree.position.set(tx, 0, tz);
+  scene.add(tree); trees.push(tree);
+}
+
+// string lights swagged from the pergola to the tank, the poles and the greenhouse
+const poles = [[10.2, 7.0], [-10.4, -3.0], [10.4, -6.0]];
+for (const [px, pz] of poles) {
+  const pole = buildLightPole(); pole.position.set(px, 0, pz); scene.add(pole);
+}
+const strands = [];
+for (const [a, b, sag, n] of [
+  [V(-7.4, 3.5, -4.3), V(-7.6, 5.3, 4.35), 0.7, 12],
+  [V(0.2, 3.5, 1.5), V(10.2, 3.0, 7.0), 0.9, 14],
+  [V(-7.4, 3.5, 1.5), V(-10.4, 3.0, -3.0), 0.5, 8],
+  [V(0.2, 3.5, -4.3), V(10.4, 3.0, -6.0), 0.85, 13]
+]) {
+  const s = buildLightString(a, b, sag, n);
+  scene.add(s); strands.push(s);
+}
+const lanterns = [];
+for (const [px, pz] of [[-10.6, -3.2], [10.6, 0.6], [-4.0, 8.6], [10.6, -6.4]]) {
+  const l = buildLantern();
+  l.position.set(px, CFG.parapetH + 0.14, pz);
+  scene.add(l); lanterns.push(l);
+}
+
+// warm pools of light where people actually sit and work
+const stringLightA = new THREE.PointLight(PAL.glow, 9, 12, 2);
+stringLightA.position.set(-3.6, 3.0, 0.4);
+const stringLightB = new THREE.PointLight(PAL.glow, 7, 12, 2);
+stringLightB.position.set(4.2, 2.9, 2.0);
+scene.add(stringLightA, stringLightB);
+
+// embers lifting off the fire bowl
+const EMBERS = 90, emberPos = new Float32Array(EMBERS * 3);
+for (let i = 0; i < EMBERS; i++) {
+  emberPos[i * 3] = -3.6 + rng(-0.7, 0.7);
+  emberPos[i * 3 + 1] = rng(0.9, 4.2);
+  emberPos[i * 3 + 2] = -1.4 + rng(-0.35, 0.35);
+}
+const emberGeo = new THREE.BufferGeometry();
+emberGeo.setAttribute('position', new THREE.BufferAttribute(emberPos, 3));
+const embers = new THREE.Points(emberGeo, new THREE.PointsMaterial(
+  { color: 0xffa257, size: 0.075, transparent: true, opacity: 0.85, depthWrite: false }));
+scene.add(embers);
+
+/* ---------------------------- 11. LIGHTING RIG ---------------------------- */
+scene.add(new THREE.HemisphereLight(0x8296c8, 0x3b3630, 0.62), new THREE.AmbientLight(0x40486a, 0.35));
+const key = new THREE.DirectionalLight(0xffb98a, 1.55);   // last warm light of the day
+key.position.set(-22, 17, 14); key.castShadow = true; key.shadow.mapSize.set(2048, 2048);
+Object.assign(key.shadow.camera, { left: -18, right: 18, top: 18, bottom: -18, near: 1, far: 60 });
+key.shadow.bias = -0.0008; key.shadow.normalBias = 0.02;
+const rim = new THREE.DirectionalLight(0x6f86d6, 0.6); rim.position.set(18, 12, -18);  // dusk sky rim
+scene.add(key, rim);
+
+/* --------------------------- 12. ANIMATION LOOP --------------------------- */
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // 1. string lights swing on their cords and pulse very slightly
+  strands.forEach((s, i) => {
+    s.userData.swing.rotation.x = Math.sin(t * 0.75 + s.userData.phase) * 0.11
+      + Math.sin(t * 1.9 + i) * 0.025;
+  });
+  MAT.bulb.emissiveIntensity = 2.5 + Math.sin(t * 1.4) * 0.22;
+  // 2. fire: flames breathe and lean, the pool of light flickers with them
+  const flick = 0.82 + Math.sin(t * 7.3) * 0.09 + Math.sin(t * 17.1) * 0.06;
+  fire.userData.flames.forEach((f, i) => {
+    const k = 0.7 + Math.abs(Math.sin(t * 3.1 + i * 1.7)) * 0.75;
+    f.scale.set(0.85 + k * 0.25, k, 0.85 + k * 0.25);
+    f.rotation.z = Math.sin(t * 2.3 + i) * 0.16;
+    f.position.y = 0.86 + k * 0.1;
+  });
+  fire.userData.light.intensity = 12 * flick;
+  MAT.flame.emissiveIntensity = 1.8 + flick * 0.7;
+  MAT.flame.opacity = 0.72 + flick * 0.2;
+  // 3. vines, crops and tree crowns stir in the evening breeze
+  pergola.userData.vines.rotation.z = Math.sin(t * 0.62 + pergola.userData.phase) * 0.016;
+  pergola.userData.vines.position.x = Math.sin(t * 0.5) * 0.05;
+  for (const bed of beds) {
+    bed.userData.crop.rotation.z = Math.sin(t * 0.9 + bed.userData.phase) * 0.03;
+    bed.userData.crop.position.x = Math.sin(t * 0.7 + bed.userData.phase) * 0.035;
+  }
+  for (const tr of trees) {
+    tr.userData.crown.rotation.z = Math.sin(t * 0.58 + tr.userData.phase) * 0.04;
+    tr.userData.crown.position.x = Math.sin(t * 0.42 + tr.userData.phase) * 0.07;
+  }
+  // 4. candle lanterns flutter, each on its own phase
+  for (const l of lanterns) {
+    const k = 0.85 + Math.sin(t * 6.1 + l.userData.phase) * 0.12;
+    l.userData.flame.scale.set(1, k, 1);
+    l.userData.flame.material.emissiveIntensity = 2.2 * k;
+  }
+  // 5. embers drift up from the coals and are reseeded at the bowl
+  const pos = embers.geometry.attributes.position;
+  for (let i = 0; i < EMBERS; i++) {
+    let y = pos.getY(i) + 0.012 + Math.sin(t * 1.3 + i) * 0.004;
+    if (y > 4.4) { y = 0.95; pos.setX(i, -3.6 + rng(-0.6, 0.6)); }
+    pos.setY(i, y);
+    pos.setZ(i, pos.getZ(i) + Math.sin(t * 0.9 + i * 0.6) * 0.0022);
+  }
+  pos.needsUpdate = true; embers.material.opacity = 0.7 + Math.sin(t * 2.1) * 0.15;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ------------------------------- 13. RESIZE ------------------------------- */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

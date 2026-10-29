@@ -1,0 +1,409 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Solid Oak Dresser — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d9d9; }
+  #app { width: 100vw; height: 100vh; display: block; }
+</style>
+
+<!-- Requirement 1: three.js + OrbitControls via importmap on jsDelivr, three@0.160.0 -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="app"></canvas>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   Units: 1 world unit = 1 centimeter.  Real bedroom-furniture proportions.
+   A 6-drawer dresser (2 columns x 3 rows), ~94cm wide, ~79cm tall, ~45cm deep.
+   ========================================================================== */
+
+// ---- Overall dimensions (cm) ----------------------------------------------
+const bodyW = 90;   // carcass width
+const bodyD = 45;   // carcass depth
+const bodyH = 68;   // carcass (drawer region) height
+
+const plinthH        = 8;    // low plinth base height
+const plinthInset    = 4;    // how far the plinth is recessed on the sides
+const plinthFrontInset = 3;  // toe-kick recess at the front
+
+const topT        = 3;       // thickness of the top surface slab
+const topOverhang = 2.5;     // top overhangs the carcass on sides/front
+
+const cols = 2, rows = 3;    // 6 drawers in a grid
+
+// Vertical layout: plinth -> carcass -> top, bottom of plinth sits at y = 0
+const carcassBottomY = plinthH;               // 8
+const carcassTopY    = plinthH + bodyH;       // 76
+const carcassCenterY = plinthH + bodyH / 2;   // 42
+
+/* ============================================================================
+   Renderer  (Requirement 3)
+   ========================================================================== */
+const canvas = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+/* ============================================================================
+   Scene + neutral studio background  (Requirement 4)
+   ========================================================================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xdadada);
+
+/* ============================================================================
+   Procedural warm-oak wood texture (CanvasTexture)  (Requirement 1)
+   Draws a light warm base with wavy grain streaks + a couple of soft knots.
+   ========================================================================== */
+function makeWoodCanvas() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const ctx = c.getContext('2d');
+
+  // Warm oak base with a gentle vertical tonal gradient
+  const grad = ctx.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.0, '#c9a06c');
+  grad.addColorStop(0.5, '#bd9160');
+  grad.addColorStop(1.0, '#c39a68');
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 512, 512);
+
+  // Long wavy grain streaks (the characteristic oak grain)
+  for (let i = 0; i < 240; i++) {
+    const x = Math.random() * 512;
+    const amp = 3 + Math.random() * 10;
+    const phase = Math.random() * Math.PI * 2;
+    const r = 90 + Math.random() * 45;
+    const g = 60 + Math.random() * 30;
+    const b = 32 + Math.random() * 22;
+    const a = 0.04 + Math.random() * 0.14;
+    ctx.strokeStyle = `rgba(${r|0},${g|0},${b|0},${a})`;
+    ctx.lineWidth = 0.5 + Math.random() * 2.2;
+    ctx.beginPath();
+    for (let y = 0; y <= 512; y += 8) {
+      const xx = x + Math.sin((y / 512) * Math.PI * 2 + phase) * amp;
+      y === 0 ? ctx.moveTo(xx, y) : ctx.lineTo(xx, y);
+    }
+    ctx.stroke();
+  }
+
+  // A few lighter highlight streaks to add depth
+  for (let i = 0; i < 60; i++) {
+    const x = Math.random() * 512;
+    ctx.strokeStyle = `rgba(224,196,150,${0.04 + Math.random() * 0.08})`;
+    ctx.lineWidth = 0.5 + Math.random() * 1.5;
+    ctx.beginPath();
+    for (let y = 0; y <= 512; y += 10) {
+      const xx = x + Math.sin((y / 512) * Math.PI * 3 + i) * 6;
+      y === 0 ? ctx.moveTo(xx, y) : ctx.lineTo(xx, y);
+    }
+    ctx.stroke();
+  }
+
+  // Soft knots
+  for (let i = 0; i < 3; i++) {
+    const kx = 60 + Math.random() * 392;
+    const ky = 60 + Math.random() * 392;
+    const kr = 8 + Math.random() * 12;
+    const rg = ctx.createRadialGradient(kx, ky, 1, kx, ky, kr);
+    rg.addColorStop(0, 'rgba(80,52,26,0.55)');
+    rg.addColorStop(0.6, 'rgba(120,84,44,0.18)');
+    rg.addColorStop(1, 'rgba(120,84,44,0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.arc(kx, ky, kr, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  return c;
+}
+
+const woodCanvas = makeWoodCanvas();
+
+// Build a wood MeshStandardMaterial with per-part grain repeat + rotation.
+// The canvas is cloned per part so each has independent wrapping/rotation.
+function woodMaterial(repeatX, repeatY, rotation = 0, extra = {}) {
+  const tex = new THREE.CanvasTexture(woodCanvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repeatX, repeatY);
+  tex.center.set(0.5, 0.5);
+  tex.rotation = rotation;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+
+  return new THREE.MeshStandardMaterial({
+    map: tex,
+    bumpMap: tex,        // reuse grain as a subtle relief
+    bumpScale: 0.015,
+    roughness: 0.62,
+    metalness: 0.0,
+    color: 0xffffff,
+    ...extra
+  });
+}
+
+// Materials per part (grain oriented sensibly)
+const carcassMat = woodMaterial(2.0, 1.6, 0);              // grain runs vertically on sides
+const topMat     = woodMaterial(2.4, 1.2, Math.PI / 2);    // grain runs along the width
+const plinthMat  = woodMaterial(2.0, 0.5, 0);
+const drawerMat  = woodMaterial(1.3, 0.8, Math.PI / 2, { roughness: 0.55 }); // grain horizontal
+// Round knobs: slightly darker, more polished oak
+const knobMat = new THREE.MeshStandardMaterial({
+  color: 0x965f31, roughness: 0.42, metalness: 0.0
+});
+
+/* ============================================================================
+   Build the dresser as a named THREE.Group  (Requirement 2)
+   ========================================================================== */
+const dresser = new THREE.Group();
+dresser.name = 'oakDresser';
+
+function addBox(name, w, h, d, x, y, z, material) {
+  const mesh = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), material);
+  mesh.name = name;
+  mesh.position.set(x, y, z);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  dresser.add(mesh);
+  return mesh;
+}
+
+// --- Carcass (main body) ---------------------------------------------------
+addBox('carcass', bodyW, bodyH, bodyD, 0, carcassCenterY, 0, carcassMat);
+
+// --- Top surface (overhanging slab) ---------------------------------------
+addBox(
+  'topSurface',
+  bodyW + topOverhang * 2,
+  topT,
+  bodyD + topOverhang,                 // overhang the front, flush at back
+  0,
+  carcassTopY + topT / 2,
+  topOverhang / 2,                     // shift so overhang is at the front
+  topMat
+);
+
+// --- Low plinth base (recessed / toe-kick) --------------------------------
+addBox(
+  'plinth',
+  bodyW - plinthInset * 2,
+  plinthH,
+  bodyD - plinthFrontInset,
+  0,
+  plinthH / 2,
+  -plinthFrontInset / 2,               // recess the front
+  plinthMat
+);
+
+/* --- Six drawers in a grid, with subtle gaps + round knobs --------------- */
+const frameSide   = 3;    // side margin of the drawer grid on the carcass face
+const frameTopBot = 3;    // top/bottom margin
+const gap         = 1.5;  // subtle gap between drawer fronts
+
+const gridW = bodyW - frameSide * 2;                       // 84
+const gridH = bodyH - frameTopBot * 2;                     // 62
+const drawerW = (gridW - (cols - 1) * gap) / cols;         // 41.25
+const drawerH = (gridH - (rows - 1) * gap) / rows;         // ~19.67
+
+const dFT        = 1.6;                 // drawer front thickness (protrusion)
+const dCenterZ   = bodyD / 2 + dFT / 2; // fronts protrude from the carcass face
+const dOuterFace = dCenterZ + dFT / 2;  // where knobs mount
+
+// Column centres (x) and row centres (y, top row first)
+const colX = [];
+for (let c = 0; c < cols; c++) colX.push(-gridW / 2 + drawerW / 2 + c * (drawerW + gap));
+const rowY = [];
+for (let r = 0; r < rows; r++)
+  rowY.push(carcassCenterY + gridH / 2 - drawerH / 2 - r * (drawerH + gap));
+
+// A round wooden knob (stem + slightly flattened sphere head), +z = outward
+function makeKnob(name) {
+  const g = new THREE.Group();
+  g.name = name;
+
+  const stem = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.7, 0.95, 1.4, 20), knobMat
+  );
+  stem.rotation.x = Math.PI / 2;   // lay the cylinder along +z
+  stem.position.z = 0.7;
+
+  const head = new THREE.Mesh(new THREE.SphereGeometry(1.9, 28, 22), knobMat);
+  head.position.z = 2.5;
+  head.scale.z = 0.72;             // flatten the ball slightly
+
+  for (const m of [stem, head]) {
+    m.castShadow = true;
+    m.receiveShadow = true;
+    g.add(m);
+  }
+  return g;
+}
+
+for (let r = 0; r < rows; r++) {
+  for (let c = 0; c < cols; c++) {
+    const x = colX[c];
+    const y = rowY[r];
+
+    // Drawer front
+    const df = new THREE.Mesh(new THREE.BoxGeometry(drawerW, drawerH, dFT), drawerMat);
+    df.name = `drawerFront_${r}_${c}`;
+    df.position.set(x, y, dCenterZ);
+    df.castShadow = true;
+    df.receiveShadow = true;
+    dresser.add(df);
+
+    // Two round knobs per wide drawer, mounted symmetrically
+    for (const side of [-1, 1]) {
+      const knob = makeKnob(`knob_${r}_${c}_${side < 0 ? 'L' : 'R'}`);
+      knob.position.set(x + side * drawerW * 0.24, y, dOuterFace);
+      dresser.add(knob);
+    }
+  }
+}
+
+scene.add(dresser);
+
+/* ============================================================================
+   Ground plane + soft contact shadow  (Requirement 4 & 6)
+   ========================================================================== */
+// Large neutral floor that receives the real (directional) shadow
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(2000, 2000),
+  new THREE.MeshStandardMaterial({ color: 0xcfccc7, roughness: 1.0, metalness: 0.0 })
+);
+ground.name = 'ground';
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;               // dresser rests exactly on this plane
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Extra soft radial contact-shadow blob for a grounded look
+function makeContactShadowTexture() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(128, 128, 10, 128, 128, 128);
+  g.addColorStop(0, 'rgba(0,0,0,0.42)');
+  g.addColorStop(0.55, 'rgba(0,0,0,0.18)');
+  g.addColorStop(1, 'rgba(0,0,0,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, 256, 256);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const contact = new THREE.Mesh(
+  new THREE.PlaneGeometry(bodyW * 1.7, bodyD * 2.1),
+  new THREE.MeshBasicMaterial({
+    map: makeContactShadowTexture(), transparent: true,
+    depthWrite: false, opacity: 0.85
+  })
+);
+contact.name = 'contactShadow';
+contact.rotation.x = -Math.PI / 2;
+contact.position.set(0, 0.05, 0);
+scene.add(contact);
+
+/* ============================================================================
+   Lighting  (Requirement 4)
+   ========================================================================== */
+// Sky/ground hemisphere fill
+const hemi = new THREE.HemisphereLight(0xffffff, 0x8d7a5f, 0.65);
+scene.add(hemi);
+
+// Directional key light (casts shadows)
+const key = new THREE.DirectionalLight(0xfff4e2, 2.3);
+key.position.set(120, 185, 130);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.5;
+const d = 130;
+key.shadow.camera.left = -d;
+key.shadow.camera.right = d;
+key.shadow.camera.top = d;
+key.shadow.camera.bottom = -d;
+key.shadow.camera.near = 10;
+key.shadow.camera.far = 700;
+key.target.position.set(0, carcassCenterY, 0);
+scene.add(key);
+scene.add(key.target);
+
+// Subtle cool fill from the opposite side (no shadow)
+const fill = new THREE.DirectionalLight(0xbcd0e6, 0.55);
+fill.position.set(-110, 90, -70);
+scene.add(fill);
+
+/* ============================================================================
+   Camera + OrbitControls, auto-framed to bounding box  (Requirement 5)
+   ========================================================================== */
+const camera = new THREE.PerspectiveCamera(
+  42, window.innerWidth / window.innerHeight, 1, 5000
+);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.minDistance = 60;
+controls.maxDistance = 600;
+controls.maxPolarAngle = Math.PI * 0.495;   // stay above the floor
+
+function frameObject() {
+  const box = new THREE.Box3().setFromObject(dresser);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * Math.PI / 180;
+  let dist = maxDim / (2 * Math.tan(fov / 2));
+  dist *= 1.55; // padding around the object
+
+  camera.position.set(center.x + dist * 0.85, center.y + dist * 0.45, center.z + dist * 1.05);
+  camera.near = Math.max(1, dist / 100);
+  camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
+frameObject();
+
+/* ============================================================================
+   Resize handling  (Requirement 5)
+   ========================================================================== */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ============================================================================
+   Render loop
+   ========================================================================== */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

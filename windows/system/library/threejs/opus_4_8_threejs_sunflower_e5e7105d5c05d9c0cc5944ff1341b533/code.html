@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Procedural Sunflower</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0d0f11; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const container = document.getElementById('app');
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & Camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0d0f11);
+scene.fog = new THREE.Fog(0x0d0f11, 8, 22);
+
+// subtle studio reflections (procedural, no assets)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(2.4, 1.9, 3.1);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere ambient + directional key + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x9fb6d0, 0x2a2418, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1dc, 3.1);
+key.position.set(4.2, 7.0, 3.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 20;
+key.shadow.camera.left = -2.2;
+key.shadow.camera.right = 2.2;
+key.shadow.camera.top = 3.4;
+key.shadow.camera.bottom = -0.3;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x7fa8ff, 0.5);
+fill.position.set(-5, 2.5, 2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffe7c2, 1.5);
+rim.position.set(-2.5, 5.5, -4.5);
+scene.add(rim);
+
+// direction the flower faces (up + toward the key light)
+const LIGHT_DIR = new THREE.Vector3(0.34, 0.92, 0.28).normalize();
+
+// ---------------------------------------------------------------------------
+// Ground plane — receives shadows only
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Small helpers
+// ---------------------------------------------------------------------------
+const rand = (a, b) => a + Math.random() * (b - a);
+const UP = new THREE.Vector3(0, 1, 0);
+const GOLDEN = Math.PI * (3 - Math.sqrt(5)); // 137.5°
+
+// Build a smooth (rows x cols) grid geometry from a parametric fn(u,v)->{p,c}
+function buildGrid(rows, cols, fn) {
+  const g = new THREE.BufferGeometry();
+  const pos = [], col = [], uvs = [], idx = [];
+  for (let i = 0; i <= rows; i++) {
+    for (let j = 0; j <= cols; j++) {
+      const v = i / rows, u = j / cols;
+      const r = fn(u, v);
+      pos.push(r.p[0], r.p[1], r.p[2]);
+      col.push(r.c[0], r.c[1], r.c[2]);
+      uvs.push(u, v);
+    }
+  }
+  const cw = cols + 1;
+  for (let i = 0; i < rows; i++) {
+    for (let j = 0; j < cols; j++) {
+      const a = i * cw + j, b = a + 1, c = a + cw, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  g.setIndex(idx);
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Tapered tube swept along a curve
+function makeTube(curve, segments, radial, radiusFn) {
+  const frames = curve.computeFrenetFrames(segments, false);
+  const g = new THREE.BufferGeometry();
+  const pos = [], idx = [];
+  const P = new THREE.Vector3();
+  for (let i = 0; i <= segments; i++) {
+    const t = i / segments;
+    curve.getPointAt(t, P);
+    const N = frames.normals[i], B = frames.binormals[i];
+    const r = radiusFn(t);
+    for (let j = 0; j <= radial; j++) {
+      const a = (j / radial) * Math.PI * 2;
+      const cx = Math.cos(a), sy = Math.sin(a);
+      const nx = cx * N.x + sy * B.x;
+      const ny = cx * N.y + sy * B.y;
+      const nz = cx * N.z + sy * B.z;
+      pos.push(P.x + r * nx, P.y + r * ny, P.z + r * nz);
+    }
+  }
+  const rw = radial + 1;
+  for (let i = 0; i < segments; i++) {
+    for (let j = 0; j < radial; j++) {
+      const a = i * rw + j, b = a + rw;
+      idx.push(a, b, a + 1, b, b + 1, a + 1);
+    }
+  }
+  g.setIndex(idx);
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// The sunflower
+// ---------------------------------------------------------------------------
+const plant = new THREE.Group();
+scene.add(plant);
+
+// --- Stem (gently curved, tapered) -----------------------------------------
+const stemCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.00, 0.00, 0.00),
+  new THREE.Vector3(0.04, 0.55, 0.03),
+  new THREE.Vector3(-0.03, 1.10, 0.05),
+  new THREE.Vector3(0.05, 1.65, 0.01),
+  new THREE.Vector3(0.11, 2.15, 0.06),
+  new THREE.Vector3(0.15, 2.45, 0.08)
+]);
+const stemTop = stemCurve.getPointAt(1);
+
+const stemRadius = (t) => THREE.MathUtils.lerp(0.058, 0.028, t) * (1 + 0.10 * Math.sin(t * 3.0));
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x4f7a33, roughness: 0.85, metalness: 0.0 });
+const stemMesh = new THREE.Mesh(makeTube(stemCurve, 140, 14, stemRadius), stemMat);
+stemMesh.castShadow = true;
+stemMesh.receiveShadow = true;
+plant.add(stemMesh);
+
+// --- Fuzz on the stem (fine hairs) -----------------------------------------
+(function addStemFuzz() {
+  const count = 620;
+  const hairGeo = new THREE.ConeGeometry(0.0035, 0.03, 5);
+  const hairMat = new THREE.MeshStandardMaterial({
+    color: 0xa6c96a, roughness: 0.95, metalness: 0.0,
+    transparent: true, opacity: 0.85
+  });
+  const hairs = new THREE.InstancedMesh(hairGeo, hairMat, count);
+  hairs.castShadow = false;
+  const frames = stemCurve.computeFrenetFrames(200, false);
+  const dummy = new THREE.Object3D();
+  const P = new THREE.Vector3(), radial = new THREE.Vector3(), dir = new THREE.Vector3();
+  for (let i = 0; i < count; i++) {
+    const t = rand(0.03, 0.99);
+    const fi = Math.min(200, Math.max(0, Math.round(t * 200)));
+    const N = frames.normals[fi], B = frames.binormals[fi];
+    const a = rand(0, Math.PI * 2);
+    radial.set(
+      Math.cos(a) * N.x + Math.sin(a) * B.x,
+      Math.cos(a) * N.y + Math.sin(a) * B.y,
+      Math.cos(a) * N.z + Math.sin(a) * B.z
+    ).normalize();
+    stemCurve.getPointAt(t, P);
+    const r = stemRadius(t);
+    dir.copy(radial).addScaledVector(UP, 0.55)
+      .add(new THREE.Vector3(rand(-0.2, 0.2), 0, rand(-0.2, 0.2))).normalize();
+    dummy.position.copy(P).addScaledVector(radial, r * 0.95).addScaledVector(dir, 0.012);
+    dummy.quaternion.setFromUnitVectors(UP, dir);
+    const s = rand(0.6, 1.25);
+    dummy.scale.set(s, rand(0.7, 1.3), s);
+    dummy.updateMatrix();
+    hairs.setMatrixAt(i, dummy.matrix);
+  }
+  hairs.instanceMatrix.needsUpdate = true;
+  plant.add(hairs);
+})();
+
+// --- Leaves -----------------------------------------------------------------
+function makeLeafGeometry(len, maxW) {
+  const cMid = new THREE.Color(0x33531e);
+  const cEdge = new THREE.Color(0x77b23f);
+  const cBase = new THREE.Color(0x8aa93a);
+  return buildGrid(16, 12, (u, v) => {
+    const uu = u * 2 - 1;
+    const w = maxW * Math.sin(Math.PI * Math.pow(v, 0.7)) * (1 - 0.12 * v) + 1e-5;
+    const x = uu * w;
+    const z = v * len;
+    // slight arch of the midrib + cupped, upward-curling edges
+    const yMid = 0.03 * Math.sin(v * Math.PI);
+    const y = yMid + 0.38 * Math.pow(Math.abs(uu), 1.8) * w;
+    const edge = Math.pow(Math.abs(uu), 0.6);
+    const c = cMid.clone().lerp(cEdge, edge * 0.9);
+    if (v < 0.25) c.lerp(cBase, (0.25 - v) * 1.4);
+    return { p: [x, y, z], c: [c.r, c.g, c.b] };
+  });
+}
+
+const leafMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.7, metalness: 0.0, side: THREE.DoubleSide
+});
+const petioleMat = new THREE.MeshStandardMaterial({ color: 0x4f7a33, roughness: 0.85 });
+
+function addLeaf(t, azimuth, size) {
+  const group = new THREE.Group();
+  const P = stemCurve.getPointAt(t);
+  group.position.copy(P);
+  group.rotation.y = azimuth;
+  group.rotation.x = rand(0.35, 0.6);          // droop
+  group.rotation.z = rand(-0.12, 0.12);        // twist
+
+  const petioleLen = 0.18 * size;
+  const petiole = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.010 * size, 0.017 * size, petioleLen, 8),
+    petioleMat
+  );
+  petiole.rotation.x = Math.PI / 2;
+  petiole.position.z = petioleLen / 2;
+  petiole.castShadow = true;
+  group.add(petiole);
+
+  const leaf = new THREE.Mesh(makeLeafGeometry(0.62 * size, 0.30 * size), leafMat);
+  leaf.position.z = petioleLen;
+  leaf.castShadow = true;
+  leaf.receiveShadow = true;
+  group.add(leaf);
+
+  plant.add(group);
+}
+
+addLeaf(0.34, 0.5, 1.15);
+addLeaf(0.52, 0.5 + Math.PI + 0.4, 1.0);
+addLeaf(0.70, 0.5 + 0.3, 0.78);
+
+// ---------------------------------------------------------------------------
+// Flower head (built facing +Y, then tilted toward the light)
+// ---------------------------------------------------------------------------
+const head = new THREE.Group();
+const q = new THREE.Quaternion().setFromUnitVectors(UP, LIGHT_DIR);
+head.quaternion.copy(q);
+head.position.copy(stemTop).addScaledVector(LIGHT_DIR, 0.03);
+plant.add(head);
+
+const SEED_R = 0.15;
+const DOME_H = 0.035;
+const domeHeight = (rr) => DOME_H * Math.sqrt(Math.max(0, 1 - rr * rr));
+
+// --- Head body (thick green involucre / rim) --------------------------------
+const bodyMat = new THREE.MeshStandardMaterial({ color: 0x5c7d34, roughness: 0.85 });
+const body = new THREE.Mesh(
+  new THREE.CylinderGeometry(SEED_R * 1.05, SEED_R * 0.82, 0.06, 64, 1, false),
+  bodyMat
+);
+body.position.y = -0.028;
+body.castShadow = true;
+body.receiveShadow = true;
+head.add(body);
+
+// green back cap
+const backMat = new THREE.MeshStandardMaterial({ color: 0x557a30, roughness: 0.85 });
+const backCap = new THREE.Mesh(
+  new THREE.SphereGeometry(SEED_R * 0.86, 48, 24, 0, Math.PI * 2, 0, Math.PI / 2),
+  backMat
+);
+backCap.scale.y = 0.9;
+backCap.rotation.x = Math.PI;
+backCap.position.y = -0.06;
+backCap.castShadow = true;
+head.add(backCap);
+
+// --- Seed disc base (brown dome the seeds sit on) ---------------------------
+const domeMat = new THREE.MeshStandardMaterial({ color: 0x2f2113, roughness: 0.95 });
+const seedDome = new THREE.Mesh(
+  new THREE.SphereGeometry(SEED_R, 64, 32, 0, Math.PI * 2, 0, Math.PI / 2),
+  domeMat
+);
+seedDome.scale.y = DOME_H / SEED_R;
+seedDome.receiveShadow = true;
+head.add(seedDome);
+
+// --- Seeds in a phyllotactic spiral (thick, textured brown center) ----------
+(function addSeeds() {
+  const N = 640;
+  const seedGeo = new THREE.BoxGeometry(1, 1, 1);
+  const seedMat = new THREE.MeshStandardMaterial({ roughness: 0.72, metalness: 0.0 });
+  const seeds = new THREE.InstancedMesh(seedGeo, seedMat, N);
+  seeds.castShadow = false;
+  seeds.receiveShadow = true;
+  const dummy = new THREE.Object3D();
+  const color = new THREE.Color();
+  const c = SEED_R / Math.sqrt(N + 4);
+  for (let i = 0; i < N; i++) {
+    const r = c * Math.sqrt(i + 0.5);
+    const theta = i * GOLDEN;
+    const rr = r / SEED_R;
+    const x = r * Math.cos(theta);
+    const z = r * Math.sin(theta);
+    const y = domeHeight(rr) + rand(-0.003, 0.003);
+    const s = THREE.MathUtils.lerp(0.0065, 0.0135, rr);
+    dummy.position.set(x, y, z);
+    dummy.rotation.set(0, theta, 0);
+    dummy.rotateX(-rr * 0.55);
+    dummy.rotateZ(rand(-0.25, 0.25));
+    dummy.scale.set(s, s * 0.6, s * 1.35);
+    dummy.updateMatrix();
+    seeds.setMatrixAt(i, dummy.matrix);
+
+    const light = THREE.MathUtils.lerp(0.27, 0.12, rr) + rand(-0.03, 0.03);
+    const hue = rr < 0.14 ? 0.12 : 0.08 - rand(0, 0.02);
+    color.setHSL(hue, 0.55, THREE.MathUtils.clamp(light, 0.06, 0.4));
+    seeds.setColorAt(i, color);
+  }
+  seeds.instanceMatrix.needsUpdate = true;
+  if (seeds.instanceColor) seeds.instanceColor.needsUpdate = true;
+  head.add(seeds);
+})();
+
+// --- Petals (two rings of pointed yellow ligules) ---------------------------
+function makePetalGeometry(len, wid, lift, channel, baseCol, tipCol) {
+  return buildGrid(12, 6, (u, v) => {
+    const uu = u * 2 - 1;
+    const w = wid * Math.sin(Math.PI * Math.pow(v, 0.5)) * (1 - 0.32 * v) + 1e-5;
+    const x = uu * w;
+    const z = v * len;
+    const yUp = lift * Math.sin(v * 1.35);
+    const y = yUp + channel * Math.pow(Math.abs(uu), 1.7) * w;
+    const c = baseCol.clone().lerp(tipCol, Math.pow(v, 0.7));
+    return { p: [x, y, z], c: [c.r, c.g, c.b] };
+  });
+}
+
+const petalMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.5, metalness: 0.0, side: THREE.DoubleSide,
+  emissive: new THREE.Color(0x3a2600), emissiveIntensity: 0.16
+});
+
+const petalBase = new THREE.Color(0xe89a1c);
+const petalTip = new THREE.Color(0xffd21b);
+
+function addPetalRing(count, radius, len, wid, rotX, phase) {
+  const geo = makePetalGeometry(len, wid, len * 0.22, 0.62, petalBase, petalTip);
+  for (let i = 0; i < count; i++) {
+    const ang = phase + (i / count) * Math.PI * 2;
+    const pivot = new THREE.Object3D();
+    pivot.rotation.y = ang + rand(-0.03, 0.03);
+    const m = new THREE.Mesh(geo, petalMat);
+    m.position.set(0, rand(-0.004, 0.004), radius);
+    m.rotation.x = rotX + rand(-0.06, 0.06);
+    m.rotation.z = rand(-0.05, 0.05);
+    m.castShadow = true;
+    pivot.add(m);
+    head.add(pivot);
+  }
+}
+
+// inner ring first (sits behind), then outer ring filling in front
+addPetalRing(24, SEED_R * 0.70, 0.165, 0.030, -0.42, Math.PI / 24);
+addPetalRing(28, SEED_R * 0.82, 0.205, 0.032, -0.24, 0.0);
+
+// --- Green bracts (calyx) behind the petals ---------------------------------
+(function addBracts() {
+  const bg = new THREE.Color(0x4d7a2c);
+  const bt = new THREE.Color(0x6fa03a);
+  const geo = makePetalGeometry(0.12, 0.028, 0.02, 0.5, bg, bt);
+  const mat = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.8, metalness: 0.0, side: THREE.DoubleSide
+  });
+  const count = 30;
+  for (let i = 0; i < count; i++) {
+    const ang = (i / count) * Math.PI * 2 + 0.1;
+    const pivot = new THREE.Object3D();
+    pivot.rotation.y = ang;
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(0, -0.02, SEED_R * 0.82);
+    m.rotation.x = 0.85 + rand(-0.1, 0.1); // angle down/back
+    m.castShadow = true;
+    pivot.add(m);
+    head.add(m.parent ? pivot : pivot);
+    head.add(pivot);
+  }
+})();
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, 1.55, 0);
+controls.minDistance = 1.2;
+controls.maxDistance = 9;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

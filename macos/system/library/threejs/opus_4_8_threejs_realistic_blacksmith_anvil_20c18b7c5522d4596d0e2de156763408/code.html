@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Blacksmith Anvil — three.js</title>
+<style>
+  html,body{margin:0;height:100%;background:#15161a;overflow:hidden}
+  canvas{display:block}
+  #hint{position:fixed;left:14px;bottom:12px;font:12px/1.4 system-ui,sans-serif;
+        color:#8a8d95;letter-spacing:.03em;user-select:none;pointer-events:none;opacity:.7}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">drag to orbit · scroll to zoom</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------- helpers */
+const clamp = (v,a,b)=>Math.min(b,Math.max(a,v));
+const smooth = (e0,e1,x)=>{const t=clamp((x-e0)/(e1-e0),0,1);return t*t*(3-2*t);};
+
+function hash(x,y){const n=Math.sin(x*127.1+y*311.7)*43758.5453123;return n-Math.floor(n);}
+function vnoise(x,y){
+  const xi=Math.floor(x),yi=Math.floor(y),xf=x-xi,yf=y-yi;
+  const u=xf*xf*(3-2*xf),v=yf*yf*(3-2*yf);
+  const a=hash(xi,yi),b=hash(xi+1,yi),c=hash(xi,yi+1),d=hash(xi+1,yi+1);
+  return a*(1-u)*(1-v)+b*u*(1-v)+c*(1-u)*v+d*u*v;
+}
+function fbm(x,y){let s=0,a=0.5,f=1;for(let i=0;i<4;i++){s+=a*vnoise(x*f,y*f);f*=2;a*=0.5;}return s;}
+
+/* ---- procedural grayscale noise texture (used for cast-iron bump) ------- */
+function noiseTexture(size,scale,contrast){
+  const c=document.createElement('canvas');c.width=c.height=size;
+  const ctx=c.getContext('2d');const img=ctx.createImageData(size,size);
+  for(let y=0;y<size;y++)for(let x=0;x<size;x++){
+    let n=fbm(x/size*scale,y/size*scale);
+    n=clamp((n-0.5)*contrast+0.5,0,1);
+    const v=Math.floor(n*255),i=(y*size+x)*4;
+    img.data[i]=img.data[i+1]=img.data[i+2]=v;img.data[i+3]=255;
+  }
+  ctx.putImageData(img,0,0);
+  const t=new THREE.CanvasTexture(c);
+  t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=THREE.NoColorSpace;
+  return t;
+}
+
+/* ---- polished face detail : bump (pits/scratches) + roughness ----------- */
+function faceDetail(){
+  const w=768,h=336;
+  const bc=document.createElement('canvas');bc.width=w;bc.height=h;const bx=bc.getContext('2d');
+  const rc=document.createElement('canvas');rc.width=w;rc.height=h;const rx=rc.getContext('2d');
+  const bimg=bx.createImageData(w,h),rimg=rx.createImageData(w,h);
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){
+    const u=x/w,v=y/h;
+    const n=fbm(u*6.5,v*6.5*(h/w));
+    let bump=clamp(0.5+(n-0.5)*0.5,0,1);
+    const dx=(u-0.55)/0.5,dy=(v-0.5)/0.5,r=Math.sqrt(dx*dx+dy*dy);
+    const polish=clamp(1-r,0,1);
+    let rough=clamp(0.62-polish*0.44+(n-0.5)*0.16,0,1);
+    const i=(y*w+x)*4;
+    const bv=Math.floor(bump*255);bimg.data[i]=bimg.data[i+1]=bimg.data[i+2]=bv;bimg.data[i+3]=255;
+    const rv=Math.floor(rough*255);rimg.data[i]=rimg.data[i+1]=rimg.data[i+2]=rv;rimg.data[i+3]=255;
+  }
+  bx.putImageData(bimg,0,0);rx.putImageData(rimg,0,0);
+  // hammer pits (dark = depressions) — denser in the central working zone / heel
+  for(let i=0;i<640;i++){
+    let x,y;
+    if(Math.random()<0.7){ x=(0.28+Math.random()*0.62)*w; y=(0.2+Math.random()*0.6)*h; }
+    else { x=Math.random()*w; y=Math.random()*h; }
+    const rad=Math.random()*2.6+0.5, d=Math.random()*0.5+0.2;
+    bx.beginPath();bx.fillStyle='rgba(0,0,0,'+d+')';bx.arc(x,y,rad,0,7);bx.fill();
+    rx.beginPath();rx.fillStyle='rgba(255,255,255,'+(d*0.9)+')';rx.arc(x,y,rad,0,7);rx.fill();
+  }
+  // fine polishing scratches
+  for(let i=0;i<52;i++){
+    const x=Math.random()*w,y=Math.random()*h,len=Math.random()*140+25,ang=(Math.random()-0.5)*0.55;
+    bx.strokeStyle='rgba(255,255,255,'+(Math.random()*0.14+0.05)+')';
+    bx.lineWidth=Math.random()*1.1+0.35;
+    bx.beginPath();bx.moveTo(x,y);bx.lineTo(x+Math.cos(ang)*len,y+Math.sin(ang)*len);bx.stroke();
+  }
+  const bt=new THREE.CanvasTexture(bc),rt=new THREE.CanvasTexture(rc);
+  // normalise the extrude-cap UVs (raw shape coords) into 0..1 of the canvas
+  const rX=1/2.85,oX=0.35/2.85,rY=1/1.24,oY=0.5;
+  [bt,rt].forEach(t=>{
+    t.wrapS=t.wrapT=THREE.RepeatWrapping;t.colorSpace=THREE.NoColorSpace;
+    t.repeat.set(rX,rY);t.offset.set(oX,oY);
+  });
+  return {bump:bt,rough:rt};
+}
+
+/* --------------------------- vertex colouring ---------------------------- */
+// rough dark forge-scale + rust bleeding down the waist/base, worn polished horn tip
+function forgeColors(geo){
+  const p=geo.attributes.position,n=p.count,col=new Float32Array(n*3);
+  const scaleA=new THREE.Color(0x171310),scaleB=new THREE.Color(0x2c251d);
+  const rustA=new THREE.Color(0x5c2f15),rustB=new THREE.Color(0x8a3f1c);
+  const steel=new THREE.Color(0x8d8f93);
+  const c=new THREE.Color(),rc=new THREE.Color();
+  for(let i=0;i<n;i++){
+    const x=p.getX(i),y=p.getY(i),z=p.getZ(i);
+    const g=fbm(x*2.3+7.0,z*2.3+y*0.8);
+    c.copy(scaleA).lerp(scaleB,clamp(g*1.35,0,1));
+    let vert=clamp((2.35-y)/1.9,0,1);vert=Math.pow(vert,1.25);       // more toward base
+    const s=fbm(x*2.6+3.1,z*2.6+9.2);                               // vertical streaks
+    const rust=vert*smooth(0.32,0.72,s)*0.85;
+    rc.copy(rustA).lerp(rustB,fbm(x*4+z*4,y*4));
+    c.lerp(rc,clamp(rust,0,1));
+    const hp=clamp((-x-1.3)/0.9,0,1)*clamp((y-1.65)/0.55,0,1);      // horn wear
+    c.lerp(steel,hp*0.6);
+    c.convertSRGBToLinear();
+    col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;
+  }
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+}
+
+// polished working face : bright worn centre, darker rough edges, faint rust
+function faceColors(geo){
+  const p=geo.attributes.position,n=p.count,col=new Float32Array(n*3);
+  const dark=new THREE.Color(0x74777c),bright=new THREE.Color(0xc4c7cb);
+  const edge=new THREE.Color(0x50535a),rust=new THREE.Color(0x7c3d1f);
+  const c=new THREE.Color();
+  for(let i=0;i<n;i++){
+    const x=p.getX(i),y=p.getY(i),z=p.getZ(i);
+    const top=smooth(2.86,2.98,y);
+    const dx=(x-0.55)/1.35,dz=z/0.5,r=Math.sqrt(dx*dx+dz*dz);
+    let pol=clamp(1-r,0,1)*(0.55+0.5*fbm(x*3+z*3,x*1.7));
+    c.copy(dark).lerp(bright,clamp(pol,0,1));
+    const er=clamp(r-0.85,0,1);
+    const hardy=clamp(1-Math.hypot((x-2.0)/0.45,z/0.4),0,1);
+    c.lerp(rust,clamp((er*0.35+hardy*0.45)*0.5,0,1));
+    c.lerp(edge,(1-top)*0.7);
+    c.convertSRGBToLinear();
+    col[i*3]=c.r;col[i*3+1]=c.g;col[i*3+2]=c.b;
+  }
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+}
+
+/* ------------------------------- renderer -------------------------------- */
+const renderer=new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+renderer.setSize(window.innerWidth,window.innerHeight);
+renderer.toneMapping=THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure=1.05;
+renderer.shadowMap.enabled=true;
+renderer.shadowMap.type=THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene=new THREE.Scene();
+scene.background=new THREE.Color(0x15161a);
+scene.fog=new THREE.Fog(0x15161a,14,34);
+
+const camera=new THREE.PerspectiveCamera(45,window.innerWidth/window.innerHeight,0.1,120);
+camera.position.set(5.6,3.3,6.6);
+
+// studio reflections (procedural, no assets)
+const pmrem=new THREE.PMREMGenerator(renderer);
+scene.environment=pmrem.fromScene(new RoomEnvironment(),0.04).texture;
+
+/* ------------------------------- lighting -------------------------------- */
+const hemi=new THREE.HemisphereLight(0xbcd0e4,0x241f1a,0.55);
+scene.add(hemi);
+
+const key=new THREE.DirectionalLight(0xfff1dd,2.5);
+key.position.set(4.5,7.5,5.0);
+key.castShadow=true;
+key.shadow.mapSize.set(2048,2048);
+key.shadow.radius=4;
+key.shadow.bias=-0.0004;
+key.shadow.camera.near=0.5;key.shadow.camera.far=32;
+key.shadow.camera.left=-5;key.shadow.camera.right=5;
+key.shadow.camera.top=6;key.shadow.camera.bottom=-2;
+scene.add(key);
+
+const fill=new THREE.DirectionalLight(0x8aa2c4,0.55);
+fill.position.set(-6,3.5,3);
+scene.add(fill);
+
+const rim=new THREE.DirectionalLight(0xffffff,1.4);
+rim.position.set(-4,5.5,-6);
+scene.add(rim);
+
+/* ----------------------------- build anvil ------------------------------- */
+const maxAniso=renderer.capabilities.getMaxAnisotropy();
+
+const bodyNoise=noiseTexture(256,5.0,1.4);
+const forgeMat=new THREE.MeshStandardMaterial({
+  color:0xffffff,vertexColors:true,metalness:0.45,roughness:0.85,
+  bumpMap:bodyNoise,bumpScale:0.03,envMapIntensity:0.55
+});
+
+const fd=faceDetail();
+fd.bump.anisotropy=fd.rough.anisotropy=maxAniso;
+const faceMat=new THREE.MeshStandardMaterial({
+  color:0xffffff,vertexColors:true,metalness:0.92,roughness:0.42,
+  bumpMap:fd.bump,bumpScale:0.022,roughnessMap:fd.rough,envMapIntensity:1.0
+});
+
+const anvil=new THREE.Group();
+
+// --- main body : iconic side silhouette (face slab -> shoulders -> waist -> base)
+const S=new THREE.Shape();
+S.moveTo(-0.70,2.70);
+S.lineTo( 2.45,2.70);
+S.lineTo( 2.45,2.12);
+S.lineTo( 1.62,2.02);
+S.quadraticCurveTo(1.16,1.86,1.08,1.24);
+S.lineTo( 1.03,0.80);
+S.quadraticCurveTo(1.16,0.42,1.70,0.24);
+S.lineTo( 1.78,0.10);
+S.lineTo( 1.78,0.00);
+S.lineTo(-1.08,0.00);
+S.lineTo(-1.08,0.10);
+S.lineTo(-0.62,0.24);
+S.quadraticCurveTo(-0.50,0.42,-0.48,0.80);
+S.lineTo(-0.50,1.24);
+S.quadraticCurveTo(-0.60,1.86,-0.72,2.40);
+S.lineTo(-0.70,2.70);
+const bodyGeo=new THREE.ExtrudeGeometry(S,{depth:1.15,bevelEnabled:true,
+  bevelThickness:0.05,bevelSize:0.05,bevelSegments:2,steps:1});
+bodyGeo.translate(0,0,-0.575);
+forgeColors(bodyGeo);
+const body=new THREE.Mesh(bodyGeo,forgeMat);
+anvil.add(body);
+
+// --- cutting step / table (horn side, lower than the face)
+const tableGeo=new THREE.BoxGeometry(0.42,0.16,1.16);
+tableGeo.translate(-0.50,2.78,0);
+forgeColors(tableGeo);
+anvil.add(new THREE.Mesh(tableGeo,forgeMat));
+
+// --- spreading base foot
+const baseGeo=new THREE.BoxGeometry(3.15,0.26,1.50);
+baseGeo.translate(0.35,0.13,0);
+forgeColors(baseGeo);
+anvil.add(new THREE.Mesh(baseGeo,forgeMat));
+
+// --- tapered horn
+const hornGeo=new THREE.CylinderGeometry(0.05,0.52,1.75,30,5,false);
+hornGeo.rotateZ(Math.PI/2);
+hornGeo.scale(1,0.94,1.06);
+hornGeo.rotateZ(0.05);
+hornGeo.translate(-1.28,2.18,0);
+forgeColors(hornGeo);
+anvil.add(new THREE.Mesh(hornGeo,forgeMat));
+
+// --- hardened face plate with hardy (square) + pritchel (round) holes
+const F=new THREE.Shape();
+F.moveTo(-0.35,-0.62);
+F.lineTo( 2.50,-0.62);
+F.lineTo( 2.50, 0.62);
+F.lineTo(-0.35, 0.62);
+F.lineTo(-0.35,-0.62);
+const hardy=new THREE.Path();
+hardy.moveTo(2.02-0.13,-0.13);
+hardy.lineTo(2.02+0.13,-0.13);
+hardy.lineTo(2.02+0.13, 0.13);
+hardy.lineTo(2.02-0.13, 0.13);
+hardy.lineTo(2.02-0.13,-0.13);
+F.holes.push(hardy);
+const pritchel=new THREE.Path();
+pritchel.absarc(1.55,0,0.085,0,Math.PI*2,false);
+F.holes.push(pritchel);
+const faceGeo=new THREE.ExtrudeGeometry(F,{depth:0.32,bevelEnabled:true,
+  bevelThickness:0.02,bevelSize:0.02,bevelSegments:1,steps:1});
+faceGeo.rotateX(-Math.PI/2);
+faceGeo.translate(0,2.70,0);
+faceColors(faceGeo);
+const face=new THREE.Mesh(faceGeo,faceMat);
+anvil.add(face);
+
+// shadows + centering
+anvil.traverse(o=>{if(o.isMesh){o.castShadow=true;o.receiveShadow=true;}});
+const box=new THREE.Box3().setFromObject(anvil);
+const ctr=box.getCenter(new THREE.Vector3());
+anvil.position.x-=ctr.x;
+anvil.position.z-=ctr.z;
+scene.add(anvil);
+const targetY=(box.min.y+box.max.y)/2;
+
+/* ---- ground that only reads as a shadow catcher (blends with backdrop) -- */
+const ground=new THREE.Mesh(
+  new THREE.CircleGeometry(32,72),
+  new THREE.MeshStandardMaterial({color:0x101012,roughness:0.95,metalness:0.0})
+);
+ground.rotation.x=-Math.PI/2;
+ground.receiveShadow=true;
+scene.add(ground);
+
+/* ------------------------------- controls -------------------------------- */
+const controls=new OrbitControls(camera,renderer.domElement);
+controls.enableDamping=true;
+controls.dampingFactor=0.05;
+controls.autoRotate=true;
+controls.autoRotateSpeed=0.9;
+controls.minDistance=4;
+controls.maxDistance=18;
+controls.maxPolarAngle=Math.PI*0.52;
+controls.minPolarAngle=0.1;
+controls.target.set(0,targetY,0);
+controls.update();
+
+/* -------------------------------- resize --------------------------------- */
+window.addEventListener('resize',()=>{
+  camera.aspect=window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio,2));
+  renderer.setSize(window.innerWidth,window.innerHeight);
+});
+
+/* --------------------------------- loop ---------------------------------- */
+renderer.setAnimationLoop(()=>{
+  controls.update();
+  renderer.render(scene,camera);
+});
+</script>
+</body>
+</html>

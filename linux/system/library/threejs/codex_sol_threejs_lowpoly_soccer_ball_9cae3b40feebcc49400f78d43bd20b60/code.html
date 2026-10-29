@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Low-Poly Soccer Ball</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      margin: 0;
+      overflow: hidden;
+      background: #d8dde0;
+    }
+    canvas {
+      display: block;
+      width: 100%;
+      height: 100%;
+      cursor: grab;
+    }
+    canvas:active { cursor: grabbing; }
+  </style>
+  <script type="importmap">
+    {
+      "imports": {
+        "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+        "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+      }
+    }
+  </script>
+</head>
+<body>
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xd8dde0);
+
+    const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.1, 100);
+    camera.position.set(5.2, 3.4, 7.2);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true });
+    renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+    renderer.setSize(innerWidth, innerHeight);
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.05;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    document.body.appendChild(renderer.domElement);
+
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.055;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.7;
+    controls.enablePan = false;
+    controls.minDistance = 5;
+    controls.maxDistance = 14;
+    controls.target.set(0, 0, 0);
+
+    const phi = (1 + Math.sqrt(5)) / 2;
+    const source = [
+      [-1,  phi,  0], [ 1,  phi,  0], [-1, -phi,  0], [ 1, -phi,  0],
+      [ 0, -1,  phi], [ 0,  1,  phi], [ 0, -1, -phi], [ 0,  1, -phi],
+      [ phi,  0, -1], [ phi,  0,  1], [-phi,  0, -1], [-phi,  0,  1]
+    ];
+    const vertices = source.map(v => new THREE.Vector3(...v).normalize());
+
+    function findIcosahedronFaces(points) {
+      const faces = [];
+      const epsilon = 1e-6;
+
+      for (let a = 0; a < points.length - 2; a++) {
+        for (let b = a + 1; b < points.length - 1; b++) {
+          for (let c = b + 1; c < points.length; c++) {
+            const ab = new THREE.Vector3().subVectors(points[b], points[a]);
+            const ac = new THREE.Vector3().subVectors(points[c], points[a]);
+            const normal = new THREE.Vector3().crossVectors(ab, ac);
+
+            if (normal.lengthSq() < epsilon) continue;
+            normal.normalize();
+
+            let positive = false;
+            let negative = false;
+
+            for (let i = 0; i < points.length; i++) {
+              if (i === a || i === b || i === c) continue;
+              const distance = normal.dot(
+                new THREE.Vector3().subVectors(points[i], points[a])
+              );
+              if (distance > epsilon) positive = true;
+              if (distance < -epsilon) negative = true;
+            }
+
+            if (positive && negative) continue;
+
+            const face = [a, b, c];
+            const center = new THREE.Vector3()
+              .add(points[a]).add(points[b]).add(points[c])
+              .multiplyScalar(1 / 3);
+
+            if (normal.dot(center) < 0) {
+              face[1] = c;
+              face[2] = b;
+            }
+            faces.push(face);
+          }
+        }
+      }
+      return faces;
+    }
+
+    const triangularFaces = findIcosahedronFaces(vertices);
+    const neighbors = Array.from({ length: vertices.length }, () => new Set());
+
+    for (const [a, b, c] of triangularFaces) {
+      neighbors[a].add(b); neighbors[a].add(c);
+      neighbors[b].add(a); neighbors[b].add(c);
+      neighbors[c].add(a); neighbors[c].add(b);
+    }
+
+    function nearVertex(a, b) {
+      return vertices[a].clone().multiplyScalar(2 / 3)
+        .addScaledVector(vertices[b], 1 / 3);
+    }
+
+    function orientOutward(points) {
+      const normal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(points[1], points[0]),
+        new THREE.Vector3().subVectors(points[2], points[0])
+      );
+      const center = points.reduce(
+        (sum, point) => sum.add(point),
+        new THREE.Vector3()
+      ).multiplyScalar(1 / points.length);
+
+      if (normal.dot(center) < 0) points.reverse();
+      return points;
+    }
+
+    const polygons = [];
+
+    for (const [a, b, c] of triangularFaces) {
+      polygons.push({
+        type: 'hexagon',
+        points: orientOutward([
+          nearVertex(a, b),
+          nearVertex(b, a),
+          nearVertex(b, c),
+          nearVertex(c, b),
+          nearVertex(c, a),
+          nearVertex(a, c)
+        ])
+      });
+    }
+
+    for (let i = 0; i < vertices.length; i++) {
+      const axis = vertices[i].clone().normalize();
+      const reference = Math.abs(axis.y) < 0.9
+        ? new THREE.Vector3(0, 1, 0)
+        : new THREE.Vector3(1, 0, 0);
+      const tangent = new THREE.Vector3().crossVectors(reference, axis).normalize();
+      const bitangent = new THREE.Vector3().crossVectors(axis, tangent).normalize();
+
+      const orderedNeighbors = [...neighbors[i]].sort((left, right) => {
+        const leftDirection = vertices[left].clone().sub(vertices[i]);
+        const rightDirection = vertices[right].clone().sub(vertices[i]);
+        const leftAngle = Math.atan2(
+          leftDirection.dot(bitangent),
+          leftDirection.dot(tangent)
+        );
+        const rightAngle = Math.atan2(
+          rightDirection.dot(bitangent),
+          rightDirection.dot(tangent)
+        );
+        return leftAngle - rightAngle;
+      });
+
+      polygons.push({
+        type: 'pentagon',
+        points: orientOutward(orderedNeighbors.map(n => nearVertex(i, n)))
+      });
+    }
+
+    const positions = [];
+    const normals = [];
+    const groups = [];
+    const ballRadius = 1.68;
+    let triangleOffset = 0;
+
+    polygons.forEach((polygon, polygonIndex) => {
+      const center = polygon.points.reduce(
+        (sum, point) => sum.add(point),
+        new THREE.Vector3()
+      ).multiplyScalar(1 / polygon.points.length);
+
+      const faceNormal = new THREE.Vector3().crossVectors(
+        new THREE.Vector3().subVectors(polygon.points[1], polygon.points[0]),
+        new THREE.Vector3().subVectors(polygon.points[2], polygon.points[0])
+      ).normalize();
+
+      for (let i = 0; i < polygon.points.length; i++) {
+        const next = (i + 1) % polygon.points.length;
+        const triangle = [center, polygon.points[i], polygon.points[next]];
+
+        for (const point of triangle) {
+          positions.push(
+            point.x * ballRadius,
+            point.y * ballRadius,
+            point.z * ballRadius
+          );
+          normals.push(faceNormal.x, faceNormal.y, faceNormal.z);
+        }
+      }
+
+      const materialIndex = polygon.type === 'pentagon'
+        ? 0
+        : 1 + (polygonIndex % 3);
+      const vertexCount = polygon.points.length * 3;
+      groups.push({
+        start: triangleOffset,
+        count: vertexCount,
+        materialIndex
+      });
+      triangleOffset += vertexCount;
+    });
+
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute(
+      'position',
+      new THREE.Float32BufferAttribute(positions, 3)
+    );
+    geometry.setAttribute(
+      'normal',
+      new THREE.Float32BufferAttribute(normals, 3)
+    );
+    groups.forEach(group => {
+      geometry.addGroup(group.start, group.count, group.materialIndex);
+    });
+    geometry.computeBoundingSphere();
+
+    const materials = [
+      new THREE.MeshStandardMaterial({
+        color: 0x090a0a,
+        roughness: 1,
+        metalness: 0,
+        flatShading: true
+      }),
+      new THREE.MeshStandardMaterial({
+        color: 0xf2f0e9,
+        roughness: 1,
+        metalness: 0,
+        flatShading: true
+      }),
+      new THREE.MeshStandardMaterial({
+        color: 0xe8e7e1,
+        roughness: 1,
+        metalness: 0,
+        flatShading: true
+      }),
+      new THREE.MeshStandardMaterial({
+        color: 0xf8f6ee,
+        roughness: 1,
+        metalness: 0,
+        flatShading: true
+      })
+    ];
+
+    const ball = new THREE.Mesh(geometry, materials);
+    ball.rotation.set(-0.18, 0.32, 0.08);
+    ball.castShadow = true;
+    ball.receiveShadow = true;
+    scene.add(ball);
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(200, 200),
+      new THREE.ShadowMaterial({
+        color: 0x263039,
+        opacity: 0.2,
+        transparent: true
+      })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -1.72;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    const hemisphere = new THREE.HemisphereLight(0xf8fbff, 0x66706c, 2.0);
+    scene.add(hemisphere);
+
+    const keyLight = new THREE.DirectionalLight(0xfff4df, 4.2);
+    keyLight.position.set(-4.5, 7, 5);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.left = -4;
+    keyLight.shadow.camera.right = 4;
+    keyLight.shadow.camera.top = 4;
+    keyLight.shadow.camera.bottom = -4;
+    keyLight.shadow.camera.near = 1;
+    keyLight.shadow.camera.far = 18;
+    keyLight.shadow.bias = -0.0003;
+    keyLight.shadow.normalBias = 0.025;
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xb9d7ff, 1.5);
+    fillLight.position.set(5, 2, -4);
+    scene.add(fillLight);
+
+    const rimLight = new THREE.DirectionalLight(0xffffff, 1.15);
+    rimLight.position.set(1, 5, -6);
+    scene.add(rimLight);
+
+    function resize() {
+      camera.aspect = innerWidth / innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+      renderer.setSize(innerWidth, innerHeight);
+    }
+
+    addEventListener('resize', resize);
+
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+
+    animate();
+  </script>
+</body>
+</html>

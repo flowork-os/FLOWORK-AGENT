@@ -1,0 +1,1060 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Stained Glass Violin</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0b0c10; overflow: hidden; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+    color: rgba(255, 226, 180, 0.45); letter-spacing: 0.12em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Stained Glass Violin &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================================
+   RENDERER / SCENE / CAMERA
+   ========================================================================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x101116);
+scene.fog = new THREE.FogExp2(0x101116, 0.018);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(0.62, 0.46, 1.30);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.minDistance = 0.55;
+controls.maxDistance = 4.0;
+controls.target.set(0, 0.36, 0);
+
+/* ============================================================================
+   LIGHTING  — key + fill + rim, plus a warm backlight to "backlight" the glass
+   ========================================================================== */
+const hemi = new THREE.HemisphereLight(0xbfd4ff, 0x241a12, 0.42);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0d2, 2.5);
+key.position.set(1.9, 2.9, 2.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 12;
+key.shadow.camera.left = -1.2;
+key.shadow.camera.right = 1.2;
+key.shadow.camera.top = 1.6;
+key.shadow.camera.bottom = -0.6;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.012;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x8fb4ff, 0.65);
+fill.position.set(-2.4, 1.1, 1.4);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffc98a, 1.5);
+rim.position.set(-1.2, 1.6, -2.6);
+scene.add(rim);
+
+// Warm "backlit cathedral window" glow behind the instrument.
+const backGlow = new THREE.PointLight(0xffb45c, 6.0, 6.0, 2.0);
+backGlow.position.set(0, 0.75, -0.65);
+scene.add(backGlow);
+
+const underGlow = new THREE.PointLight(0xff7a3c, 2.2, 3.0, 2.0);
+underGlow.position.set(0, 0.06, -0.25);
+scene.add(underGlow);
+
+/* Ground plane: shadow-only */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(24, 24),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================================
+   THE ONE OBJECT
+   ========================================================================== */
+const violin = new THREE.Group();
+scene.add(violin);
+
+/* ---------------------------------------------------------------------------
+   Palette: amber, ruby, cobalt cathedral glass + dark lead came
+   ------------------------------------------------------------------------ */
+const GLASS = {
+  amberL:  0xffb43a,
+  amber:   0xf08a12,
+  amberD:  0xc05e08,
+  ruby:    0xd0122c,
+  rubyD:   0x8c0a24,
+  rubyL:   0xf2456a,
+  cobalt:  0x1436b4,
+  cobaltD: 0x0a1c78,
+  cobaltL: 0x3a76ee,
+  teal:    0x0f7d94,
+  gold:    0xffd77a
+};
+const LEAD_COLOR = 0x14131a;
+
+const leadMat = new THREE.MeshStandardMaterial({
+  color: LEAD_COLOR, roughness: 0.42, metalness: 0.85
+});
+const leadMatDark = new THREE.MeshStandardMaterial({
+  color: 0x0b0a0f, roughness: 0.5, metalness: 0.8
+});
+
+const glassMatCache = new Map();
+function glassMat(hex, opts = {}) {
+  const emissiveScale = opts.emissive ?? 0.55;
+  const key = `${hex}|${emissiveScale}|${opts.rough ?? 0.15}|${opts.opacity ?? 0.82}`;
+  if (glassMatCache.has(key)) return glassMatCache.get(key);
+  const c = new THREE.Color(hex);
+  const m = new THREE.MeshPhysicalMaterial({
+    color: c,
+    roughness: opts.rough ?? 0.15,
+    metalness: 0.0,
+    transmission: 0.72,
+    thickness: 0.05,
+    ior: 1.52,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.08,
+    transparent: true,
+    opacity: opts.opacity ?? 0.82,
+    side: THREE.DoubleSide,
+    emissive: c.clone().multiplyScalar(1.0),
+    emissiveIntensity: emissiveScale,
+    depthWrite: true
+  });
+  glassMatCache.set(key, m);
+  return m;
+}
+
+/* ---------------------------------------------------------------------------
+   Violin outline (classic hourglass): upper bout, C-bout waist, lower bout.
+   Units = metres. Body length ~0.355 m (full-size 4/4 violin).
+   ------------------------------------------------------------------------ */
+const BODY_LEN = 0.355;      // y from 0 .. BODY_LEN in local body space
+const LOWER_W  = 0.104;      // half-width of lower bout
+const UPPER_W  = 0.084;      // half-width of upper bout
+const WAIST_W  = 0.055;      // half-width at the C-bout waist
+
+// Half-outline as a function of t in [0,1] along body length (y = t*BODY_LEN)
+function halfWidth(t) {
+  // lower bout lobe centred ~0.22, upper bout lobe centred ~0.80, waist ~0.52
+  const lower = LOWER_W * Math.exp(-Math.pow((t - 0.235) / 0.205, 2));
+  const upper = UPPER_W * Math.exp(-Math.pow((t - 0.805) / 0.175, 2));
+  const waist = WAIST_W * Math.exp(-Math.pow((t - 0.525) / 0.30, 2));
+  // end caps taper
+  const cap = Math.pow(Math.sin(Math.PI * Math.min(1, Math.max(0, t))), 0.32);
+  const w = Math.max(lower, upper, waist * 1.0);
+  const blended = Math.max(w, 0.5 * (lower + upper) + waist * 0.35);
+  return blended * cap;
+}
+
+const OUTLINE_STEPS = 220;
+const outlinePts = [];   // right half, bottom -> top
+for (let i = 0; i <= OUTLINE_STEPS; i++) {
+  const t = i / OUTLINE_STEPS;
+  outlinePts.push(new THREE.Vector2(halfWidth(t), t * BODY_LEN));
+}
+
+function outlineShape() {
+  const s = new THREE.Shape();
+  s.moveTo(outlinePts[0].x, outlinePts[0].y);
+  for (let i = 1; i < outlinePts.length; i++) s.lineTo(outlinePts[i].x, outlinePts[i].y);
+  for (let i = outlinePts.length - 1; i >= 0; i--) s.lineTo(-outlinePts[i].x, outlinePts[i].y);
+  s.closePath();
+  return s;
+}
+
+// Width at arbitrary y (metres) via interpolation
+function widthAtY(y) {
+  const t = THREE.MathUtils.clamp(y / BODY_LEN, 0, 1);
+  const f = t * OUTLINE_STEPS;
+  const i = Math.min(OUTLINE_STEPS - 1, Math.floor(f));
+  const a = outlinePts[i].x, b = outlinePts[i + 1].x;
+  return THREE.MathUtils.lerp(a, b, f - i);
+}
+
+// Arched plate depth (belly bulge) at a point
+function archAt(x, y) {
+  const w = Math.max(1e-4, widthAtY(y));
+  const nx = THREE.MathUtils.clamp(x / w, -1, 1);
+  const t  = THREE.MathUtils.clamp(y / BODY_LEN, 0, 1);
+  const lateral = Math.cos(nx * Math.PI * 0.5);
+  const longit  = Math.sin(Math.PI * t);
+  return Math.pow(lateral, 0.85) * Math.pow(longit, 0.42);
+}
+
+/* ---------------------------------------------------------------------------
+   Mosaic tessellation of the body plate into leaded shards.
+   Radial "cathedral window" cells: rings x sectors, clipped to the outline.
+   ------------------------------------------------------------------------ */
+const bodyGroup = new THREE.Group();
+violin.add(bodyGroup);
+
+// f-hole shape helper (used to punch dark leaded openings)
+function fHoleOutline(sign) {
+  // Returns array of Vector2 forming a stylized f-hole (right side if sign=+1)
+  const pts = [];
+  const cx = sign * 0.040;
+  const cy = 0.168;
+  const L  = 0.075;                 // vertical extent
+  const steps = 60;
+  const half = 0.0055;
+  const front = [], back = [];
+  for (let i = 0; i <= steps; i++) {
+    const u = i / steps;             // 0 bottom -> 1 top
+    const y = cy - L * 0.5 + u * L;
+    const bend = Math.sin((u - 0.5) * Math.PI * 1.15) * 0.014 * sign;
+    const taper = 0.55 + 0.75 * Math.sin(Math.PI * Math.pow(u, 0.9));
+    const x = cx + bend;
+    front.push(new THREE.Vector2(x + half * taper, y));
+    back.push(new THREE.Vector2(x - half * taper, y));
+  }
+  for (const p of front) pts.push(p);
+  for (let i = back.length - 1; i >= 0; i--) pts.push(back[i]);
+  return { pts, cx, cy, L, sign };
+}
+
+const FHOLES = [fHoleOutline(1), fHoleOutline(-1)];
+
+// Rough "inside an f-hole" test so mosaic shards avoid the openings
+function insideFHole(x, y) {
+  for (const f of FHOLES) {
+    const u = THREE.MathUtils.clamp((y - (f.cy - f.L * 0.5)) / f.L, 0, 1);
+    if (y < f.cy - f.L * 0.5 - 0.006 || y > f.cy + f.L * 0.5 + 0.006) continue;
+    const bend = Math.sin((u - 0.5) * Math.PI * 1.15) * 0.014 * f.sign;
+    const taper = 0.55 + 0.75 * Math.sin(Math.PI * Math.pow(u, 0.9));
+    const cx = f.cx + bend;
+    if (Math.abs(x - cx) < 0.0055 * taper + 0.0045) return true;
+  }
+  return false;
+}
+
+/* Polygon clipping (Sutherland–Hodgman) against a convex-ish half-plane list
+   — we instead clip radial cells against the violin outline by sampling. */
+
+function pointInOutline(x, y) {
+  if (y < 0.0015 || y > BODY_LEN - 0.0015) return false;
+  return Math.abs(x) <= widthAtY(y) - 0.0012;
+}
+
+/* Build one shard: an extruded polygon (the glass) + a lead border ring. */
+const shardGlassGeos = [];
+const shardsByColor = new Map();
+
+function pushShard(poly, colorHex, thickness, zBase, curveScale) {
+  if (poly.length < 3) return;
+  const shape = new THREE.Shape();
+  shape.moveTo(poly[0].x, poly[0].y);
+  for (let i = 1; i < poly.length; i++) shape.lineTo(poly[i].x, poly[i].y);
+  shape.closePath();
+
+  const geo = new THREE.ExtrudeGeometry(shape, {
+    depth: thickness,
+    bevelEnabled: true,
+    bevelThickness: 0.0022,
+    bevelSize: 0.0016,
+    bevelSegments: 1,
+    curveSegments: 1
+  });
+  // Curve the flat shard onto the arched belly
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    pos.setZ(i, z + zBase + archAt(x, y) * curveScale);
+  }
+  geo.computeVertexNormals();
+  geo.translate(0, 0, 0);
+
+  if (!shardsByColor.has(colorHex)) shardsByColor.set(colorHex, []);
+  shardsByColor.get(colorHex).push(geo);
+}
+
+/* Lead came: a thin tube tracing a polygon boundary */
+const leadGeos = [];
+function pushLeadPath(points3, radius, closed) {
+  if (points3.length < 2) return;
+  const curve = new THREE.CatmullRomCurve3(points3, closed, 'catmullrom', 0.0);
+  const tubular = Math.max(6, Math.min(220, Math.floor(points3.length * 2)));
+  const g = new THREE.TubeGeometry(curve, tubular, radius, 5, closed);
+  leadGeos.push(g);
+}
+
+function leadFromPoly(poly, zBase, curveScale, radius) {
+  const pts = poly.map(p => new THREE.Vector3(
+    p.x, p.y, zBase + archAt(p.x, p.y) * curveScale + 0.0008
+  ));
+  pushLeadPath(pts, radius, true);
+}
+
+/* --- Radial mosaic generation over the body ---------------------------- */
+function buildMosaic(zBase, curveScale, thickness, palette, seedOffset) {
+  const CENTER = new THREE.Vector2(0, BODY_LEN * 0.50);
+  const RINGS = 7;
+  const SECTORS = 26;
+  const RMAX = 0.24;
+
+  // deterministic pseudo-random
+  let s = 1337 + seedOffset;
+  const rnd = () => (s = (s * 1664525 + 1013904223) % 4294967296) / 4294967296;
+
+  for (let r = 0; r < RINGS; r++) {
+    const r0 = RMAX * Math.pow(r / RINGS, 1.12);
+    const r1 = RMAX * Math.pow((r + 1) / RINGS, 1.12);
+    const sectors = SECTORS;
+    for (let a = 0; a < sectors; a++) {
+      const a0 = (a / sectors) * Math.PI * 2 + (r % 2) * (Math.PI / sectors) * 0.5;
+      const a1 = ((a + 1) / sectors) * Math.PI * 2 + (r % 2) * (Math.PI / sectors) * 0.5;
+
+      // Build the quad, then clamp each vertex to the outline
+      const raw = [
+        polar(CENTER, r0, a0), polar(CENTER, r1, a0),
+        polar(CENTER, r1, a1), polar(CENTER, r0, a1)
+      ];
+
+      // Subdivide the two arc edges so the cell hugs curved boundaries
+      const poly = [];
+      const arcSteps = 3;
+      for (let i = 0; i <= arcSteps; i++) {
+        const aa = THREE.MathUtils.lerp(a0, a1, i / arcSteps);
+        poly.push(polar(CENTER, r0, aa));
+      }
+      for (let i = 0; i <= arcSteps; i++) {
+        const aa = THREE.MathUtils.lerp(a1, a0, i / arcSteps);
+        poly.push(polar(CENTER, r1, aa));
+      }
+      // reorder: inner arc (a0->a1) then outer arc (a1->a0) — already correct
+      const clipped = clampPolyToOutline(poly);
+      if (!clipped) continue;
+
+      // skip cells that overlap the f-holes
+      let centroid = new THREE.Vector2();
+      clipped.forEach(p => centroid.add(p));
+      centroid.multiplyScalar(1 / clipped.length);
+      if (insideFHole(centroid.x, centroid.y)) continue;
+
+      // inset for the lead line gap
+      const inset = insetPoly(clipped, centroid, 0.0022);
+
+      // colour choice — amber core, ruby mid, cobalt rim, with variation
+      const rr = r / (RINGS - 1);
+      let col;
+      const jitter = rnd();
+      if (rr < 0.28)      col = jitter < 0.72 ? palette.a1 : palette.a2;
+      else if (rr < 0.55) col = jitter < 0.55 ? palette.a2 : (jitter < 0.85 ? palette.r1 : palette.a1);
+      else if (rr < 0.80) col = jitter < 0.60 ? palette.r1 : (jitter < 0.88 ? palette.r2 : palette.c1);
+      else                col = jitter < 0.66 ? palette.c1 : (jitter < 0.9 ? palette.c2 : palette.r2);
+
+      pushShard(inset, col, thickness, zBase, curveScale);
+      leadFromPoly(clipped, zBase + thickness, curveScale, 0.0016);
+    }
+  }
+}
+
+function polar(c, r, a) {
+  return new THREE.Vector2(c.x + Math.cos(a) * r * 0.86, c.y + Math.sin(a) * r);
+}
+
+function clampPolyToOutline(poly) {
+  const out = [];
+  let anyInside = false;
+  for (const p of poly) {
+    const yc = THREE.MathUtils.clamp(p.y, 0.004, BODY_LEN - 0.004);
+    const w  = widthAtY(yc) - 0.0025;
+    const xc = THREE.MathUtils.clamp(p.x, -w, w);
+    if (Math.abs(p.x) <= w && p.y > 0.004 && p.y < BODY_LEN - 0.004) anyInside = true;
+    out.push(new THREE.Vector2(xc, yc));
+  }
+  if (!anyInside) return null;
+  // reject degenerate (near-zero area) cells
+  let area = 0;
+  for (let i = 0; i < out.length; i++) {
+    const p = out[i], q = out[(i + 1) % out.length];
+    area += p.x * q.y - q.x * p.y;
+  }
+  if (Math.abs(area) * 0.5 < 1.2e-6) return null;
+  return out;
+}
+
+function insetPoly(poly, centroid, amount) {
+  return poly.map(p => {
+    const d = new THREE.Vector2().subVectors(p, centroid);
+    const len = d.length();
+    if (len < 1e-6) return p.clone();
+    const k = Math.max(0.05, (len - amount) / len);
+    return new THREE.Vector2(centroid.x + d.x * k, centroid.y + d.y * k);
+  });
+}
+
+const FRONT_PALETTE = {
+  a1: GLASS.amberL, a2: GLASS.amber,
+  r1: GLASS.ruby,   r2: GLASS.rubyL,
+  c1: GLASS.cobalt, c2: GLASS.cobaltL
+};
+const BACK_PALETTE = {
+  a1: GLASS.amber,  a2: GLASS.amberD,
+  r1: GLASS.rubyD,  r2: GLASS.ruby,
+  c1: GLASS.cobaltD, c2: GLASS.cobalt
+};
+
+const PLATE_T = 0.006;
+const ARCH_F  = 0.016;   // belly arch height
+const ARCH_B  = 0.013;
+
+buildMosaic(0.020, ARCH_F, PLATE_T, FRONT_PALETTE, 0);        // top plate (belly)
+buildMosaic(-0.020 - PLATE_T, -ARCH_B, PLATE_T, BACK_PALETTE, 977); // back plate
+
+/* Merge shard geometry per colour into single meshes */
+function mergeGeos(geos) {
+  // manual merge of non-indexed position/normal/uv
+  const nonIndexed = geos.map(g => g.index ? g.toNonIndexed() : g);
+  let total = 0;
+  nonIndexed.forEach(g => total += g.attributes.position.count);
+  const pos = new Float32Array(total * 3);
+  const nor = new Float32Array(total * 3);
+  const uv  = new Float32Array(total * 2);
+  let o = 0;
+  for (const g of nonIndexed) {
+    const p = g.attributes.position, n = g.attributes.normal, u = g.attributes.uv;
+    for (let i = 0; i < p.count; i++) {
+      pos[(o + i) * 3 + 0] = p.getX(i);
+      pos[(o + i) * 3 + 1] = p.getY(i);
+      pos[(o + i) * 3 + 2] = p.getZ(i);
+      if (n) { nor[(o+i)*3+0] = n.getX(i); nor[(o+i)*3+1] = n.getY(i); nor[(o+i)*3+2] = n.getZ(i); }
+      if (u) { uv[(o+i)*2+0] = u.getX(i); uv[(o+i)*2+1] = u.getY(i); }
+    }
+    o += p.count;
+    g.dispose();
+  }
+  const merged = new THREE.BufferGeometry();
+  merged.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  merged.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  merged.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+  merged.computeBoundingSphere();
+  return merged;
+}
+
+const plateGroup = new THREE.Group();
+for (const [hex, geos] of shardsByColor) {
+  const merged = mergeGeos(geos);
+  const m = new THREE.Mesh(merged, glassMat(hex, { emissive: 0.5 }));
+  m.castShadow = true;
+  m.receiveShadow = true;
+  plateGroup.add(m);
+}
+bodyGroup.add(plateGroup);
+
+/* ---------------------------------------------------------------------------
+   Ribs (sides) — a lathe-less extruded band following the outline
+   ------------------------------------------------------------------------ */
+{
+  const shape = outlineShape();
+  const ribGeo = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.040,
+    bevelEnabled: true,
+    bevelThickness: 0.004,
+    bevelSize: 0.0035,
+    bevelSegments: 2,
+    curveSegments: 2
+  });
+  ribGeo.translate(0, 0, -0.020 - PLATE_T);
+  const ribMat = new THREE.MeshPhysicalMaterial({
+    color: 0x2a0f16,
+    roughness: 0.32,
+    metalness: 0.1,
+    clearcoat: 0.9,
+    clearcoatRoughness: 0.15,
+    emissive: new THREE.Color(0x5a1b12),
+    emissiveIntensity: 0.35,
+    transparent: true,
+    opacity: 0.94,
+    side: THREE.DoubleSide
+  });
+  const ribs = new THREE.Mesh(ribGeo, ribMat);
+  ribs.castShadow = true;
+  ribs.receiveShadow = true;
+  bodyGroup.add(ribs);
+}
+
+/* Outer lead came around the whole silhouette, front and back */
+{
+  const mkPurfling = (z, arch) => {
+    const pts = [];
+    for (let i = 0; i <= OUTLINE_STEPS; i++) {
+      const p = outlinePts[i];
+      pts.push(new THREE.Vector3(p.x, p.y, z + archAt(p.x, p.y) * arch));
+    }
+    for (let i = OUTLINE_STEPS; i >= 0; i--) {
+      const p = outlinePts[i];
+      if (i === OUTLINE_STEPS || i === 0) continue;
+      pts.push(new THREE.Vector3(-p.x, p.y, z + archAt(-p.x, p.y) * arch));
+    }
+    pushLeadPath(pts, 0.0032, true);
+  };
+  mkPurfling(0.020 + PLATE_T, ARCH_F);
+  mkPurfling(-0.020 - PLATE_T * 0.0, -ARCH_B);
+
+  // inner purfling line (classic double-line inlay), front only
+  const inner = [];
+  for (let i = 0; i <= OUTLINE_STEPS; i++) {
+    const t = i / OUTLINE_STEPS;
+    const y = THREE.MathUtils.clamp(t * BODY_LEN, 0.006, BODY_LEN - 0.006);
+    const w = Math.max(0.002, widthAtY(y) - 0.006);
+    inner.push(new THREE.Vector3(w, y, 0.020 + PLATE_T + archAt(w, y) * ARCH_F));
+  }
+  for (let i = OUTLINE_STEPS - 1; i >= 1; i--) {
+    const t = i / OUTLINE_STEPS;
+    const y = THREE.MathUtils.clamp(t * BODY_LEN, 0.006, BODY_LEN - 0.006);
+    const w = Math.max(0.002, widthAtY(y) - 0.006);
+    inner.push(new THREE.Vector3(-w, y, 0.020 + PLATE_T + archAt(-w, y) * ARCH_F));
+  }
+  pushLeadPath(inner, 0.0013, true);
+}
+
+/* ---------------------------------------------------------------------------
+   f-holes: dark leaded openings with a faint glowing core
+   ------------------------------------------------------------------------ */
+for (const f of FHOLES) {
+  const shape = new THREE.Shape();
+  shape.moveTo(f.pts[0].x, f.pts[0].y);
+  for (let i = 1; i < f.pts.length; i++) shape.lineTo(f.pts[i].x, f.pts[i].y);
+  shape.closePath();
+
+  const g = new THREE.ExtrudeGeometry(shape, {
+    depth: 0.004, bevelEnabled: true,
+    bevelThickness: 0.0012, bevelSize: 0.0010, bevelSegments: 1, curveSegments: 1
+  });
+  const pos = g.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setZ(i, pos.getZ(i) + 0.019 + archAt(pos.getX(i), pos.getY(i)) * ARCH_F);
+  }
+  g.computeVertexNormals();
+  const fh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x120c08, roughness: 0.45, metalness: 0.6,
+    emissive: new THREE.Color(0xff7a1e), emissiveIntensity: 0.30
+  }));
+  fh.castShadow = false;
+  bodyGroup.add(fh);
+
+  // lead outline tracing the f-hole
+  const trace = f.pts.map(p => new THREE.Vector3(
+    p.x, p.y, 0.020 + PLATE_T * 0.9 + archAt(p.x, p.y) * ARCH_F
+  ));
+  pushLeadPath(trace, 0.0014, true);
+
+  // the two eyes (round terminals) of the f
+  for (const [uy, rad] of [[0.06, 0.0072], [0.94, 0.0060]]) {
+    const y = f.cy - f.L * 0.5 + uy * f.L;
+    const bend = Math.sin((uy - 0.5) * Math.PI * 1.15) * 0.014 * f.sign;
+    const x = f.cx + bend + f.sign * (uy < 0.5 ? 0.0015 : -0.0015);
+    const eye = new THREE.Mesh(
+      new THREE.CylinderGeometry(rad, rad, 0.004, 16),
+      new THREE.MeshStandardMaterial({
+        color: 0x120c08, roughness: 0.45, metalness: 0.6,
+        emissive: new THREE.Color(0xff8c2a), emissiveIntensity: 0.35
+      })
+    );
+    eye.rotation.x = Math.PI / 2;
+    eye.position.set(x, y, 0.021 + archAt(x, y) * ARCH_F);
+    bodyGroup.add(eye);
+
+    const ringPts = [];
+    for (let i = 0; i <= 24; i++) {
+      const a = (i / 24) * Math.PI * 2;
+      ringPts.push(new THREE.Vector3(
+        x + Math.cos(a) * rad, y + Math.sin(a) * rad,
+        0.0235 + archAt(x, y) * ARCH_F
+      ));
+    }
+    pushLeadPath(ringPts, 0.0013, true);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+   Bridge, tailpiece, chinrest, fingerboard, neck, pegbox, scroll
+   ------------------------------------------------------------------------ */
+
+// --- Bridge (amber glass, arched, with cut-outs suggested by lead) ---
+{
+  const bg = new THREE.Group();
+  const bridgeShape = new THREE.Shape();
+  const bw = 0.021, bh = 0.033;
+  bridgeShape.moveTo(-bw, 0);
+  bridgeShape.lineTo(-bw * 0.72, bh * 0.30);
+  bridgeShape.lineTo(-bw * 0.86, bh * 0.52);
+  bridgeShape.lineTo(-bw * 0.55, bh * 0.60);
+  bridgeShape.lineTo(-bw * 0.62, bh * 0.86);
+  bridgeShape.lineTo(-bw * 0.40, bh);
+  bridgeShape.lineTo(bw * 0.40, bh);
+  bridgeShape.lineTo(bw * 0.62, bh * 0.86);
+  bridgeShape.lineTo(bw * 0.55, bh * 0.60);
+  bridgeShape.lineTo(bw * 0.86, bh * 0.52);
+  bridgeShape.lineTo(bw * 0.72, bh * 0.30);
+  bridgeShape.lineTo(bw, 0);
+  bridgeShape.closePath();
+
+  const bgeo = new THREE.ExtrudeGeometry(bridgeShape, {
+    depth: 0.003, bevelEnabled: true, bevelThickness: 0.0008,
+    bevelSize: 0.0008, bevelSegments: 1, curveSegments: 1
+  });
+  const bridge = new THREE.Mesh(bgeo, glassMat(GLASS.amberL, { emissive: 0.75, opacity: 0.88 }));
+  bridge.castShadow = true;
+  bg.add(bridge);
+
+  const outline = [];
+  const bp = bridgeShape.getPoints(1);
+  for (const p of bp) outline.push(new THREE.Vector3(p.x, p.y, 0.0035));
+  const bcurve = new THREE.CatmullRomCurve3(outline, true, 'catmullrom', 0.0);
+  bg.add(new THREE.Mesh(new THREE.TubeGeometry(bcurve, 80, 0.0011, 5, true), leadMat));
+
+  bg.position.set(0, 0.168, 0.020 + ARCH_F * archAt(0, 0.168) - 0.0015);
+  bodyGroup.add(bg);
+}
+
+// --- Tailpiece (cobalt shard) ---
+{
+  const tp = new THREE.Shape();
+  tp.moveTo(-0.014, 0);
+  tp.lineTo(0.014, 0);
+  tp.lineTo(0.010, -0.062);
+  tp.lineTo(-0.010, -0.062);
+  tp.closePath();
+  const g = new THREE.ExtrudeGeometry(tp, {
+    depth: 0.006, bevelEnabled: true, bevelThickness: 0.0012,
+    bevelSize: 0.0012, bevelSegments: 1, curveSegments: 1
+  });
+  const m = new THREE.Mesh(g, glassMat(GLASS.cobaltD, { emissive: 0.65, opacity: 0.9 }));
+  m.castShadow = true;
+  m.position.set(0, 0.108, 0.0225 + ARCH_F * 0.55);
+  m.rotation.x = -0.10;
+  bodyGroup.add(m);
+
+  const ring = [];
+  const tpp = tp.getPoints(1);
+  for (const p of tpp) ring.push(new THREE.Vector3(p.x, p.y, 0.0068));
+  const c = new THREE.CatmullRomCurve3(ring, true, 'catmullrom', 0.0);
+  const lead = new THREE.Mesh(new THREE.TubeGeometry(c, 40, 0.0012, 5, true), leadMat);
+  lead.position.copy(m.position);
+  lead.rotation.copy(m.rotation);
+  bodyGroup.add(lead);
+
+  // end button
+  const btn = new THREE.Mesh(
+    new THREE.SphereGeometry(0.0055, 16, 12),
+    glassMat(GLASS.gold, { emissive: 0.9, opacity: 0.95 })
+  );
+  btn.position.set(0, 0.006, 0.020);
+  bodyGroup.add(btn);
+}
+
+// --- Chinrest (ruby glass, left of tailpiece) ---
+{
+  const g = new THREE.SphereGeometry(0.030, 24, 16);
+  g.scale(1.0, 0.62, 0.34);
+  const chin = new THREE.Mesh(g, glassMat(GLASS.rubyD, { emissive: 0.5, opacity: 0.86 }));
+  chin.position.set(-0.030, 0.038, 0.028);
+  chin.rotation.z = 0.22;
+  chin.castShadow = true;
+  bodyGroup.add(chin);
+}
+
+/* --- Neck + fingerboard ------------------------------------------------- */
+const NECK_BASE_Y = BODY_LEN - 0.004;
+const neckGroup = new THREE.Group();
+violin.add(neckGroup);
+
+const NECK_LEN = 0.130;
+const FB_LEN   = 0.270;
+
+// Neck body (dark lead-toned, tapering)
+{
+  const pts = [];
+  const segs = 18;
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const y = NECK_BASE_Y + t * NECK_LEN;
+    const w = THREE.MathUtils.lerp(0.0165, 0.0125, t);
+    pts.push(new THREE.Vector2(w, y));
+  }
+  const g = new THREE.LatheGeometry(
+    pts.map(p => new THREE.Vector2(p.x, p.y)), 20, 0, Math.PI * 2
+  );
+  g.scale(1.0, 1.0, 0.62);
+  const neck = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x1a1620, roughness: 0.35, metalness: 0.7,
+    emissive: new THREE.Color(0x3a1408), emissiveIntensity: 0.22
+  }));
+  neck.position.z = -0.004;
+  neck.castShadow = true;
+  neckGroup.add(neck);
+}
+
+// Fingerboard: an ebony-dark leaded strip with cobalt glass inlay
+{
+  const fbShape = new THREE.Shape();
+  fbShape.moveTo(-0.0140, 0);
+  fbShape.lineTo(0.0140, 0);
+  fbShape.lineTo(0.0105, FB_LEN);
+  fbShape.lineTo(-0.0105, FB_LEN);
+  fbShape.closePath();
+  const g = new THREE.ExtrudeGeometry(fbShape, {
+    depth: 0.008, bevelEnabled: true, bevelThickness: 0.0012,
+    bevelSize: 0.0012, bevelSegments: 1, curveSegments: 1
+  });
+  const fb = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x141019, roughness: 0.28, metalness: 0.72,
+    emissive: new THREE.Color(0x2a0e30), emissiveIntensity: 0.25
+  }));
+  fb.rotation.x = -Math.PI / 2;
+  fb.position.set(0, BODY_LEN - 0.075 + 0.0, 0.0265);
+  fb.rotation.z = 0;
+  // Orient: extrude along local Z -> after rotX(-90) depth points -Y... simpler:
+  fb.rotation.set(0, 0, 0);
+  fb.position.set(0, BODY_LEN - 0.075, 0.0245);
+  fb.castShadow = true;
+  neckGroup.add(fb);
+
+  // cobalt glass inlays along the fingerboard
+  for (let i = 0; i < 9; i++) {
+    const t = 0.06 + i * 0.10;
+    const y = BODY_LEN - 0.075 + t * FB_LEN;
+    const w = THREE.MathUtils.lerp(0.0140, 0.0105, t) * 0.68;
+    const s = new THREE.Shape();
+    s.moveTo(0, 0.006); s.lineTo(w, 0); s.lineTo(0, -0.006); s.lineTo(-w, 0);
+    s.closePath();
+    const gg = new THREE.ExtrudeGeometry(s, {
+      depth: 0.0022, bevelEnabled: false, curveSegments: 1
+    });
+    const inlay = new THREE.Mesh(gg, glassMat(
+      i % 3 === 0 ? GLASS.amberL : (i % 3 === 1 ? GLASS.cobaltL : GLASS.rubyL),
+      { emissive: 1.0, opacity: 0.9 }
+    ));
+    inlay.position.set(0, y, 0.0325);
+    neckGroup.add(inlay);
+  }
+}
+
+/* --- Pegbox + pegs ------------------------------------------------------ */
+const PEGBOX_Y = BODY_LEN - 0.075 + FB_LEN - 0.012;
+{
+  const s = new THREE.Shape();
+  s.moveTo(-0.0125, 0);
+  s.lineTo(0.0125, 0);
+  s.lineTo(0.0115, 0.056);
+  s.lineTo(-0.0115, 0.056);
+  s.closePath();
+  const g = new THREE.ExtrudeGeometry(s, {
+    depth: 0.030, bevelEnabled: true, bevelThickness: 0.0015,
+    bevelSize: 0.0015, bevelSegments: 1, curveSegments: 1
+  });
+  const pb = new THREE.Mesh(g, new THREE.MeshStandardMaterial({
+    color: 0x171320, roughness: 0.3, metalness: 0.72,
+    emissive: new THREE.Color(0x3a1a08), emissiveIntensity: 0.2
+  }));
+  pb.position.set(0, PEGBOX_Y, -0.006);
+  pb.castShadow = true;
+  neckGroup.add(pb);
+
+  // glowing slot in the pegbox
+  const slot = new THREE.Mesh(
+    new THREE.BoxGeometry(0.0085, 0.044, 0.031),
+    new THREE.MeshStandardMaterial({
+      color: 0x2a0d04, roughness: 0.5, metalness: 0.4,
+      emissive: new THREE.Color(0xff8a2a), emissiveIntensity: 0.55
+    })
+  );
+  slot.position.set(0, PEGBOX_Y + 0.026, 0.0092);
+  neckGroup.add(slot);
+
+  // pegs — jewel-toned glass
+  const pegCols = [GLASS.ruby, GLASS.cobalt, GLASS.amber, GLASS.rubyL];
+  const pegPos = [
+    [ 1, 0.012], [-1, 0.024], [ 1, 0.036], [-1, 0.048]
+  ];
+  pegPos.forEach((p, i) => {
+    const side = p[0], yy = PEGBOX_Y + p[1];
+    const pg = new THREE.Group();
+
+    const shaft = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.0028, 0.0035, 0.034, 12),
+      leadMatDark
+    );
+    shaft.rotation.z = Math.PI / 2;
+    pg.add(shaft);
+
+    const head = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0072, 16, 12),
+      glassMat(pegCols[i], { emissive: 1.0, opacity: 0.92 })
+    );
+    head.scale.set(0.55, 1.0, 1.0);
+    head.position.x = side * 0.020;
+    pg.add(head);
+
+    const collar = new THREE.Mesh(
+      new THREE.TorusGeometry(0.0042, 0.0011, 8, 16),
+      leadMat
+    );
+    collar.rotation.y = Math.PI / 2;
+    collar.position.x = side * 0.0135;
+    pg.add(collar);
+
+    pg.position.set(0, yy, 0.008);
+    neckGroup.add(pg);
+  });
+}
+
+/* --- Scroll: a leaded volute spiral with amber glass core --------------- */
+{
+  const scrollGroup = new THREE.Group();
+  const baseY = PEGBOX_Y + 0.056;
+
+  // The volute: spiral tube of lead
+  const spiral = [];
+  const TURNS = 2.35;
+  for (let i = 0; i <= 180; i++) {
+    const t = i / 180;
+    const a = -Math.PI * 0.35 + t * Math.PI * 2 * TURNS;
+    const r = THREE.MathUtils.lerp(0.0235, 0.0022, Math.pow(t, 0.82));
+    const cx = 0.0;
+    const cy = 0.0175;
+    spiral.push(new THREE.Vector3(
+      cx + Math.cos(a) * r * 0.92,
+      cy + Math.sin(a) * r,
+      0
+    ));
+  }
+  const sc = new THREE.CatmullRomCurve3(spiral, false, 'catmullrom', 0.0);
+  const spiralMesh = new THREE.Mesh(
+    new THREE.TubeGeometry(sc, 200, 0.0042, 8, false), leadMat
+  );
+  spiralMesh.castShadow = true;
+  scrollGroup.add(spiralMesh);
+
+  // Glass fill between the spiral turns (a ribbon of amber/ruby)
+  const ribbon = [];
+  for (let i = 0; i < spiral.length - 1; i++) {
+    ribbon.push(spiral[i]);
+  }
+  const inner = new THREE.CatmullRomCurve3(spiral.map((p, i) => {
+    const t = i / (spiral.length - 1);
+    return new THREE.Vector3(p.x * 0.98, 0.0175 + (p.y - 0.0175) * 0.98, p.z);
+  }), false, 'catmullrom', 0.0);
+  const glassSpiral = new THREE.Mesh(
+    new THREE.TubeGeometry(inner, 200, 0.0072, 8, false),
+    glassMat(GLASS.amber, { emissive: 0.85, opacity: 0.7 })
+  );
+  scrollGroup.add(glassSpiral);
+
+  // Scroll cheeks (flat glass discs on either side of the volute)
+  for (const sx of [-1, 1]) {
+    const disc = new THREE.Mesh(
+      new THREE.CircleGeometry(0.0175, 28),
+      glassMat(sx > 0 ? GLASS.ruby : GLASS.rubyD, { emissive: 0.8, opacity: 0.78 })
+    );
+    disc.position.set(0, 0.0175, sx * 0.0105);
+    disc.scale.set(0.92, 1.0, 1.0);
+    scrollGroup.add(disc);
+
+    const ringPts = [];
+    for (let i = 0; i <= 32; i++) {
+      const a = (i / 32) * Math.PI * 2;
+      ringPts.push(new THREE.Vector3(
+        Math.cos(a) * 0.0175 * 0.92, 0.0175 + Math.sin(a) * 0.0175, sx * 0.0107
+      ));
+    }
+    const rc = new THREE.CatmullRomCurve3(ringPts, true, 'catmullrom', 0.0);
+    scrollGroup.add(new THREE.Mesh(new THREE.TubeGeometry(rc, 48, 0.0016, 6, true), leadMat));
+  }
+
+  // Throat connecting pegbox to the volute
+  const throat = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.0105, 0.0120, 0.018, 14),
+    new THREE.MeshStandardMaterial({
+      color: 0x171320, roughness: 0.3, metalness: 0.72,
+      emissive: new THREE.Color(0x3a1a08), emissiveIntensity: 0.2
+    })
+  );
+  throat.scale.set(1.0, 1.0, 1.6);
+  throat.position.set(0, -0.006, 0.004);
+  scrollGroup.add(throat);
+
+  scrollGroup.position.set(0, baseY, 0.004);
+  scrollGroup.rotation.x = -0.06;
+  neckGroup.add(scrollGroup);
+}
+
+/* --- Four strings: fine lead lines from tailpiece over bridge to pegs --- */
+{
+  const bridgeTopY = 0.168;
+  const bridgeTopZ = 0.020 + ARCH_F * archAt(0, 0.168) + 0.031;
+  const nutY = BODY_LEN - 0.075 + FB_LEN - 0.004;
+  const nutZ = 0.0345;
+  const tailY = 0.112;
+  const tailZ = 0.026;
+
+  const spacing = [-0.0057, -0.0019, 0.0019, 0.0057];
+  const stringMat = new THREE.MeshStandardMaterial({
+    color: 0x0e0d12, roughness: 0.3, metalness: 0.9,
+    emissive: new THREE.Color(0xffb15a), emissiveIntensity: 0.12
+  });
+
+  spacing.forEach((sx, i) => {
+    const radius = 0.00075 + (3 - i) * 0.00022;
+
+    // tailpiece -> bridge
+    const p1 = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(sx * 0.55, tailY, tailZ),
+      new THREE.Vector3(sx * 0.85, (tailY + bridgeTopY) * 0.5, (tailZ + bridgeTopZ) * 0.5),
+      new THREE.Vector3(sx, bridgeTopY, bridgeTopZ)
+    ], false, 'catmullrom', 0.0);
+    const m1 = new THREE.Mesh(new THREE.TubeGeometry(p1, 24, radius, 6, false), stringMat);
+    violin.add(m1);
+
+    // bridge -> nut (straight, floating above fingerboard)
+    const p2 = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(sx, bridgeTopY, bridgeTopZ),
+      new THREE.Vector3(sx * 0.92, (bridgeTopY + nutY) * 0.5, (bridgeTopZ + nutZ) * 0.5),
+      new THREE.Vector3(sx * 0.78, nutY, nutZ)
+    ], false, 'catmullrom', 0.0);
+    const m2 = new THREE.Mesh(new THREE.TubeGeometry(p2, 40, radius, 6, false), stringMat);
+    violin.add(m2);
+
+    // nut -> peg (wrap into pegbox)
+    const pegY = PEGBOX_Y + [0.012, 0.024, 0.036, 0.048][i];
+    const p3 = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(sx * 0.78, nutY, nutZ),
+      new THREE.Vector3(sx * 0.5, (nutY + pegY) * 0.5, 0.020),
+      new THREE.Vector3(sx * 0.25, pegY, 0.010)
+    ], false, 'catmullrom', 0.0);
+    const m3 = new THREE.Mesh(new THREE.TubeGeometry(p3, 24, radius * 0.9, 6, false), stringMat);
+    violin.add(m3);
+
+    // fine tuner nub on the tailpiece
+    const nub = new THREE.Mesh(
+      new THREE.SphereGeometry(0.0022, 10, 8),
+      glassMat(GLASS.gold, { emissive: 1.1, opacity: 0.95 })
+    );
+    nub.position.set(sx * 0.55, tailY, tailZ + 0.001);
+    violin.add(nub);
+  });
+
+  // nut
+  const nut = new THREE.Mesh(
+    new THREE.BoxGeometry(0.0235, 0.0035, 0.0055),
+    glassMat(GLASS.gold, { emissive: 0.85, opacity: 0.95 })
+  );
+  nut.position.set(0, nutY, 0.0322);
+  violin.add(nut);
+}
+
+/* --- Merge and add all the lead came ----------------------------------- */
+{
+  const merged = mergeGeos(leadGeos);
+  const leadMesh = new THREE.Mesh(merged, leadMat);
+  leadMesh.castShadow = true;
+  leadMesh.receiveShadow = true;
+  violin.add(leadMesh);
+}
+
+/* --- Backlight card: a warm glow disc behind the body (the "backlit" read) */
+{
+  const glow = new THREE.Mesh(
+    new THREE.CircleGeometry(0.20, 48),
+    new THREE.MeshBasicMaterial({
+      color: 0xff9a3c, transparent: true, opacity: 0.11,
+      side: THREE.DoubleSide, depthWrite: false,
+      blending: THREE.AdditiveBlending
+    })
+  );
+  glow.position.set(0, BODY_LEN * 0.45, -0.075);
+  violin.add(glow);
+}
+
+/* ============================================================================
+   PLACE THE OBJECT: stand it upright, centred, resting on the ground plane
+   ========================================================================== */
+// Currently: body local +Y = up the instrument, +Z = front face. Stand upright.
+violin.rotation.x = 0;
+violin.position.set(0, 0, 0);
+
+// Compute bounds and re-centre so it sits on y=0 and is horizontally centred.
+{
+  const box = new THREE.Box3().setFromObject(violin);
+  const size = new THREE.Vector3(); box.getSize(size);
+  const center = new THREE.Vector3(); box.getCenter(center);
+  violin.position.x -= center.x;
+  violin.position.z -= center.z;
+  violin.position.y -= box.min.y;
+
+  const box2 = new THREE.Box3().setFromObject(violin);
+  const c2 = new THREE.Vector3(); box2.getCenter(c2);
+  controls.target.set(0, c2.y, 0);
+  const h = box2.max.y - box2.min.y;
+  camera.position.set(0.50, c2.y + h * 0.28, 0.86);
+  controls.update();
+}
+
+/* ============================================================================
+   ANIMATE
+   ========================================================================== */
+let t0 = 0;
+function animate(t) {
+  requestAnimationFrame(animate);
+  const dt = (t - t0) / 1000; t0 = t;
+  const s = t / 1000;
+
+  // subtle breathing of the backlight, as if candles behind the window
+  backGlow.intensity = 5.2 + Math.sin(s * 1.1) * 0.9 + Math.sin(s * 2.7) * 0.35;
+  underGlow.intensity = 2.0 + Math.sin(s * 0.8 + 1.4) * 0.5;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+requestAnimationFrame(animate);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

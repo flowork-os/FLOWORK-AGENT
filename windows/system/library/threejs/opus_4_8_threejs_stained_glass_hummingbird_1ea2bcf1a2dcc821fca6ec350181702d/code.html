@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Stained-Glass Hummingbird</title>
+<style>
+  html,body{margin:0;height:100%;background:#0a0b0d;overflow:hidden;}
+  canvas{display:block;}
+  #hint{position:fixed;left:14px;bottom:12px;font:12px/1.4 system-ui,sans-serif;
+        color:#8a93a6;letter-spacing:.03em;user-select:none;pointer-events:none;}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="hint">Stained-Glass Hummingbird · drag to orbit · scroll to zoom</div>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------- renderer */
+const renderer = new THREE.WebGLRenderer({ antialias:true, alpha:false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* ------------------------------------------------------------------- scene */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0a0b0d);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth/window.innerHeight, 0.1, 100);
+camera.position.set(3.2, 1.6, 3.9);
+
+// soft studio environment for glass reflections/refraction (not shown as background)
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ------------------------------------------------------------------ lights */
+const hemi = new THREE.HemisphereLight(0x2b3c5a, 0x070708, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.3);
+key.position.set(3.5, 4.5, 2.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 20;
+key.shadow.camera.left = -3.5; key.shadow.camera.right = 3.5;
+key.shadow.camera.top = 3.5; key.shadow.camera.bottom = -3.5;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x88aaff, 0.5);
+fill.position.set(-3.5, 1.2, 2.5);
+scene.add(fill);
+
+// warm rim / backlight to make the glass glow from behind
+const back = new THREE.DirectionalLight(0xfff0dd, 1.5);
+back.position.set(-1.5, 2.2, -3.5);
+scene.add(back);
+
+// coloured accents that spill jewel tones through the panes
+const accEmerald  = new THREE.PointLight(0x18d47a, 6, 9, 2); accEmerald.position.set(-1.6, 1.1, -1.4); scene.add(accEmerald);
+const accRuby     = new THREE.PointLight(0xff2a55, 5, 9, 2); accRuby.position.set( 1.5, 0.4, -1.7);    scene.add(accRuby);
+const accSapphire = new THREE.PointLight(0x2f6bff, 5, 9, 2); accSapphire.position.set(-0.4, 1.7, 1.7);  scene.add(accSapphire);
+
+/* ------------------------------------------------------------------ ground */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.4 })
+);
+ground.rotation.x = -Math.PI/2;
+ground.position.y = -1.35;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ================================================================ HUMMINGBIRD
+   Assembled as jewel-toned glass panes floating just above dark "lead" cores.
+   The seams between panes reveal the dark core → leaded solder lines.        */
+
+const JEWEL = {
+  emerald:0x1f9d57, emeraldDeep:0x0d5f34,
+  teal:0x14a79a,
+  sapphire:0x2c6ff0, sapphireDeep:0x143a86,
+  ruby:0xd41c3d, rubyDeep:0x82122a,
+};
+
+const lerp = (a,b,t)=>a+(b-a)*t;
+
+const glassBuckets = new Map();   // color -> {color, geoms:[]}
+const darkGeoms = [];             // lead lines + solid cores
+
+function addGlass(geom, color){
+  let b = glassBuckets.get(color);
+  if(!b){ b = { color, geoms:[] }; glassBuckets.set(color, b); }
+  b.geoms.push(geom);
+}
+
+function quadGeom(a,b,c,d){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array([
+    a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z, d.x,d.y,d.z ]), 3));
+  g.setIndex([0,1,2, 0,2,3]);
+  g.computeVertexNormals();
+  return g;
+}
+
+// Build one leaded glass cell (+ optional dark backing sheet for open surfaces)
+function addCell(corners, color, opts){
+  const c = new THREE.Vector3();
+  corners.forEach(p=>c.add(p)); c.multiplyScalar(0.25);
+  const e1 = new THREE.Vector3().subVectors(corners[1], corners[0]);
+  const e2 = new THREE.Vector3().subVectors(corners[3], corners[0]);
+  let n = new THREE.Vector3().crossVectors(e1, e2).normalize();
+  if(opts.outwardRef){
+    const r = new THREE.Vector3().subVectors(c, opts.outwardRef);
+    if(n.dot(r) < 0) n.negate();
+  }
+  if(opts.backing){
+    const bp = corners.map(p=>p.clone().addScaledVector(n, opts.backOffset ?? -0.012));
+    darkGeoms.push(quadGeom(bp[0], bp[1], bp[2], bp[3]));
+  }
+  const inset = opts.inset ?? 0.9, off = opts.offset ?? 0.02;
+  const gp = corners.map(p=>new THREE.Vector3().lerpVectors(c, p, inset).addScaledVector(n, off));
+  addGlass(quadGeom(gp[0], gp[1], gp[2], gp[3]), color);
+}
+
+// Tile a parametric surface func(u,v)->Vector3 with a grid of glass panes
+function tileSurface(func, uSegs, vSegs, uR, vR, colorFn, opts){
+  for(let i=0;i<uSegs;i++){
+    for(let j=0;j<vSegs;j++){
+      const u0 = lerp(uR[0],uR[1], i/uSegs),     u1 = lerp(uR[0],uR[1], (i+1)/uSegs);
+      const v0 = lerp(vR[0],vR[1], j/vSegs),     v1 = lerp(vR[0],vR[1], (j+1)/vSegs);
+      const a = func(u0,v0), b = func(u1,v0), cc = func(u1,v1), d = func(u0,v1);
+      addCell([a,b,cc,d], colorFn(i,j,uSegs,vSegs), opts);
+    }
+  }
+}
+
+function coreEllipsoid(center, r, s){
+  const g = new THREE.SphereGeometry(1, 24, 16);
+  g.scale(r.x*s, r.y*s, r.z*s);
+  g.translate(center.x, center.y, center.z);
+  g.deleteAttribute('uv');   // match quad attributes for merge
+  darkGeoms.push(g);
+}
+
+/* --------------------------------------------------------------------- body */
+const bodyC = new THREE.Vector3(0, 0, 0);
+const bodyR = { x:0.66, y:0.44, z:0.42 };
+function bodyFunc(u,v){
+  const phi = u*Math.PI*2, theta = v*Math.PI;   // poles along X
+  const s = Math.sin(theta);
+  return new THREE.Vector3(
+    bodyR.x*Math.cos(theta),
+    bodyR.y*s*Math.cos(phi),
+    bodyR.z*s*Math.sin(phi)
+  ).add(bodyC);
+}
+function bodyColor(i,j,U,V){
+  const v=(j+0.5)/V, up=Math.cos(((i+0.5)/U)*Math.PI*2);
+  if(v<0.42 && up<0.2)  return (i%2)?JEWEL.ruby:JEWEL.rubyDeep;       // breast / throat
+  if(up>0.25)           return (i%2)?JEWEL.emerald:JEWEL.emeraldDeep;  // iridescent back
+  if(up<-0.35)          return (i%2)?JEWEL.teal:JEWEL.emerald;         // belly
+  return (i%2)?JEWEL.sapphire:JEWEL.sapphireDeep;                      // flanks
+}
+tileSurface(bodyFunc, 12, 8, [0,1], [0.05,0.95], bodyColor,
+  { inset:0.9, offset:0.018, outwardRef:bodyC });
+coreEllipsoid(bodyC, bodyR, 0.99);
+
+/* --------------------------------------------------------------------- head */
+const headC = new THREE.Vector3(0.82, 0.16, 0);
+const headR = { x:0.36, y:0.33, z:0.33 };
+function headFunc(u,v){
+  const phi = u*Math.PI*2, theta = v*Math.PI;
+  const s = Math.sin(theta);
+  return new THREE.Vector3(
+    headR.x*Math.cos(theta),
+    headR.y*s*Math.cos(phi),
+    headR.z*s*Math.sin(phi)
+  ).add(headC);
+}
+function headColor(i,j,U,V){
+  const v=(j+0.5)/V, up=Math.cos(((i+0.5)/U)*Math.PI*2);
+  if(v<0.5 && up<0.0)  return (i%2)?JEWEL.ruby:JEWEL.rubyDeep;         // gorget
+  if(up>0.2)           return (i%2)?JEWEL.emerald:JEWEL.emeraldDeep;   // crown
+  return (i%2)?JEWEL.sapphire:JEWEL.sapphireDeep;
+}
+tileSurface(headFunc, 10, 6, [0,1], [0.06,0.94], headColor,
+  { inset:0.9, offset:0.016, outwardRef:headC });
+coreEllipsoid(headC, headR, 0.99);
+
+/* -------------------------------------------------------------------- wings */
+function buildWing(side){
+  const shoulder = new THREE.Vector3(0.14, 0.30, 0.20*side);
+  const Lhat = new THREE.Vector3(0.12, 0.78, 0.55*side).normalize();
+  const ref  = new THREE.Vector3(0.7, 0.0, -0.15*side);
+  const What = ref.clone().addScaledVector(Lhat, -ref.dot(Lhat)).normalize();
+  const Nhat = new THREE.Vector3().crossVectors(Lhat, What).normalize();
+  const L = 1.62;
+  const W = (u)=>0.42*Math.pow(Math.sin(Math.PI*(0.12+0.82*u)), 0.85)*(1-0.25*u);
+  const sweep = (u)=>-0.16*u*u;                       // trailing sweep of centreline
+  const camber = (u,v)=>0.12*Math.sin(Math.PI*v)*Math.sin(Math.PI*u*0.85);
+
+  function wingFunc(u,v){
+    const across = (v-0.5)*2*W(u) + sweep(u);
+    return shoulder.clone()
+      .addScaledVector(Lhat, u*L)
+      .addScaledVector(What, across)
+      .addScaledVector(Nhat, camber(u,v)*side);
+  }
+  function wingColor(i,j,U,V){
+    const u=(i+0.5)/U, v=(j+0.5)/V;
+    if(u>0.74)  return (j%2)?JEWEL.ruby:JEWEL.rubyDeep;            // luminous ruby tips
+    if(v>0.62)  return (i%2)?JEWEL.sapphire:JEWEL.sapphireDeep;   // leading edge
+    if(v<0.38)  return (i%2)?JEWEL.emerald:JEWEL.emeraldDeep;     // trailing edge
+    return (i%2)?JEWEL.teal:JEWEL.emerald;
+  }
+  tileSurface(wingFunc, 7, 4, [0,1], [0,1], wingColor,
+    { inset:0.9, offset:0.02, backing:true, backOffset:-0.012,
+      outwardRef:new THREE.Vector3(0,-2,0) });
+}
+buildWing(1);
+buildWing(-1);
+
+/* --------------------------------------------------------------------- tail */
+(function buildTail(){
+  const base = new THREE.Vector3(-0.60, -0.02, 0);
+  const Ltail = 1.15, spread = 1.2;
+  function dir(v){
+    const a = (v-0.5)*spread, ca=Math.cos(a), sa=Math.sin(a);
+    const d = new THREE.Vector3(-1, -0.34, 0);
+    return new THREE.Vector3(d.x*ca + d.z*sa, d.y, -d.x*sa + d.z*ca).normalize();
+  }
+  function tailFunc(u,v){
+    const r = 0.12 + u*Ltail;
+    return base.clone().addScaledVector(dir(v), r).add(new THREE.Vector3(0, -0.06*u*u, 0));
+  }
+  const pal = [JEWEL.ruby, JEWEL.sapphire, JEWEL.emerald, JEWEL.sapphireDeep,
+               JEWEL.emerald, JEWEL.sapphire, JEWEL.ruby];
+  function tailColor(i,j){
+    let c = pal[j % pal.length];
+    if(i === 0){ if(c===JEWEL.ruby)c=JEWEL.rubyDeep; else if(c===JEWEL.emerald)c=JEWEL.emeraldDeep;
+                 else if(c===JEWEL.sapphire)c=JEWEL.sapphireDeep; }
+    return c;
+  }
+  tileSurface(tailFunc, 3, 7, [0,1], [0,1], tailColor,
+    { inset:0.9, offset:0.02, backing:true, backOffset:-0.012,
+      outwardRef:new THREE.Vector3(0,3,0) });
+})();
+
+/* ------------------------------------------------- merge into final meshes */
+function glassMat(color){
+  return new THREE.MeshPhysicalMaterial({
+    color, metalness:0.0, roughness:0.22,
+    transmission:0.6, thickness:0.3, ior:1.5,
+    transparent:true, opacity:1.0, side:THREE.DoubleSide,
+    emissive:color, emissiveIntensity:0.5,
+    clearcoat:0.8, clearcoatRoughness:0.2,
+    envMapIntensity:1.0,
+  });
+}
+const leadMat = new THREE.MeshStandardMaterial({ color:0x0b0b0e, roughness:0.5, metalness:0.65 });
+
+const bird = new THREE.Group();
+bird.position.y = 0.28;
+scene.add(bird);
+
+const leadMesh = new THREE.Mesh(mergeGeometries(darkGeoms, false), leadMat);
+leadMesh.castShadow = true; leadMesh.receiveShadow = true;
+bird.add(leadMesh);
+
+for(const [, b] of glassBuckets){
+  const m = new THREE.Mesh(mergeGeometries(b.geoms, false), glassMat(b.color));
+  m.castShadow = true;
+  bird.add(m);
+}
+
+/* ------------------------------------------------- beak, luminous tip, eyes */
+const beakBase = new THREE.Vector3(1.14, 0.16, 0);
+const beakDir  = new THREE.Vector3(0.995, -0.09, 0).normalize();
+const beakLen  = 0.98;
+const beakMat  = new THREE.MeshStandardMaterial({
+  color:0x0e0e12, metalness:0.85, roughness:0.32, emissive:0x1a1206, emissiveIntensity:0.4 });
+const beak = new THREE.Mesh(new THREE.CylinderGeometry(0.006, 0.05, beakLen, 16), beakMat);
+beak.quaternion.setFromUnitVectors(new THREE.Vector3(0,1,0), beakDir);
+beak.position.copy(beakBase).addScaledVector(beakDir, beakLen/2);
+beak.castShadow = true;
+bird.add(beak);
+
+const tipPos = beakBase.clone().addScaledVector(beakDir, beakLen);
+const tip = new THREE.Mesh(
+  new THREE.SphereGeometry(0.032, 16, 16),
+  new THREE.MeshStandardMaterial({ color:0x3a2a08, emissive:0xffe6a8, emissiveIntensity:3.2, roughness:0.3 })
+);
+tip.position.copy(tipPos);
+bird.add(tip);
+const tipLight = new THREE.PointLight(0xffe4a6, 2.6, 1.4, 2);
+tipLight.position.copy(tipPos);
+bird.add(tipLight);
+
+const eyeMat = new THREE.MeshStandardMaterial({ color:0x050506, metalness:0.3, roughness:0.12 });
+for(const s of [1,-1]){
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(0.06, 18, 18), eyeMat);
+  eye.position.set(0.95, 0.27, 0.21*s);
+  bird.add(eye);
+  const glint = new THREE.Mesh(new THREE.SphereGeometry(0.016, 8, 8),
+    new THREE.MeshBasicMaterial({ color:0xffffff }));
+  glint.position.set(0.99, 0.30, 0.235*s);
+  bird.add(glint);
+}
+
+/* ------------------------------------------------------------ orbit controls */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.7;
+controls.minDistance = 2.5;
+controls.maxDistance = 11;
+controls.maxPolarAngle = Math.PI*0.52;
+controls.target.set(0, 0.6, 0);
+
+/* -------------------------------------------------------------------- resize */
+window.addEventListener('resize', ()=>{
+  camera.aspect = window.innerWidth/window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* --------------------------------------------------------------------- loop */
+const clock = new THREE.Clock();
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  bird.position.y = 0.28 + Math.sin(t*2.1)*0.05;        // gentle hover bob
+  bird.rotation.z = Math.sin(t*1.3)*0.015;              // subtle sway
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

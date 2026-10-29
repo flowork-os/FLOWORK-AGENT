@@ -1,0 +1,54 @@
+# [FL_INDEX: keywords="bioinspired_3d, bpy, bmesh, procedural_biology, create_a_model_of_picture_frame_in_blender_script" | COT="Bio-inspired 3D procedural generator from 3DCodeverse"]
+# Structure: create a model of picture frame in blender script
+
+import bpy
+
+def clear_scene():
+    bpy.ops.object.select_all(action='DESELECT')
+    bpy.ops.object.select_by_type(type='MESH')
+    bpy.ops.object.delete()
+
+clear_scene()
+
+material = bpy.data.materials.new(name='BrownFrame')
+material.diffuse_color = (0.5, 0.3, 0.1, 1)
+
+outer = bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+outer_frame = bpy.context.object
+outer_frame.name = 'OuterFrame'
+outer_frame.scale = (1, 0.1, 1.5)
+outer_frame.data.materials.append(material)
+
+inner = bpy.ops.mesh.primitive_cube_add(size=1, location=(0, 0, 0))
+inner_frame = bpy.context.object
+inner_frame.name = 'InnerFrame'
+inner_frame.scale = (0.9, 0.1, 1.4)
+inner_frame.data.materials.append(material)
+
+outer_frame.modifiers.new(type='BOOLEAN', name='FrameCutout').operation = 'DIFFERENCE'
+outer_frame.modifiers['FrameCutout'].object = inner_frame
+bpy.context.view_layer.objects.active = outer_frame
+bpy.ops.object.modifier_apply(modifier='FrameCutout')
+
+bpy.data.objects.remove(inner_frame, do_unlink=True)
+
+
+# --- 3DCodeVerse geo variant: neutralize materials (auto-derived, do not edit) ---
+import bpy as _bpy_geo
+_geo_mat = _bpy_geo.data.materials.get("geo_neutral") or _bpy_geo.data.materials.new("geo_neutral")
+try:
+    _geo_mat.use_nodes = False
+except Exception:
+    pass
+try:
+    _geo_mat.diffuse_color = (0.8, 0.8, 0.8, 1.0)
+except Exception:
+    pass
+for _geo_obj in list(_bpy_geo.data.objects):
+    if _geo_obj.type == "MESH" and _geo_obj.data is not None:
+        try:
+            _geo_obj.data.materials.clear()
+            _geo_obj.data.materials.append(_geo_mat)
+        except Exception:
+            pass
+# --- end geo variant ---

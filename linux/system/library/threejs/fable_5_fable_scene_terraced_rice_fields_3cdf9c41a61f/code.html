@@ -1,0 +1,583 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Terraced Rice Fields</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f2a96b; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================== CONFIG / PALETTE =============================
+const SEED = 20260815;
+const PAL = {
+  fog: 0xf2b184, sun: 0xffd9a0, key: 0xffb070,
+  hemiSky: 0xffbd8e, hemiGround: 0x4f6039, ambient: 0x5c4a72,
+  waterDeep: 0x54748c, waterEmissive: 0xff8c4f,
+  grass: 0x7da84a, bund: 0x7fae4a, mud: 0x6e523a, earth: 0x8a6644,
+  rice: 0x8bc94f, frond: 0x4f8f3a, trunk: 0x8a6a4c,
+  wood: 0x7b5a3c, plank: 0x9a7a52, weave: 0xcaa172, thatch: 0xc9a05e,
+  buffalo: 0x5c534d, horn: 0xcfc3ae, egret: 0xf6f3ea, beak: 0xe8a13c,
+  dark: 0x3a332c, stone: 0x8d7f6a, shirt: 0xa34d2e, hat: 0xcaa15a,
+  hill: 0x7c5470, pool: 0x6d5638, pad: 0x4e7d33, glowWin: 0xffc27a
+};
+// Terrace layout: 7 curved rings stepping down from a hilltop plateau.
+const T = { rings: 7, r0: 6, gap: 2.95, topY: 7.4, step: 0.95, bund: 0.26 };
+const SUN_DIR = new THREE.Vector3(0.82, 0.30, -0.49).normalize();
+
+// ============================== PRNG / HELPERS ===============================
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr = (a, b) => a + (b - a) * rand();
+const TAU = Math.PI * 2;
+// Shared organic outline: every terrace boundary is this shape scaled, so the
+// curved rings nest without ever intersecting.
+const SHAPE = th => 1 + 0.09 * Math.sin(2 * th + 0.7) + 0.05 * Math.sin(3 * th + 2.3) + 0.03 * Math.sin(5 * th + 4.1);
+const ringR = i => T.r0 + i * T.gap;
+const terraceY = i => 6.35 - i * T.step;
+function heightAtBase(rn) {          // terrain height for an unshaped radius
+  if (rn < T.r0) return T.topY;
+  const i = Math.floor((rn - T.r0) / T.gap);
+  if (i >= T.rings) return 0;
+  let y = terraceY(i);
+  if ((rn - T.r0) - i * T.gap > T.gap - 0.7) y += T.bund;  // walking on a bund
+  return y;
+}
+
+// ============================== CANVAS TEXTURES ==============================
+function makeTex(w, h, draw, repX = 1, repY = 1) {
+  const cv = document.createElement('canvas'); cv.width = w; cv.height = h;
+  draw(cv.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(cv);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const TEX = {
+  sky: makeTex(64, 1024, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0.00, '#38306b'); g.addColorStop(0.30, '#8a4a6e');
+    g.addColorStop(0.44, '#d96b4c'); g.addColorStop(0.50, '#f79a55');
+    g.addColorStop(0.56, '#ffc978'); g.addColorStop(1.00, '#ffe7ae');
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+  }),
+  ground: makeTex(512, 512, (c, w, h) => {
+    c.fillStyle = '#75a145'; c.fillRect(0, 0, w, h);
+    const tones = ['#86ad4b', '#6c9440', '#9aa851', '#5f8a3d', '#a58a4d'];
+    for (let i = 0; i < 1100; i++) {
+      c.globalAlpha = rr(0.10, 0.30); c.fillStyle = tones[(rand() * tones.length) | 0];
+      c.beginPath(); c.ellipse(rand() * w, rand() * h, rr(3, 22), rr(2, 12), rand() * TAU, 0, TAU); c.fill();
+    }
+    c.globalAlpha = 1;
+  }, 26, 26),
+  water: makeTex(256, 64, (c, w, h) => {
+    const g = c.createLinearGradient(0, 0, 0, h);
+    g.addColorStop(0, '#5d7e97'); g.addColorStop(0.5, '#6f8ea2'); g.addColorStop(1, '#5a7a92');
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+    for (let i = 0; i < 46; i++) {
+      c.globalAlpha = rr(0.08, 0.22); c.fillStyle = i % 3 ? '#ffd9a8' : '#fff2d8';
+      c.fillRect(rand() * w, rand() * h, rr(14, 70), rr(0.6, 1.8));
+    }
+    c.globalAlpha = 1;
+  }, 6, 1),
+  weave: makeTex(256, 256, (c, w, h) => {
+    c.fillStyle = '#c8a26c'; c.fillRect(0, 0, w, h);
+    for (let y = 0; y < 8; y++) for (let x = 0; x < 8; x++) {
+      c.fillStyle = (x + y) % 2 ? '#b3894f' : '#d3af78';
+      c.fillRect(x * 32 + 1, y * 32 + 1, 30, 30);
+      c.fillStyle = 'rgba(90,60,30,0.35)';
+      if ((x + y) % 2) c.fillRect(x * 32, y * 32 + 14, 32, 3); else c.fillRect(x * 32 + 14, y * 32, 3, 32);
+    }
+  }, 3, 2),
+  thatch: makeTex(256, 256, (c, w, h) => {
+    c.fillStyle = '#c9a05e'; c.fillRect(0, 0, w, h);
+    for (let i = 0; i < 340; i++) {
+      c.strokeStyle = `rgba(${120 + (rand() * 90) | 0},${80 + (rand() * 60) | 0},40,${rr(0.25, 0.6)})`;
+      c.lineWidth = rr(0.6, 1.8);
+      const y = rand() * h, x = rand() * w;
+      c.beginPath(); c.moveTo(x, y); c.lineTo(x + rr(18, 60), y + rr(-3, 3)); c.stroke();
+    }
+  }, 3, 2),
+  glow: makeTex(128, 128, (c, w, h) => {
+    const g = c.createRadialGradient(64, 64, 2, 64, 64, 64);
+    g.addColorStop(0, 'rgba(255,236,190,1)'); g.addColorStop(0.4, 'rgba(255,190,120,0.55)');
+    g.addColorStop(1, 'rgba(255,170,90,0)');
+    c.fillStyle = g; c.fillRect(0, 0, w, h);
+  }),
+  smoke: makeTex(64, 64, (c) => {
+    const g = c.createRadialGradient(32, 32, 2, 32, 32, 30);
+    g.addColorStop(0, 'rgba(244,232,216,0.85)'); g.addColorStop(1, 'rgba(244,232,216,0)');
+    c.fillStyle = g; c.fillRect(0, 0, 64, 64);
+  })
+};
+
+// ============================== MATERIALS ====================================
+const MAT = {
+  grass: new THREE.MeshStandardMaterial({ color: PAL.grass, map: TEX.ground, roughness: 0.95 }),
+  bund: new THREE.MeshStandardMaterial({ color: PAL.bund, roughness: 0.95 }),
+  mud: new THREE.MeshStandardMaterial({ color: PAL.mud, roughness: 1.0 }),
+  earth: new THREE.MeshStandardMaterial({ color: PAL.earth, roughness: 1.0 }),
+  rice: new THREE.MeshStandardMaterial({ color: PAL.rice, roughness: 0.8, flatShading: true }),
+  frond: new THREE.MeshStandardMaterial({ color: PAL.frond, roughness: 0.85, side: THREE.DoubleSide }),
+  trunk: new THREE.MeshStandardMaterial({ color: PAL.trunk, roughness: 0.95 }),
+  wood: new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.9 }),
+  plank: new THREE.MeshStandardMaterial({ color: PAL.plank, map: TEX.thatch, roughness: 0.9 }),
+  weave: new THREE.MeshStandardMaterial({ color: PAL.weave, map: TEX.weave, roughness: 0.9 }),
+  thatch: new THREE.MeshStandardMaterial({ color: PAL.thatch, map: TEX.thatch, roughness: 1.0 }),
+  buffalo: new THREE.MeshStandardMaterial({ color: PAL.buffalo, roughness: 0.95 }),
+  horn: new THREE.MeshStandardMaterial({ color: PAL.horn, roughness: 0.6, side: THREE.DoubleSide }),
+  egret: new THREE.MeshStandardMaterial({ color: PAL.egret, roughness: 0.7 }),
+  beak: new THREE.MeshStandardMaterial({ color: PAL.beak, roughness: 0.5 }),
+  dark: new THREE.MeshStandardMaterial({ color: PAL.dark, roughness: 0.9 }),
+  stone: new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.95, flatShading: true }),
+  shirt: new THREE.MeshStandardMaterial({ color: PAL.shirt, roughness: 0.9 }),
+  hat: new THREE.MeshStandardMaterial({ color: PAL.hat, roughness: 0.95 }),
+  hill: new THREE.MeshStandardMaterial({ color: PAL.hill, roughness: 1.0 }),
+  pool: new THREE.MeshStandardMaterial({ color: PAL.pool, roughness: 0.25, metalness: 0.15, emissive: 0xd97b3f, emissiveIntensity: 0.12 }),
+  pad: new THREE.MeshStandardMaterial({ color: PAL.pad, roughness: 0.7, side: THREE.DoubleSide }),
+  glowWin: new THREE.MeshBasicMaterial({ color: PAL.glowWin })
+};
+const waterUnits = [];               // { mat, tex, ring } for shimmer animation
+function makeWaterMat(ring) {
+  const tex = TEX.water.clone(); tex.needsUpdate = true;
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex, color: 0xffffff, roughness: 0.14, metalness: 0.35,
+    emissive: PAL.waterEmissive, emissiveIntensity: 0.3,
+    transparent: true, opacity: 0.94, side: THREE.DoubleSide
+  });
+  waterUnits.push({ mat, tex, ring });
+  return mat;
+}
+
+// ============================== GEOMETRY HELPERS =============================
+// Triangulated strip between two closed rims (each a fn of theta -> [x,y,z]).
+function stripMesh(edgeA, edgeB, mat, segs = 196, uvRep = 10) {
+  const pos = [], uv = [], idx = [];
+  for (let s = 0; s <= segs; s++) {
+    const th = (s / segs) * TAU, A = edgeA(th), B = edgeB(th);
+    pos.push(A[0], A[1], A[2], B[0], B[1], B[2]);
+    uv.push((s / segs) * uvRep, 0, (s / segs) * uvRep, 1);
+    if (s < segs) { const a = s * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  const m = new THREE.Mesh(g, mat); m.receiveShadow = true;
+  return m;
+}
+const rim = (rBase, y) => th => {
+  const r = rBase * SHAPE(th);
+  return [Math.cos(th) * r, y, Math.sin(th) * r];
+};
+function prim(geo, mat, x, y, z) {
+  const m = new THREE.Mesh(geo, mat); m.position.set(x, y, z);
+  m.castShadow = true; return m;
+}
+
+// ============================== BUILDERS =====================================
+// --- The stepped hillside itself: mud beds, mirror water, grass bunds, walls.
+function buildTerraces() {
+  const g = new THREE.Group();
+  g.add(stripMesh(rim(0.02, T.topY), rim(T.r0 + 0.05, T.topY), MAT.grass, 160, 6));
+  g.add(stripMesh(rim(T.r0, T.topY), rim(T.r0 + 0.4, terraceY(0)), MAT.earth, 160, 26));
+  for (let i = 0; i < T.rings; i++) {
+    const Ri = ringR(i), Ro = ringR(i + 1), y = terraceY(i);
+    const yNext = i < T.rings - 1 ? terraceY(i + 1) : 0;
+    g.add(stripMesh(rim(Ri - 0.12, y), rim(Ro - 0.5, y), MAT.mud, 196, 14));
+    g.add(stripMesh(rim(Ri + 0.1, y + 0.12), rim(Ro - 0.6, y + 0.12), makeWaterMat(i), 196, 6));
+    g.add(stripMesh(rim(Ro - 0.55, y + T.bund), rim(Ro + 0.12, y + T.bund), MAT.bund, 196, 44));
+    g.add(stripMesh(rim(Ro - 0.55, y + T.bund), rim(Ro - 0.5, y), MAT.bund, 196, 34));
+    g.add(stripMesh(rim(Ro + 0.12, y + T.bund), rim(Ro + 0.5, yNext), MAT.earth, 196, 34));
+  }
+  return g;
+}
+// --- Young rice seedlings, planted in curved rows that follow each terrace.
+function buildRice() {
+  const geo = new THREE.ConeGeometry(0.1, 0.46, 5); geo.translate(0, 0.2, 0);
+  const list = [];
+  for (let i = 0; i < T.rings; i++) {
+    const y = terraceY(i) + 0.1;
+    for (const f of [0.3, 0.52, 0.74]) {
+      const rBase = ringR(i) + f * T.gap;
+      const n = Math.floor((TAU * rBase) / 0.62);
+      for (let k = 0; k < n; k++) {
+        const th = (k / n) * TAU + rr(-0.02, 0.02);
+        const r = (rBase + rr(-0.09, 0.09)) * SHAPE(th);
+        list.push([Math.cos(th) * r, y, Math.sin(th) * r, rr(0.7, 1.25), rand() * TAU]);
+      }
+    }
+  }
+  const im = new THREE.InstancedMesh(geo, MAT.rice, list.length);
+  const M = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), s = new THREE.Vector3();
+  list.forEach((p, k) => {
+    e.set(rr(-0.12, 0.12), p[4], rr(-0.12, 0.12)); q.setFromEuler(e);
+    v.set(p[0], p[1], p[2]); s.set(p[3], p[3], p[3]);
+    M.compose(v, q, s); im.setMatrixAt(k, M);
+  });
+  return im;
+}
+// --- Lily-pad clumps floating on a few paddies.
+function buildLilyPads() {
+  const geo = new THREE.CircleGeometry(0.3, 9); geo.rotateX(-Math.PI / 2);
+  const spots = [[1, 1.1], [3, 3.9], [5, 0.6], [4, 5.1]];
+  const list = [];
+  for (const [ring, th0] of spots) {
+    const rC = ringR(ring) + 1.5, n = 12 + ((rand() * 6) | 0);
+    for (let k = 0; k < n; k++) {
+      const th = th0 + rr(-0.16, 0.16), r = (rC + rr(-0.7, 0.7)) * SHAPE(th);
+      list.push([Math.cos(th) * r, terraceY(ring) + 0.135, Math.sin(th) * r, rr(0.5, 1.1)]);
+    }
+  }
+  const im = new THREE.InstancedMesh(geo, MAT.pad, list.length);
+  const M = new THREE.Matrix4();
+  list.forEach((p, k) => {
+    M.makeRotationY(rand() * TAU); M.scale(new THREE.Vector3(p[3], 1, p[3]));
+    M.setPosition(p[0], p[1], p[2]); im.setMatrixAt(k, M);
+  });
+  return im;
+}
+// --- Winding dirt footpath: stepping pads spiraling from the plain to the hut.
+function buildFootpath() {
+  const geo = new THREE.CylinderGeometry(0.42, 0.5, 0.14, 7);
+  const steps = 104, th0 = 0.55, turns = 1.05, list = [];
+  for (let s = 0; s <= steps; s++) {
+    const t = s / steps;
+    const rn = 29.5 - t * 26.9, th = th0 + (1 - t) * turns * TAU;
+    const r = rn * SHAPE(th), y = heightAtBase(rn) + 0.05;
+    list.push([Math.cos(th) * r, y, Math.sin(th) * r]);
+  }
+  const im = new THREE.InstancedMesh(geo, MAT.stone, list.length);
+  const M = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler(), v = new THREE.Vector3(), sc = new THREE.Vector3();
+  list.forEach((p, k) => {
+    e.set(0, rand() * TAU, 0); q.setFromEuler(e);
+    v.set(p[0], p[1], p[2]); sc.set(rr(0.8, 1.15), 1, rr(0.8, 1.15));
+    M.compose(v, q, sc); im.setMatrixAt(k, M);
+  });
+  im.receiveShadow = true;
+  const g = new THREE.Group(); g.add(im); return g;
+}
+// --- Stilted farmer's hut with woven walls, thatched gable roof and a ladder.
+function buildHut() {
+  const g = new THREE.Group();
+  const stiltH = 1.5, W = 3.2, D = 2.4, floorY = stiltH + 0.08;
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]])
+    g.add(prim(new THREE.CylinderGeometry(0.09, 0.12, stiltH, 8), MAT.wood, sx * (W / 2 - 0.25), stiltH / 2, sz * (D / 2 - 0.25)));
+  g.add(prim(new THREE.BoxGeometry(W + 0.5, 0.16, D + 0.5), MAT.plank, 0, floorY, 0));
+  const wallH = 1.45, wallY = floorY + 0.08 + wallH / 2;
+  g.add(prim(new THREE.BoxGeometry(W, wallH, D), MAT.weave, 0, wallY, 0));
+  const door = prim(new THREE.PlaneGeometry(0.66, 1.05), MAT.dark, -0.7, wallY - 0.1, D / 2 + 0.012);
+  door.castShadow = false; g.add(door);
+  const win = prim(new THREE.PlaneGeometry(0.55, 0.42), MAT.glowWin, 0.85, wallY + 0.1, D / 2 + 0.012);
+  win.castShadow = false; g.add(win);
+  const a = 0.62, L = 1.95, ridgeY = floorY + 0.08 + wallH + 0.12;
+  for (const sgn of [1, -1]) {
+    const panel = prim(new THREE.BoxGeometry(W + 1.0, 0.1, L), MAT.thatch, 0, ridgeY + (L / 2) * Math.sin(a) - L * Math.sin(a) / 2 + 0.42, sgn * (L / 2) * Math.cos(a));
+    panel.position.y = ridgeY + 0.42 - (L / 2) * Math.sin(a) + (L / 2) * Math.sin(a); // ridge-aligned
+    panel.position.y = ridgeY + 0.9 - (L / 2) * Math.sin(a);
+    panel.rotation.x = sgn * a; g.add(panel);
+  }
+  g.add(prim(new THREE.CylinderGeometry(0.06, 0.06, W + 1.1, 6), MAT.wood, 0, ridgeY + 0.92, 0)).children;
+  g.children[g.children.length - 1].rotation.z = Math.PI / 2;
+  const lad = new THREE.Group(); lad.position.set(-0.7, 0, D / 2 + 0.4); lad.rotation.x = -0.34;
+  for (const sx of [-0.24, 0.24]) lad.add(prim(new THREE.CylinderGeometry(0.035, 0.035, 1.9, 6), MAT.wood, sx, 0.95, 0));
+  for (let i = 0; i < 5; i++) lad.add((() => { const r = prim(new THREE.CylinderGeometry(0.028, 0.028, 0.5, 6), MAT.wood, 0, 0.3 + i * 0.34, 0); r.rotation.z = Math.PI / 2; return r; })());
+  g.add(lad);
+  return g;
+}
+// --- A leaning coconut palm with drooping fronds and a few nuts.
+const FROND_GEO = (() => {
+  const geo = new THREE.PlaneGeometry(2.3, 0.5, 8, 1);
+  geo.translate(1.15, 0, 0); geo.rotateX(-Math.PI / 2);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const t = p.getX(i) / 2.3;
+    p.setY(i, -Math.pow(t, 1.7) * 1.15);
+    p.setZ(i, p.getZ(i) * (1 - t * 0.85) * (1 + 0.7 * Math.sin(t * Math.PI)));
+  }
+  geo.computeVertexNormals(); return geo;
+})();
+function buildPalm(h) {
+  const g = new THREE.Group(), lean = rr(0.15, 0.42), dir = rand() * TAU, segs = 6;
+  const off = s => lean * s * s * 0.055;
+  for (let s = 0; s < segs; s++) {
+    const sh = h / segs;
+    g.add(prim(new THREE.CylinderGeometry(0.17 - s * 0.013, 0.19 - s * 0.013, sh * 1.15, 7),
+      MAT.trunk, Math.cos(dir) * off(s), s * sh + sh / 2, Math.sin(dir) * off(s)));
+  }
+  const crown = new THREE.Group();
+  crown.position.set(Math.cos(dir) * off(segs), h + 0.1, Math.sin(dir) * off(segs));
+  for (let k = 0; k < 9; k++) {
+    const f = new THREE.Mesh(FROND_GEO, MAT.frond); f.castShadow = true;
+    f.rotateY((k / 9) * TAU + rr(-0.2, 0.2));
+    f.rotateZ(k % 2 ? rr(0.35, 0.6) : rr(0.0, 0.2));
+    f.scale.setScalar(rr(0.85, 1.15)); crown.add(f);
+  }
+  for (let k = 0; k < 3; k++)
+    crown.add(prim(new THREE.SphereGeometry(0.14, 8, 6), MAT.wood, rr(-0.2, 0.2), -0.12, rr(-0.2, 0.2)));
+  g.add(crown); g.userData.crown = crown; g.userData.phase = rand() * TAU;
+  return g;
+}
+// --- Water buffalo (stylized) resting beside its muddy wallow.
+function buildBuffalo() {
+  const g = new THREE.Group();
+  const body = prim(new THREE.SphereGeometry(1, 20, 14), MAT.buffalo, 0, 1.18, 0);
+  body.scale.set(1.35, 0.95, 0.85); g.add(body);
+  const hump = prim(new THREE.SphereGeometry(0.55, 12, 9), MAT.buffalo, 0.55, 1.68, 0);
+  hump.scale.set(1, 0.7, 0.85); g.add(hump);
+  const head = new THREE.Group(); head.position.set(1.52, 1.3, 0); g.add(head); g.userData.head = head;
+  const skull = prim(new THREE.SphereGeometry(0.42, 14, 10), MAT.buffalo, 0, 0, 0);
+  skull.scale.set(1.1, 0.9, 0.78); head.add(skull);
+  head.add(prim(new THREE.BoxGeometry(0.42, 0.3, 0.4), MAT.buffalo, 0.3, -0.17, 0));
+  for (const sz of [1, -1]) {
+    const horn = prim(new THREE.TorusGeometry(0.38, 0.05, 7, 14, Math.PI * 0.85), MAT.horn, -0.06, 0.3, sz * 0.16);
+    horn.rotation.set(Math.PI / 2, 0, 0.4); if (sz < 0) horn.scale.z = -1;
+    head.add(horn);
+    const ear = prim(new THREE.SphereGeometry(0.13, 8, 6), MAT.buffalo, -0.12, 0.1, sz * 0.42);
+    ear.scale.set(1, 0.5, 1.3); head.add(ear);
+    const eye = prim(new THREE.SphereGeometry(0.05, 6, 5), MAT.dark, 0.22, 0.12, sz * 0.3);
+    eye.castShadow = false; head.add(eye);
+  }
+  for (const [lx, lz] of [[-0.78, -0.48], [-0.78, 0.48], [0.72, -0.48], [0.72, 0.48]])
+    g.add(prim(new THREE.CylinderGeometry(0.13, 0.16, 1.1, 8), MAT.buffalo, lx, 0.55, lz));
+  const tail = new THREE.Group(); tail.position.set(-1.32, 1.55, 0); g.add(tail); g.userData.tail = tail;
+  tail.add(prim(new THREE.CylinderGeometry(0.035, 0.05, 0.95, 6), MAT.buffalo, 0, -0.45, 0));
+  tail.add(prim(new THREE.SphereGeometry(0.09, 7, 6), MAT.dark, 0, -0.92, 0));
+  return g;
+}
+// --- White egret; standing variant wades in a paddy, flying variant flaps.
+function buildEgret(flying) {
+  const g = new THREE.Group();
+  const body = prim(new THREE.SphereGeometry(0.22, 12, 9), MAT.egret, 0, 0, 0);
+  body.scale.set(1.5, 1, 0.9); g.add(body);
+  const neck = prim(new THREE.CylinderGeometry(0.04, 0.06, 0.46, 7), MAT.egret, 0.26, 0.24, 0);
+  neck.rotation.z = -0.5; g.add(neck);
+  g.add(prim(new THREE.SphereGeometry(0.095, 9, 7), MAT.egret, 0.42, 0.46, 0));
+  const beak = prim(new THREE.ConeGeometry(0.03, 0.3, 6), MAT.beak, 0.6, 0.45, 0);
+  beak.rotation.z = -Math.PI / 2; g.add(beak);
+  const tail = prim(new THREE.ConeGeometry(0.08, 0.32, 6), MAT.egret, -0.34, 0.05, 0);
+  tail.rotation.z = Math.PI / 2.4; g.add(tail);
+  if (flying) {
+    for (const sz of [1, -1]) {
+      const pivot = new THREE.Group(); pivot.position.set(0, 0.1, sz * 0.1);
+      const wingGeo = new THREE.PlaneGeometry(0.55, 0.95, 1, 3); wingGeo.rotateX(-Math.PI / 2);
+      const wing = new THREE.Mesh(wingGeo, new THREE.MeshStandardMaterial({ color: PAL.egret, roughness: 0.7, side: THREE.DoubleSide }));
+      wing.position.z = sz * 0.48; wing.castShadow = true; pivot.add(wing);
+      g.add(pivot); g.userData[sz > 0 ? 'wL' : 'wR'] = pivot;
+    }
+    const legs = prim(new THREE.CylinderGeometry(0.015, 0.015, 0.5, 5), MAT.beak, -0.3, -0.18, 0);
+    legs.rotation.z = 1.1; g.add(legs);
+  } else {
+    for (const sz of [1, -1])
+      g.add(prim(new THREE.CylinderGeometry(0.016, 0.016, 0.62, 5), MAT.dark, 0.02, -0.42, sz * 0.07));
+  }
+  return g;
+}
+// --- Scarecrow standing guard on a bund.
+function buildScarecrow() {
+  const g = new THREE.Group();
+  g.add(prim(new THREE.CylinderGeometry(0.05, 0.06, 2.1, 7), MAT.wood, 0, 1.05, 0));
+  const arm = prim(new THREE.CylinderGeometry(0.04, 0.04, 1.5, 7), MAT.wood, 0, 1.62, 0);
+  arm.rotation.z = Math.PI / 2; g.add(arm);
+  g.add(prim(new THREE.ConeGeometry(0.42, 1.05, 8), MAT.shirt, 0, 1.35, 0));
+  g.add(prim(new THREE.SphereGeometry(0.17, 10, 8), MAT.hat, 0, 2.0, 0));
+  g.add(prim(new THREE.ConeGeometry(0.34, 0.24, 9), MAT.hat, 0, 2.18, 0));
+  return g;
+}
+// --- Sunrise sky dome, sun disc and halo.
+function buildSky() {
+  const g = new THREE.Group();
+  const dome = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 18),
+    new THREE.MeshBasicMaterial({ map: TEX.sky, side: THREE.BackSide, fog: false }));
+  g.add(dome);
+  const sun = new THREE.Mesh(new THREE.CircleGeometry(13, 40),
+    new THREE.MeshBasicMaterial({ color: PAL.sun, fog: false }));
+  sun.position.copy(SUN_DIR).multiplyScalar(282); sun.lookAt(0, 0, 0); g.add(sun);
+  const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.glow, transparent: true, depthWrite: false, fog: false, opacity: 0.95 }));
+  halo.position.copy(SUN_DIR).multiplyScalar(272); halo.scale.setScalar(130); g.add(halo);
+  return g;
+}
+// --- Hazy far hill silhouettes on the horizon.
+function buildFarHills() {
+  const g = new THREE.Group();
+  for (const [az, d, hr, hh] of [[0.95, 175, 62, 30], [2.25, 190, 78, 40], [3.6, 168, 58, 26], [5.0, 185, 70, 34]]) {
+    const cone = new THREE.Mesh(new THREE.ConeGeometry(hr, hh, 24), MAT.hill);
+    cone.position.set(Math.cos(az) * d, hh / 2 - 3, Math.sin(az) * d);
+    g.add(cone);
+  }
+  return g;
+}
+// --- Cook-fire smoke drifting from the hut roof (looping sprites).
+function buildSmoke() {
+  const g = new THREE.Group(); g.userData.puffs = [];
+  for (let i = 0; i < 8; i++) {
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({ map: TEX.smoke, transparent: true, opacity: 0.5, depthWrite: false }));
+    s.userData.phase = i / 8; g.add(s); g.userData.puffs.push(s);
+  }
+  return g;
+}
+
+// ============================== ASSEMBLY / LAYOUT ============================
+const scene = new THREE.Scene();
+scene.fog = new THREE.FogExp2(PAL.fog, 0.0042);
+scene.add(buildSky(), buildFarHills());
+
+const ground = new THREE.Mesh(new THREE.CircleGeometry(230, 64), MAT.grass);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true;
+scene.add(ground);
+
+scene.add(buildTerraces(), buildRice(), buildLilyPads(), buildFootpath());
+
+const hut = buildHut();
+hut.position.set(0.2, T.topY, -0.5); hut.rotation.y = 0.71;
+scene.add(hut);
+const smoke = buildSmoke(); smoke.position.set(-0.9, 4.3, 0.3); hut.add(smoke);
+
+const poolPos = new THREE.Vector3(29.8, 0, 11.6);
+const pool = new THREE.Mesh(new THREE.CircleGeometry(3.1, 26), MAT.pool);
+pool.rotation.x = -Math.PI / 2; pool.scale.set(1.35, 1, 1);
+pool.position.set(poolPos.x, 0.03, poolPos.z); pool.receiveShadow = true;
+scene.add(pool);
+const poolRim = new THREE.Mesh(new THREE.RingGeometry(3.0, 3.7, 26), MAT.mud);
+poolRim.rotation.x = -Math.PI / 2; poolRim.scale.set(1.35, 1, 1);
+poolRim.position.set(poolPos.x, 0.02, poolPos.z);
+scene.add(poolRim);
+const buffalo = buildBuffalo();
+buffalo.position.set(27.4, 0, 8.2); buffalo.rotation.y = 2.1; buffalo.scale.setScalar(0.92);
+scene.add(buffalo);
+
+const palms = [];
+const palmSpots = [[-2.4, T.topY, 1.9, 3.6], [2.7, T.topY, 2.1, 3.1],
+  [-24.6, 0, 17.6, 4.4], [-27.2, 0, 15.2, 3.7], [-25.4, 0, 20.6, 4.0],
+  [17.0, 0, -25.8, 4.5], [14.6, 0, -27.6, 3.5]];
+for (const [x, y, z, h] of palmSpots) {
+  const p = buildPalm(h); p.position.set(x, y, z); palms.push(p); scene.add(p);
+}
+
+const waders = [[1, 3.3], [3, 4.5], [4, 2.0]].map(([ring, th]) => {
+  const e = buildEgret(false);
+  const r = (ringR(ring) + 1.5) * SHAPE(th);
+  e.position.set(Math.cos(th) * r, terraceY(ring) + 0.72, Math.sin(th) * r);
+  e.rotation.y = rand() * TAU; scene.add(e); return e;
+});
+const flyers = [0, Math.PI * 0.9].map(phase => {
+  const e = buildEgret(true); e.scale.setScalar(1.35); e.userData.phase = phase;
+  scene.add(e); return e;
+});
+
+const scarecrow = buildScarecrow();
+{
+  const thS = 5.6, rS = (ringR(3) - 0.25) * SHAPE(thS);
+  scarecrow.position.set(Math.cos(thS) * rS, terraceY(2) + T.bund, Math.sin(thS) * rS);
+  scarecrow.rotation.y = -thS; scene.add(scarecrow);
+}
+for (let i = 0; i < 6; i++) {
+  const th = rr(0, TAU), r = rr(30, 36);
+  const rock = prim(new THREE.DodecahedronGeometry(rr(0.35, 0.9)), MAT.stone, Math.cos(th) * r, 0.15, Math.sin(th) * r);
+  rock.rotation.set(rand() * TAU, rand() * TAU, 0); rock.receiveShadow = true; scene.add(rock);
+}
+
+// ============================== LIGHTING RIG =================================
+const keyLight = new THREE.DirectionalLight(PAL.key, 2.7);
+keyLight.position.copy(SUN_DIR).multiplyScalar(95);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -46; keyLight.shadow.camera.right = 46;
+keyLight.shadow.camera.top = 46; keyLight.shadow.camera.bottom = -46;
+keyLight.shadow.camera.near = 20; keyLight.shadow.camera.far = 220;
+keyLight.shadow.bias = -0.0006;
+scene.add(keyLight);
+scene.add(new THREE.HemisphereLight(PAL.hemiSky, PAL.hemiGround, 0.85));
+scene.add(new THREE.AmbientLight(PAL.ambient, 0.3));
+const hutLamp = new THREE.PointLight(0xffb56a, 7, 12, 2);
+hutLamp.position.set(0, 2.4, 0); hut.add(hutLamp);
+
+// ============================== RENDERER / CAMERA ============================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(55, innerWidth / innerHeight, 0.1, 700);
+camera.position.set(33, 17.5, 30);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.6, 0);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.0;
+controls.minDistance = 28; controls.maxDistance = 64;
+controls.minPolarAngle = 0.32; controls.maxPolarAngle = 1.42;
+
+// ============================== ANIMATION LOOP ===============================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // Breeze shimmer sweeping outward across the paddies
+  for (const u of waterUnits) {
+    u.mat.emissiveIntensity = 0.3 + 0.16 * Math.sin(t * 1.5 - u.ring * 0.85);
+    u.tex.offset.x = t * 0.016 + u.ring * 0.11;
+    u.mat.roughness = 0.14 + 0.05 * Math.sin(t * 1.1 + u.ring * 1.7);
+  }
+  // Palms swaying gently in the same breeze
+  for (const p of palms) {
+    const c = p.userData.crown, ph = p.userData.phase;
+    c.rotation.x = 0.045 * Math.sin(t * 1.15 + ph);
+    c.rotation.z = 0.045 * Math.cos(t * 0.9 + ph * 1.3);
+  }
+  // Egrets circling above the terraces with flapping wings
+  flyers.forEach((e, i) => {
+    const a = t * 0.24 + e.userData.phase, R = 21 - i * 2.5;
+    e.position.set(Math.cos(a) * R, 12.6 + Math.sin(t * 0.7 + i) * 0.8 + i * 1.1, Math.sin(a) * R);
+    e.rotation.y = -a - Math.PI / 2;
+    const flap = 0.15 + 0.55 * Math.sin(t * 6.5 + i * 2);
+    e.userData.wL.rotation.x = flap; e.userData.wR.rotation.x = -flap;
+  });
+  // Waders dip their heads now and then (slow bob)
+  waders.forEach((e, i) => { e.rotation.x = 0.1 * Math.sin(t * 0.9 + i * 2.4); });
+  // Buffalo tail swish + lazy head turn
+  buffalo.userData.tail.rotation.x = 0.4 * Math.sin(t * 2.2);
+  buffalo.userData.head.rotation.y = 0.22 * Math.sin(t * 0.45);
+  // Cook-fire smoke drifting and fading in a loop
+  for (const s of smoke.userData.puffs) {
+    const k = (t * 0.14 + s.userData.phase) % 1;
+    s.position.set(Math.sin(k * 9) * 0.25 + k * 0.9, k * 3.0, Math.cos(k * 7) * 0.2);
+    s.scale.setScalar(0.35 + k * 1.5);
+    s.material.opacity = 0.45 * (1 - k);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ============================== RESIZE =======================================
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

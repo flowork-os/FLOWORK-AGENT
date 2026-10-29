@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Procedural Wheelbarrow — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1c1e20; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(230,235,240,0.55); letter-spacing: .3px; user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1c1e20);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(2.05, 1.35, 2.25);
+
+// Subtle indoor-studio environment for believable metal reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.035).texture;
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + directional key + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xc5d6e6, 0x2a2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e2, 2.6);
+key.position.set(2.6, 4.2, 2.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 14;
+key.shadow.camera.left = -1.8;
+key.shadow.camera.right = 1.8;
+key.shadow.camera.top = 1.8;
+key.shadow.camera.bottom = -1.8;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb4c8, 0.6);
+fill.position.set(-3.0, 1.8, 1.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbcd0ff, 0.9);
+rim.position.set(-1.8, 2.2, -3.2);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane — receives shadows only
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(7, 64),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Materials
+// ---------------------------------------------------------------------------
+const trayMat = new THREE.MeshStandardMaterial({
+  color: 0x76808a, metalness: 0.82, roughness: 0.52, side: THREE.DoubleSide
+});
+const frameMat = new THREE.MeshStandardMaterial({
+  color: 0x4a4f56, metalness: 0.9, roughness: 0.42
+});
+const rimMetalMat = new THREE.MeshStandardMaterial({
+  color: 0x5b6068, metalness: 0.88, roughness: 0.48
+});
+const gripMat = new THREE.MeshStandardMaterial({
+  color: 0x181818, metalness: 0.0, roughness: 0.92
+});
+const tireMat = new THREE.MeshStandardMaterial({
+  color: 0x161616, metalness: 0.0, roughness: 0.98
+});
+const hubMat = new THREE.MeshStandardMaterial({
+  color: 0x3c4046, metalness: 0.85, roughness: 0.55
+});
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+const barrow = new THREE.Group();
+scene.add(barrow);
+
+function addMesh(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  barrow.add(m);
+  return m;
+}
+
+function tube(pts, radius, mat, closed = false, tubular = 80) {
+  const curve = new THREE.CatmullRomCurve3(
+    pts.map(p => new THREE.Vector3(p[0], p[1], p[2])),
+    closed, 'catmullrom', 0.5
+  );
+  const geo = new THREE.TubeGeometry(curve, tubular, radius, 16, closed);
+  return addMesh(geo, mat);
+}
+
+const mirrorZ = pts => pts.map(p => [p[0], p[1], -p[2]]);
+
+// ---------------------------------------------------------------------------
+// TRAY / BASIN — shallow sloped metal tub built from panels
+// ---------------------------------------------------------------------------
+function buildTray() {
+  const g = new THREE.Group();
+
+  // corner coordinates (local)
+  const B_FL = [ 0.26, 0.055,  0.15];
+  const B_FR = [ 0.26, 0.055, -0.15];
+  const B_BL = [-0.28, 0.020,  0.15];
+  const B_BR = [-0.28, 0.020, -0.15];
+  const T_FL = [ 0.41, 0.360,  0.31];
+  const T_FR = [ 0.41, 0.360, -0.31];
+  const T_BL = [-0.34, 0.235,  0.28];
+  const T_BR = [-0.34, 0.235, -0.28];
+
+  const positions = [];
+  const indices = [];
+  const v = p => { positions.push(p[0], p[1], p[2]); return positions.length / 3 - 1; };
+  const quad = (a, b, c, d) => {
+    const i0 = v(a), i1 = v(b), i2 = v(c), i3 = v(d);
+    indices.push(i0, i1, i2, i0, i2, i3);
+  };
+
+  quad(B_BL, B_BR, B_FR, B_FL); // floor
+  quad(B_FL, B_FR, T_FR, T_FL); // front wall (toward wheel)
+  quad(B_BR, B_BL, T_BL, T_BR); // back wall
+  quad(B_BL, B_FL, T_FL, T_BL); // left wall
+  quad(B_FR, B_BR, T_BR, T_FR); // right wall
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+
+  const shell = new THREE.Mesh(geo, trayMat);
+  shell.castShadow = true;
+  shell.receiveShadow = true;
+  g.add(shell);
+
+  // rolled rim around the opening
+  const rimCurve = new THREE.CatmullRomCurve3(
+    [T_FL, T_FR, T_BR, T_BL].map(p => new THREE.Vector3(...p)),
+    true, 'catmullrom', 0.35
+  );
+  const rimMesh = new THREE.Mesh(
+    new THREE.TubeGeometry(rimCurve, 120, 0.02, 14, true),
+    frameMat
+  );
+  rimMesh.castShadow = true;
+  rimMesh.receiveShadow = true;
+  g.add(rimMesh);
+
+  g.position.set(0.02, 0.28, 0);
+  g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  barrow.add(g);
+}
+buildTray();
+
+// ---------------------------------------------------------------------------
+// FRAME — two long tubular handle rails (grips at back, wheel fork at front)
+// ---------------------------------------------------------------------------
+const railL = [
+  [-1.02, 0.55, 0.185],
+  [-0.72, 0.42, 0.200],
+  [-0.40, 0.33, 0.215],
+  [-0.05, 0.305, 0.235],
+  [ 0.30, 0.275, 0.160],
+  [ 0.60, 0.215, 0.078]
+];
+const railR = mirrorZ(railL);
+
+tube(railL, 0.024, frameMat);
+tube(railR, 0.024, frameMat);
+
+// worn grips on the rear ends
+const gripL = [railL[0], [
+  railL[0][0] * 0.62 + railL[1][0] * 0.38,
+  railL[0][1] * 0.62 + railL[1][1] * 0.38,
+  railL[0][2] * 0.62 + railL[1][2] * 0.38
+]];
+const gripR = mirrorZ(gripL);
+tube(gripL, 0.03, gripMat, false, 24);
+tube(gripR, 0.03, gripMat, false, 24);
+addMesh(new THREE.SphereGeometry(0.03, 16, 12), gripMat).position.set(railL[0][0], railL[0][1], railL[0][2]);
+addMesh(new THREE.SphereGeometry(0.03, 16, 12), gripMat).position.set(railR[0][0], railR[0][1], railR[0][2]);
+
+// cross members that the tray sits on
+tube([[ 0.30, 0.272,  0.16], [ 0.30, 0.272, -0.16]], 0.02, frameMat, false, 8);
+tube([[-0.38, 0.328,  0.212], [-0.38, 0.328, -0.212]], 0.02, frameMat, false, 8);
+
+// ---------------------------------------------------------------------------
+// FRONT SUPPORT LEGS — a small U-shaped stand at the rear-bottom
+// ---------------------------------------------------------------------------
+const legL = [[-0.40, 0.33, 0.215], [-0.44, 0.14, 0.222], [-0.455, 0.03, 0.225]];
+const legR = mirrorZ(legL);
+tube(legL, 0.019, frameMat, false, 24);
+tube(legR, 0.019, frameMat, false, 24);
+// bottom crossbar of the stand (ground contact at back)
+tube([[-0.455, 0.03, 0.225], [-0.455, 0.03, -0.225]], 0.019, frameMat, false, 8);
+// little foot pads
+[[-0.455, 0.03, 0.225], [-0.455, 0.03, -0.225]].forEach(f => {
+  const pad = addMesh(new THREE.CylinderGeometry(0.03, 0.034, 0.03, 16), gripMat);
+  pad.position.set(f[0], 0.015, f[2]);
+});
+
+// ---------------------------------------------------------------------------
+// WHEEL — single worn rubber wheel with a steel rim/hub at the front
+// ---------------------------------------------------------------------------
+const wheel = new THREE.Group();
+wheel.position.set(0.60, 0.205, 0);
+barrow.add(wheel);
+
+function wAdd(mesh) { mesh.castShadow = true; mesh.receiveShadow = true; wheel.add(mesh); return mesh; }
+
+// tire (torus axis already along Z)
+wAdd(new THREE.Mesh(new THREE.TorusGeometry(0.15, 0.056, 22, 48), tireMat));
+// inner tread ring for a chunkier worn look
+const tread = wAdd(new THREE.Mesh(new THREE.TorusGeometry(0.152, 0.048, 20, 44), tireMat));
+// steel rim
+const wRim = wAdd(new THREE.Mesh(new THREE.CylinderGeometry(0.10, 0.10, 0.086, 28), rimMetalMat));
+wRim.rotation.x = Math.PI / 2;
+// hub
+const hub = wAdd(new THREE.Mesh(new THREE.CylinderGeometry(0.036, 0.036, 0.12, 20), hubMat));
+hub.rotation.x = Math.PI / 2;
+// spokes
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2;
+  const spoke = wAdd(new THREE.Mesh(new THREE.CylinderGeometry(0.01, 0.01, 0.066, 10), rimMetalMat));
+  spoke.position.set(Math.cos(a) * 0.068, Math.sin(a) * 0.068, 0);
+  spoke.rotation.z = a - Math.PI / 2;
+}
+
+// axle through the fork
+const axle = addMesh(new THREE.CylinderGeometry(0.02, 0.02, 0.20, 14), hubMat);
+axle.rotation.x = Math.PI / 2;
+axle.position.set(0.60, 0.205, 0);
+
+// ---------------------------------------------------------------------------
+// Center the whole assembly on the origin & rest it on the ground
+// ---------------------------------------------------------------------------
+barrow.updateWorldMatrix(true, true);
+const box = new THREE.Box3().setFromObject(barrow);
+const center = new THREE.Vector3();
+box.getCenter(center);
+barrow.position.x -= center.x;
+barrow.position.z -= center.z;
+barrow.position.y -= box.min.y;
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+controls.minDistance = 1.5;
+controls.maxDistance = 6.5;
+controls.maxPolarAngle = Math.PI * 0.5;
+controls.target.set(0, 0.32, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

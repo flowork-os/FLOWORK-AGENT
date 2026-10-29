@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Glowing Fantasy Potion</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #0b0c10; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<div id="app"></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene + background (procedural studio vignette)
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+
+function makeBackground() {
+  const c = document.createElement('canvas');
+  c.width = c.height = 512;
+  const g = c.getContext('2d');
+  const grd = g.createRadialGradient(256, 210, 30, 256, 300, 380);
+  grd.addColorStop(0.0, '#2b3140');
+  grd.addColorStop(0.45, '#181b23');
+  grd.addColorStop(1.0, '#08090d');
+  g.fillStyle = grd;
+  g.fillRect(0, 0, 512, 512);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+scene.background = makeBackground();
+
+// Procedural environment for realistic glass reflections / refraction
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// ---------------------------------------------------------------------------
+// Camera + controls
+// ---------------------------------------------------------------------------
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(4.6, 3.2, 6.2);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.enablePan = false;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 4;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.5 * 0.98;
+controls.target.set(0, 1.35, 0);
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + key/fill/rim, soft shadows
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0x9fb4d6, 0x161018, 0.55);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xffffff, 3.0);
+keyLight.position.set(5, 8, 4);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 26;
+keyLight.shadow.camera.left = -6;
+keyLight.shadow.camera.right = 6;
+keyLight.shadow.camera.top = 6;
+keyLight.shadow.camera.bottom = -6;
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.02;
+keyLight.shadow.radius = 4;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xffd9b0, 0.8);
+fillLight.position.set(-5, 2.5, 3);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xbfe9ff, 2.4);
+rimLight.position.set(-4, 5, -6);
+scene.add(rimLight);
+
+// ---------------------------------------------------------------------------
+// Bottle profile (radius as a function of height)
+// ---------------------------------------------------------------------------
+const OP = [
+  { y: 0.00, r: 0.00 },
+  { y: 0.02, r: 0.30 },
+  { y: 0.06, r: 0.46 },
+  { y: 0.15, r: 0.73 },
+  { y: 0.30, r: 0.95 },
+  { y: 0.48, r: 1.10 },
+  { y: 0.70, r: 1.19 },
+  { y: 0.92, r: 1.21 },
+  { y: 1.15, r: 1.16 },
+  { y: 1.38, r: 1.05 },
+  { y: 1.60, r: 0.90 },
+  { y: 1.80, r: 0.72 },
+  { y: 1.98, r: 0.55 },
+  { y: 2.12, r: 0.42 },
+  { y: 2.24, r: 0.33 },
+  { y: 2.34, r: 0.29 },
+  { y: 2.50, r: 0.275 },
+  { y: 2.72, r: 0.275 },
+  { y: 2.86, r: 0.30 },
+  { y: 2.96, r: 0.34 },
+  { y: 3.02, r: 0.33 },
+  { y: 3.05, r: 0.29 }
+];
+
+function findR(y) {
+  if (y <= OP[0].y) return OP[0].r;
+  if (y >= OP[OP.length - 1].y) return OP[OP.length - 1].r;
+  for (let i = 0; i < OP.length - 1; i++) {
+    if (y >= OP[i].y && y <= OP[i + 1].y) {
+      const t = (y - OP[i].y) / (OP[i + 1].y - OP[i].y);
+      return OP[i].r + t * (OP[i + 1].r - OP[i].r);
+    }
+  }
+  return OP[OP.length - 1].r;
+}
+
+const potion = new THREE.Group();
+scene.add(potion);
+
+// ---------------------------------------------------------------------------
+// Faceted glass flask
+// ---------------------------------------------------------------------------
+const glassPts = OP.map(p => new THREE.Vector2(p.r, p.y));
+const glassGeo = new THREE.LatheGeometry(glassPts, 12);
+
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.06,
+  transmission: 1.0,
+  thickness: 1.2,
+  ior: 1.46,
+  attenuationColor: new THREE.Color(0x74e9c6),
+  attenuationDistance: 3.0,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.14,
+  envMapIntensity: 1.35,
+  transparent: true,
+  side: THREE.DoubleSide,
+  flatShading: true
+});
+const glass = new THREE.Mesh(glassGeo, glassMat);
+glass.castShadow = true;
+potion.add(glass);
+
+// ---------------------------------------------------------------------------
+// Glowing, swirling emissive liquid (half-filled)
+// ---------------------------------------------------------------------------
+const fillY = 1.14;
+const inner = 0.90;
+
+const liquidPts = [];
+liquidPts.push(new THREE.Vector2(0.0, 0.05));
+liquidPts.push(new THREE.Vector2(findR(0.05) * inner, 0.05));
+for (const p of OP) {
+  if (p.y > 0.05 && p.y < fillY) liquidPts.push(new THREE.Vector2(p.r * inner, p.y));
+}
+const rFill = findR(fillY) * inner;
+liquidPts.push(new THREE.Vector2(rFill, fillY));
+liquidPts.push(new THREE.Vector2(rFill * 0.92, fillY + 0.012));
+liquidPts.push(new THREE.Vector2(0.0, fillY + 0.012));
+
+const liquidGeo = new THREE.LatheGeometry(liquidPts, 64);
+
+const liquidMat = new THREE.ShaderMaterial({
+  uniforms: {
+    uTime: { value: 0 },
+    uColorA: { value: new THREE.Color(0.02, 0.30, 0.24) },
+    uColorB: { value: new THREE.Color(0.10, 1.30, 0.85) }
+  },
+  vertexShader: /* glsl */`
+    varying vec3 vPos;
+    void main() {
+      vPos = position;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vPos;
+    uniform float uTime;
+    uniform vec3 uColorA;
+    uniform vec3 uColorB;
+
+    float hash(vec3 p){
+      p = fract(p * 0.3183099 + 0.1);
+      p *= 17.0;
+      return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+    }
+    float noise(vec3 x){
+      vec3 i = floor(x);
+      vec3 f = fract(x);
+      f = f * f * (3.0 - 2.0 * f);
+      return mix(mix(mix(hash(i + vec3(0,0,0)), hash(i + vec3(1,0,0)), f.x),
+                     mix(hash(i + vec3(0,1,0)), hash(i + vec3(1,1,0)), f.x), f.y),
+                 mix(mix(hash(i + vec3(0,0,1)), hash(i + vec3(1,0,1)), f.x),
+                     mix(hash(i + vec3(0,1,1)), hash(i + vec3(1,1,1)), f.x), f.y), f.z);
+    }
+    float fbm(vec3 p){
+      float v = 0.0, a = 0.5;
+      for (int i = 0; i < 5; i++) { v += a * noise(p); p *= 2.0; a *= 0.5; }
+      return v;
+    }
+
+    void main(){
+      vec3 p = vPos;
+      float ang = atan(p.z, p.x);
+      float rad = length(p.xz);
+      float swirl = ang * 1.5 + p.y * 2.0 - uTime * 0.8 + rad * 2.0;
+      vec3 q = vec3(cos(swirl) * rad, p.y * 1.5 - uTime * 0.3, sin(swirl) * rad);
+      float n1 = fbm(q * 1.8 + vec3(0.0, uTime * 0.2, 0.0));
+      float n2 = fbm(p * 2.6 + vec3(uTime * 0.15));
+      float m = mix(n1, n2, 0.5);
+      m = pow(clamp(m, 0.0, 1.0), 1.4);
+
+      vec3 col = mix(uColorA, uColorB, m);
+      float glow = smoothstep(0.2, 1.0, m);
+      col += uColorB * glow * 0.8;
+      float fil = smoothstep(0.62, 0.92, m);
+      col += vec3(0.6, 1.0, 0.9) * fil * 0.7;
+
+      gl_FragColor = vec4(col * 1.35, 1.0);
+    }
+  `,
+  side: THREE.FrontSide
+});
+const liquid = new THREE.Mesh(liquidGeo, liquidMat);
+potion.add(liquid);
+
+// Inner glow light so the liquid lights the glass from within
+const glowLight = new THREE.PointLight(0x30ffcf, 10, 8, 2);
+glowLight.position.set(0, 0.85, 0);
+potion.add(glowLight);
+
+// ---------------------------------------------------------------------------
+// Rising glow bubbles
+// ---------------------------------------------------------------------------
+const bubbleMat = new THREE.MeshStandardMaterial({
+  color: 0x061a15,
+  emissive: 0x35ffcf,
+  emissiveIntensity: 2.4,
+  roughness: 0.35,
+  metalness: 0.0
+});
+const bubbles = [];
+for (let i = 0; i < 7; i++) {
+  const r = 0.03 + Math.random() * 0.035;
+  const mesh = new THREE.Mesh(new THREE.SphereGeometry(r, 12, 12), bubbleMat);
+  const b = {
+    mesh,
+    ang: Math.random() * Math.PI * 2,
+    rad: 0.12 + Math.random() * 0.5,
+    speed: 0.14 + Math.random() * 0.2,
+    phase: Math.random(),
+    sway: 0.4 + Math.random() * 0.6
+  };
+  bubbles.push(b);
+  potion.add(mesh);
+}
+
+// ---------------------------------------------------------------------------
+// Cork stopper
+// ---------------------------------------------------------------------------
+const corkPts = [
+  new THREE.Vector2(0.00, 0.00),
+  new THREE.Vector2(0.255, 0.00),
+  new THREE.Vector2(0.265, 0.06),
+  new THREE.Vector2(0.268, 0.30),
+  new THREE.Vector2(0.300, 0.40),
+  new THREE.Vector2(0.345, 0.46),
+  new THREE.Vector2(0.350, 0.58),
+  new THREE.Vector2(0.330, 0.66),
+  new THREE.Vector2(0.240, 0.71),
+  new THREE.Vector2(0.000, 0.73)
+];
+const corkGeo = new THREE.LatheGeometry(corkPts, 20);
+// grainy displacement
+const cpos = corkGeo.attributes.position;
+for (let i = 0; i < cpos.count; i++) {
+  cpos.setX(i, cpos.getX(i) + (Math.random() - 0.5) * 0.008);
+  cpos.setY(i, cpos.getY(i) + (Math.random() - 0.5) * 0.006);
+  cpos.setZ(i, cpos.getZ(i) + (Math.random() - 0.5) * 0.008);
+}
+corkGeo.computeVertexNormals();
+const corkMat = new THREE.MeshStandardMaterial({
+  color: 0x9a6b3f,
+  roughness: 0.9,
+  metalness: 0.0,
+  flatShading: true
+});
+const cork = new THREE.Mesh(corkGeo, corkMat);
+cork.position.y = 2.66;
+cork.castShadow = true;
+potion.add(cork);
+
+// ---------------------------------------------------------------------------
+// Paper tag tied to the neck (string + tie ring + extruded rounded tag)
+// ---------------------------------------------------------------------------
+const twineMat = new THREE.MeshStandardMaterial({ color: 0xd8c59a, roughness: 0.9, metalness: 0.0 });
+
+// tie ring around the neck
+const tieRing = new THREE.Mesh(new THREE.TorusGeometry(0.30, 0.016, 8, 28), twineMat);
+tieRing.rotation.x = Math.PI / 2;
+tieRing.rotation.z = 0.15;
+tieRing.position.y = 2.55;
+tieRing.castShadow = true;
+potion.add(tieRing);
+
+// string from the ring to the tag hole
+const stringCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(0.30, 2.55, 0.02),
+  new THREE.Vector3(0.42, 2.44, 0.09),
+  new THREE.Vector3(0.55, 2.34, 0.15),
+  new THREE.Vector3(0.62, 2.28, 0.18)
+]);
+const stringMesh = new THREE.Mesh(new THREE.TubeGeometry(stringCurve, 28, 0.012, 6, false), twineMat);
+stringMesh.castShadow = true;
+potion.add(stringMesh);
+
+// the tag itself
+function roundedRectPath(shape, w, h, r) {
+  const x = -w / 2, y = -h / 2;
+  shape.moveTo(x + r, y);
+  shape.lineTo(x + w - r, y);
+  shape.quadraticCurveTo(x + w, y, x + w, y + r);
+  shape.lineTo(x + w, y + h - r);
+  shape.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  shape.lineTo(x + r, y + h);
+  shape.quadraticCurveTo(x, y + h, x, y + h - r);
+  shape.lineTo(x, y + r);
+  shape.quadraticCurveTo(x, y, x + r, y);
+}
+const tagW = 0.5, tagH = 0.66;
+const tagShape = new THREE.Shape();
+roundedRectPath(tagShape, tagW, tagH, 0.07);
+const holeY = tagH / 2 - 0.10;
+const tagHole = new THREE.Path();
+tagHole.absarc(0, holeY, 0.035, 0, Math.PI * 2, true);
+tagShape.holes.push(tagHole);
+
+const tagGeo = new THREE.ExtrudeGeometry(tagShape, {
+  depth: 0.02, bevelEnabled: true, bevelThickness: 0.006, bevelSize: 0.006, bevelSegments: 1, steps: 1
+});
+tagGeo.translate(0, -holeY, -0.01); // move string-hole to local origin
+
+const tagMat = new THREE.MeshStandardMaterial({
+  color: 0xe9ddc0, roughness: 0.95, metalness: 0.0, side: THREE.DoubleSide
+});
+const tag = new THREE.Mesh(tagGeo, tagMat);
+tag.castShadow = true;
+
+const tagGroup = new THREE.Group();
+tagGroup.add(tag);
+tagGroup.position.set(0.62, 2.28, 0.18);
+tagGroup.rotation.set(0.18, 0.55, -0.24);
+potion.add(tagGroup);
+
+// faint magical rune on the tag
+const rune = new THREE.Mesh(
+  new THREE.TorusGeometry(0.07, 0.012, 8, 24),
+  new THREE.MeshStandardMaterial({ color: 0x0a221c, emissive: 0x35ffcf, emissiveIntensity: 1.4, roughness: 0.5 })
+);
+rune.position.set(0, -0.16, 0.022);
+tagGroup.add(rune);
+
+// ---------------------------------------------------------------------------
+// Ground plane that only receives shadows
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Post-processing: subtle bloom for the inner glow
+// ---------------------------------------------------------------------------
+const composer = new EffectComposer(renderer);
+composer.setPixelRatio(renderer.getPixelRatio());
+composer.setSize(window.innerWidth, window.innerHeight);
+composer.addPass(new RenderPass(scene, camera));
+const bloomPass = new UnrealBloomPass(
+  new THREE.Vector2(window.innerWidth, window.innerHeight),
+  0.6, 0.6, 0.85
+);
+composer.addPass(bloomPass);
+composer.addPass(new OutputPass());
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  const w = window.innerWidth, h = window.innerHeight;
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+  renderer.setSize(w, h);
+  composer.setSize(w, h);
+  bloomPass.setSize(w, h);
+});
+
+// ---------------------------------------------------------------------------
+// Animate
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  liquidMat.uniforms.uTime.value = t;
+  glowLight.intensity = 9.5 + Math.sin(t * 3.0) * 1.2 + Math.sin(t * 7.3) * 0.6;
+
+  for (const b of bubbles) {
+    const frac = ((t * b.speed + b.phase) % 1);
+    const y = 0.14 + frac * (fillY - 0.28);
+    const a = b.ang + Math.sin(t * 1.4 + b.phase * 6.28) * b.sway;
+    const rr = b.rad * (1.0 - frac * 0.35);
+    b.mesh.position.set(Math.cos(a) * rr, y, Math.sin(a) * rr);
+    const s = 0.6 + 0.5 * Math.sin(frac * Math.PI);
+    b.mesh.scale.setScalar(s);
+  }
+
+  controls.update();
+  composer.render();
+}
+animate();
+</script>
+</body>
+</html>

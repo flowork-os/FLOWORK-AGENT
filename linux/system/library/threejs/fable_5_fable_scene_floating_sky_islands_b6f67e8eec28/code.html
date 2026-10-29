@@ -1,0 +1,776 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Floating Sky Islands</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #9fd0f0; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+// CONFIG & PALETTE (ghibli-inspired bright fantasy sky)
+// ============================================================
+const SEED = 20250815;
+const PAL = {
+  skyTop: '#3d7ecf', skyMid: '#8cc2ec', skyLow: '#e9f6ff', horizon: '#fdf3da',
+  fog: 0xd2e9f9,
+  grass: 0x74bb52, dirt: 0x8a6746, rock: 0x8d8174,
+  plaster: 0xf4ecd8, timber: 0x6f4a2c, roof: 0xb75840,
+  wood: 0x8a5a33, rope: 0xd8c091,
+  water: 0xaadcef, leaf: 0x5da84e, leafLight: 0x93cc66, trunk: 0x6e4c30,
+  balloonA: '#e9daba', balloonB: '#c4604a',
+  bird: 0x46536b, flag: 0xe2574b, sun: 0xfff4cf
+};
+
+// ============================================================
+// SEEDED PRNG & SMALL HELPERS
+// ============================================================
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(SEED);
+// Deterministic, seam-safe pseudo noise keyed on position (0..1).
+function hnoise(x, y, z) {
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+// Smooth grassy mound height used both to displace island caps and to seat props.
+function capHeight(x, z, ph) {
+  const mound = 0.5 + 0.5 * Math.sin(x * 0.42 + 1.3 + ph) * Math.cos(z * 0.38 - 0.7 + ph);
+  return mound * 0.55 + hnoise(x, 0, z) * 0.14;
+}
+// Thin cylinder strut between two points (ropes, spars).
+function strut(p1, p2, r, mat) {
+  const dir = p2.clone().sub(p1);
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, dir.length(), 5), mat);
+  m.position.copy(p1).add(p2).multiplyScalar(0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize());
+  return m;
+}
+
+// ============================================================
+// CANVAS TEXTURES (all procedural)
+// ============================================================
+function makeCanvasTex(w, h, draw) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  return t;
+}
+const texRng = mulberry32(SEED ^ 0x9e37);
+const grassTex = makeCanvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#74bb52'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 1600; i++) {
+    const shade = ['#68ae47', '#7fc45c', '#8ecd68', '#5da046'][Math.floor(texRng() * 4)];
+    g.fillStyle = shade;
+    g.fillRect(texRng() * w, texRng() * h, 2 + texRng() * 3, 2 + texRng() * 3);
+  }
+  g.strokeStyle = 'rgba(60,110,40,0.35)';
+  for (let i = 0; i < 220; i++) {
+    const x = texRng() * w, y = texRng() * h;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + texRng() * 3 - 1.5, y - 4 - texRng() * 4); g.stroke();
+  }
+});
+const rockTex = makeCanvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#8d8174'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 380; i++) {
+    g.fillStyle = ['#847767', '#97897b', '#7c6f60', '#a0937f'][Math.floor(texRng() * 4)];
+    const r = 4 + texRng() * 16;
+    g.beginPath(); g.arc(texRng() * w, texRng() * h, r, 0, Math.PI * 2); g.fill();
+  }
+  g.strokeStyle = 'rgba(70,60,50,0.4)';
+  for (let i = 0; i < 60; i++) {
+    const x = texRng() * w, y = texRng() * h;
+    g.beginPath(); g.moveTo(x, y); g.lineTo(x + texRng() * 26 - 13, y + texRng() * 26 - 13); g.stroke();
+  }
+});
+const woodTex = makeCanvasTex(128, 128, (g, w, h) => {
+  g.fillStyle = '#8a5a33'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 26; i++) {
+    g.strokeStyle = 'rgba(' + (70 + texRng() * 40) + ',' + (44 + texRng() * 22) + ',22,0.55)';
+    g.lineWidth = 1 + texRng() * 2;
+    const y = texRng() * h;
+    g.beginPath(); g.moveTo(0, y);
+    g.bezierCurveTo(w * 0.3, y + texRng() * 8 - 4, w * 0.7, y - texRng() * 8 + 4, w, y);
+    g.stroke();
+  }
+});
+function makeFallTex() {
+  return makeCanvasTex(128, 256, (g, w, h) => {
+    g.fillStyle = 'rgba(205,235,248,0.9)'; g.fillRect(0, 0, w, h);
+    for (let i = 0; i < 90; i++) {
+      const x = texRng() * w, lw = 2 + texRng() * 6;
+      g.fillStyle = texRng() < 0.55 ? 'rgba(255,255,255,0.8)' : 'rgba(150,205,235,0.7)';
+      g.fillRect(x, 0, lw, h);
+    }
+  });
+}
+const balloonTex = makeCanvasTex(256, 128, (g, w, h) => {
+  for (let i = 0; i < 12; i++) {
+    g.fillStyle = i % 2 ? PAL.balloonB : PAL.balloonA;
+    g.fillRect((i * w) / 12, 0, w / 12 + 1, h);
+  }
+  g.fillStyle = 'rgba(90,50,30,0.25)'; g.fillRect(0, h * 0.47, w, 4);
+});
+const skyTex = makeCanvasTex(64, 512, (g, w, h) => {
+  const grad = g.createLinearGradient(0, 0, 0, h);
+  grad.addColorStop(0, PAL.skyTop); grad.addColorStop(0.45, PAL.skyMid);
+  grad.addColorStop(0.72, PAL.skyLow); grad.addColorStop(1, PAL.horizon);
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+});
+const softTex = makeCanvasTex(64, 64, (g, w, h) => {
+  const grad = g.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)'); grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, w, h);
+});
+grassTex.repeat.set(3, 3);
+
+// ============================================================
+// MATERIALS (single shared palette)
+// ============================================================
+const MAT = {
+  grass: new THREE.MeshStandardMaterial({ map: grassTex, color: 0xffffff, roughness: 0.95 }),
+  rock: new THREE.MeshStandardMaterial({ map: rockTex, roughness: 1, flatShading: true }),
+  dirt: new THREE.MeshStandardMaterial({ color: PAL.dirt, roughness: 1 }),
+  plaster: new THREE.MeshStandardMaterial({ color: PAL.plaster, roughness: 0.9 }),
+  timber: new THREE.MeshStandardMaterial({ color: PAL.timber, roughness: 0.85 }),
+  roof: new THREE.MeshStandardMaterial({ color: PAL.roof, roughness: 0.8 }),
+  wood: new THREE.MeshStandardMaterial({ map: woodTex, roughness: 0.85 }),
+  rope: new THREE.MeshStandardMaterial({ color: PAL.rope, roughness: 1 }),
+  water: new THREE.MeshStandardMaterial({ color: PAL.water, roughness: 0.15, transparent: true, opacity: 0.92 }),
+  leaf: new THREE.MeshStandardMaterial({ color: PAL.leaf, roughness: 0.9 }),
+  leafLight: new THREE.MeshStandardMaterial({ color: PAL.leafLight, roughness: 0.9 }),
+  trunk: new THREE.MeshStandardMaterial({ color: PAL.trunk, roughness: 1 }),
+  balloon: new THREE.MeshStandardMaterial({ map: balloonTex, roughness: 0.6 }),
+  cloud: new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 1, transparent: true, opacity: 0.92 }),
+  bird: new THREE.MeshStandardMaterial({ color: PAL.bird, roughness: 0.8, side: THREE.DoubleSide }),
+  flag: new THREE.MeshStandardMaterial({ color: PAL.flag, roughness: 0.8, side: THREE.DoubleSide }),
+  glass: new THREE.MeshStandardMaterial({ color: 0xbfe2f2, roughness: 0.2, metalness: 0.1 }),
+  mist: new THREE.PointsMaterial({ map: softTex, size: 2.1, transparent: true, opacity: 0.5, depthWrite: false }),
+  smoke: new THREE.MeshStandardMaterial({ color: 0xf2f2ee, transparent: true, opacity: 0.5, depthWrite: false })
+};
+
+// ============================================================
+// BUILDER FUNCTIONS (each returns a THREE.Group)
+// ============================================================
+// --- Floating island: bumpy grass cap over a jagged rock cone ---
+function buildIsland(radius, depth, ph) {
+  const g = new THREE.Group();
+  g.userData.ph = ph;
+  const cap = new THREE.CylinderGeometry(radius, radius * 1.04, 1.4, 30, 2);
+  let pos = cap.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const rad = Math.hypot(x, z);
+    if (rad > radius * 0.55) {
+      const j = (hnoise(x, 0, z) - 0.5) * radius * 0.07;
+      pos.setX(i, x + (x / rad) * j); pos.setZ(i, z + (z / rad) * j);
+    }
+    if (y > 0.65) pos.setY(i, y + capHeight(pos.getX(i), pos.getZ(i), ph));
+  }
+  cap.computeVertexNormals();
+  cap.translate(0, -0.7, 0);
+  const capMesh = new THREE.Mesh(cap, MAT.grass);
+  capMesh.castShadow = capMesh.receiveShadow = true;
+  g.add(capMesh);
+  const cone = new THREE.ConeGeometry(radius * 1.0, depth, 26, 6);
+  cone.rotateX(Math.PI);
+  pos = cone.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const rad = Math.hypot(x, z);
+    if (rad > 0.15) {
+      const fade = 1 - Math.abs(y - depth / 2) / depth;
+      const j = (hnoise(x, y, z) - 0.5) * radius * 0.28 * (0.35 + fade);
+      pos.setX(i, x + (x / rad) * j); pos.setZ(i, z + (z / rad) * j);
+      pos.setY(i, y + (hnoise(z, x, y) - 0.5) * depth * 0.05);
+    }
+  }
+  cone.translate(0, -depth / 2 - 0.55, 0);
+  const rockMesh = new THREE.Mesh(cone, MAT.rock);
+  rockMesh.castShadow = rockMesh.receiveShadow = true;
+  g.add(rockMesh);
+  return g;
+}
+// --- Ghibli puffball tree ---
+function buildTree(s) {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.14 * s, 0.24 * s, 1.7 * s, 7), MAT.trunk);
+  trunk.position.y = 0.85 * s;
+  trunk.castShadow = true;
+  g.add(trunk);
+  const puffGeo = new THREE.SphereGeometry(1, 12, 10);
+  for (let i = 0; i < 4; i++) {
+    const puff = new THREE.Mesh(puffGeo, i % 2 ? MAT.leafLight : MAT.leaf);
+    const a = (i / 4) * Math.PI * 2 + rng();
+    puff.position.set(Math.cos(a) * 0.45 * s, 1.9 * s + rng() * 0.5 * s, Math.sin(a) * 0.45 * s);
+    puff.scale.setScalar((0.6 + rng() * 0.35) * s);
+    puff.castShadow = true;
+    g.add(puff);
+  }
+  return g;
+}
+// --- Tiny plastered cottage with chimney smoke ---
+const smokePuffs = [];
+function buildCottage() {
+  const g = new THREE.Group();
+  const base = new THREE.Mesh(new THREE.BoxGeometry(4, 2.5, 3.1), MAT.plaster);
+  base.position.y = 1.15;
+  base.castShadow = base.receiveShadow = true;
+  g.add(base);
+  const gable = new THREE.Shape();
+  gable.moveTo(-2, 0); gable.lineTo(2, 0); gable.lineTo(0, 1.5); gable.closePath();
+  for (const zc of [1.54, -1.54]) {
+    const tri = new THREE.Mesh(new THREE.ShapeGeometry(gable), MAT.plaster);
+    tri.position.set(0, 2.4, zc);
+    tri.castShadow = true;
+    g.add(tri);
+  }
+  for (const sgn of [1, -1]) {
+    const slab = new THREE.Mesh(new THREE.BoxGeometry(2.6, 0.16, 3.7), MAT.roof);
+    slab.position.set(sgn * 1.05, 3.15, 0);
+    slab.rotation.z = sgn * -0.62;
+    slab.castShadow = true;
+    g.add(slab);
+  }
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.4, 0.08), MAT.timber);
+  door.position.set(-0.9, 0.72, 1.57);
+  g.add(door);
+  for (const wx of [0.9, -2.02]) {
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(wx > 0 ? 0.8 : 0.1, 0.8, wx > 0 ? 0.1 : 0.8), MAT.timber);
+    frame.position.set(wx > 0 ? 0.9 : -2.02, 1.5, wx > 0 ? 1.57 : 0.4);
+    g.add(frame);
+    const glass = new THREE.Mesh(new THREE.BoxGeometry(wx > 0 ? 0.6 : 0.06, 0.6, wx > 0 ? 0.14 : 0.6), MAT.glass);
+    glass.position.copy(frame.position);
+    g.add(glass);
+  }
+  const chimney = new THREE.Mesh(new THREE.BoxGeometry(0.55, 1.3, 0.55), MAT.timber);
+  chimney.position.set(1.2, 3.6, -0.5);
+  chimney.castShadow = true;
+  g.add(chimney);
+  for (let i = 0; i < 3; i++) {
+    const puff = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8), MAT.smoke.clone());
+    puff.position.set(1.2, 4.3, -0.5);
+    g.add(puff);
+    smokePuffs.push({ mesh: puff, y0: 4.3, speed: 0.14 + rng() * 0.05, off: i / 3 });
+  }
+  return g;
+}
+// --- Windmill tower with rotating sails ---
+let windmillBlades;
+function buildWindmill() {
+  const g = new THREE.Group();
+  const tower = new THREE.Mesh(new THREE.CylinderGeometry(1.05, 1.6, 5.6, 9), MAT.plaster);
+  tower.position.y = 2.8;
+  tower.castShadow = tower.receiveShadow = true;
+  g.add(tower);
+  const cap = new THREE.Mesh(new THREE.ConeGeometry(1.4, 1.5, 9), MAT.roof);
+  cap.position.y = 6.3;
+  cap.castShadow = true;
+  g.add(cap);
+  const door = new THREE.Mesh(new THREE.BoxGeometry(0.7, 1.25, 0.1), MAT.timber);
+  door.position.set(0, 0.75, 1.42);
+  g.add(door);
+  const hub = new THREE.Mesh(new THREE.CylinderGeometry(0.16, 0.16, 1.2, 7), MAT.timber);
+  hub.rotation.x = Math.PI / 2;
+  hub.position.set(0, 5.4, 1.15);
+  g.add(hub);
+  windmillBlades = new THREE.Group();
+  const sailGeo = new THREE.PlaneGeometry(0.85, 2.6);
+  sailGeo.translate(0, 1.9, 0);
+  const spokeGeo = new THREE.BoxGeometry(0.1, 3.3, 0.1);
+  spokeGeo.translate(0, 1.65, 0);
+  for (let i = 0; i < 4; i++) {
+    const arm = new THREE.Group();
+    const spoke = new THREE.Mesh(spokeGeo, MAT.timber);
+    const sail = new THREE.Mesh(sailGeo, new THREE.MeshStandardMaterial({ color: 0xf7f1e2, side: THREE.DoubleSide, roughness: 0.9 }));
+    sail.castShadow = true;
+    arm.add(spoke, sail);
+    arm.rotation.z = (i * Math.PI) / 2;
+    windmillBlades.add(arm);
+  }
+  windmillBlades.position.set(0, 5.4, 1.8);
+  g.add(windmillBlades);
+  return g;
+}
+// --- Waterfall sheet pouring into hanging mist ---
+const waterfalls = [];
+function buildWaterfall(drop, width) {
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(width, drop, 6, 16);
+  geo.translate(0, -drop / 2, 0);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const prog = -pos.getY(i) / drop;
+    pos.setZ(i, Math.sqrt(Math.max(prog, 0)) * 2.3 + Math.sin(pos.getX(i) * 3.1) * 0.07);
+  }
+  geo.computeVertexNormals();
+  const tex = makeFallTex();
+  tex.repeat.set(width / 3.2, drop / 5.5);
+  const mat = new THREE.MeshStandardMaterial({
+    map: tex, transparent: true, opacity: 0.85, roughness: 0.35,
+    side: THREE.DoubleSide, depthWrite: false, emissive: 0x9fc9de, emissiveIntensity: 0.25
+  });
+  g.add(new THREE.Mesh(geo, mat));
+  const pts = [];
+  for (let i = 0; i < 44; i++) {
+    const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * 2.3;
+    pts.push(Math.cos(a) * r, (rng() - 0.5) * 1.7, Math.sin(a) * r);
+  }
+  const mistGeo = new THREE.BufferGeometry();
+  mistGeo.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+  const mist = new THREE.Points(mistGeo, MAT.mist);
+  mist.position.set(0, -drop - 0.3, 2.3);
+  g.add(mist);
+  waterfalls.push({ tex, mist, phase: rng() * 6 });
+  return g;
+}
+// --- Rope bridge between two world-space deck anchors ---
+function buildRopeBridge(a, b) {
+  const g = new THREE.Group();
+  const span = a.distanceTo(b);
+  const dir = b.clone().sub(a); dir.y = 0; dir.normalize();
+  const perp = new THREE.Vector3(-dir.z, 0, dir.x);
+  const sag = span * 0.1;
+  const mid = a.clone().add(b).multiplyScalar(0.5).add(new THREE.Vector3(0, -sag, 0));
+  const deck = new THREE.QuadraticBezierCurve3(a, mid, b);
+  const n = Math.max(8, Math.round(span / 0.85));
+  const planks = new THREE.InstancedMesh(new THREE.BoxGeometry(1.5, 0.07, 0.52), MAT.wood, n);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < n; i++) {
+    const u = (i + 0.5) / n;
+    const p = deck.getPoint(u);
+    dummy.position.copy(p);
+    dummy.lookAt(p.clone().add(deck.getTangent(u)));
+    dummy.updateMatrix();
+    planks.setMatrixAt(i, dummy.matrix);
+  }
+  planks.castShadow = planks.receiveShadow = true;
+  g.add(planks);
+  for (const s of [[0.75, 0.06], [-0.75, 0.06], [0.75, 1.05], [-0.75, 1.05]]) {
+    const off = perp.clone().multiplyScalar(s[0]).add(new THREE.Vector3(0, s[1], 0));
+    const oa = a.clone().add(off), ob = b.clone().add(off);
+    const om = oa.clone().add(ob).multiplyScalar(0.5).add(new THREE.Vector3(0, -sag * (s[1] > 0.5 ? 0.75 : 1), 0));
+    const rope = new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(oa, om, ob), 24, 0.045, 5), MAT.rope);
+    rope.castShadow = true;
+    g.add(rope);
+  }
+  const posts = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.12, 1.4, 6), MAT.wood, 4);
+  let pi = 0;
+  for (const end of [a, b]) for (const sd of [0.75, -0.75]) {
+    dummy.position.copy(end).add(perp.clone().multiplyScalar(sd));
+    dummy.position.y += 0.5;
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    posts.setMatrixAt(pi++, dummy.matrix);
+  }
+  posts.castShadow = true;
+  g.add(posts);
+  return g;
+}
+// --- Small striped airship, pivoted at its mooring point ---
+let propeller;
+function buildAirship() {
+  const g = new THREE.Group();
+  const balloon = new THREE.Mesh(new THREE.SphereGeometry(1, 26, 18), MAT.balloon);
+  balloon.scale.set(3.2, 1.4, 1.4);
+  balloon.position.set(0.7, 4.7, 0);
+  balloon.castShadow = true;
+  g.add(balloon);
+  for (const [ry, rz] of [[0, 0], [0, Math.PI / 2], [0, -Math.PI / 2]]) {
+    const fin = new THREE.Mesh(new THREE.BoxGeometry(1.4, 0.09, 0.9), MAT.roof);
+    fin.position.set(-2.35, 4.7, 0);
+    fin.rotation.set(rz, ry, 0.35);
+    fin.castShadow = true;
+    g.add(fin);
+  }
+  const gondola = new THREE.Mesh(new THREE.BoxGeometry(2.2, 0.62, 0.95), MAT.wood);
+  gondola.position.set(0.7, 2.75, 0);
+  gondola.castShadow = true;
+  g.add(gondola);
+  const rail = new THREE.Mesh(new THREE.BoxGeometry(2.3, 0.08, 1.05), MAT.timber);
+  rail.position.set(0.7, 3.1, 0);
+  g.add(rail);
+  for (const dx of [-0.85, 0.85]) for (const dz of [-0.4, 0.4]) {
+    g.add(strut(new THREE.Vector3(0.7 + dx, 3.1, dz), new THREE.Vector3(0.7 + dx * 1.4, 4.2, dz * 1.6), 0.025, MAT.rope));
+  }
+  propeller = new THREE.Group();
+  for (let i = 0; i < 2; i++) {
+    const blade = new THREE.Mesh(new THREE.BoxGeometry(0.08, 1.0, 0.16), MAT.timber);
+    blade.rotation.z = i * Math.PI / 2;
+    propeller.add(blade);
+  }
+  propeller.rotation.y = Math.PI / 2;
+  propeller.position.set(-0.55, 2.75, 0);
+  g.add(propeller);
+  const moor = new THREE.Mesh(new THREE.TubeGeometry(new THREE.QuadraticBezierCurve3(
+    new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.9, 1.1, 0), new THREE.Vector3(1.75, 2.5, 0)), 16, 0.035, 5), MAT.rope);
+  g.add(moor);
+  return g;
+}
+// --- Mooring post with waving pennant ---
+let pennant;
+function buildMooringPost() {
+  const g = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.13, 2.4, 7), MAT.wood);
+  pole.position.y = 1.2;
+  pole.castShadow = true;
+  g.add(pole);
+  const arm = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.09, 0.09), MAT.wood);
+  arm.position.y = 2.25;
+  g.add(arm);
+  const shape = new THREE.Shape();
+  shape.moveTo(0, 0); shape.lineTo(0.85, 0.16); shape.lineTo(0, 0.34); shape.closePath();
+  pennant = new THREE.Mesh(new THREE.ShapeGeometry(shape), MAT.flag);
+  pennant.position.set(0.05, 2.02, 0);
+  g.add(pennant);
+  return g;
+}
+// --- Circling bird flock (flapping) ---
+let flock;
+function buildBirdFlock(count) {
+  flock = new THREE.Group();
+  const bodyGeo = new THREE.ConeGeometry(0.13, 0.75, 6);
+  bodyGeo.rotateX(Math.PI / 2);
+  const wingGeo = new THREE.PlaneGeometry(1.25, 0.42);
+  wingGeo.translate(0.62, 0, 0);
+  for (let i = 0; i < count; i++) {
+    const bird = new THREE.Group();
+    const body = new THREE.Mesh(bodyGeo, MAT.bird);
+    const wl = new THREE.Mesh(wingGeo, MAT.bird);
+    const wr = new THREE.Mesh(wingGeo, MAT.bird);
+    wl.rotation.y = Math.PI;
+    bird.add(body, wl, wr);
+    const a = (i / count) * Math.PI * 2 + rng() * 0.5;
+    const r = 9.5 + rng() * 4.5;
+    bird.position.set(Math.cos(a) * r, (rng() - 0.5) * 3, Math.sin(a) * r);
+    bird.rotation.y = -a;
+    bird.rotation.z = 0.22;
+    bird.userData = { wl, wr, ph: rng() * 6.28, y0: bird.position.y };
+    flock.add(bird);
+  }
+  return flock;
+}
+// --- Puffy drifting cloud ---
+function buildCloud(s, castShadows) {
+  const g = new THREE.Group();
+  const puffGeo = new THREE.SphereGeometry(1, 12, 10);
+  const n = 4 + Math.floor(rng() * 3);
+  for (let i = 0; i < n; i++) {
+    const puff = new THREE.Mesh(puffGeo, MAT.cloud);
+    const spread = (i / (n - 1) - 0.5) * 2;
+    puff.position.set(spread * s * 1.35, (rng() - 0.3) * 0.35 * s, (rng() - 0.5) * s * 0.75);
+    const ps = (1 - Math.abs(spread) * 0.45) * s * (0.62 + rng() * 0.3);
+    puff.scale.set(ps, ps * 0.6, ps);
+    puff.castShadow = castShadows;
+    g.add(puff);
+  }
+  return g;
+}
+// --- Jagged floating boulder ---
+function buildBoulder(size) {
+  const g = new THREE.Group();
+  const geo = new THREE.DodecahedronGeometry(size, 0);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const j = 0.72 + hnoise(x, y, z) * 0.5;
+    pos.setXYZ(i, x * j, y * (j * 0.85), z * j);
+  }
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, MAT.rock);
+  m.castShadow = m.receiveShadow = true;
+  g.add(m);
+  if (rng() < 0.5) {
+    const tuft = new THREE.Mesh(new THREE.SphereGeometry(size * 0.45, 8, 6), MAT.leafLight);
+    tuft.position.y = size * 0.72;
+    tuft.scale.y = 0.5;
+    g.add(tuft);
+  }
+  return g;
+}
+// --- Little picket fence run along +x ---
+function buildFence(len) {
+  const g = new THREE.Group();
+  const n = Math.max(2, Math.round(len / 0.75));
+  const posts = new THREE.InstancedMesh(new THREE.BoxGeometry(0.09, 0.85, 0.09), MAT.wood, n);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < n; i++) {
+    dummy.position.set((i / (n - 1)) * len, 0.35, 0);
+    dummy.updateMatrix();
+    posts.setMatrixAt(i, dummy.matrix);
+  }
+  posts.castShadow = true;
+  g.add(posts);
+  for (const h of [0.32, 0.62]) {
+    const rail = new THREE.Mesh(new THREE.BoxGeometry(len, 0.06, 0.05), MAT.wood);
+    rail.position.set(len / 2, h, 0);
+    g.add(rail);
+  }
+  return g;
+}
+
+// ============================================================
+// RENDERER / SCENE / CAMERA
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.fog);
+scene.fog = new THREE.Fog(PAL.fog, 75, 200);
+
+const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(38, 11, 46);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, -2.5, 0);
+controls.minDistance = 34;
+controls.maxDistance = 95;
+controls.maxPolarAngle = 2.05;
+
+// Sky dome + sun disc
+const dome = new THREE.Mesh(new THREE.SphereGeometry(230, 24, 16),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+scene.add(dome);
+const sunDisc = new THREE.Mesh(new THREE.CircleGeometry(15, 24),
+  new THREE.MeshBasicMaterial({ color: PAL.sun, fog: false }));
+sunDisc.position.set(118, 155, 58);
+sunDisc.lookAt(0, 0, 0);
+scene.add(sunDisc);
+
+// ============================================================
+// ASSEMBLY & LAYOUT
+// ============================================================
+const islandA = buildIsland(11, 13, 0);
+scene.add(islandA);
+const islandB = buildIsland(6.5, 9, 2.1);
+islandB.position.set(19, -3.5, -7);
+scene.add(islandB);
+const islandC = buildIsland(5.5, 8, 4.2);
+islandC.position.set(-17, -5, 7);
+scene.add(islandC);
+const islandD = buildIsland(3.2, 5, 1.2);
+const islandDY = -9;
+islandD.position.set(7, islandDY, 17);
+scene.add(islandD);
+// helper: seat a prop on an island cap
+function seat(island, obj, x, z, sink, ry) {
+  obj.position.set(x, capHeight(x, z, island.userData.ph) - sink, z);
+  if (ry !== undefined) obj.rotation.y = ry;
+  island.add(obj);
+}
+// main island props
+seat(islandA, buildCottage(), -3.6, 2.6, 0.14, 0.45);
+seat(islandA, buildWindmill(), 3.6, -4.8, 0.24, -0.5);
+seat(islandA, buildTree(1.25), -7.6, -3.6, 0.1);
+seat(islandA, buildTree(1.0), -0.6, 7.4, 0.1);
+seat(islandA, buildTree(0.85), 7.8, 1.6, 0.1);
+seat(islandA, buildFence(4.6), -6.3, 5.4, 0.1, 0.25);
+seat(islandA, buildFence(3.6), -6.5, 5.6, 0.1, 1.7);
+// pond + stream feeding the main waterfall
+const pond = new THREE.Mesh(new THREE.CircleGeometry(2.1, 22), MAT.water);
+pond.rotation.x = -Math.PI / 2;
+pond.position.set(6.2, 0.42, 3.4);
+islandA.add(pond);
+const basin = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 2.4, 0.45, 22), MAT.dirt);
+basin.position.set(6.2, 0.2, 3.4);
+islandA.add(basin);
+const stream = new THREE.Mesh(new THREE.PlaneGeometry(1.2, 3.6), MAT.water);
+stream.rotation.set(-Math.PI / 2, 0, -0.5);
+stream.position.set(7.7, 0.4, 4.2);
+islandA.add(stream);
+const wfA = buildWaterfall(14, 2.6);
+wfA.position.set(9.7, 0.32, 5.3);
+wfA.rotation.y = Math.PI / 2 - 0.5;
+islandA.add(wfA);
+// island B props
+seat(islandB, buildTree(1.05), -1.8, 2.4, 0.1);
+seat(islandB, buildTree(0.8), 2.6, 1.8, 0.1);
+const wfB = buildWaterfall(10, 1.9);
+wfB.position.set(5.6, 0.3, -2.1);
+wfB.rotation.y = Math.PI / 2 + 0.36;
+islandB.add(wfB);
+// island C: mooring post + airship
+seat(islandC, buildMooringPost(), 0.6, 0.4, 0.12);
+const airship = buildAirship();
+airship.position.set(0.6, capHeight(0.6, 0.4, 4.2) + 2.15, 0.4);
+airship.rotation.y = 0.5;
+islandC.add(airship);
+seat(islandC, buildTree(0.9), -2.4, -1.6, 0.1);
+// island D: lone tree
+seat(islandD, buildTree(0.7), 0.4, -0.3, 0.1);
+// meadow scatter on the main island (instanced tufts + flowers)
+const tuftGeo = new THREE.ConeGeometry(0.07, 0.42, 5);
+const tufts = new THREE.InstancedMesh(tuftGeo, new THREE.MeshStandardMaterial({ roughness: 1 }), 110);
+const flowerGeo = new THREE.SphereGeometry(0.11, 6, 5);
+const flowers = new THREE.InstancedMesh(flowerGeo, new THREE.MeshStandardMaterial({ roughness: 0.7 }), 60);
+{
+  const dummy = new THREE.Object3D();
+  const col = new THREE.Color();
+  for (let i = 0; i < 110; i++) {
+    const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * 9.6;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    dummy.position.set(x, capHeight(x, z, 0) + 0.06, z);
+    dummy.rotation.y = rng() * 3;
+    dummy.updateMatrix();
+    tufts.setMatrixAt(i, dummy.matrix);
+    tufts.setColorAt(i, col.setHSL(0.29 + rng() * 0.06, 0.55, 0.38 + rng() * 0.12));
+  }
+  const petals = [0xf2f0e8, 0xe8b7c9, 0xf0d060];
+  for (let i = 0; i < 60; i++) {
+    const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * 9.2;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r;
+    dummy.position.set(x, capHeight(x, z, 0) + 0.05, z);
+    dummy.rotation.y = 0;
+    dummy.updateMatrix();
+    flowers.setMatrixAt(i, dummy.matrix);
+    flowers.setColorAt(i, col.set(petals[Math.floor(rng() * 3)]));
+  }
+}
+islandA.add(tufts, flowers);
+// rope bridges (world space)
+scene.add(buildRopeBridge(new THREE.Vector3(9.9, 0.5, -3.7), new THREE.Vector3(13.2, -3.0, -4.9)));
+scene.add(buildRopeBridge(new THREE.Vector3(-9.8, 0.5, 4.1), new THREE.Vector3(-12.1, -4.4, 5.0)));
+// circling birds below the cluster
+scene.add(buildBirdFlock(9));
+flock.position.set(3, -14.5, 3);
+// floating boulders
+const boulders = new THREE.Group();
+for (let i = 0; i < 10; i++) {
+  const b = buildBoulder(0.7 + rng() * 1.3);
+  const a = rng() * Math.PI * 2, r = 13 + rng() * 17;
+  b.position.set(Math.cos(a) * r, -7 + rng() * 12, Math.sin(a) * r);
+  b.rotation.y = rng() * 6;
+  b.userData = { y0: b.position.y, sp: 0.35 + rng() * 0.5, ph: rng() * 6.28, rot: (rng() - 0.5) * 0.3 };
+  boulders.add(b);
+}
+scene.add(boulders);
+// drifting clouds: a high shadow-casting layer + a soft layer far below
+const clouds = [];
+for (let i = 0; i < 4; i++) {
+  const c = buildCloud(2.6 + rng() * 1.6, true);
+  c.position.set(-55 + i * 28 + rng() * 10, 14 + rng() * 5, -22 + rng() * 36);
+  scene.add(c);
+  clouds.push({ mesh: c, speed: 1.1 + rng() * 0.9 });
+}
+for (let i = 0; i < 3; i++) {
+  const c = buildCloud(4.5 + rng() * 2, false);
+  c.position.set(-60 + i * 40 + rng() * 14, -19 - rng() * 4, -30 + rng() * 55);
+  scene.add(c);
+  clouds.push({ mesh: c, speed: 0.6 + rng() * 0.5 });
+}
+
+// ============================================================
+// LIGHTING RIG
+// ============================================================
+const hemi = new THREE.HemisphereLight(0xbfdfff, 0x87a86a, 0.85);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xfff1d6, 2.7);
+sun.position.set(30, 40, 15);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -38; sun.shadow.camera.right = 38;
+sun.shadow.camera.top = 38; sun.shadow.camera.bottom = -38;
+sun.shadow.camera.near = 5; sun.shadow.camera.far = 130;
+sun.shadow.bias = -0.0004;
+scene.add(sun, sun.target);
+const bounce = new THREE.DirectionalLight(0xcfe4ff, 0.4);
+bounce.position.set(-25, -12, -20);
+scene.add(bounce);
+
+// ============================================================
+// ANIMATION LOOP
+// ============================================================
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+  controls.update();
+  // windmill sails
+  if (windmillBlades) windmillBlades.rotation.z -= dt * 0.9;
+  // waterfalls flow + mist breathing
+  for (const wf of waterfalls) {
+    wf.tex.offset.y += dt * 0.55;
+    wf.mist.rotation.y += dt * 0.35;
+    const p = 1 + Math.sin(t * 2.0 + wf.phase) * 0.14;
+    wf.mist.scale.set(p, 1, p);
+  }
+  // birds circle + flap
+  flock.rotation.y -= dt * 0.34;
+  for (const b of flock.children) {
+    const f = Math.sin(t * 7 + b.userData.ph) * 0.55 + 0.15;
+    b.userData.wl.rotation.z = f;
+    b.userData.wr.rotation.z = f;
+    b.position.y = b.userData.y0 + Math.sin(t * 1.2 + b.userData.ph) * 0.5;
+  }
+  // clouds drift and wrap
+  for (const c of clouds) {
+    c.mesh.position.x += dt * c.speed;
+    if (c.mesh.position.x > 72) c.mesh.position.x = -72;
+  }
+  // moored airship sways; propeller idles
+  airship.rotation.z = Math.sin(t * 0.45) * 0.04;
+  airship.rotation.x = Math.cos(t * 0.36) * 0.03;
+  propeller.rotation.x += dt * 6;
+  pennant.rotation.y = 0.3 + Math.sin(t * 2.6) * 0.45;
+  // small island + boulders bob gently
+  islandD.position.y = islandDY + Math.sin(t * 0.55) * 0.6;
+  for (const bo of boulders.children) {
+    bo.position.y = bo.userData.y0 + Math.sin(t * bo.userData.sp + bo.userData.ph) * 0.55;
+    bo.rotation.y += dt * bo.userData.rot;
+  }
+  // chimney smoke rises and fades
+  for (const s of smokePuffs) {
+    const life = (t * s.speed + s.off) % 1;
+    s.mesh.position.y = s.y0 + life * 2.6;
+    s.mesh.scale.setScalar(0.4 + life * 1.1);
+    s.mesh.material.opacity = 0.5 * (1 - life);
+  }
+  renderer.render(scene, camera);
+}
+animate();
+
+// ============================================================
+// RESIZE
+// ============================================================
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

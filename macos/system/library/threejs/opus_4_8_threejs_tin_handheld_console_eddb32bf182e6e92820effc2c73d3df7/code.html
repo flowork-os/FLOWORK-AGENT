@@ -1,0 +1,617 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Tin-Toy Handheld Game Console</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #17191c; overflow: hidden; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 12px; bottom: 10px;
+    font: 12px/1.4 -apple-system, system-ui, sans-serif;
+    color: #9aa2ab; letter-spacing: .3px; user-select: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Retro tin-toy handheld · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer
+--------------------------------------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
+
+/* ---------------------------------------------------------------------------
+   Scene & Camera
+--------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17191c);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.17, 0.11, 0.32);
+
+// Subtle procedural studio environment for believable metal reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere + key/fill/rim, soft shadows
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0x9fb2c4, 0x2b2622, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e0, 2.7);
+key.position.set(0.26, 0.42, 0.34);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.05;
+key.shadow.camera.far = 1.4;
+key.shadow.camera.left = -0.16;
+key.shadow.camera.right = 0.16;
+key.shadow.camera.top = 0.16;
+key.shadow.camera.bottom = -0.16;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xaaccff, 0.7);
+fill.position.set(-0.32, 0.12, 0.22);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.25);
+rim.position.set(-0.16, 0.28, -0.36);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Ground plane — receives shadows only
+--------------------------------------------------------------------------- */
+const groundY = -0.0835;
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(0.7, 64),
+  new THREE.ShadowMaterial({ opacity: 0.38 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = groundY;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Canvas texture helpers
+--------------------------------------------------------------------------- */
+function makeCanvas(w, h) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return c;
+}
+function toTex(canvas, srgb = true) {
+  const t = new THREE.CanvasTexture(canvas);
+  t.anisotropy = MAX_ANISO;
+  if (srgb) t.colorSpace = THREE.SRGBColorSpace;
+  t.needsUpdate = true;
+  return t;
+}
+function roundRect(ctx, x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function halftone(ctx, x, y, w, h, step, rad, color, alpha) {
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = color;
+  for (let yy = y; yy < y + h; yy += step) {
+    for (let xx = x; xx < x + w; xx += step) {
+      ctx.beginPath();
+      ctx.arc(xx, yy, rad, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+function scuffs(ctx, w, h, count) {
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const x = Math.random() * w, y = Math.random() * h;
+    const len = 8 + Math.random() * 90, a = Math.random() * Math.PI;
+    ctx.strokeStyle = Math.random() > 0.5 ? 'rgba(255,255,255,0.11)' : 'rgba(0,0,0,0.15)';
+    ctx.lineWidth = 0.6 + Math.random() * 1.8;
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + Math.cos(a) * len, y + Math.sin(a) * len);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+function edgeWear(ctx, w, h) {
+  // worn-to-silver flecks near the borders
+  ctx.save();
+  const margin = Math.min(w, h) * 0.06;
+  for (let i = 0; i < 260; i++) {
+    let x, y;
+    if (Math.random() < 0.5) { x = Math.random() * w; y = Math.random() < 0.5 ? Math.random() * margin : h - Math.random() * margin; }
+    else { y = Math.random() * h; x = Math.random() < 0.5 ? Math.random() * margin : w - Math.random() * margin; }
+    ctx.globalAlpha = 0.05 + Math.random() * 0.22;
+    ctx.fillStyle = Math.random() > 0.4 ? '#d9dde0' : '#8f9498';
+    const s = 1 + Math.random() * 3;
+    ctx.fillRect(x, y, s, s);
+  }
+  ctx.restore();
+}
+function regMark(ctx, x, y, col) {
+  ctx.save();
+  ctx.strokeStyle = col; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo(x - 9, y); ctx.lineTo(x + 9, y);
+  ctx.moveTo(x, y - 9); ctx.lineTo(x, y + 9); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x, y, 6, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+/* ---------------------------------------------------------------------------
+   Body litho texture (wraps the tin box)
+--------------------------------------------------------------------------- */
+function makeLithoTexture() {
+  const W = 1024, H = 1024;
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext('2d');
+  // teal base
+  ctx.fillStyle = '#1f7f86';
+  ctx.fillRect(0, 0, W, H);
+  // subtle vertical print variation
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, 'rgba(255,255,255,0.06)');
+  g.addColorStop(0.5, 'rgba(0,0,0,0.0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.10)');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // orange band low
+  ctx.fillStyle = '#e07a2b';
+  ctx.fillRect(0, H * 0.66, W, H * 0.20);
+  ctx.fillStyle = '#c85f22';
+  ctx.fillRect(0, H * 0.66, W, 10);
+  // decorative dashes
+  ctx.fillStyle = 'rgba(255,246,230,0.5)';
+  for (let x = 0; x < W; x += 46) ctx.fillRect(x, H * 0.62, 24, 6);
+  // printed stars
+  ctx.fillStyle = 'rgba(255,244,220,0.35)';
+  for (let i = 0; i < 40; i++) {
+    const x = Math.random() * W, y = Math.random() * H * 0.6, s = 4 + Math.random() * 8;
+    ctx.beginPath();
+    for (let k = 0; k < 5; k++) {
+      const a = -Math.PI / 2 + k * (Math.PI * 2 / 5);
+      ctx.lineTo(x + Math.cos(a) * s, y + Math.sin(a) * s);
+      const a2 = a + Math.PI / 5;
+      ctx.lineTo(x + Math.cos(a2) * s * 0.45, y + Math.sin(a2) * s * 0.45);
+    }
+    ctx.closePath(); ctx.fill();
+  }
+  halftone(ctx, 0, 0, W, H, 7, 0.9, 'rgba(0,0,0,0.10)', 0.5);
+  scuffs(ctx, W, H, 220);
+  edgeWear(ctx, W, H);
+  // corner vignette
+  const rg = ctx.createRadialGradient(W/2, H/2, W*0.2, W/2, H/2, W*0.72);
+  rg.addColorStop(0, 'rgba(0,0,0,0)');
+  rg.addColorStop(1, 'rgba(0,0,0,0.28)');
+  ctx.fillStyle = rg; ctx.fillRect(0, 0, W, H);
+  return toTex(c);
+}
+
+/* ---------------------------------------------------------------------------
+   Front decal texture (printed layout under the 3D controls)
+--------------------------------------------------------------------------- */
+function makeFrontDecal() {
+  const W = 700, H = 1240;
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext('2d');
+  // teal ground
+  ctx.fillStyle = '#22868c';
+  ctx.fillRect(0, 0, W, H);
+  // upper printed panel (screen surround area)
+  ctx.fillStyle = '#1c6f75';
+  roundRect(ctx, 60, 70, W - 120, 470, 26); ctx.fill();
+  // dark faux-screen recess print
+  ctx.fillStyle = '#10262b';
+  roundRect(ctx, 120, 120, W - 240, 360, 20); ctx.fill();
+  ctx.strokeStyle = 'rgba(0,0,0,0.5)'; ctx.lineWidth = 6;
+  roundRect(ctx, 120, 120, W - 240, 360, 20); ctx.stroke();
+  // brand nameplate (orange band)
+  ctx.fillStyle = '#e8801f';
+  roundRect(ctx, 70, 585, W - 140, 96, 20); ctx.fill();
+  ctx.fillStyle = '#c9641a';
+  roundRect(ctx, 70, 585, W - 140, 12, 8); ctx.fill();
+  ctx.fillStyle = '#22303a';
+  ctx.font = 'bold 60px Georgia, "Times New Roman", serif';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('TIN ★ BOY', W / 2, 636);
+  ctx.font = 'bold 22px Arial, sans-serif';
+  ctx.fillStyle = 'rgba(34,48,58,0.85)';
+  ctx.fillText('8 - BIT  POCKET  ARCADE', W / 2, 700);
+  // lower control zone
+  // d-pad printed socket (left)
+  ctx.save();
+  ctx.translate(190, 900);
+  ctx.fillStyle = 'rgba(0,0,0,0.28)';
+  roundRect(ctx, -78, -26, 156, 52, 16); ctx.fill();
+  roundRect(ctx, -26, -78, 52, 156, 16); ctx.fill();
+  ctx.restore();
+  // A/B printed sockets (right)
+  ctx.fillStyle = 'rgba(0,0,0,0.26)';
+  ctx.beginPath(); ctx.arc(520, 830, 52, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(430, 930, 52, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#2a3640';
+  ctx.font = 'bold 40px Arial, sans-serif';
+  ctx.fillText('A', 590, 830);
+  ctx.fillText('B', 372, 930);
+  // start / select labels
+  ctx.fillStyle = 'rgba(34,48,58,0.8)';
+  ctx.font = 'bold 20px Arial, sans-serif';
+  ctx.fillText('SELECT', 300, 1075);
+  ctx.fillText('START', 430, 1075);
+  // speaker grille (angled dots, lower-right)
+  ctx.save();
+  ctx.translate(560, 1090);
+  ctx.rotate(-0.35);
+  ctx.fillStyle = 'rgba(0,0,0,0.4)';
+  for (let r = 0; r < 4; r++)
+    for (let cph = 0; cph < 5; cph++)
+      { ctx.beginPath(); ctx.arc(cph * 22, r * 22, 6, 0, Math.PI * 2); ctx.fill(); }
+  ctx.restore();
+  // registration crosshairs in corners
+  regMark(ctx, 38, 38, 'rgba(230,120,40,0.8)');
+  regMark(ctx, W - 38, 38, 'rgba(20,40,45,0.8)');
+  regMark(ctx, 38, H - 38, 'rgba(20,40,45,0.8)');
+  regMark(ctx, W - 38, H - 38, 'rgba(230,120,40,0.8)');
+  // litho finishing
+  halftone(ctx, 0, 0, W, H, 6, 0.8, 'rgba(0,0,0,0.08)', 0.45);
+  scuffs(ctx, W, H, 150);
+  edgeWear(ctx, W, H);
+  return toTex(c);
+}
+
+/* ---------------------------------------------------------------------------
+   Screen graphic texture (stamped faux game scene under glass)
+--------------------------------------------------------------------------- */
+function makeScreenTexture() {
+  const W = 540, H = 420;
+  const c = makeCanvas(W, H);
+  const ctx = c.getContext('2d');
+  // pale LCD olive
+  ctx.fillStyle = '#9bab34';
+  ctx.fillRect(0, 0, W, H);
+  const px = 15; // "pixel" size
+  const P = (x, y, w, h, col) => { ctx.fillStyle = col; ctx.fillRect(x * px, y * px, w * px, h * px); };
+  // sky shading
+  ctx.fillStyle = 'rgba(255,255,255,0.10)';
+  ctx.fillRect(0, 0, W, H * 0.55);
+  // clouds
+  P(3, 2, 3, 1, '#c7d36a'); P(4, 1, 2, 1, '#c7d36a');
+  P(24, 3, 3, 1, '#c7d36a'); P(25, 2, 2, 1, '#c7d36a');
+  // sun/coin
+  P(28, 1, 2, 2, '#e9e26f');
+  // ground bricks
+  for (let x = 0; x < 36; x++) { P(x, 24, 1, 4, '#5c6b1e'); }
+  ctx.fillStyle = '#42500f';
+  for (let x = 0; x < 36; x += 2) ctx.fillRect(x * px, 24 * px, px, px);
+  for (let x = 1; x < 36; x += 2) ctx.fillRect(x * px, 26 * px, px, px);
+  // pipe
+  P(30, 20, 4, 4, '#3f7d3f'); P(29, 19, 6, 1, '#4f9a4f');
+  // little blocky hero
+  P(9, 19, 3, 1, '#b5462b');   // cap
+  P(9, 20, 3, 2, '#e6b98a');   // face
+  P(9, 22, 3, 2, '#2b5fa5');   // body
+  P(8, 22, 1, 1, '#e6b98a'); P(12, 22, 1, 1, '#e6b98a'); // arms
+  P(9, 24, 1, 0.6, '#33301f'); P(11, 24, 1, 0.6, '#33301f'); // feet (approx)
+  // floating "?" block
+  P(15, 15, 2, 2, '#d9a23a');
+  ctx.fillStyle = '#3a2e10'; ctx.font = 'bold 18px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.fillText('?', 15.9 * px, 16 * px);
+  // HUD text
+  ctx.fillStyle = '#2f3a10';
+  ctx.font = 'bold 20px monospace'; ctx.textAlign = 'left'; ctx.textBaseline = 'top';
+  ctx.fillText('1UP', 16, 12);
+  ctx.fillText('001200', 16, 36);
+  ctx.textAlign = 'right';
+  ctx.fillText('WORLD', W - 16, 12);
+  ctx.fillText('1-1', W - 16, 36);
+  // litho mis-registration ghost (offset cyan)
+  ctx.globalCompositeOperation = 'screen';
+  ctx.globalAlpha = 0.10;
+  ctx.drawImage(c, 3, -2);
+  ctx.globalAlpha = 1;
+  ctx.globalCompositeOperation = 'source-over';
+  // pixel grid + scanlines
+  ctx.strokeStyle = 'rgba(0,0,0,0.06)'; ctx.lineWidth = 1;
+  for (let x = 0; x <= W; x += px) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, H); ctx.stroke(); }
+  for (let y = 0; y <= H; y += px) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke(); }
+  // a scratch and dust on the "glass"
+  scuffs(ctx, W, H, 24);
+  // diagonal glare
+  const gg = ctx.createLinearGradient(0, 0, W, H);
+  gg.addColorStop(0, 'rgba(255,255,255,0.22)');
+  gg.addColorStop(0.25, 'rgba(255,255,255,0.03)');
+  gg.addColorStop(0.5, 'rgba(255,255,255,0.0)');
+  ctx.fillStyle = gg; ctx.fillRect(0, 0, W, H);
+  return toTex(c);
+}
+
+/* ---------------------------------------------------------------------------
+   Shared shape helpers (rounded-rect for extruded bezel)
+--------------------------------------------------------------------------- */
+function roundedRectShape(w, h, r) {
+  const s = new THREE.Shape();
+  const x = -w / 2, y = -h / 2;
+  s.moveTo(x + r, y);
+  s.lineTo(x + w - r, y); s.quadraticCurveTo(x + w, y, x + w, y + r);
+  s.lineTo(x + w, y + h - r); s.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  s.lineTo(x + r, y + h); s.quadraticCurveTo(x, y + h, x, y + h - r);
+  s.lineTo(x, y + r); s.quadraticCurveTo(x, y, x + r, y);
+  return s;
+}
+function roundedRectPath(w, h, r) {
+  const p = new THREE.Path();
+  const x = -w / 2, y = -h / 2;
+  p.moveTo(x + r, y);
+  p.lineTo(x + w - r, y); p.quadraticCurveTo(x + w, y, x + w, y + r);
+  p.lineTo(x + w, y + h - r); p.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
+  p.lineTo(x + r, y + h); p.quadraticCurveTo(x, y + h, x, y + h - r);
+  p.lineTo(x, y + r); p.quadraticCurveTo(x, y, x + r, y);
+  return p;
+}
+
+/* ---------------------------------------------------------------------------
+   Materials
+--------------------------------------------------------------------------- */
+const lithoTex = makeLithoTexture();
+const decalTex = makeFrontDecal();
+const screenTex = makeScreenTexture();
+
+const bodyMat = new THREE.MeshStandardMaterial({
+  map: lithoTex, metalness: 0.62, roughness: 0.55, envMapIntensity: 0.6
+});
+const decalMat = new THREE.MeshStandardMaterial({
+  map: decalTex, metalness: 0.5, roughness: 0.5, envMapIntensity: 0.5
+});
+const bezelMat = new THREE.MeshStandardMaterial({
+  color: 0x123039, metalness: 0.72, roughness: 0.42, envMapIntensity: 0.9
+});
+const maskMat = new THREE.MeshStandardMaterial({
+  color: 0x0a1418, metalness: 0.3, roughness: 0.7
+});
+const screenMat = new THREE.MeshPhysicalMaterial({
+  map: screenTex, emissive: 0xffffff, emissiveMap: screenTex, emissiveIntensity: 0.28,
+  roughness: 0.18, metalness: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.08, envMapIntensity: 1.1
+});
+const dpadMat = new THREE.MeshStandardMaterial({
+  color: 0x232a30, metalness: 0.5, roughness: 0.5, envMapIntensity: 0.7
+});
+const btnAMat = new THREE.MeshStandardMaterial({
+  color: 0xd23f2c, metalness: 0.32, roughness: 0.44, envMapIntensity: 0.6
+});
+const btnBMat = new THREE.MeshStandardMaterial({
+  color: 0xe07b2a, metalness: 0.32, roughness: 0.44, envMapIntensity: 0.6
+});
+const pillMat = new THREE.MeshStandardMaterial({
+  color: 0x2c343b, metalness: 0.45, roughness: 0.5, envMapIntensity: 0.7
+});
+const rivetMat = new THREE.MeshStandardMaterial({
+  color: 0xcfd3d6, metalness: 1.0, roughness: 0.26, envMapIntensity: 1.2
+});
+const brassMat = new THREE.MeshStandardMaterial({
+  color: 0xc79a3a, metalness: 1.0, roughness: 0.32, envMapIntensity: 1.2
+});
+const ledMat = new THREE.MeshStandardMaterial({
+  color: 0xff4436, emissive: 0xff2a1e, emissiveIntensity: 1.4, roughness: 0.35, metalness: 0
+});
+
+/* ---------------------------------------------------------------------------
+   Build the console (single centered object)
+--------------------------------------------------------------------------- */
+const consoleGroup = new THREE.Group();
+
+const bodyW = 0.10, bodyH = 0.165, bodyD = 0.032, bodyR = 0.008;
+const frontZ = bodyD / 2; // 0.016
+
+// --- main body
+const body = new THREE.Mesh(new RoundedBoxGeometry(bodyW, bodyH, bodyD, 6, bodyR), bodyMat);
+body.castShadow = true; body.receiveShadow = true;
+consoleGroup.add(body);
+
+// --- front printed decal (thin plane just above the front face)
+const decal = new THREE.Mesh(new THREE.PlaneGeometry(0.084, 0.149), decalMat);
+decal.position.set(0, 0, frontZ + 0.0006);
+decal.receiveShadow = true;
+consoleGroup.add(decal);
+
+// --- screen assembly -------------------------------------------------------
+const screenY = 0.040;
+
+// bezel frame (extruded rounded ring)
+const bezelShape = roundedRectShape(0.076, 0.058, 0.010);
+bezelShape.holes.push(roundedRectPath(0.056, 0.044, 0.006));
+const bezelGeo = new THREE.ExtrudeGeometry(bezelShape, {
+  depth: 0.006, bevelEnabled: true, bevelThickness: 0.0018, bevelSize: 0.0018, bevelSegments: 2, steps: 1
+});
+const bezel = new THREE.Mesh(bezelGeo, bezelMat);
+bezel.position.set(0, screenY, frontZ - 0.001);
+bezel.castShadow = true; bezel.receiveShadow = true;
+consoleGroup.add(bezel);
+
+// dark mask behind the screen art
+const mask = new THREE.Mesh(new THREE.PlaneGeometry(0.060, 0.048), maskMat);
+mask.position.set(0, screenY, frontZ + 0.0015);
+consoleGroup.add(mask);
+
+// the printed screen (recessed within the bezel window)
+const screen = new THREE.Mesh(new THREE.PlaneGeometry(0.054, 0.042), screenMat);
+screen.position.set(0, screenY, frontZ + 0.0022);
+consoleGroup.add(screen);
+
+// power LED
+const led = new THREE.Mesh(new THREE.SphereGeometry(0.0022, 16, 12), ledMat);
+led.position.set(-0.044, screenY + 0.006, frontZ + 0.004);
+consoleGroup.add(led);
+
+// --- D-pad -----------------------------------------------------------------
+const dpad = new THREE.Group();
+const dpV = new THREE.Mesh(new RoundedBoxGeometry(0.010, 0.030, 0.006, 3, 0.002), dpadMat);
+const dpH = new THREE.Mesh(new RoundedBoxGeometry(0.030, 0.010, 0.006, 3, 0.002), dpadMat);
+const dpHub = new THREE.Mesh(new THREE.CylinderGeometry(0.0045, 0.0045, 0.0065, 20), dpadMat);
+dpHub.rotation.x = Math.PI / 2;
+[dpV, dpH, dpHub].forEach(m => { m.castShadow = true; m.receiveShadow = true; dpad.add(m); });
+dpad.position.set(-0.027, -0.040, frontZ + 0.003);
+consoleGroup.add(dpad);
+
+// --- A / B buttons ---------------------------------------------------------
+function roundButton(mat, x, y) {
+  const b = new THREE.Mesh(new THREE.CylinderGeometry(0.0088, 0.0092, 0.006, 28), mat);
+  b.rotation.x = Math.PI / 2;
+  b.position.set(x, y, frontZ + 0.0035);
+  b.castShadow = true; b.receiveShadow = true;
+  return b;
+}
+consoleGroup.add(roundButton(btnAMat, 0.031, -0.030));
+consoleGroup.add(roundButton(btnBMat, 0.0135, -0.044));
+
+// --- start / select pills --------------------------------------------------
+function pill(x) {
+  const p = new THREE.Mesh(new RoundedBoxGeometry(0.015, 0.005, 0.004, 3, 0.0022), pillMat);
+  p.position.set(x, -0.066, frontZ + 0.002);
+  p.rotation.z = -0.32;
+  p.castShadow = true; p.receiveShadow = true;
+  return p;
+}
+consoleGroup.add(pill(-0.010));
+consoleGroup.add(pill(0.012));
+
+// --- corner rivets (front + back) -----------------------------------------
+function rivet(x, y, z, flip) {
+  const r = new THREE.Mesh(new THREE.SphereGeometry(0.0036, 18, 14), rivetMat);
+  r.scale.set(1, 1, 0.55);
+  r.position.set(x, y, z);
+  if (flip) r.rotation.y = Math.PI;
+  r.castShadow = true; r.receiveShadow = true;
+  return r;
+}
+const rx = bodyW / 2 - 0.010, ry = bodyH / 2 - 0.010;
+[[-rx, ry], [rx, ry], [-rx, -ry], [rx, -ry]].forEach(([x, y]) => {
+  consoleGroup.add(rivet(x, y, frontZ + 0.0016, false));
+  consoleGroup.add(rivet(x, y, -frontZ - 0.0016, true));
+});
+
+// --- fold-out wind-up key on the back -------------------------------------
+const keyGroup = new THREE.Group();
+const backZ = -bodyD / 2;
+
+// recessed mounting plate print
+const keyPlate = new THREE.Mesh(new RoundedBoxGeometry(0.03, 0.014, 0.003, 3, 0.002), maskMat);
+keyPlate.position.set(0, 0, backZ - 0.0005);
+keyGroup.add(keyPlate);
+
+// hinge pin
+const hinge = new THREE.Mesh(new THREE.CylinderGeometry(0.0016, 0.0016, 0.028, 16), brassMat);
+hinge.rotation.z = Math.PI / 2;
+hinge.position.set(0, 0, backZ - 0.003);
+keyGroup.add(hinge);
+
+// pivoting arm (base plate, shaft, winder wings)
+const keyArm = new THREE.Group();
+const keyBase = new THREE.Mesh(new THREE.CylinderGeometry(0.0075, 0.009, 0.004, 24), brassMat);
+keyBase.rotation.x = Math.PI / 2;
+keyBase.position.set(0, 0, -0.002);
+keyArm.add(keyBase);
+
+const shaft = new THREE.Mesh(new THREE.CylinderGeometry(0.0034, 0.0034, 0.03, 20), brassMat);
+shaft.rotation.x = Math.PI / 2;
+shaft.position.set(0, 0, -0.018);
+keyArm.add(shaft);
+
+// double-loop winder wings
+const wing = new THREE.Group();
+for (const sx of [-0.008, 0.008]) {
+  const loop = new THREE.Mesh(new THREE.TorusGeometry(0.008, 0.0022, 14, 30), brassMat);
+  loop.position.set(sx, 0, 0);
+  wing.add(loop);
+}
+const crossBar = new THREE.Mesh(new THREE.CylinderGeometry(0.0018, 0.0018, 0.02, 14), brassMat);
+crossBar.rotation.z = Math.PI / 2;
+wing.add(crossBar);
+const hub = new THREE.Mesh(new THREE.SphereGeometry(0.0032, 16, 12), brassMat);
+wing.add(hub);
+wing.position.set(0, 0, -0.033);
+keyArm.add(wing);
+
+keyArm.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+// folded-out slightly so it reads as a hinged, pop-out key
+keyArm.rotation.x = 0.16;
+keyArm.position.set(0, 0.002, backZ - 0.002);
+keyGroup.add(keyArm);
+
+consoleGroup.add(keyGroup);
+
+// gentle presentation tilt
+consoleGroup.rotation.y = -0.15;
+scene.add(consoleGroup);
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.1;
+controls.minDistance = 0.18;
+controls.maxDistance = 0.9;
+controls.target.set(0, 0.0, 0);
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

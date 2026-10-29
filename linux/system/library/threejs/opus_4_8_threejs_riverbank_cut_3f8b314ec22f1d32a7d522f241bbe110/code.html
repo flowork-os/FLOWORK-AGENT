@@ -1,0 +1,578 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Riverbank Cut — Procedural Three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #14161a; overflow: hidden; }
+  #c { display: block; width: 100%; height: 100%; }
+  #tag {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    color: #9aa3ad; letter-spacing: 0.02em; user-select: none; pointer-events: none;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.6);
+  }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="tag">Riverbank cut section · procedural · meters · north = −Z (drag to orbit)</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+/* ============================================================================
+   Riverbank cut — a single centered, fully procedural object (one THREE.Group):
+     - a rectangular soil block (6 x 6 m footprint) with stratified cut faces
+     - a sloped, eroded muddy bank descending north to a flat water plane
+     - clumps of tall reeds / cattails along the waterline
+     - a line of thin survey stakes with flagging tape + string along the top
+   Meter units. North is -Z (the bank faces / descends toward -Z).
+   ========================================================================== */
+
+// ---------- constants (meters) ----------
+const W = 6.0;          // east-west extent (x)
+const L = 6.0;          // north-south extent (z)
+const NX = 150, NZ = 150;
+const BASE_Y = -1.20;   // bottom of the soil block
+const WATER_Y = 0.0;    // still-water surface level
+const Z_WATER_S = 0.15; // south edge of the water plane (tucks under the mud)
+
+// ---------- small math helpers ----------
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+function smoothstep(a, b, x) { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }
+
+// deterministic value-noise + fbm
+function hash2(x, y) { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453123; return s - Math.floor(s); }
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi), c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return a + (b - a) * u + (c - a) * v + (a - b - c + d) * u * v;
+}
+function fbm(x, y) {
+  let f = 0, amp = 0.5, sum = 0;
+  for (let o = 0; o < 5; o++) { f += amp * vnoise(x, y); sum += amp; x *= 2.03; y *= 2.01; amp *= 0.5; }
+  return f / sum; // ~0..1
+}
+
+// seeded rng (stable scatter across reloads)
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260706);
+
+// ---------- terrain height field ----------
+// z = +L/2 is the high (south) plateau where the stakes stand.
+// z = -L/2 is the flat river bed to the north, submerged under the water plane.
+function bankHeight(x, z) {
+  const bankTop = 1.45, bedLevel = -0.38;
+  const slopeStart = 1.20, slopeEnd = -0.55;
+  let base;
+  if (z >= slopeStart) base = bankTop;
+  else if (z <= slopeEnd) base = bedLevel;
+  else {
+    const s = (z - slopeEnd) / (slopeStart - slopeEnd);
+    const ss = s * s * (3 - 2 * s);
+    base = bedLevel + (bankTop - bedLevel) * ss;
+  }
+  const platW = smoothstep(0.6, 1.4, z);
+  const plateau = (fbm(x * 0.5 + 3.1, z * 0.5 + 7.4) - 0.5) * 0.18;
+  const rough  = (fbm(x * 1.3 + 11.0, z * 1.3 + 2.0) - 0.5) * 0.12;
+  const micro  = (fbm(x * 5.5 + 30.0, z * 5.5 + 12.0) - 0.5) * 0.03;
+
+  // erosion rills carved down the slope (channels elongated along z)
+  const smB = smoothstep(slopeEnd - 0.1, slopeEnd + 0.7, z) *
+              (1 - smoothstep(slopeStart - 0.7, slopeStart + 0.1, z));
+  const chan = vnoise(x * 1.7 + 5.0, z * 0.4 + 1.0);
+  const ridged = 1 - Math.abs(chan - 0.5) * 2;
+  const gully = Math.pow(clamp(ridged, 0, 1), 1.5) * smB * 0.22;
+
+  return base + plateau * platW + rough + micro - gully;
+}
+
+// ---------- colour ramps ----------
+const tWet = new THREE.Color(0x2c2016), tMud = new THREE.Color(0x543a22);
+const tSoil = new THREE.Color(0x7a5836), tGrass = new THREE.Color(0x6c6a3a);
+function terrainColor(x, z, h) {
+  const c = tWet.clone();
+  c.lerp(tMud,  smoothstep(-0.25, 0.15, h));
+  c.lerp(tSoil, smoothstep(0.20, 0.75, h));
+  c.lerp(tGrass, smoothstep(1.00, 1.40, h));
+  const m = 0.80 + 0.40 * fbm(x * 2.6 + 20.0, z * 2.6 + 9.0);
+  return c.multiplyScalar(m);
+}
+
+const strTop = new THREE.Color(0x463523), strSoil = new THREE.Color(0x6b4f30);
+const strClay = new THREE.Color(0x9a7c4e), strSilt = new THREE.Color(0xb5a67a);
+const strGrey = new THREE.Color(0x7c715b), strGravel = new THREE.Color(0x53483a);
+function strataColor(h, y) {
+  const yy = y + (fbm(h * 1.6 + 40.0, y * 3.0 + 8.0) - 0.5) * 0.16; // wavy sediment boundaries
+  const c = strGravel.clone();
+  c.lerp(strGrey, smoothstep(-1.15, -0.80, yy));
+  c.lerp(strSilt, smoothstep(-0.75, -0.35, yy));
+  c.lerp(strClay, smoothstep(-0.30,  0.15, yy));
+  c.lerp(strSoil, smoothstep( 0.25,  0.70, yy));
+  c.lerp(strTop,  smoothstep( 0.95,  1.25, yy));
+  const m = 0.82 + 0.34 * fbm(h * 3.2 + 5.0, y * 3.2 + 2.0);
+  return c.multiplyScalar(m);
+}
+
+// ---------- generic attribute helpers ----------
+function setSolidColor(g, color) {
+  const n = g.attributes.position.count, arr = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) { arr[i * 3] = color.r; arr[i * 3 + 1] = color.g; arr[i * 3 + 2] = color.b; }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+}
+
+// =====================================================================
+//  RENDERER / SCENE / CAMERA
+// =====================================================================
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14161a);          // neutral dark studio
+scene.fog = new THREE.Fog(0x14161a, 20, 46);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(8.0, 5.0, 8.6);
+
+// soft procedural environment (gives water & mud gentle reflected light)
+(function () {
+  const cv = document.createElement('canvas'); cv.width = 16; cv.height = 64;
+  const g = cv.getContext('2d');
+  const grad = g.createLinearGradient(0, 0, 0, 64);
+  grad.addColorStop(0.00, '#48566a');
+  grad.addColorStop(0.48, '#6a7482');
+  grad.addColorStop(0.50, '#2a2620');
+  grad.addColorStop(1.00, '#15120f');
+  g.fillStyle = grad; g.fillRect(0, 0, 16, 64);
+  const tex = new THREE.CanvasTexture(cv);
+  tex.mapping = THREE.EquirectangularReflectionMapping;
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  scene.environment = pmrem.fromEquirectangular(tex).texture;
+  tex.dispose(); pmrem.dispose();
+})();
+
+// =====================================================================
+//  LIGHTING — hemisphere fill + warm key + cool rim, soft shadows
+// =====================================================================
+const hemi = new THREE.HemisphereLight(0x9fb4c8, 0x2a2420, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff1d6, 2.5);   // low warm sun, SE, rakes the bank
+key.position.set(6.0, 8.0, 5.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1; key.shadow.camera.far = 42;
+key.shadow.camera.left = -6.5; key.shadow.camera.right = 6.5;
+key.shadow.camera.top = 6.5; key.shadow.camera.bottom = -6.5;
+key.shadow.bias = -0.0005; key.shadow.normalBias = 0.03; key.shadow.radius = 4;
+scene.add(key);
+scene.add(key.target); key.target.position.set(0, 0, -0.4);
+
+const fill = new THREE.DirectionalLight(0x8aa0c2, 0.42);  // cool sky fill from NW
+fill.position.set(-6.0, 4.0, -2.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xbfd2ff, 0.6);    // cool rim from the north (behind bank)
+rim.position.set(-2.5, 3.0, -8.0);
+scene.add(rim);
+
+// shadow-catching ground plane (only receives shadows)
+const shadowGround = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+shadowGround.rotation.x = -Math.PI / 2;
+shadowGround.position.y = BASE_Y + 0.002;
+shadowGround.receiveShadow = true;
+scene.add(shadowGround);
+
+// =====================================================================
+//  THE ONE OBJECT
+// =====================================================================
+const bank = new THREE.Group();
+scene.add(bank);
+
+// ---- 1. terrain top surface -----------------------------------------
+function buildTerrain() {
+  const segX = NX - 1, segZ = NZ - 1;
+  const pos = [], col = [], idx = [];
+  const grid = [];
+  for (let j = 0; j < NZ; j++) {
+    grid[j] = [];
+    for (let i = 0; i < NX; i++) {
+      const x = -W / 2 + (i / segX) * W;
+      const z = -L / 2 + (j / segZ) * L;
+      const y = bankHeight(x, z);
+      pos.push(x, y, z);
+      const c = terrainColor(x, z, y); col.push(c.r, c.g, c.b);
+      grid[j][i] = { x, y, z };
+    }
+  }
+  for (let j = 0; j < segZ; j++)
+    for (let i = 0; i < segX; i++) {
+      const a = j * NX + i, b = j * NX + i + 1, c = (j + 1) * NX + i, d = (j + 1) * NX + i + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return { geo: g, grid };
+}
+const { geo: terrainGeo, grid } = buildTerrain();
+const soilMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.96, metalness: 0.0,
+  envMapIntensity: 0.22, side: THREE.DoubleSide
+});
+const terrainMesh = new THREE.Mesh(terrainGeo, soilMat);
+terrainMesh.castShadow = true; terrainMesh.receiveShadow = true;
+bank.add(terrainMesh);
+
+// ---- 2. stratified cut faces (walls) + bottom -----------------------
+function buildWalls(grid) {
+  const pos = [], col = [], idx = [];
+  const VR = 22;
+  function addWall(points, outX, outZ, useZ) {
+    const startV = pos.length / 3, n = points.length;
+    for (let k = 0; k < n; k++) {
+      const p = points[k], hc = useZ ? p.z : p.x;
+      for (let r = 0; r <= VR; r++) {
+        const ty = r / VR, y = p.y + (BASE_Y - p.y) * ty;
+        const disp = (fbm(hc * 2.2 + 50.0, y * 2.6 + 3.0) - 0.5) * 0.05; // eroded relief
+        pos.push(p.x + outX * disp, y, p.z + outZ * disp);
+        const c = strataColor(hc, y); col.push(c.r, c.g, c.b);
+      }
+    }
+    for (let k = 0; k < n - 1; k++)
+      for (let r = 0; r < VR; r++) {
+        const a = startV + k * (VR + 1) + r;
+        const b = startV + k * (VR + 1) + r + 1;
+        const c = startV + (k + 1) * (VR + 1) + r;
+        const d = startV + (k + 1) * (VR + 1) + r + 1;
+        idx.push(a, c, b, b, c, d);
+      }
+  }
+  const south = [], north = [], east = [], west = [];
+  for (let i = 0; i < NX; i++) south.push(grid[NZ - 1][i]);
+  for (let i = NX - 1; i >= 0; i--) north.push(grid[0][i]);
+  for (let j = 0; j < NZ; j++) east.push(grid[j][NX - 1]);
+  for (let j = NZ - 1; j >= 0; j--) west.push(grid[j][0]);
+  addWall(south, 0, 1, false);
+  addWall(north, 0, -1, false);
+  addWall(east, 1, 0, true);
+  addWall(west, -1, 0, true);
+  // flat bottom
+  const bv = pos.length / 3;
+  const corners = [[-W / 2, -L / 2], [W / 2, -L / 2], [W / 2, L / 2], [-W / 2, L / 2]];
+  for (const c of corners) { pos.push(c[0], BASE_Y, c[1]); const s = strataColor(c[0], BASE_Y); col.push(s.r, s.g, s.b); }
+  idx.push(bv, bv + 1, bv + 2, bv, bv + 2, bv + 3);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  return g;
+}
+const wallMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.99, metalness: 0.0,
+  envMapIntensity: 0.16, side: THREE.DoubleSide
+});
+const wallMesh = new THREE.Mesh(buildWalls(grid), wallMat);
+wallMesh.castShadow = true; wallMesh.receiveShadow = true;
+bank.add(wallMesh);
+
+// ---- 3. water: still surface + translucent side cross-sections -------
+const waterMat = new THREE.MeshPhysicalMaterial({
+  color: 0x2a453f, roughness: 0.14, metalness: 0.0,
+  transparent: true, opacity: 0.90,
+  clearcoat: 0.7, clearcoatRoughness: 0.14,
+  envMapIntensity: 1.0, side: THREE.DoubleSide
+});
+
+let waterTopGeo, wX = [], wZ = [], wFade = [];
+(function buildWaterTop() {
+  const zN = -L / 2, zS = Z_WATER_S, segX = 110, segZ = 74;
+  const pos = [], idx = [];
+  for (let j = 0; j <= segZ; j++)
+    for (let i = 0; i <= segX; i++) {
+      const x = -W / 2 + (i / segX) * W;
+      const z = zN + (j / segZ) * (zS - zN);
+      pos.push(x, WATER_Y, z);
+      wX.push(x); wZ.push(z);
+      const dEx = Math.min(x + W / 2, W / 2 - x);
+      const dEz = Math.min(z - zN, zS - z);
+      wFade.push(smoothstep(0, 0.45, dEx) * smoothstep(0, 0.45, dEz));
+    }
+  for (let j = 0; j < segZ; j++)
+    for (let i = 0; i < segX; i++) {
+      const a = j * (segX + 1) + i, b = a + 1, c = a + (segX + 1), d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  waterTopGeo = new THREE.BufferGeometry();
+  waterTopGeo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  waterTopGeo.setIndex(idx);
+  waterTopGeo.computeVertexNormals();
+})();
+const waterTop = new THREE.Mesh(waterTopGeo, waterMat);
+waterTop.receiveShadow = true;
+bank.add(waterTop);
+
+(function buildWaterSides() {
+  const pos = [], idx = [];
+  function addEdge(points) {
+    for (let k = 0; k < points.length - 1; k++) {
+      const p0 = points[k], p1 = points[k + 1];
+      const y0 = Math.min(p0.y, 0), y1 = Math.min(p1.y, 0);
+      if (y0 >= 0 && y1 >= 0) continue;           // both above water → no water column
+      const b = pos.length / 3;
+      pos.push(p0.x, 0, p0.z, p1.x, 0, p1.z, p1.x, y1, p1.z, p0.x, y0, p0.z);
+      idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    }
+  }
+  const north = [], east = [], west = [];
+  for (let i = 0; i < NX; i++) north.push(grid[0][i]);
+  for (let j = 0; j < NZ; j++) east.push(grid[j][NX - 1]);
+  for (let j = 0; j < NZ; j++) west.push(grid[j][0]);
+  addEdge(north); addEdge(east); addEdge(west);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  g.computeVertexNormals();
+  bank.add(new THREE.Mesh(g, waterMat));
+})();
+
+// ---- 4. reeds / cattails along the waterline + dry grass on top -----
+const stemGeos = [], headGeos = [];
+function bendBlade(g, H, ang, amt) {
+  const p = g.attributes.position, dx = Math.cos(ang), dz = Math.sin(ang);
+  for (let i = 0; i < p.count; i++) {
+    const t = clamp(p.getY(i) / H, 0, 1), off = amt * t * t;
+    p.setX(i, p.getX(i) + dx * off);
+    p.setZ(i, p.getZ(i) + dz * off);
+  }
+}
+function setBladeColor(g, H, cB, cT) {
+  const p = g.attributes.position, arr = new Float32Array(p.count * 3), c = new THREE.Color();
+  for (let i = 0; i < p.count; i++) {
+    const t = clamp(p.getY(i) / H, 0, 1);
+    c.copy(cB).lerp(cT, t);
+    arr[i * 3] = c.r; arr[i * 3 + 1] = c.g; arr[i * 3 + 2] = c.b;
+  }
+  g.setAttribute('color', new THREE.Float32BufferAttribute(arr, 3));
+}
+function addBlades(cx, cz, o) {
+  for (let b = 0; b < o.count; b++) {
+    const a = rng() * Math.PI * 2, r = Math.sqrt(rng()) * o.radius;
+    const px = cx + Math.cos(a) * r, pz = cz + Math.sin(a) * r;
+    const baseY = bankHeight(px, pz);
+    const H = o.hMin + rng() * (o.hMax - o.hMin);
+    const g = new THREE.CylinderGeometry(o.rTop, o.rBot, H, 5, 6, false);
+    g.translate(0, H / 2, 0);
+    const bendA = rng() * Math.PI * 2, bendAmt = o.bendMin + rng() * (o.bendMax - o.bendMin);
+    bendBlade(g, H, bendA, bendAmt);
+    g.computeVertexNormals();
+    setBladeColor(g, H, o.base, o.tops[Math.floor(rng() * o.tops.length)]);
+    g.translate(px, baseY - 0.04, pz);
+    stemGeos.push(g);
+    if (o.headChance > 0 && rng() < o.headChance && H > o.headMinH) {
+      const dx = Math.cos(bendA), dz = Math.sin(bendA);
+      const topX = px + dx * bendAmt, topZ = pz + dz * bendAmt, topY = baseY - 0.04 + H;
+      const cap = new THREE.CapsuleGeometry(0.028, 0.14, 4, 8);
+      cap.translate(topX, topY - 0.16, topZ);
+      headGeos.push(cap);
+    }
+  }
+}
+const reedTops = [new THREE.Color(0x86a24e), new THREE.Color(0x6f8f43), new THREE.Color(0x9aac5b), new THREE.Color(0x738a3e)];
+const reedOpts = {
+  count: 0, radius: 0.30, hMin: 1.55, hMax: 2.55, rTop: 0.004, rBot: 0.017,
+  bendMin: 0.12, bendMax: 0.42, base: new THREE.Color(0x3f5327),
+  tops: reedTops, headChance: 0.32, headMinH: 1.95
+};
+// reed clumps hugging the shoreline (where the slope meets the water)
+const shoreX = [-2.45, -1.75, -1.1, -0.35, 0.35, 1.05, 1.7, 2.35, -1.4, 0.75];
+for (const sx of shoreX) {
+  reedOpts.count = 14 + Math.floor(rng() * 12);
+  addBlades(sx + (rng() - 0.5) * 0.2, -0.15 + (rng() - 0.5) * 0.55, reedOpts);
+}
+// sparse dry grass tufts on the plateau
+const grassTops = [new THREE.Color(0x7f7a3e), new THREE.Color(0x8f7a3a), new THREE.Color(0x6d6a35)];
+const grassOpts = {
+  count: 0, radius: 0.17, hMin: 0.16, hMax: 0.48, rTop: 0.0025, rBot: 0.006,
+  bendMin: 0.04, bendMax: 0.20, base: new THREE.Color(0x5a5228),
+  tops: grassTops, headChance: 0, headMinH: 99
+};
+for (let t = 0; t < 16; t++) {
+  grassOpts.count = 7 + Math.floor(rng() * 8);
+  addBlades(-2.7 + rng() * 5.4, 1.55 + rng() * 1.2, grassOpts);
+}
+const foliageMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.55, metalness: 0.0,
+  envMapIntensity: 0.35, side: THREE.DoubleSide
+});
+const stems = new THREE.Mesh(mergeGeometries(stemGeos), foliageMat);
+stems.castShadow = true; stems.receiveShadow = true;
+bank.add(stems);
+if (headGeos.length) {
+  const heads = new THREE.Mesh(mergeGeometries(headGeos),
+    new THREE.MeshStandardMaterial({ color: 0x5a3a1f, roughness: 0.82, metalness: 0.0 }));
+  heads.castShadow = true;
+  bank.add(heads);
+}
+
+// ---- 5. survey stakes: posts + flagging tape + flags + string -------
+const woodGeos = [], markerGeos = [], stringGeos = [], stakeTops = [];
+const N_STAKES = 8;
+for (let k = 0; k < N_STAKES; k++) {
+  const x = -2.5 + k * (5.0 / (N_STAKES - 1));
+  const z = 2.40 + (rng() - 0.5) * 0.12;
+  const baseY = bankHeight(x, z);
+  const H = 0.80 + rng() * 0.20;
+  const euler = new THREE.Euler((rng() - 0.5) * 0.08, (rng() - 0.5) * 0.5, (rng() - 0.5) * 0.12);
+  const m = new THREE.Matrix4()
+    .makeTranslation(x, baseY - 0.10, z)
+    .multiply(new THREE.Matrix4().makeRotationFromEuler(euler));
+
+  const post = new THREE.BoxGeometry(0.03, H, 0.045); // wooden lath
+  post.translate(0, H / 2, 0); post.applyMatrix4(m); woodGeos.push(post);
+
+  const tc = (k % 2 === 0) ? new THREE.Color(0xff5a1f) : new THREE.Color(0xff2f7a);
+  const tape = new THREE.BoxGeometry(0.052, 0.06, 0.067);
+  tape.translate(0, H - 0.12, 0); setSolidColor(tape, tc); tape.applyMatrix4(m); markerGeos.push(tape);
+
+  const flag = new THREE.PlaneGeometry(0.16, 0.09);
+  flag.rotateZ((rng() - 0.5) * 0.3);
+  flag.translate(0.095, H - 0.045, 0); setSolidColor(flag, tc); flag.applyMatrix4(m); markerGeos.push(flag);
+
+  stakeTops.push(new THREE.Vector3(0, H, 0).applyMatrix4(m));
+}
+const woodMesh = new THREE.Mesh(mergeGeometries(woodGeos),
+  new THREE.MeshStandardMaterial({ color: 0xa0804f, roughness: 0.88, metalness: 0.0, envMapIntensity: 0.18 }));
+woodMesh.castShadow = true; woodMesh.receiveShadow = true;
+bank.add(woodMesh);
+
+const markerMesh = new THREE.Mesh(mergeGeometries(markerGeos),
+  new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.6, metalness: 0.0, side: THREE.DoubleSide }));
+markerMesh.castShadow = true;
+bank.add(markerMesh);
+
+// taut survey string strung between stake tops
+function cylinderBetween(a, b, r) {
+  const dir = new THREE.Vector3().subVectors(b, a), len = dir.length();
+  const g = new THREE.CylinderGeometry(r, r, len, 5, 1);
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  const mid = new THREE.Vector3().addVectors(a, b).multiplyScalar(0.5);
+  g.applyMatrix4(new THREE.Matrix4().compose(mid, q, new THREE.Vector3(1, 1, 1)));
+  return g;
+}
+for (let k = 0; k < stakeTops.length - 1; k++)
+  stringGeos.push(cylinderBetween(stakeTops[k], stakeTops[k + 1], 0.004));
+const stringMesh = new THREE.Mesh(mergeGeometries(stringGeos),
+  new THREE.MeshStandardMaterial({ color: 0xe8dcbf, roughness: 0.7, metalness: 0.0 }));
+stringMesh.castShadow = true;
+bank.add(stringMesh);
+
+// ---- 6. pebbles / small rocks scattered along the eroded waterline --
+const pebbleGeos = [];
+for (let i = 0; i < 26; i++) {
+  const cx = -2.7 + rng() * 5.4, cz = -0.45 + rng() * 0.95;
+  const baseY = bankHeight(cx, cz);
+  const r = 0.03 + rng() * (rng() < 0.15 ? 0.13 : 0.055);
+  const g = new THREE.IcosahedronGeometry(r, 0);
+  g.scale(1 + rng() * 0.4, 0.55 + rng() * 0.3, 1 + rng() * 0.4);
+  g.rotateX(rng() * 3.0); g.rotateY(rng() * 3.0);
+  g.translate(cx, baseY + r * 0.3, cz);
+  setSolidColor(g, new THREE.Color(0x8a857c).multiplyScalar(0.65 + rng() * 0.55));
+  pebbleGeos.push(g);
+}
+const pebbleMesh = new THREE.Mesh(mergeGeometries(pebbleGeos),
+  new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.9, metalness: 0.0, envMapIntensity: 0.2 }));
+pebbleMesh.castShadow = true; pebbleMesh.receiveShadow = true;
+bank.add(pebbleMesh);
+
+// centre the whole object vertically about the origin
+bank.position.y = -(BASE_Y + 1.55) / 2; // midway between block base and plateau top
+
+// =====================================================================
+//  CONTROLS
+// =====================================================================
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.6;
+controls.target.set(0, 0.05, 0);
+controls.minDistance = 5;
+controls.maxDistance = 26;
+controls.maxPolarAngle = Math.PI * 0.495; // stay above the ground plane
+
+// =====================================================================
+//  ANIMATION
+// =====================================================================
+const clock = new THREE.Clock();
+function waterRipple(x, z, t) {
+  let h = 0;
+  h += Math.sin(x * 1.5 + t * 0.9) * 0.015;
+  h += Math.sin(z * 1.9 - t * 0.7) * 0.012;
+  h += Math.sin((x * 0.8 + z * 1.1) + t * 1.3) * 0.010;
+  h += Math.sin((x * 2.3 - z * 0.6) - t * 1.7) * 0.006;
+  return h;
+}
+const wpos = waterTopGeo.attributes.position;
+function updateWater(t) {
+  for (let i = 0; i < wpos.count; i++)
+    wpos.setY(i, WATER_Y + waterRipple(wX[i], wZ[i], t) * wFade[i]);
+  wpos.needsUpdate = true;
+  waterTopGeo.computeVertexNormals();
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  updateWater(clock.getElapsedTime());
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// =====================================================================
+//  RESIZE
+// =====================================================================
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

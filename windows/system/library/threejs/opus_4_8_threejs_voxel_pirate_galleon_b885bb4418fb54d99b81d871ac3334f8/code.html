@@ -1,0 +1,851 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voxel Pirate Galleon</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #14161c; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(230,235,245,0.45); letter-spacing: 0.14em; text-transform: uppercase;
+    pointer-events: none; user-select: none; text-align: center;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Voxel Pirate Galleon &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const container = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x171a21);
+scene.fog = new THREE.Fog(0x171a21, 60, 170);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(34, 21, 38);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 18;
+controls.maxDistance = 110;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 7.5, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting : hemisphere + key + fill + rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x8fb4e0, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff0d8, 2.5);
+key.position.set(24, 34, 18);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 120;
+key.shadow.camera.left = -34;
+key.shadow.camera.right = 34;
+key.shadow.camera.top = 40;
+key.shadow.camera.bottom = -14;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.03;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9dc4ee, 0.7);
+fill.position.set(-26, 14, 22);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffc98a, 1.0);
+rim.position.set(-16, 18, -30);
+scene.add(rim);
+
+/* ground plane: shadows only */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(400, 400),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.001;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ *
+ *  Voxel toolkit
+ *  Every part of the ship is an instanced 1x1x1 cube on a lattice.
+ * ------------------------------------------------------------------ */
+const VOX = 1.0;              // voxel pitch
+const GAP = 0.012;            // tiny inset so cube edges read as pixels
+const boxGeo = new THREE.BoxGeometry(VOX - GAP, VOX - GAP, VOX - GAP);
+
+function mat(hex, opts = {}) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(hex),
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.85,
+    metalness: opts.metalness !== undefined ? opts.metalness : 0.0,
+    emissive: opts.emissive !== undefined ? new THREE.Color(opts.emissive) : new THREE.Color(0x000000),
+    emissiveIntensity: opts.emissiveIntensity !== undefined ? opts.emissiveIntensity : 1.0,
+    flatShading: true
+  });
+}
+
+const PAL = {
+  hullDark:   mat(0x3a2416, { roughness: 0.92 }),
+  hull:       mat(0x5a3821, { roughness: 0.9 }),
+  hullLight:  mat(0x6d4526, { roughness: 0.88 }),
+  plank:      mat(0x8a5c30, { roughness: 0.87 }),
+  deck:       mat(0xa87a45, { roughness: 0.86 }),
+  deckAlt:    mat(0x96693a, { roughness: 0.86 }),
+  gold:       mat(0xd9a227, { roughness: 0.34, metalness: 0.75 }),
+  goldDim:    mat(0xb0801c, { roughness: 0.42, metalness: 0.7 }),
+  mast:       mat(0xc2a06a, { roughness: 0.83 }),   // tan stacked pixels
+  mastDark:   mat(0xa9884f, { roughness: 0.85 }),
+  rope:       mat(0x7d6a49, { roughness: 0.95 }),
+  sail:       mat(0xe8e2d2, { roughness: 0.95 }),
+  sailShade:  mat(0xd3ccba, { roughness: 0.95 }),
+  sailDeep:   mat(0xbdb5a1, { roughness: 0.95 }),
+  skull:      mat(0x1b1b20, { roughness: 0.9 }),
+  flagRed:    mat(0xa5202a, { roughness: 0.9 }),
+  flagDark:   mat(0x7a1620, { roughness: 0.9 }),
+  iron:       mat(0x2b2f36, { roughness: 0.5, metalness: 0.6 }),
+  ironLight:  mat(0x434a55, { roughness: 0.55, metalness: 0.5 }),
+  glass:      mat(0x8fd3d8, { roughness: 0.25, metalness: 0.1, emissive: 0x2b6b70, emissiveIntensity: 0.6 }),
+  white:      mat(0xf2efe6, { roughness: 0.9 }),
+  window:     mat(0x2a1a10, { roughness: 0.7 })
+};
+
+/* Collect voxels per-material, then bake into InstancedMeshes. */
+const buckets = new Map();      // material -> array of {x,y,z,sx,sy,sz}
+function vox(x, y, z, material, scale) {
+  let arr = buckets.get(material);
+  if (!arr) { arr = []; buckets.set(material, arr); }
+  arr.push({
+    x: x, y: y, z: z,
+    sx: scale ? scale[0] : 1,
+    sy: scale ? scale[1] : 1,
+    sz: scale ? scale[2] : 1
+  });
+}
+
+/* Axis-aligned box of voxels, inclusive ranges (integers). */
+function voxBox(x0, x1, y0, y1, z0, z1, material) {
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++)
+      for (let z = z0; z <= z1; z++)
+        vox(x, y, z, material);
+}
+
+/* Hollow shell box (walls only, optional open top/bottom) */
+function voxShell(x0, x1, y0, y1, z0, z1, material, openTop, openBottom) {
+  for (let x = x0; x <= x1; x++)
+    for (let y = y0; y <= y1; y++)
+      for (let z = z0; z <= z1; z++) {
+        const onX = (x === x0 || x === x1);
+        const onZ = (z === z0 || z === z1);
+        const onY = (y === y0 && !openBottom) || (y === y1 && !openTop);
+        if (onX || onZ || onY) vox(x, y, z, material);
+      }
+}
+
+const shipRoot = new THREE.Group();
+scene.add(shipRoot);
+
+/* ==================================================================
+ *  SHIP LAYOUT  (voxel-lattice coordinates)
+ *  X : port(-) <-> starboard(+)     beam
+ *  Y : up
+ *  Z : bow(-) <-> stern(+)          length
+ * ================================================================== */
+
+const BOW = -19;      // forward-most hull z
+const STERN = 17;     // aft-most hull z
+const DECK_Y = 7;     // main deck level
+
+/* Half-beam profile: how wide the hull is at each z, per deck level.
+   Produces a stepped, chunky, tapering hull. */
+function halfBeam(z, level) {
+  // level 0 = keel .. increases upward
+  const t = (z - BOW) / (STERN - BOW);       // 0 at bow, 1 at stern
+  // base fullness curve: narrow bow, full midships, moderately full stern
+  const fullness = Math.sin(Math.PI * Math.pow(t, 0.72));
+  let w = 1.0 + 5.4 * fullness;
+  // stern stays fuller (transom)
+  if (t > 0.82) w = Math.max(w, 3.6);
+  // flare: wider higher up
+  w += level * 0.42;
+  // bow pinches hard
+  if (z <= BOW + 2) w = Math.min(w, 1.6 + level * 0.35);
+  return Math.max(0.8, w);
+}
+
+/* ---------------------- HULL (stepped brown) ---------------------- */
+const HULL_LEVELS = [
+  { y: 1, mat: PAL.hullDark },
+  { y: 2, mat: PAL.hullDark },
+  { y: 3, mat: PAL.hull },
+  { y: 4, mat: PAL.hull },
+  { y: 5, mat: PAL.hullLight },
+  { y: 6, mat: PAL.plank }     // wale / rail band
+];
+
+const hullMask = new Set();                       // "x,y,z" occupancy of hull solid
+const deckCells = [];                             // cells of the open main deck
+
+function keyOf(x, y, z) { return x + ',' + y + ',' + z; }
+
+for (let li = 0; li < HULL_LEVELS.length; li++) {
+  const lvl = HULL_LEVELS[li];
+  const y = lvl.y;
+  for (let z = BOW; z <= STERN; z++) {
+    // keel/hull bottom rises toward bow & stern (rocker)
+    const tt = (z - BOW) / (STERN - BOW);
+    const rocker = Math.round(2.2 * Math.pow(Math.abs(tt - 0.46) * 2.0, 2.4));
+    if (y < 1 + rocker) continue;
+
+    const hb = Math.floor(halfBeam(z, li));
+    for (let x = -hb; x <= hb; x++) {
+      hullMask.add(keyOf(x, y, z));
+    }
+  }
+}
+
+/* Carve out the interior at the top hull level so the deck sits inside
+   a bulwark ring. Deck planking fills the void. */
+for (let z = BOW + 3; z <= STERN - 1; z++) {
+  const hb = Math.floor(halfBeam(z, HULL_LEVELS.length - 1));
+  for (let x = -hb + 1; x <= hb - 1; x++) {
+    hullMask.delete(keyOf(x, 6, z));
+    deckCells.push([x, z]);
+  }
+}
+
+/* Emit hull voxels with material chosen by level. */
+const levelMatByY = {};
+HULL_LEVELS.forEach(l => { levelMatByY[l.y] = l.mat; });
+hullMask.forEach(k => {
+  const p = k.split(',');
+  const x = +p[0], y = +p[1], z = +p[2];
+  vox(x, y, z, levelMatByY[y] || PAL.hull);
+});
+
+/* Gold trim stripe along the wale (level y=5 outer edge) */
+for (let z = BOW + 2; z <= STERN; z++) {
+  const hb = Math.floor(halfBeam(z, 4));
+  if (hullMask.has(keyOf(hb, 5, z))) vox(hb + 0.42, 5, z, PAL.gold, [0.18, 0.62, 0.98]);
+  if (hullMask.has(keyOf(-hb, 5, z))) vox(-hb - 0.42, 5, z, PAL.gold, [0.18, 0.62, 0.98]);
+}
+
+/* --------------------------- MAIN DECK ---------------------------- */
+for (const c of deckCells) {
+  const x = c[0], z = c[1];
+  const m = ((x + z) % 2 === 0) ? PAL.deck : PAL.deckAlt;
+  vox(x, DECK_Y - 1, z, m);     // deck planks sit at y = 6
+}
+
+/* Bulwark rail cap: one voxel of plank on the hull rim at y=7 */
+for (let z = BOW + 1; z <= STERN; z++) {
+  const hb = Math.floor(halfBeam(z, HULL_LEVELS.length - 1));
+  if (z >= BOW + 3 && z <= STERN - 1) {
+    vox(hb, DECK_Y, z, PAL.plank);
+    vox(-hb, DECK_Y, z, PAL.plank);
+    if (z % 5 === 0) {                 // gold stanchion accents
+      vox(hb, DECK_Y + 1, z, PAL.goldDim);
+      vox(-hb, DECK_Y + 1, z, PAL.goldDim);
+    }
+  } else {
+    // solid bow cap
+    for (let x = -hb; x <= hb; x++) vox(x, DECK_Y, z, PAL.plank);
+  }
+}
+
+/* ------------------------ BOW / BOWSPRIT -------------------------- */
+/* Rising prow block */
+for (let i = 0; i < 4; i++) {
+  const z = BOW + i;
+  const hb = Math.max(1, Math.floor(halfBeam(z, 5)) - 0);
+  for (let x = -hb; x <= hb; x++) {
+    for (let y = DECK_Y; y <= DECK_Y + (3 - i); y++) {
+      vox(x, y, z, y >= DECK_Y + 2 ? PAL.hullLight : PAL.hull);
+    }
+  }
+}
+/* gold beak trim */
+vox(0, DECK_Y + 3, BOW, PAL.gold);
+vox(0, DECK_Y + 2, BOW - 1, PAL.gold);
+vox(1, DECK_Y + 2, BOW, PAL.goldDim);
+vox(-1, DECK_Y + 2, BOW, PAL.goldDim);
+
+/* Bowsprit: stacked tan pixels angling forward & up */
+for (let i = 0; i < 11; i++) {
+  const z = BOW - i * 0.86;
+  const y = DECK_Y + 2 + i * 0.34;
+  vox(0, y, z, i % 2 === 0 ? PAL.mast : PAL.mastDark, [0.86, 0.86, 0.98]);
+}
+/* bowsprit tip flag-knob */
+vox(0, DECK_Y + 2 + 11 * 0.34, BOW - 11 * 0.86, PAL.gold, [0.6, 0.6, 0.6]);
+
+/* Small jib sail on the bowsprit (off-white voxels) */
+for (let i = 0; i < 6; i++) {
+  for (let j = 0; j <= i; j++) {
+    const z = BOW - 1.2 - i * 0.82;
+    const y = DECK_Y + 3.2 + (i * 0.34) + j * 0.85;
+    const bulge = Math.sin((j + 1) / (i + 2) * Math.PI) * 0.5;
+    const m = j === 0 ? PAL.sailShade : PAL.sail;
+    vox(bulge * 0.8, y, z, m, [0.55, 0.9, 0.9]);
+  }
+}
+
+/* --------------------- STERN CASTLE (blocky) ---------------------- */
+/* Quarterdeck platform */
+const QD_Z0 = 4, QD_Z1 = STERN - 1;
+const QD_Y = DECK_Y + 3;
+for (let z = QD_Z0; z <= QD_Z1; z++) {
+  const hb = Math.floor(halfBeam(z, 5));
+  for (let x = -hb; x <= hb; x++) {
+    // support walls at the forward face
+    if (z === QD_Z0) {
+      for (let y = DECK_Y; y < QD_Y; y++) vox(x, y, z, PAL.hull);
+    } else if (Math.abs(x) >= hb - 0) {
+      for (let y = DECK_Y; y < QD_Y; y++) vox(x, y, z, PAL.hullLight);
+    }
+    vox(x, QD_Y, z, ((x + z) % 2 === 0) ? PAL.deck : PAL.deckAlt);
+  }
+}
+/* gold band under the quarterdeck lip */
+for (let z = QD_Z0; z <= QD_Z1; z++) {
+  const hb = Math.floor(halfBeam(z, 5));
+  vox(hb + 0.4, QD_Y - 1, z, PAL.gold, [0.2, 0.7, 0.98]);
+  vox(-hb - 0.4, QD_Y - 1, z, PAL.gold, [0.2, 0.7, 0.98]);
+}
+for (let x = -Math.floor(halfBeam(QD_Z0, 5)); x <= Math.floor(halfBeam(QD_Z0, 5)); x++) {
+  vox(x, QD_Y - 1, QD_Z0 - 0.4, PAL.gold, [0.98, 0.7, 0.2]);
+}
+
+/* Quarterdeck rails */
+for (let z = QD_Z0; z <= QD_Z1; z++) {
+  const hb = Math.floor(halfBeam(z, 5));
+  vox(hb, QD_Y + 1, z, PAL.plank);
+  vox(-hb, QD_Y + 1, z, PAL.plank);
+  if (z % 4 === 0) { vox(hb, QD_Y + 2, z, PAL.goldDim); vox(-hb, QD_Y + 2, z, PAL.goldDim); }
+}
+{
+  const hb = Math.floor(halfBeam(QD_Z0, 5));
+  for (let x = -hb; x <= hb; x++) if (Math.abs(x) > 1) vox(x, QD_Y + 1, QD_Z0, PAL.plank);
+}
+
+/* Stern cabin block — the gold-trimmed castle */
+const CAB_Z0 = 8, CAB_Z1 = STERN - 1;
+const CAB_Y0 = QD_Y + 1, CAB_Y1 = QD_Y + 5;
+const cabHalf = 4;
+for (let z = CAB_Z0; z <= CAB_Z1; z++) {
+  for (let y = CAB_Y0; y <= CAB_Y1; y++) {
+    for (let x = -cabHalf; x <= cabHalf; x++) {
+      const onX = (Math.abs(x) === cabHalf);
+      const onZ = (z === CAB_Z0 || z === CAB_Z1);
+      const onY = (y === CAB_Y1);
+      if (!(onX || onZ || onY)) continue;
+      let m = PAL.hull;
+      if (y === CAB_Y1) m = PAL.plank;
+      else if ((y - CAB_Y0) % 2 === 1) m = PAL.hullLight;
+      vox(x, y, z, m);
+    }
+  }
+}
+/* cabin windows: dark panes with gold mullions on the transom */
+for (let x = -3; x <= 3; x++) {
+  for (let y = CAB_Y0 + 1; y <= CAB_Y0 + 2; y++) {
+    if (x % 2 === 0) vox(x, y, CAB_Z1 + 0.42, PAL.glass, [0.86, 0.86, 0.2]);
+    else vox(x, y, CAB_Z1 + 0.42, PAL.gold, [0.9, 0.9, 0.18]);
+  }
+}
+/* side windows */
+for (let z = CAB_Z0 + 2; z <= CAB_Z1 - 1; z += 2) {
+  vox(cabHalf + 0.42, CAB_Y0 + 2, z, PAL.glass, [0.2, 0.86, 0.86]);
+  vox(-cabHalf - 0.42, CAB_Y0 + 2, z, PAL.glass, [0.2, 0.86, 0.86]);
+}
+/* gold trim frame around the castle */
+for (let x = -cabHalf; x <= cabHalf; x++) {
+  vox(x, CAB_Y0 - 0.05, CAB_Z1 + 0.42, PAL.gold, [0.98, 0.4, 0.2]);
+  vox(x, CAB_Y1 + 0.45, CAB_Z1 + 0.2, PAL.gold, [0.98, 0.2, 0.6]);
+  vox(x, CAB_Y1 + 0.45, CAB_Z0 - 0.2, PAL.goldDim, [0.98, 0.2, 0.6]);
+}
+for (let z = CAB_Z0; z <= CAB_Z1; z++) {
+  vox(cabHalf + 0.42, CAB_Y1 + 0.45, z, PAL.gold, [0.2, 0.2, 0.98]);
+  vox(-cabHalf - 0.42, CAB_Y1 + 0.45, z, PAL.gold, [0.2, 0.2, 0.98]);
+  vox(cabHalf + 0.42, CAB_Y0 - 0.05, z, PAL.goldDim, [0.2, 0.4, 0.98]);
+  vox(-cabHalf - 0.42, CAB_Y0 - 0.05, z, PAL.goldDim, [0.2, 0.4, 0.98]);
+}
+/* stern lanterns (gold + warm glass) */
+[[-3, CAB_Z1 + 1], [3, CAB_Z1 + 1]].forEach(function (p) {
+  vox(p[0], CAB_Y1 + 1, p[1], PAL.gold, [0.7, 0.4, 0.7]);
+  vox(p[0], CAB_Y1 + 2, p[1], PAL.goldDim, [0.5, 0.3, 0.5]);
+});
+const lanternGlass = mat(0xffcf72, { roughness: 0.3, emissive: 0xff9d2a, emissiveIntensity: 1.6 });
+vox(-3, CAB_Y1 + 1.6, CAB_Z1 + 1, lanternGlass, [0.5, 0.55, 0.5]);
+vox(3, CAB_Y1 + 1.6, CAB_Z1 + 1, lanternGlass, [0.5, 0.55, 0.5]);
+
+const lanternLightA = new THREE.PointLight(0xffab3d, 6.0, 16, 2.0);
+const lanternLightB = new THREE.PointLight(0xffab3d, 6.0, 16, 2.0);
+
+/* stepped transom skirt below the castle */
+for (let i = 0; i < 3; i++) {
+  const hb = 4 - i;
+  for (let x = -hb; x <= hb; x++) vox(x, QD_Y - i, STERN + 0.6 - i * 0.35, i === 1 ? PAL.gold : PAL.hullLight, [0.98, 0.98, 0.5]);
+}
+
+/* --------------------- FORECASTLE (bow deck) ---------------------- */
+const FC_Z0 = BOW + 3, FC_Z1 = BOW + 8;
+const FC_Y = DECK_Y + 2;
+for (let z = FC_Z0; z <= FC_Z1; z++) {
+  const hb = Math.floor(halfBeam(z, 5));
+  for (let x = -hb; x <= hb; x++) {
+    if (z === FC_Z1 || Math.abs(x) === hb) {
+      for (let y = DECK_Y; y < FC_Y; y++) vox(x, y, z, PAL.hull);
+    }
+    vox(x, FC_Y, z, ((x + z) % 2 === 0) ? PAL.deck : PAL.deckAlt);
+    if (Math.abs(x) === hb) vox(x, FC_Y + 1, z, PAL.plank);
+  }
+}
+{
+  const hb = Math.floor(halfBeam(FC_Z1, 5));
+  for (let x = -hb; x <= hb; x++) {
+    vox(x, FC_Y + 1, FC_Z1, PAL.plank);
+    vox(x, FC_Y - 1, FC_Z1 + 0.42, PAL.gold, [0.98, 0.2, 0.2]);
+  }
+}
+
+/* ------------------- GUNPORTS + CUBE CANNONS ---------------------- */
+/* Square gunports cut into the hull side at y=4, with tiny cube cannons. */
+const gunZ = [-11, -7, -3, 1, 5, 9];
+for (let gi = 0; gi < gunZ.length; gi++) {
+  const z = gunZ[gi];
+  const hb = Math.floor(halfBeam(z, 3));
+  for (let s = -1; s <= 1; s += 2) {
+    const xEdge = s * hb;
+    // port frame (dark recess + gold lintel)
+    vox(xEdge + s * 0.44, 4, z, PAL.window, [0.2, 0.98, 0.98]);
+    vox(xEdge + s * 0.46, 5, z, PAL.goldDim, [0.2, 0.24, 1.02]);
+    vox(xEdge + s * 0.46, 3, z, PAL.goldDim, [0.2, 0.24, 1.02]);
+    vox(xEdge + s * 0.46, 4, z + 0.62, PAL.goldDim, [0.2, 1.02, 0.24]);
+    vox(xEdge + s * 0.46, 4, z - 0.62, PAL.goldDim, [0.2, 1.02, 0.24]);
+    // cannon barrel: 3 stacked-out iron cubes shrinking outward
+    vox(xEdge + s * 0.85, 4, z, PAL.iron, [0.9, 0.62, 0.62]);
+    vox(xEdge + s * 1.6, 4, z, PAL.iron, [0.75, 0.5, 0.5]);
+    vox(xEdge + s * 2.15, 4, z, PAL.ironLight, [0.44, 0.42, 0.42]);
+  }
+}
+/* Deck-level swivel guns on the rail */
+[[-13, 1], [-13, -1], [11, 1], [11, -1]].forEach(function (p) {
+  const z = p[0], s = p[1];
+  const hb = Math.floor(halfBeam(z, 5));
+  const x = s * hb;
+  vox(x, DECK_Y + 1, z, PAL.iron, [0.55, 0.55, 0.55]);
+  vox(x + s * 0.7, DECK_Y + 1.15, z, PAL.ironLight, [0.9, 0.34, 0.34]);
+});
+
+/* ------------------------- DECK DETAILS --------------------------- */
+/* main hatch grating */
+for (let x = -2; x <= 2; x++) {
+  for (let z = -4; z <= -1; z++) {
+    const m = ((x + z) % 2 === 0) ? PAL.hullDark : PAL.plank;
+    vox(x, DECK_Y, z, m, [0.94, 0.34, 0.94]);
+  }
+}
+/* capstan */
+vox(0, DECK_Y, 2, PAL.plank, [0.8, 1.0, 0.8]);
+vox(0, DECK_Y + 1, 2, PAL.mastDark, [0.55, 1.0, 0.55]);
+for (let i = -1; i <= 1; i += 2) {
+  vox(i * 0.9, DECK_Y + 1, 2, PAL.mast, [0.9, 0.24, 0.24]);
+  vox(0, DECK_Y + 1, 2 + i * 0.9, PAL.mast, [0.24, 0.24, 0.9]);
+}
+/* barrels near the waist */
+function barrel(x, z) {
+  vox(x, DECK_Y, z, PAL.hullDark, [0.9, 0.34, 0.9]);
+  vox(x, DECK_Y + 0.42, z, PAL.plank, [0.98, 0.52, 0.98]);
+  vox(x, DECK_Y + 0.84, z, PAL.hullDark, [0.9, 0.34, 0.9]);
+}
+barrel(-4, 1); barrel(-4, 2.1); barrel(4, 0.4);
+/* crates */
+vox(4, DECK_Y + 0.2, 2.2, PAL.mastDark, [1.15, 1.15, 1.15]);
+vox(3.1, DECK_Y + 0.1, 3.1, PAL.plank, [0.95, 0.95, 0.95]);
+
+/* ------------------------- SHIP'S WHEEL --------------------------- */
+{
+  const wz = CAB_Z0 - 2, wy = QD_Y + 2.4;
+  vox(0, QD_Y + 1, wz, PAL.plank, [0.7, 1.0, 0.7]);
+  for (let a = 0; a < 8; a++) {
+    const ang = (a / 8) * Math.PI * 2;
+    vox(Math.cos(ang) * 1.15, wy + Math.sin(ang) * 1.15, wz, PAL.mastDark, [0.38, 0.38, 0.3]);
+  }
+  vox(0, wy, wz, PAL.goldDim, [0.42, 0.42, 0.42]);
+}
+
+/* ============================ MASTS ============================== */
+/* Three masts of stacked tan pixels. */
+const MASTS = [
+  { z: -10, base: FC_Y + 1, height: 17, name: 'fore' },
+  { z: -1,  base: DECK_Y,   height: 25, name: 'main' },
+  { z: 10,  base: QD_Y + 1, height: 14, name: 'mizzen' }
+];
+
+MASTS.forEach(function (M) {
+  for (let i = 0; i < M.height; i++) {
+    const y = M.base + i;
+    const m = (i % 3 === 0) ? PAL.mastDark : PAL.mast;
+    const s = i > M.height - 5 ? 0.72 : 0.9;
+    vox(0, y, M.z, m, [s, 1.0, s]);
+  }
+  // mast top knob + gold cap
+  vox(0, M.base + M.height, M.z, PAL.goldDim, [0.62, 0.6, 0.62]);
+});
+
+/* Yard arms (horizontal stacked pixels) */
+function yard(z, y, halfLen, material) {
+  for (let x = -halfLen; x <= halfLen; x++) {
+    const m = (Math.abs(x) % 3 === 0) ? PAL.mastDark : material;
+    vox(x, y, z, m, [1.0, 0.78, 0.78]);
+  }
+  // gold tips
+  vox(-halfLen - 0.6, y, z, PAL.goldDim, [0.4, 0.5, 0.5]);
+  vox(halfLen + 0.6, y, z, PAL.goldDim, [0.4, 0.5, 0.5]);
+}
+
+/* --------------------------- SAILS -------------------------------
+ * Two big square sails of off-white voxels that bulge slightly.
+ * Sail A (mainmast) is stamped with a black skull-and-bones.
+ * ------------------------------------------------------------------ */
+
+/* 11 x 9 skull-and-crossbones stamp (1 = dark voxel) */
+const SKULL = [
+  '000011111000',
+  '000111111100',
+  '001111111110',
+  '001100110110',
+  '001100110110',
+  '001111111110',
+  '000111111100',
+  '000101101000',
+  '000111111100',
+  '001111111110',
+  '011000000011'
+];
+/* crossbones rows appended below the skull */
+const BONES = [
+  '110000000011',
+  '011100001110',
+  '001111111100',
+  '000111111000',
+  '001111111100',
+  '011100001110',
+  '110000000011'
+];
+
+function buildSail(opts) {
+  const z = opts.z;                 // mast z
+  const topY = opts.topY;
+  const halfW = opts.halfW;         // half width in voxels
+  const rows = opts.rows;           // vertical voxel count
+  const stamp = opts.stamp;         // optional {grid, ox, oy}
+  const bulge = opts.bulge !== undefined ? opts.bulge : 1.5;
+
+  for (let r = 0; r < rows; r++) {
+    const y = topY - r;
+    // vertical bulge envelope: 0 at top/bottom edge, max in the middle
+    const vEnv = Math.sin(((r + 0.5) / rows) * Math.PI);
+    for (let x = -halfW; x <= halfW; x++) {
+      const u = (x + halfW) / (2 * halfW);            // 0..1 across
+      const hEnv = Math.sin(u * Math.PI);
+      const dz = bulge * hEnv * vEnv;                 // bulge aft (downwind)
+      let m;
+      // shading: edges darker, belly brightest
+      const lum = hEnv * vEnv;
+      if (lum > 0.72) m = PAL.sail;
+      else if (lum > 0.34) m = PAL.sailShade;
+      else m = PAL.sailDeep;
+
+      // skull stamp lookup
+      if (stamp) {
+        const gy = r - stamp.oy;
+        const gx = (x + halfW) - stamp.ox;
+        if (gy >= 0 && gy < stamp.grid.length) {
+          const line = stamp.grid[gy];
+          if (gx >= 0 && gx < line.length && line[gx] === '1') m = PAL.skull;
+        }
+      }
+      vox(x, y, z + dz, m, [1.0, 1.0, 0.42]);
+    }
+  }
+}
+
+/* ---- MAIN SAIL (skull & bones) on the mainmast ---- */
+const MAIN = MASTS[1];
+const mainYardY = MAIN.base + MAIN.height - 5;
+const mainHalfW = 7;
+const mainRows = 13;
+yard(MAIN.z, mainYardY, mainHalfW + 1, PAL.mast);
+buildSail({
+  z: MAIN.z,
+  topY: mainYardY - 1,
+  halfW: mainHalfW,
+  rows: mainRows,
+  bulge: 1.7,
+  stamp: { grid: SKULL.concat(BONES), ox: 1, oy: 0 }
+});
+/* lower yard under the main sail */
+yard(MAIN.z, mainYardY - mainRows, mainHalfW, PAL.mastDark);
+
+/* ---- FORE SAIL (plain off-white) ---- */
+const FORE = MASTS[0];
+const foreYardY = FORE.base + FORE.height - 4;
+const foreHalfW = 5;
+const foreRows = 10;
+yard(FORE.z, foreYardY, foreHalfW + 1, PAL.mast);
+buildSail({
+  z: FORE.z,
+  topY: foreYardY - 1,
+  halfW: foreHalfW,
+  rows: foreRows,
+  bulge: 1.35
+});
+yard(FORE.z, foreYardY - foreRows, foreHalfW, PAL.mastDark);
+
+/* ---- Mizzen: furled sail bundle (keeps "two square sails" reading) --- */
+const MIZ = MASTS[2];
+const mizYardY = MIZ.base + MIZ.height - 4;
+yard(MIZ.z, mizYardY, 4, PAL.mast);
+for (let x = -3; x <= 3; x++) {
+  vox(x, mizYardY - 1, MIZ.z + 0.25, (x % 2 === 0) ? PAL.sailShade : PAL.sailDeep, [1.0, 0.72, 0.72]);
+}
+
+/* ---- Crow's nest on the mainmast ---- */
+{
+  const cy = MAIN.base + MAIN.height - 2;
+  for (let x = -2; x <= 2; x++) {
+    for (let z = -2; z <= 2; z++) {
+      if (Math.abs(x) === 2 || Math.abs(z) === 2) {
+        vox(x, cy + 1, MAIN.z + z, PAL.plank, [1.0, 0.75, 1.0]);
+        vox(x, cy, MAIN.z + z, PAL.mastDark, [1.0, 0.6, 1.0]);
+      } else if (!(x === 0 && z === 0)) {
+        vox(x, cy, MAIN.z + z, PAL.mastDark, [1.0, 0.35, 1.0]);
+      }
+    }
+  }
+}
+
+/* -------------------- JAGGED PIXEL FLAG --------------------------
+ * Juts out from the mainmast top: a ragged, notched banner.
+ * ------------------------------------------------------------------ */
+const FLAG_BASE_Y = MAIN.base + MAIN.height - 1;
+const FLAG = [
+  '11111111110',
+  '11111111100',
+  '11111111111',
+  '11111111000',
+  '11111111110',
+  '11111110000',
+  '11111111100'
+];
+const flagVoxels = [];   // remember for gentle wave animation
+for (let r = 0; r < FLAG.length; r++) {
+  const line = FLAG[r];
+  for (let c = 0; c < line.length; c++) {
+    if (line[c] !== '1') continue;
+    const y = FLAG_BASE_Y - r;
+    const zOff = 0.9 + c * 0.92;
+    const m = (r % 2 === 0)
+      ? ((c > 6) ? PAL.flagDark : PAL.flagRed)
+      : ((c > 6) ? PAL.flagRed : PAL.flagDark);
+    // slight skull dot on the flag
+    const isDot = (r === 2 && (c === 3 || c === 5)) || (r === 3 && c === 4);
+    vox(0, y, MAIN.z + zOff, isDot ? PAL.skull : m, [0.42, 1.0, 1.0]);
+    flagVoxels.push({ mat: isDot ? PAL.skull : m, col: c, row: r, y: y, z: MAIN.z + zOff });
+  }
+}
+
+/* ------------------------- RIGGING LINES -------------------------- */
+/* Thin voxel-stepped ropes: mast tops to bow/stern and shrouds. */
+function ropeLine(x0, y0, z0, x1, y1, z1, steps, material, thick) {
+  const t = thick || 0.16;
+  for (let i = 0; i <= steps; i++) {
+    const f = i / steps;
+    vox(
+      x0 + (x1 - x0) * f,
+      y0 + (y1 - y0) * f,
+      z0 + (z1 - z0) * f,
+      material,
+      [t, t, t]
+    );
+  }
+}
+/* forestays */
+ropeLine(0, MAIN.base + MAIN.height - 1, MAIN.z, 0, DECK_Y + 4.5, BOW - 7.5, 46, PAL.rope);
+ropeLine(0, FORE.base + FORE.height - 1, FORE.z, 0, DECK_Y + 3.2, BOW - 4.0, 34, PAL.rope);
+/* backstays */
+ropeLine(0, MAIN.base + MAIN.height - 1, MAIN.z, 0, CAB_Y1 + 1.2, CAB_Z1, 34, PAL.rope);
+ropeLine(0, MIZ.base + MIZ.height - 1, MIZ.z, 0, QD_Y + 1.5, STERN, 20, PAL.rope);
+/* shrouds (mast -> rail, both sides, each mast) */
+MASTS.forEach(function (M) {
+  const topY = M.base + M.height - 5;
+  const hb = Math.floor(halfBeam(M.z, 5));
+  for (let s = -1; s <= 1; s += 2) {
+    for (let k = 0; k < 3; k++) {
+      const zOff = (k - 1) * 2.0;
+      ropeLine(0, topY, M.z, s * hb, M.base - 0.4, M.z + zOff, 22, PAL.rope, 0.14);
+    }
+  }
+});
+/* ratline rungs on the main shrouds */
+for (let k = 1; k <= 6; k++) {
+  const f = k / 7.5;
+  const hb = Math.floor(halfBeam(MAIN.z, 5));
+  const topY = MAIN.base + MAIN.height - 5;
+  const yA = topY + (MAIN.base - 0.4 - topY) * f;
+  for (let s = -1; s <= 1; s += 2) {
+    const xA = s * hb * f;
+    for (let q = -1; q <= 1; q++) {
+      vox(xA * (1 + q * 0.0), yA, MAIN.z + q * 2.0 * f, PAL.rope, [0.13, 0.13, 2.0 * f * 0.55 + 0.2]);
+    }
+  }
+}
+
+/* ------------------------- ANCHOR --------------------------------- */
+{
+  const az = BOW + 5, ax = Math.floor(halfBeam(BOW + 5, 4)) + 0.5;
+  for (let s = -1; s <= 1; s += 2) {
+    vox(s * ax, 5.6, az, PAL.iron, [0.24, 1.5, 0.28]);
+    vox(s * ax, 4.5, az, PAL.iron, [1.0, 0.26, 0.28]);
+    vox(s * ax, 4.2, az - 0.5, PAL.ironLight, [0.4, 0.3, 0.4]);
+    vox(s * ax, 4.2, az + 0.5, PAL.ironLight, [0.4, 0.3, 0.4]);
+    vox(s * ax, 6.4, az, PAL.goldDim, [0.34, 0.4, 0.34]);
+  }
+}
+
+/* ================= BAKE BUCKETS INTO INSTANCED MESHES ============= */
+const dummy = new THREE.Object3D();
+buckets.forEach(function (list, material) {
+  const inst = new THREE.InstancedMesh(boxGeo, material, list.length);
+  inst.castShadow = true;
+  inst.receiveShadow = true;
+  for (let i = 0; i < list.length; i++) {
+    const v = list[i];
+    dummy.position.set(v.x * VOX, v.y * VOX, v.z * VOX);
+    dummy.rotation.set(0, 0, 0);
+    dummy.scale.set(v.sx, v.sy, v.sz);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+  }
+  inst.instanceMatrix.needsUpdate = true;
+  inst.frustumCulled = false;
+  shipRoot.add(inst);
+});
+
+/* ------------- Center the whole ship on the origin ---------------- */
+const bbox = new THREE.Box3().setFromObject(shipRoot);
+const size = new THREE.Vector3();
+const center = new THREE.Vector3();
+bbox.getSize(size);
+bbox.getCenter(center);
+
+/* scale so the galleon is a comfortable studio size */
+const targetHeight = 26;
+const s = targetHeight / size.y;
+shipRoot.scale.setScalar(s);
+shipRoot.position.set(-center.x * s, -bbox.min.y * s + 0.6, -center.z * s);
+
+/* place lantern point lights in world space after transform */
+scene.add(lanternLightA);
+scene.add(lanternLightB);
+function placeLantern(light, lx, ly, lz) {
+  light.position.set(
+    lx * s + shipRoot.position.x,
+    ly * s + shipRoot.position.y,
+    lz * s + shipRoot.position.z
+  );
+}
+placeLantern(lanternLightA, -3, CAB_Y1 + 1.6, CAB_Z1 + 1.4);
+placeLantern(lanternLightB, 3, CAB_Y1 + 1.6, CAB_Z1 + 1.4);
+
+/* recompute a good camera framing */
+const finalBox = new THREE.Box3().setFromObject(shipRoot);
+const fSize = new THREE.Vector3();
+finalBox.getSize(fSize);
+const fCenter = new THREE.Vector3();
+finalBox.getCenter(fCenter);
+controls.target.copy(fCenter);
+const radius = fSize.length() * 0.5;
+const dist = radius / Math.tan((camera.fov * Math.PI) / 360) * 1.06;
+camera.position.set(dist * 0.62, fCenter.y + radius * 0.42, dist * 0.72);
+controls.update();
+
+/* shadow camera follows the object */
+key.target.position.copy(fCenter);
+scene.add(key.target);
+fill.target.position.copy(fCenter);
+scene.add(fill.target);
+rim.target.position.copy(fCenter);
+scene.add(rim.target);
+
+/* ------------------------------------------------------------------ *
+ *  Resize + Render loop
+ * ------------------------------------------------------------------ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  // gentle sea-swell rocking of the whole galleon
+  shipRoot.rotation.z = Math.sin(t * 0.55) * 0.018;
+  shipRoot.rotation.x = Math.sin(t * 0.4 + 1.1) * 0.012;
+
+  // lantern flicker
+  const flick = 5.2 + Math.sin(t * 9.0) * 0.6 + Math.sin(t * 23.0) * 0.35;
+  lanternLightA.intensity = flick;
+  lanternLightB.intensity = flick * 0.92;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

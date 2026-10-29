@@ -1,0 +1,1012 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Neon Wireframe Stag</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #05060a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    letter-spacing: 0.18em; text-transform: uppercase;
+    color: rgba(255, 120, 220, 0.45); pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   RENDERER / SCENE / CAMERA
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x06070c);
+scene.fog = new THREE.FogExp2(0x06070c, 0.022);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 200);
+camera.position.set(3.6, 2.2, 5.4);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.target.set(0, 1.28, 0);
+controls.minDistance = 2.4;
+controls.maxDistance = 16;
+controls.maxPolarAngle = Math.PI * 0.52;
+
+/* ============================================================
+   PALETTE
+   ============================================================ */
+const COL_MAGENTA = new THREE.Color(0xff1f8f);
+const COL_MAGENTA_HOT = new THREE.Color(0xff6bc0);
+const COL_CYAN = new THREE.Color(0x22e8ff);
+const COL_CYAN_HOT = new THREE.Color(0xa8fbff);
+const COL_VIOLET = new THREE.Color(0xb44dff);
+
+/* ============================================================
+   ROOT OBJECT  (the single centered object)
+   ============================================================ */
+const stag = new THREE.Group();
+scene.add(stag);
+
+/* ------------------------------------------------------------
+   Shared materials
+   ------------------------------------------------------------ */
+function tubeMat(color, intensity) {
+  return new THREE.MeshBasicMaterial({
+    color: color.clone().multiplyScalar(intensity),
+    toneMapped: false,
+    fog: false
+  });
+}
+
+const MAT = {
+  magenta:  tubeMat(COL_MAGENTA, 1.35),
+  magentaB: tubeMat(COL_MAGENTA_HOT, 1.6),
+  cyan:     tubeMat(COL_CYAN, 1.45),
+  cyanB:    tubeMat(COL_CYAN_HOT, 1.7),
+  violet:   tubeMat(COL_VIOLET, 1.25)
+};
+
+/* Halo (bloom-substitute) material: additive, view-facing falloff sprite-shell */
+function haloMaterial(color, strength) {
+  return new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    side: THREE.BackSide,
+    toneMapped: false,
+    fog: false,
+    uniforms: {
+      uColor: { value: color.clone() },
+      uStrength: { value: strength }
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vN;
+      varying vec3 vV;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        vN = normalize(normalMatrix * normal);
+        vV = normalize(-mv.xyz);
+        gl_Position = projectionMatrix * mv;
+      }
+    `,
+    fragmentShader: /* glsl */`
+      uniform vec3 uColor;
+      uniform float uStrength;
+      varying vec3 vN;
+      varying vec3 vV;
+      void main() {
+        float f = 1.0 - abs(dot(normalize(vN), normalize(vV)));
+        f = pow(clamp(f, 0.0, 1.0), 1.6);
+        float a = f * uStrength;
+        if (a < 0.003) discard;
+        gl_FragColor = vec4(uColor * a * 1.35, a);
+      }
+    `
+  });
+}
+
+const HALO = {
+  magenta: haloMaterial(COL_MAGENTA, 0.42),
+  cyan:    haloMaterial(COL_CYAN, 0.40),
+  violet:  haloMaterial(COL_VIOLET, 0.34)
+};
+
+/* Node (vertex flare) material: additive radial billboard */
+const nodeMaterial = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  toneMapped: false,
+  fog: false,
+  uniforms: {
+    uTime: { value: 0 },
+    uScale: { value: (window.innerHeight * Math.min(window.devicePixelRatio, 2)) / 2 }
+  },
+  vertexShader: /* glsl */`
+    attribute float aSize;
+    attribute vec3 aColor;
+    attribute float aPhase;
+    uniform float uTime;
+    uniform float uScale;
+    varying vec3 vColor;
+    varying float vPulse;
+    void main() {
+      vColor = aColor;
+      float pulse = 0.72 + 0.38 * sin(uTime * 1.7 + aPhase);
+      vPulse = pulse;
+      vec4 mv = modelViewMatrix * vec4(position, 1.0);
+      gl_Position = projectionMatrix * mv;
+      gl_PointSize = aSize * pulse * uScale / max(0.0001, -mv.z);
+      gl_PointSize = clamp(gl_PointSize, 1.0, 190.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    varying vec3 vColor;
+    varying float vPulse;
+    void main() {
+      vec2 uv = gl_PointCoord - 0.5;
+      float d = length(uv) * 2.0;
+      if (d > 1.0) discard;
+      float core = pow(clamp(1.0 - d, 0.0, 1.0), 2.6);
+      float glow = pow(clamp(1.0 - d, 0.0, 1.0), 0.85) * 0.30;
+      float a = (core + glow) * vPulse;
+      gl_FragColor = vec4(vColor * a * 1.7, a);
+    }
+  `
+});
+
+/* ============================================================
+   EDGE BUILDER  — tubes + halo shells + vertex nodes
+   ============================================================ */
+const nodeRegistry = []; // { pos: Vector3, size, color }
+
+function registerNode(p, size, color) {
+  // merge coincident nodes, keeping the brightest/largest
+  for (let i = 0; i < nodeRegistry.length; i++) {
+    const n = nodeRegistry[i];
+    if (n.pos.distanceToSquared(p) < 0.0016) {
+      if (size > n.size) { n.size = size; n.color = color; }
+      return;
+    }
+  }
+  nodeRegistry.push({ pos: p.clone(), size, color: color.clone() });
+}
+
+const tubeGroup = new THREE.Group();
+const haloGroup = new THREE.Group();
+stag.add(tubeGroup, haloGroup);
+
+const _up = new THREE.Vector3(0, 1, 0);
+const _alt = new THREE.Vector3(1, 0, 0);
+const _dir = new THREE.Vector3();
+const _mid = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+
+// Reusable unit geometries (radius 1, height 1, centered) -> scaled per edge.
+const CYL_LO = new THREE.CylinderGeometry(1, 1, 1, 6, 1, true);
+const CYL_HI = new THREE.CylinderGeometry(1, 1, 1, 8, 1, true);
+const SPH_LO = new THREE.SphereGeometry(1, 8, 6);
+
+/**
+ * Adds a glowing tube segment between a and b.
+ */
+function addEdge(a, b, opts = {}) {
+  const radius = opts.radius !== undefined ? opts.radius : 0.011;
+  const mat = opts.mat || MAT.magenta;
+  const halo = opts.halo || HALO.magenta;
+  const haloScale = opts.haloScale !== undefined ? opts.haloScale : 3.4;
+  const detail = opts.detail || 'lo';
+
+  _dir.subVectors(b, a);
+  const len = _dir.length();
+  if (len < 1e-5) return;
+  _dir.normalize();
+  _mid.addVectors(a, b).multiplyScalar(0.5);
+
+  const axis = Math.abs(_dir.y) > 0.999 ? _alt : _up;
+  _q.setFromUnitVectors(_up, _dir);
+
+  const geo = detail === 'hi' ? CYL_HI : CYL_LO;
+
+  const core = new THREE.Mesh(geo, mat);
+  core.position.copy(_mid);
+  core.quaternion.copy(_q);
+  core.scale.set(radius, len, radius);
+  core.renderOrder = 2;
+  tubeGroup.add(core);
+
+  const shell = new THREE.Mesh(geo, halo);
+  shell.position.copy(_mid);
+  shell.quaternion.copy(_q);
+  shell.scale.set(radius * haloScale, len * 1.005, radius * haloScale);
+  shell.renderOrder = 1;
+  haloGroup.add(shell);
+
+  void axis; // (kept for clarity of axis-selection intent)
+}
+
+/**
+ * Adds a polyline of edges. `closed` loops back to the first point.
+ */
+function addPath(points, opts = {}, closed = false) {
+  for (let i = 0; i < points.length - 1; i++) addEdge(points[i], points[i + 1], opts);
+  if (closed && points.length > 2) addEdge(points[points.length - 1], points[0], opts);
+  if (opts.nodes !== false) {
+    const ns = opts.nodeSize !== undefined ? opts.nodeSize : 0.055;
+    const nc = opts.nodeColor || (opts.mat === MAT.cyan || opts.mat === MAT.cyanB ? COL_CYAN_HOT : COL_MAGENTA_HOT);
+    for (const p of points) registerNode(p, ns, nc);
+  }
+}
+
+/* ============================================================
+   BODY CROSS-SECTION LATTICE
+   A "spine" of polygonal rings lofted along the torso; ring edges
+   in magenta, longitudinal stringers in magenta, spine line cyan.
+   ============================================================ */
+
+// Ring generator: elliptical polygon in the local XY plane, placed at (cx, cy, cz)
+// oriented along +Z (body axis runs -Z (tail) -> +Z (chest) in local space).
+function makeRing(cx, cy, cz, rx, ry, sides, phase = 0, squash = 0) {
+  const pts = [];
+  for (let i = 0; i < sides; i++) {
+    const t = (i / sides) * Math.PI * 2 + phase;
+    let x = Math.cos(t) * rx;
+    let y = Math.sin(t) * ry;
+    // squash flattens the belly (negative y) for a more equine/cervine cross-section
+    if (squash > 0 && y < 0) y *= (1 - squash * 0.45);
+    pts.push(new THREE.Vector3(cx + x, cy + y, cz));
+  }
+  return pts;
+}
+
+const SIDES = 8;
+
+/* Torso profile: [z, centerY, radiusX (half-width), radiusY (half-height)] */
+const torsoProfile = [
+  { z: -0.86, y: 1.30, rx: 0.085, ry: 0.10 },  // tail root / rump tip
+  { z: -0.70, y: 1.33, rx: 0.185, ry: 0.215 }, // rump
+  { z: -0.48, y: 1.34, rx: 0.245, ry: 0.275 }, // haunch
+  { z: -0.22, y: 1.32, rx: 0.245, ry: 0.275 }, // loin
+  { z:  0.02, y: 1.31, rx: 0.225, ry: 0.265 }, // barrel
+  { z:  0.26, y: 1.33, rx: 0.238, ry: 0.285 }, // ribcage
+  { z:  0.50, y: 1.35, rx: 0.250, ry: 0.300 }, // chest (deepest)
+  { z:  0.70, y: 1.36, rx: 0.215, ry: 0.265 }, // shoulder
+  { z:  0.86, y: 1.38, rx: 0.150, ry: 0.190 }  // base of neck
+];
+
+const torsoRings = torsoProfile.map((p, i) =>
+  makeRing(0, p.y, p.z, p.rx, p.ry, SIDES, (i % 2) * (Math.PI / SIDES), 0.5)
+);
+
+// Ring edges
+for (const ring of torsoRings) {
+  addPath(ring, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0095, nodeSize: 0.048 }, true);
+}
+
+// Longitudinal stringers: connect nearest vertices between consecutive rings.
+function loftRings(ringA, ringB, opts) {
+  const n = Math.min(ringA.length, ringB.length);
+  for (let i = 0; i < n; i++) {
+    // find nearest vertex in ringB for angular continuity with alternating phase
+    let best = 0, bestD = Infinity;
+    for (let j = 0; j < ringB.length; j++) {
+      const d = ringA[i].distanceToSquared(ringB[j]);
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    addEdge(ringA[i], ringB[best], opts);
+  }
+}
+
+for (let i = 0; i < torsoRings.length - 1; i++) {
+  loftRings(torsoRings[i], torsoRings[i + 1], {
+    mat: MAT.magenta, halo: HALO.magenta, radius: 0.0085
+  });
+}
+
+// Diagonal cross-bracing on the flanks for lattice density
+for (let i = 0; i < torsoRings.length - 1; i++) {
+  const A = torsoRings[i], B = torsoRings[i + 1];
+  for (let k = 0; k < SIDES; k += 2) {
+    const a = A[k % A.length];
+    const b = B[(k + 1) % B.length];
+    addEdge(a, b, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0055 });
+  }
+}
+
+/* ------------------------------------------------------------
+   CYAN SPINE — runs the topline from tail through withers to skull
+   ------------------------------------------------------------ */
+const spinePts = [
+  new THREE.Vector3(0, 1.40, -0.86),
+  new THREE.Vector3(0, 1.545, -0.70),
+  new THREE.Vector3(0, 1.605, -0.48),
+  new THREE.Vector3(0, 1.585, -0.22),
+  new THREE.Vector3(0, 1.565, 0.02),
+  new THREE.Vector3(0, 1.605, 0.26),
+  new THREE.Vector3(0, 1.640, 0.50),
+  new THREE.Vector3(0, 1.615, 0.70),
+  new THREE.Vector3(0, 1.560, 0.86)
+];
+addPath(spinePts, {
+  mat: MAT.cyan, halo: HALO.cyan, radius: 0.0135, haloScale: 3.9,
+  nodeSize: 0.075, nodeColor: COL_CYAN_HOT, detail: 'hi'
+});
+
+// Belly line (magenta, mirrors the spine underneath)
+const bellyPts = torsoProfile.map(p => new THREE.Vector3(0, p.y - p.ry * 0.78, p.z));
+addPath(bellyPts, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0085, nodeSize: 0.038 });
+
+/* ============================================================
+   NECK
+   ============================================================ */
+const neckProfile = [
+  { z: 0.86, y: 1.38, rx: 0.150, ry: 0.190 },
+  { z: 0.99, y: 1.52, rx: 0.130, ry: 0.160 },
+  { z: 1.10, y: 1.68, rx: 0.115, ry: 0.140 },
+  { z: 1.19, y: 1.84, rx: 0.104, ry: 0.124 },
+  { z: 1.27, y: 2.00, rx: 0.096, ry: 0.112 },
+  { z: 1.34, y: 2.13, rx: 0.090, ry: 0.100 }
+];
+const neckRings = neckProfile.map((p, i) =>
+  makeRing(0, p.y, p.z, p.rx, p.ry, SIDES, (i % 2) * (Math.PI / SIDES))
+);
+for (const ring of neckRings) {
+  addPath(ring, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0085, nodeSize: 0.042 }, true);
+}
+for (let i = 0; i < neckRings.length - 1; i++) {
+  loftRings(neckRings[i], neckRings[i + 1], { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075 });
+}
+// bridge torso -> neck
+loftRings(torsoRings[torsoRings.length - 1], neckRings[0], {
+  mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075
+});
+
+// Cyan crest along the top of the neck into the skull base
+const neckCrest = neckProfile.map(p => new THREE.Vector3(0, p.y + p.ry * 0.95, p.z));
+neckCrest.unshift(new THREE.Vector3(0, 1.560, 0.86));
+addPath(neckCrest, {
+  mat: MAT.cyan, halo: HALO.cyan, radius: 0.0115, haloScale: 3.8,
+  nodeSize: 0.062, nodeColor: COL_CYAN_HOT, detail: 'hi'
+});
+
+/* ============================================================
+   HEAD  — wedge-shaped skull + muzzle + ears
+   ============================================================ */
+const headRoot = new THREE.Vector3(0, 2.16, 1.36);
+
+// Skull box (tapered), built as two rings + muzzle tip
+const skullBack = [
+  new THREE.Vector3(-0.098, 2.245, 1.325),
+  new THREE.Vector3( 0.098, 2.245, 1.325),
+  new THREE.Vector3( 0.104, 2.135, 1.318),
+  new THREE.Vector3( 0.062, 2.060, 1.330),
+  new THREE.Vector3(-0.062, 2.060, 1.330),
+  new THREE.Vector3(-0.104, 2.135, 1.318)
+];
+const skullMid = [
+  new THREE.Vector3(-0.082, 2.238, 1.505),
+  new THREE.Vector3( 0.082, 2.238, 1.505),
+  new THREE.Vector3( 0.088, 2.140, 1.505),
+  new THREE.Vector3( 0.052, 2.062, 1.510),
+  new THREE.Vector3(-0.052, 2.062, 1.510),
+  new THREE.Vector3(-0.088, 2.140, 1.505)
+];
+const muzzleRing = [
+  new THREE.Vector3(-0.050, 2.168, 1.690),
+  new THREE.Vector3( 0.050, 2.168, 1.690),
+  new THREE.Vector3( 0.056, 2.108, 1.688),
+  new THREE.Vector3( 0.034, 2.058, 1.692),
+  new THREE.Vector3(-0.034, 2.058, 1.692),
+  new THREE.Vector3(-0.056, 2.108, 1.688)
+];
+const noseRing = [
+  new THREE.Vector3(-0.032, 2.150, 1.790),
+  new THREE.Vector3( 0.032, 2.150, 1.790),
+  new THREE.Vector3( 0.038, 2.110, 1.788),
+  new THREE.Vector3( 0.022, 2.078, 1.790),
+  new THREE.Vector3(-0.022, 2.078, 1.790),
+  new THREE.Vector3(-0.038, 2.110, 1.788)
+];
+
+for (const r of [skullBack, skullMid, muzzleRing, noseRing]) {
+  addPath(r, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0080, nodeSize: 0.042 }, true);
+}
+loftRings(skullBack, skullMid, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075 });
+loftRings(skullMid, muzzleRing, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075 });
+loftRings(muzzleRing, noseRing, { mat: MAT.magenta, halo: HALO.magenta, radius: 0.0070 });
+
+// bridge neck -> skull
+loftRings(neckRings[neckRings.length - 1], skullBack, {
+  mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075
+});
+
+// Cyan nasal ridge (skull top -> nose)
+addPath([
+  new THREE.Vector3(0, 2.252, 1.322),
+  new THREE.Vector3(0, 2.246, 1.505),
+  new THREE.Vector3(0, 2.180, 1.690),
+  new THREE.Vector3(0, 2.158, 1.792)
+], {
+  mat: MAT.cyan, halo: HALO.cyan, radius: 0.0100, haloScale: 3.6,
+  nodeSize: 0.058, nodeColor: COL_CYAN_HOT, detail: 'hi'
+});
+
+// Eye nodes (bright violet-white flares)
+registerNode(new THREE.Vector3( 0.094, 2.196, 1.452), 0.105, COL_CYAN_HOT);
+registerNode(new THREE.Vector3(-0.094, 2.196, 1.452), 0.105, COL_CYAN_HOT);
+
+// Ears — flat triangular fans sweeping back and out
+function buildEar(side) {
+  const base = new THREE.Vector3(side * 0.095, 2.250, 1.318);
+  const tipA = new THREE.Vector3(side * 0.300, 2.360, 1.198);
+  const tipB = new THREE.Vector3(side * 0.268, 2.288, 1.148);
+  const tipC = new THREE.Vector3(side * 0.196, 2.318, 1.262);
+  addPath([base, tipC, tipA, tipB, base], {
+    mat: MAT.magenta, halo: HALO.magenta, radius: 0.0075, nodeSize: 0.048
+  });
+  addEdge(base, tipA, { mat: MAT.violet, halo: HALO.violet, radius: 0.0055 });
+}
+buildEar(1);
+buildEar(-1);
+
+/* ============================================================
+   ANTLERS — recursive branching cage of luminous filaments
+   ============================================================ */
+const antlerRoot = new THREE.Group();
+stag.add(antlerRoot);
+
+// Deterministic pseudo-random so the shape is stable across reloads
+let _seed = 20260720;
+function rnd() {
+  _seed = (_seed * 1664525 + 1013904223) % 4294967296;
+  return _seed / 4294967296;
+}
+
+const antlerEdges = []; // collected for the connective "cage" webbing
+
+/**
+ * Grows a branch as a slightly curved chain of segments, then recurses
+ * into tines. Radius tapers with depth.
+ */
+function growBranch(origin, dir, length, radius, depth, side, curve) {
+  const SEGS = Math.max(2, 4 - depth);
+  const pts = [origin.clone()];
+  const d = dir.clone().normalize();
+  const step = length / SEGS;
+
+  for (let i = 0; i < SEGS; i++) {
+    // curve the branch: bend upward + outward progressively
+    const bend = curve.clone().multiplyScalar(0.22 + 0.10 * i);
+    d.add(bend).normalize();
+    const next = pts[pts.length - 1].clone().addScaledVector(d, step);
+    pts.push(next);
+  }
+
+  // Draw segments with a taper and colour shifting toward violet at the tips
+  for (let i = 0; i < pts.length - 1; i++) {
+    const t = i / Math.max(1, pts.length - 2);
+    const r = radius * (1 - 0.42 * t);
+    const useCyan = depth >= 2 && i === pts.length - 2;
+    addEdge(pts[i], pts[i + 1], {
+      mat: useCyan ? MAT.cyanB : (depth === 0 ? MAT.magentaB : MAT.magenta),
+      halo: useCyan ? HALO.cyan : HALO.magenta,
+      radius: Math.max(0.0035, r),
+      haloScale: 3.8,
+      detail: 'hi'
+    });
+    antlerEdges.push({ a: pts[i], b: pts[i + 1], depth });
+  }
+
+  // Node flares at every vertex, brighter at branch tips
+  for (let i = 0; i < pts.length; i++) {
+    const isTip = (i === pts.length - 1);
+    registerNode(
+      pts[i],
+      isTip ? 0.095 - depth * 0.012 : 0.060 - depth * 0.008,
+      isTip ? (depth >= 2 ? COL_CYAN_HOT : COL_MAGENTA_HOT) : COL_MAGENTA_HOT
+    );
+  }
+
+  if (depth >= 3) return;
+
+  // --- child tines ---
+  const nBranches = depth === 0 ? 3 : (depth === 1 ? 2 : 1);
+  for (let b = 0; b < nBranches; b++) {
+    // spawn point along the branch (skip the very base)
+    const spawnIdx = Math.min(pts.length - 1, 1 + Math.floor((b + 1) / (nBranches + 1) * (pts.length - 1)));
+    const origin2 = pts[spawnIdx];
+
+    const spread = 0.55 + rnd() * 0.35;
+    const upBias = 0.65 + rnd() * 0.45;
+
+    const outward = new THREE.Vector3(side * spread, upBias, -0.30 + rnd() * 0.55).normalize();
+    const forward = d.clone().normalize();
+    const dir2 = forward.clone().multiplyScalar(0.55).add(outward.multiplyScalar(0.75)).normalize();
+
+    const len2 = length * (0.62 - depth * 0.10) * (0.82 + rnd() * 0.36);
+    const curve2 = new THREE.Vector3(
+      side * (0.06 + rnd() * 0.10),
+      0.16 + rnd() * 0.12,
+      -0.02 + rnd() * 0.08
+    );
+
+    growBranch(origin2, dir2, len2, radius * 0.70, depth + 1, side, curve2);
+  }
+
+  // Terminal fork at the crown of the main beam
+  if (depth === 0) {
+    const tip = pts[pts.length - 1];
+    for (let f = -1; f <= 1; f++) {
+      const forkDir = new THREE.Vector3(side * 0.42 + f * 0.20, 1.0, 0.16 * f).normalize();
+      growBranch(
+        tip, forkDir, length * 0.34, radius * 0.62, 2, side,
+        new THREE.Vector3(side * 0.05, 0.12, 0.02)
+      );
+    }
+  }
+}
+
+// Pedicles: short bases rising off the skull
+function buildAntler(side) {
+  const pedicleBase = new THREE.Vector3(side * 0.075, 2.256, 1.318);
+  const pedicleTop = new THREE.Vector3(side * 0.105, 2.400, 1.276);
+  addEdge(pedicleBase, pedicleTop, {
+    mat: MAT.magentaB, halo: HALO.magenta, radius: 0.0155, haloScale: 3.6, detail: 'hi'
+  });
+  registerNode(pedicleBase, 0.085, COL_MAGENTA_HOT);
+  registerNode(pedicleTop, 0.090, COL_MAGENTA_HOT);
+  antlerEdges.push({ a: pedicleBase, b: pedicleTop, depth: 0 });
+
+  // Brow tine (low, forward-pointing)
+  growBranch(
+    pedicleTop,
+    new THREE.Vector3(side * 0.42, 0.52, 0.75).normalize(),
+    0.42, 0.0090, 2, side,
+    new THREE.Vector3(side * 0.04, 0.16, 0.02)
+  );
+
+  // Main beam sweeping up, out and back then forward
+  growBranch(
+    pedicleTop,
+    new THREE.Vector3(side * 0.50, 0.86, -0.06).normalize(),
+    1.02, 0.0140, 0, side,
+    new THREE.Vector3(side * 0.055, 0.12, 0.085)
+  );
+}
+buildAntler(1);
+buildAntler(-1);
+
+/* Cage webbing: fine violet filaments stitching nearby antler vertices,
+   giving the "dense cage of luminous filaments" read. */
+(function weaveAntlerCage() {
+  const verts = [];
+  for (const e of antlerEdges) {
+    verts.push(e.a, e.b);
+  }
+  // unique-ish sampling
+  const uniq = [];
+  for (const v of verts) {
+    let dup = false;
+    for (const u of uniq) { if (u.distanceToSquared(v) < 0.0009) { dup = true; break; } }
+    if (!dup) uniq.push(v);
+  }
+
+  let woven = 0;
+  const MAX_WEAVE = 96;
+  for (let i = 0; i < uniq.length && woven < MAX_WEAVE; i++) {
+    for (let j = i + 1; j < uniq.length && woven < MAX_WEAVE; j++) {
+      const a = uniq[i], b = uniq[j];
+      const d2 = a.distanceToSquared(b);
+      // only stitch mid-range pairs on the same side, above the skull
+      if (d2 > 0.028 && d2 < 0.115 && a.y > 2.42 && b.y > 2.42 && a.x * b.x > 0) {
+        if (rnd() < 0.55) {
+          addEdge(a, b, {
+            mat: MAT.violet, halo: HALO.violet, radius: 0.0032, haloScale: 3.2
+          });
+          woven++;
+        }
+      }
+    }
+  }
+})();
+
+/* ============================================================
+   LEGS — cyan-accented, polygonal, with joint node flares
+   ============================================================ */
+function buildLeg(x, zHip, front) {
+  const hipY = front ? 1.44 : 1.46;
+  const joints = front
+    ? [
+        new THREE.Vector3(x * 0.86, hipY,  zHip),          // shoulder
+        new THREE.Vector3(x,        1.10,  zHip + 0.035),  // elbow
+        new THREE.Vector3(x,        0.70,  zHip - 0.012),  // knee
+        new THREE.Vector3(x,        0.30,  zHip + 0.028),  // fetlock
+        new THREE.Vector3(x,        0.045, zHip + 0.070)   // hoof
+      ]
+    : [
+        new THREE.Vector3(x * 0.86, hipY,  zHip),          // hip
+        new THREE.Vector3(x,        1.12,  zHip - 0.075),  // stifle
+        new THREE.Vector3(x,        0.72,  zHip + 0.085),  // hock
+        new THREE.Vector3(x,        0.30,  zHip + 0.020),  // fetlock
+        new THREE.Vector3(x,        0.045, zHip + 0.052)   // hoof
+      ];
+
+  // Cyan structural line down the leg
+  const radii = [0.0130, 0.0115, 0.0100, 0.0090];
+  for (let i = 0; i < joints.length - 1; i++) {
+    addEdge(joints[i], joints[i + 1], {
+      mat: i < 2 ? MAT.cyan : MAT.cyanB,
+      halo: HALO.cyan,
+      radius: radii[i],
+      haloScale: 3.8,
+      detail: 'hi'
+    });
+  }
+  for (let i = 0; i < joints.length; i++) {
+    registerNode(joints[i], i === 0 ? 0.082 : (i === joints.length - 1 ? 0.070 : 0.076), COL_CYAN_HOT);
+  }
+
+  // Magenta polygonal cladding: triangular prisms around the upper leg
+  const sides = 4;
+  function legRing(center, r, phase) {
+    const pts = [];
+    for (let i = 0; i < sides; i++) {
+      const t = (i / sides) * Math.PI * 2 + phase;
+      pts.push(new THREE.Vector3(
+        center.x + Math.cos(t) * r,
+        center.y,
+        center.z + Math.sin(t) * r * 1.15
+      ));
+    }
+    return pts;
+  }
+
+  const clad = [
+    { c: joints[0], r: 0.105, ph: 0.0 },
+    { c: joints[1], r: 0.082, ph: Math.PI / sides },
+    { c: joints[2], r: 0.055, ph: 0.0 },
+    { c: joints[3], r: 0.036, ph: Math.PI / sides },
+    { c: joints[4], r: 0.031, ph: 0.0 }
+  ].map(o => legRing(o.c, o.r, o.ph));
+
+  for (let i = 0; i < clad.length; i++) {
+    addPath(clad[i], {
+      mat: MAT.magenta, halo: HALO.magenta,
+      radius: i < 2 ? 0.0070 : 0.0055,
+      nodeSize: 0.036
+    }, true);
+  }
+  for (let i = 0; i < clad.length - 1; i++) {
+    loftRings(clad[i], clad[i + 1], {
+      mat: MAT.magenta, halo: HALO.magenta, radius: 0.0055
+    });
+  }
+
+  // Tie the top ring into the torso lattice
+  const nearestTorsoRing = front ? torsoRings[7] : torsoRings[2];
+  for (let i = 0; i < clad[0].length; i++) {
+    let best = 0, bestD = Infinity;
+    for (let j = 0; j < nearestTorsoRing.length; j++) {
+      const d = clad[0][i].distanceToSquared(nearestTorsoRing[j]);
+      if (d < bestD) { bestD = d; best = j; }
+    }
+    addEdge(clad[0][i], nearestTorsoRing[best], {
+      mat: MAT.magenta, halo: HALO.magenta, radius: 0.0050
+    });
+  }
+}
+
+buildLeg( 0.175,  0.585, true);
+buildLeg(-0.175,  0.585, true);
+buildLeg( 0.185, -0.545, false);
+buildLeg(-0.185, -0.545, false);
+
+/* ============================================================
+   TAIL
+   ============================================================ */
+const tailPts = [
+  new THREE.Vector3(0, 1.415, -0.86),
+  new THREE.Vector3(0, 1.345, -0.96),
+  new THREE.Vector3(0.012, 1.255, -1.01),
+  new THREE.Vector3(0.020, 1.175, -1.02)
+];
+addPath(tailPts, {
+  mat: MAT.cyan, halo: HALO.cyan, radius: 0.0095, haloScale: 3.6,
+  nodeSize: 0.055, nodeColor: COL_CYAN_HOT, detail: 'hi'
+});
+// small tail fan
+const tf = tailPts[tailPts.length - 1];
+for (let i = -1; i <= 1; i++) {
+  addEdge(tf, new THREE.Vector3(tf.x + i * 0.045, tf.y - 0.075, tf.z - 0.03 + Math.abs(i) * 0.02), {
+    mat: MAT.magenta, halo: HALO.magenta, radius: 0.0050
+  });
+}
+
+/* ============================================================
+   NODE POINT-CLOUD (vertex flares)
+   ============================================================ */
+(function buildNodes() {
+  const n = nodeRegistry.length;
+  const pos = new Float32Array(n * 3);
+  const col = new Float32Array(n * 3);
+  const siz = new Float32Array(n);
+  const pha = new Float32Array(n);
+  for (let i = 0; i < n; i++) {
+    const nd = nodeRegistry[i];
+    pos[i * 3 + 0] = nd.pos.x;
+    pos[i * 3 + 1] = nd.pos.y;
+    pos[i * 3 + 2] = nd.pos.z;
+    col[i * 3 + 0] = nd.color.r;
+    col[i * 3 + 1] = nd.color.g;
+    col[i * 3 + 2] = nd.color.b;
+    siz[i] = nd.size;
+    pha[i] = (i * 2.399963) % (Math.PI * 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aSize', new THREE.BufferAttribute(siz, 1));
+  g.setAttribute('aPhase', new THREE.BufferAttribute(pha, 1));
+  const pts = new THREE.Points(g, nodeMaterial);
+  pts.renderOrder = 4;
+  pts.frustumCulled = false;
+  stag.add(pts);
+})();
+
+/* ============================================================
+   SHADOW CASTER — an invisible low-poly proxy so the stag
+   casts a soft shadow onto the ground plane without showing
+   any solid surface (interior stays empty dark space).
+   ============================================================ */
+const shadowProxy = new THREE.Group();
+shadowProxy.matrixAutoUpdate = true;
+stag.add(shadowProxy);
+
+const shadowMat = new THREE.ShadowMaterial({ opacity: 0.0 });
+shadowMat.colorWrite = false;
+
+function addShadowBlob(x, y, z, sx, sy, sz) {
+  const m = new THREE.Mesh(SPH_LO, shadowMat);
+  m.position.set(x, y, z);
+  m.scale.set(sx, sy, sz);
+  m.castShadow = true;
+  m.receiveShadow = false;
+  m.visible = true;
+  shadowProxy.add(m);
+}
+addShadowBlob(0, 1.33, -0.20, 0.24, 0.28, 0.62);   // torso
+addShadowBlob(0, 1.35, 0.48, 0.24, 0.29, 0.34);    // chest
+addShadowBlob(0, 1.78, 1.10, 0.12, 0.30, 0.26);    // neck
+addShadowBlob(0, 2.16, 1.52, 0.10, 0.11, 0.20);    // head
+addShadowBlob(0.175, 0.75, 0.60, 0.06, 0.70, 0.07);
+addShadowBlob(-0.175, 0.75, 0.60, 0.06, 0.70, 0.07);
+addShadowBlob(0.185, 0.75, -0.53, 0.06, 0.70, 0.08);
+addShadowBlob(-0.185, 0.75, -0.53, 0.06, 0.70, 0.08);
+addShadowBlob(0.42, 2.85, 1.10, 0.30, 0.45, 0.35);
+addShadowBlob(-0.42, 2.85, 1.10, 0.30, 0.45, 0.35);
+
+/* ============================================================
+   GROUND — shadow-receiving plane + faint neon grid
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(60, 60),
+  new THREE.ShadowMaterial({ opacity: 0.42, color: 0x000000 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint reflective-looking grid (pure lines, very dim) for grounding
+const grid = new THREE.GridHelper(40, 40, 0x2a0f2a, 0x180a22);
+grid.material.transparent = true;
+grid.material.opacity = 0.28;
+grid.material.depthWrite = false;
+grid.position.y = 0.001;
+scene.add(grid);
+
+// Soft magenta pool of light under the stag (fake radiosity)
+const poolGeo = new THREE.CircleGeometry(2.6, 64);
+const poolMat = new THREE.ShaderMaterial({
+  transparent: true,
+  depthWrite: false,
+  blending: THREE.AdditiveBlending,
+  toneMapped: false,
+  fog: false,
+  uniforms: { uColor: { value: new THREE.Color(0xff2f9a) } },
+  vertexShader: /* glsl */`
+    varying vec2 vUv;
+    void main() {
+      vUv = uv;
+      gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+    }
+  `,
+  fragmentShader: /* glsl */`
+    uniform vec3 uColor;
+    varying vec2 vUv;
+    void main() {
+      float d = length(vUv - 0.5) * 2.0;
+      float a = pow(clamp(1.0 - d, 0.0, 1.0), 2.4) * 0.30;
+      gl_FragColor = vec4(uColor * a, a);
+    }
+  `
+});
+const pool = new THREE.Mesh(poolGeo, poolMat);
+pool.rotation.x = -Math.PI / 2;
+pool.position.y = 0.004;
+scene.add(pool);
+
+/* ============================================================
+   LIGHTING — key + fill + rim (+ hemisphere)
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0x4a2a6a, 0x0a0610, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xff5fc0, 1.45);
+key.position.set(4.2, 6.4, 3.6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 24;
+key.shadow.camera.left = -4.5;
+key.shadow.camera.right = 4.5;
+key.shadow.camera.top = 5.5;
+key.shadow.camera.bottom = -1.5;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.03;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x2ad8ff, 0.55);
+fill.position.set(-5.0, 2.4, 2.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xa855ff, 0.85);
+rim.position.set(-1.6, 3.2, -5.4);
+scene.add(rim);
+
+// Interior point lights to make the halo shells feel volumetric on the ground
+const glowA = new THREE.PointLight(0xff2f9a, 2.4, 6.5, 2.0);
+glowA.position.set(0, 1.5, 0.1);
+scene.add(glowA);
+
+const glowB = new THREE.PointLight(0x25e6ff, 1.6, 5.5, 2.0);
+glowB.position.set(0, 2.7, 1.15);
+scene.add(glowB);
+
+/* ============================================================
+   CENTERING — recentre the stag on the origin footprint
+   ============================================================ */
+(function centerStag() {
+  const box = new THREE.Box3();
+  const tmp = new THREE.Box3();
+  let first = true;
+  tubeGroup.traverse(o => {
+    if (o.isMesh && o.geometry) {
+      o.updateMatrixWorld(true);
+      tmp.setFromObject(o);
+      if (first) { box.copy(tmp); first = false; } else { box.union(tmp); }
+    }
+  });
+  if (!first) {
+    const c = new THREE.Vector3();
+    box.getCenter(c);
+    stag.position.x -= c.x;
+    stag.position.z -= c.z;
+    const size = new THREE.Vector3();
+    box.getSize(size);
+    controls.target.set(0, box.min.y + size.y * 0.48, 0);
+    controls.update();
+  }
+})();
+
+/* ============================================================
+   STARFIELD — sparse cold motes for depth
+   ============================================================ */
+(function stars() {
+  const N = 380;
+  const pos = new Float32Array(N * 3);
+  const col = new Float32Array(N * 3);
+  const siz = new Float32Array(N);
+  const pha = new Float32Array(N);
+  const c1 = new THREE.Color(0x7a3fff);
+  const c2 = new THREE.Color(0x1fd6ff);
+  for (let i = 0; i < N; i++) {
+    const r = 14 + rnd() * 20;
+    const th = rnd() * Math.PI * 2;
+    const ph = Math.acos(2 * rnd() - 1);
+    pos[i * 3 + 0] = r * Math.sin(ph) * Math.cos(th);
+    pos[i * 3 + 1] = Math.abs(r * Math.cos(ph)) * 0.55 + 0.6;
+    pos[i * 3 + 2] = r * Math.sin(ph) * Math.sin(th);
+    const c = rnd() < 0.5 ? c1 : c2;
+    const k = 0.25 + rnd() * 0.45;
+    col[i * 3 + 0] = c.r * k;
+    col[i * 3 + 1] = c.g * k;
+    col[i * 3 + 2] = c.b * k;
+    siz[i] = 0.10 + rnd() * 0.22;
+    pha[i] = rnd() * Math.PI * 2;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+  g.setAttribute('aSize', new THREE.BufferAttribute(siz, 1));
+  g.setAttribute('aPhase', new THREE.BufferAttribute(pha, 1));
+  const p = new THREE.Points(g, nodeMaterial);
+  p.frustumCulled = false;
+  p.renderOrder = 0;
+  scene.add(p);
+})();
+
+/* ============================================================
+   ANIMATION
+   ============================================================ */
+const clock = new THREE.Clock();
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  nodeMaterial.uniforms.uScale.value =
+    (window.innerHeight * Math.min(window.devicePixelRatio, 2)) / 2;
+}
+window.addEventListener('resize', onResize);
+onResize();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  nodeMaterial.uniforms.uTime.value = t;
+
+  // Subtle breathing on the emissive intensity of the neon tubes
+  const breathe = 1.0 + 0.075 * Math.sin(t * 1.15);
+  MAT.magenta.color.copy(COL_MAGENTA).multiplyScalar(1.35 * breathe);
+  MAT.magentaB.color.copy(COL_MAGENTA_HOT).multiplyScalar(1.60 * breathe);
+  MAT.cyan.color.copy(COL_CYAN).multiplyScalar(1.45 * (2.0 - breathe));
+  MAT.cyanB.color.copy(COL_CYAN_HOT).multiplyScalar(1.70 * (2.0 - breathe));
+  MAT.violet.color.copy(COL_VIOLET).multiplyScalar(1.25 * breathe);
+
+  HALO.magenta.uniforms.uStrength.value = 0.42 * breathe;
+  HALO.cyan.uniforms.uStrength.value = 0.40 * (2.0 - breathe);
+  HALO.violet.uniforms.uStrength.value = 0.34 * breathe;
+
+  glowA.intensity = 2.4 * breathe;
+  glowB.intensity = 1.6 * (2.0 - breathe);
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

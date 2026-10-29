@@ -1,0 +1,580 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Marble Sleeping Hound</title>
+<style>
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: #d8d4cc;
+}
+canvas {
+  display: block;
+}
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xd9d5cd);
+scene.fog = new THREE.Fog(0xd9d5cd, 13, 25);
+
+const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.1, 50);
+camera.position.set(7.2, 4.4, 8.6);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.12;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.05, 0.1);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.42;
+controls.minDistance = 6;
+controls.maxDistance = 15;
+controls.maxPolarAngle = Math.PI * 0.48;
+
+const marbleMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0xf1efe9,
+  roughness: 0.24,
+  metalness: 0,
+  clearcoat: 0.22,
+  clearcoatRoughness: 0.3
+});
+
+marbleMaterial.onBeforeCompile = shader => {
+  shader.vertexShader = shader.vertexShader
+    .replace('#include <common>', '#include <common>\nvarying vec3 vMarbleWorld;')
+    .replace('#include <worldpos_vertex>', '#include <worldpos_vertex>\nvMarbleWorld = worldPosition.xyz;');
+
+  shader.fragmentShader = shader.fragmentShader
+    .replace(
+      '#include <common>',
+      `#include <common>
+       varying vec3 vMarbleWorld;
+       float marbleHash(vec3 p) {
+         p = fract(p * 0.3183099 + vec3(0.13, 0.27, 0.41));
+         p *= 17.0;
+         return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
+       }`
+    )
+    .replace(
+      '#include <map_fragment>',
+      `#include <map_fragment>
+       vec3 mp = vMarbleWorld;
+       float warp = sin(mp.x * 1.7 + mp.z * 2.3) * 0.18
+                  + sin(mp.y * 4.1 - mp.z * 1.1) * 0.07;
+       float diagonal = mp.x * 0.72 + mp.y * 1.28 + mp.z * 0.46 + warp;
+       float primary = 1.0 - smoothstep(0.025, 0.105, abs(sin(diagonal * 2.25)));
+       float secondary = 1.0 - smoothstep(0.018, 0.075, abs(sin(diagonal * 4.7 + mp.z * 0.85 + 1.2)));
+       float cloudy = 0.5 + 0.5 * sin(mp.x * 3.4 - mp.y * 2.1 + sin(mp.z * 3.0));
+       float grain = marbleHash(floor(mp * 38.0));
+       float vein = clamp(primary * 0.48 + secondary * 0.2, 0.0, 0.55);
+       vec3 stone = vec3(0.955, 0.945, 0.915);
+       stone *= 0.985 + cloudy * 0.025 + (grain - 0.5) * 0.012;
+       vec3 veinColor = vec3(0.47, 0.50, 0.52);
+       diffuseColor.rgb *= mix(stone, veinColor, vein);`
+    );
+};
+
+const roughMarbleMaterial = marbleMaterial.clone();
+roughMarbleMaterial.roughness = 0.72;
+roughMarbleMaterial.clearcoat = 0.02;
+
+const incisionMaterial = new THREE.MeshStandardMaterial({
+  color: 0x777976,
+  roughness: 0.6,
+  metalness: 0
+});
+
+const deepIncisionMaterial = new THREE.MeshStandardMaterial({
+  color: 0x575956,
+  roughness: 0.72,
+  metalness: 0
+});
+
+const hound = new THREE.Group();
+scene.add(hound);
+
+function shadowed(mesh) {
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  return mesh;
+}
+
+function ellipsoid(name, position, scale, material = marbleMaterial, segments = 48) {
+  const geometry = new THREE.SphereGeometry(1, segments, Math.max(16, Math.floor(segments * 0.55)));
+  const mesh = shadowed(new THREE.Mesh(geometry, material));
+  mesh.name = name;
+  mesh.position.copy(position);
+  mesh.scale.copy(scale);
+  hound.add(mesh);
+  return mesh;
+}
+
+function sweepGeometry(points, radiusSide, radiusVertical, tubularSegments = 56, radialSegments = 14) {
+  const curve = new THREE.CatmullRomCurve3(points, false, 'centripetal');
+  const positions = [];
+  const indices = [];
+  const tangent = new THREE.Vector3();
+  const side = new THREE.Vector3();
+  const vertical = new THREE.Vector3();
+  const point = new THREE.Vector3();
+
+  for (let i = 0; i <= tubularSegments; i++) {
+    const u = i / tubularSegments;
+    curve.getPointAt(u, point);
+    curve.getTangentAt(u, tangent).normalize();
+    side.set(-tangent.z, 0, tangent.x);
+    if (side.lengthSq() < 0.0001) side.set(0, 0, 1);
+    side.normalize();
+    vertical.crossVectors(side, tangent).normalize();
+
+    const rs = typeof radiusSide === 'function' ? radiusSide(u) : radiusSide;
+    const rv = typeof radiusVertical === 'function' ? radiusVertical(u) : radiusVertical;
+
+    for (let j = 0; j < radialSegments; j++) {
+      const angle = j / radialSegments * Math.PI * 2;
+      const ca = Math.cos(angle);
+      const sa = Math.sin(angle);
+      positions.push(
+        point.x + side.x * sa * rs + vertical.x * ca * rv,
+        point.y + side.y * sa * rs + vertical.y * ca * rv,
+        point.z + side.z * sa * rs + vertical.z * ca * rv
+      );
+    }
+  }
+
+  for (let i = 0; i < tubularSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const next = (j + 1) % radialSegments;
+      const a = i * radialSegments + j;
+      const b = (i + 1) * radialSegments + j;
+      const c = (i + 1) * radialSegments + next;
+      const d = i * radialSegments + next;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+function sweep(name, points, sideRadius, verticalRadius, material = marbleMaterial, tubular = 56, radial = 14) {
+  const mesh = shadowed(new THREE.Mesh(
+    sweepGeometry(points, sideRadius, verticalRadius, tubular, radial),
+    material
+  ));
+  mesh.name = name;
+  hound.add(mesh);
+  return mesh;
+}
+
+function tube(name, curve, radius, material = marbleMaterial, segments = 36, radial = 8) {
+  const mesh = shadowed(new THREE.Mesh(
+    new THREE.TubeGeometry(curve, segments, radius, radial, false),
+    material
+  ));
+  mesh.name = name;
+  hound.add(mesh);
+  return mesh;
+}
+
+const plinth = shadowed(new THREE.Mesh(
+  new RoundedBoxGeometry(6.65, 0.62, 3.25, 5, 0.09),
+  roughMarbleMaterial
+));
+plinth.name = 'Rough-chiseled marble plinth';
+plinth.position.set(0, 0.34, 0);
+hound.add(plinth);
+
+const upperSlab = shadowed(new THREE.Mesh(
+  new RoundedBoxGeometry(6.3, 0.17, 2.96, 4, 0.055),
+  marbleMaterial
+));
+upperSlab.position.set(0, 0.69, 0);
+hound.add(upperSlab);
+
+const torsoPoints = [
+  new THREE.Vector3(-2.05, 1.34, -0.12),
+  new THREE.Vector3(-1.65, 1.62, -0.17),
+  new THREE.Vector3(-0.85, 1.79, -0.2),
+  new THREE.Vector3(0.05, 1.78, -0.18),
+  new THREE.Vector3(0.92, 1.63, -0.08),
+  new THREE.Vector3(1.45, 1.43, 0.08)
+];
+
+sweep(
+  'Long ribcage and flank',
+  torsoPoints,
+  u => 0.57 * Math.sin(Math.PI * (0.12 + u * 0.76)) + 0.18,
+  u => 0.48 * Math.sin(Math.PI * (0.1 + u * 0.8)) + 0.2,
+  marbleMaterial,
+  72,
+  18
+);
+
+ellipsoid(
+  'Powerful folded haunch',
+  new THREE.Vector3(-2.02, 1.31, -0.05),
+  new THREE.Vector3(0.83, 0.78, 0.72)
+);
+
+ellipsoid(
+  'Shoulder',
+  new THREE.Vector3(1.25, 1.38, 0.08),
+  new THREE.Vector3(0.59, 0.68, 0.58)
+);
+
+const neckPoints = [
+  new THREE.Vector3(1.25, 1.58, -0.02),
+  new THREE.Vector3(1.55, 1.78, 0.02),
+  new THREE.Vector3(1.86, 1.62, 0.18),
+  new THREE.Vector3(1.92, 1.31, 0.42)
+];
+
+sweep(
+  'Arched slender neck',
+  neckPoints,
+  u => 0.38 - u * 0.09,
+  u => 0.43 - u * 0.11,
+  marbleMaterial,
+  44,
+  16
+);
+
+const skull = ellipsoid(
+  'Sleeping head',
+  new THREE.Vector3(1.96, 1.22, 0.55),
+  new THREE.Vector3(0.5, 0.39, 0.42)
+);
+skull.rotation.z = -0.19;
+skull.rotation.x = 0.09;
+
+const muzzlePoints = [
+  new THREE.Vector3(1.98, 1.18, 0.65),
+  new THREE.Vector3(2.25, 1.03, 0.73),
+  new THREE.Vector3(2.57, 0.91, 0.79),
+  new THREE.Vector3(2.76, 0.88, 0.79)
+];
+
+sweep(
+  'Long greyhound muzzle',
+  muzzlePoints,
+  u => 0.27 - u * 0.1,
+  u => 0.25 - u * 0.1,
+  marbleMaterial,
+  42,
+  14
+);
+
+ellipsoid(
+  'Carved nose',
+  new THREE.Vector3(2.77, 0.88, 0.8),
+  new THREE.Vector3(0.19, 0.14, 0.18),
+  incisionMaterial,
+  30
+);
+
+const forePawPoints = [
+  new THREE.Vector3(1.05, 1.18, 0.39),
+  new THREE.Vector3(1.28, 0.92, 0.62),
+  new THREE.Vector3(1.75, 0.79, 0.81),
+  new THREE.Vector3(2.35, 0.77, 0.84),
+  new THREE.Vector3(2.62, 0.79, 0.82)
+];
+
+sweep(
+  'Foreleg beneath muzzle',
+  forePawPoints,
+  u => 0.22 - u * 0.045,
+  u => 0.2 - u * 0.055,
+  marbleMaterial,
+  52,
+  14
+);
+
+ellipsoid(
+  'Forepaw',
+  new THREE.Vector3(2.48, 0.79, 0.83),
+  new THREE.Vector3(0.43, 0.18, 0.25)
+);
+
+const tuckedForelegPoints = [
+  new THREE.Vector3(1.12, 1.28, -0.18),
+  new THREE.Vector3(0.92, 0.98, 0.06),
+  new THREE.Vector3(0.61, 0.79, 0.36),
+  new THREE.Vector3(0.24, 0.76, 0.56)
+];
+
+sweep(
+  'Tucked far foreleg',
+  tuckedForelegPoints,
+  u => 0.19 - u * 0.035,
+  u => 0.19 - u * 0.045,
+  marbleMaterial,
+  42,
+  13
+);
+
+ellipsoid(
+  'Tucked forepaw',
+  new THREE.Vector3(0.17, 0.76, 0.59),
+  new THREE.Vector3(0.42, 0.17, 0.22)
+);
+
+const nearHindLegPoints = [
+  new THREE.Vector3(-2.1, 1.28, 0.22),
+  new THREE.Vector3(-1.88, 0.98, 0.55),
+  new THREE.Vector3(-1.4, 0.79, 0.77),
+  new THREE.Vector3(-0.72, 0.73, 0.83),
+  new THREE.Vector3(-0.12, 0.74, 0.77)
+];
+
+sweep(
+  'Folded near hind leg',
+  nearHindLegPoints,
+  u => 0.3 - u * 0.08,
+  u => 0.28 - u * 0.09,
+  marbleMaterial,
+  56,
+  15
+);
+
+ellipsoid(
+  'Long rear paw',
+  new THREE.Vector3(0.02, 0.75, 0.75),
+  new THREE.Vector3(0.54, 0.18, 0.24)
+);
+
+const farHindLegPoints = [
+  new THREE.Vector3(-2.25, 1.31, -0.31),
+  new THREE.Vector3(-2.25, 0.98, -0.58),
+  new THREE.Vector3(-1.8, 0.77, -0.72),
+  new THREE.Vector3(-1.15, 0.72, -0.66)
+];
+
+sweep(
+  'Folded far hind leg',
+  farHindLegPoints,
+  u => 0.25 - u * 0.055,
+  u => 0.24 - u * 0.065,
+  marbleMaterial,
+  44,
+  14
+);
+
+const tailPoints = [
+  new THREE.Vector3(-2.55, 1.35, -0.08),
+  new THREE.Vector3(-2.82, 1.03, 0.05),
+  new THREE.Vector3(-2.65, 0.78, 0.5),
+  new THREE.Vector3(-2.05, 0.69, 0.91),
+  new THREE.Vector3(-1.25, 0.68, 1.05),
+  new THREE.Vector3(-0.59, 0.72, 0.99)
+];
+
+sweep(
+  'Curled tapering tail',
+  tailPoints,
+  u => 0.19 * (1 - u) + 0.045,
+  u => 0.17 * (1 - u) + 0.04,
+  marbleMaterial,
+  68,
+  12
+);
+
+ellipsoid(
+  'Tail tip',
+  new THREE.Vector3(-0.58, 0.72, 0.99),
+  new THREE.Vector3(0.09, 0.075, 0.075)
+);
+
+const spineCurve = new THREE.CatmullRomCurve3([
+  new THREE.Vector3(-1.93, 1.87, -0.18),
+  new THREE.Vector3(-1.2, 2.13, -0.2),
+  new THREE.Vector3(-0.35, 2.25, -0.2),
+  new THREE.Vector3(0.52, 2.12, -0.14),
+  new THREE.Vector3(1.15, 1.88, -0.04)
+]);
+tube('Subtle spine ridge', spineCurve, 0.045, marbleMaterial, 54, 8);
+
+for (let i = 0; i < 5; i++) {
+  const x = -1.2 + i * 0.42;
+  const ribCurve = new THREE.CubicBezierCurve3(
+    new THREE.Vector3(x, 2.02 + i * 0.012, 0.28),
+    new THREE.Vector3(x - 0.13, 1.83, 0.52),
+    new THREE.Vector3(x - 0.18, 1.48, 0.62),
+    new THREE.Vector3(x - 0.12, 1.23, 0.46)
+  );
+  tube('Polished rib plane', ribCurve, 0.027, marbleMaterial, 28, 7);
+}
+
+const browCurve = new THREE.CubicBezierCurve3(
+  new THREE.Vector3(1.9, 1.37, 0.94),
+  new THREE.Vector3(2.02, 1.39, 0.99),
+  new THREE.Vector3(2.14, 1.33, 1.0),
+  new THREE.Vector3(2.2, 1.27, 0.96)
+);
+tube('Closed carved eyelid', browCurve, 0.018, deepIncisionMaterial, 22, 6);
+
+const mouthCurve = new THREE.CubicBezierCurve3(
+  new THREE.Vector3(2.3, 0.95, 0.97),
+  new THREE.Vector3(2.43, 0.91, 1.0),
+  new THREE.Vector3(2.58, 0.9, 0.98),
+  new THREE.Vector3(2.68, 0.91, 0.93)
+);
+tube('Mouth incision', mouthCurve, 0.012, deepIncisionMaterial, 20, 5);
+
+function ear(position, rotation, scale) {
+  const geometry = new THREE.ConeGeometry(0.31, 0.68, 3, 1);
+  geometry.rotateZ(Math.PI);
+  const mesh = shadowed(new THREE.Mesh(geometry, marbleMaterial));
+  mesh.position.copy(position);
+  mesh.rotation.set(rotation.x, rotation.y, rotation.z);
+  mesh.scale.copy(scale);
+  hound.add(mesh);
+  return mesh;
+}
+
+ear(
+  new THREE.Vector3(1.64, 1.62, 0.3),
+  new THREE.Euler(0.25, -0.48, -0.83),
+  new THREE.Vector3(0.72, 0.72, 0.25)
+);
+
+ear(
+  new THREE.Vector3(1.8, 1.6, -0.01),
+  new THREE.Euler(-0.22, 0.42, -0.7),
+  new THREE.Vector3(0.7, 0.67, 0.22)
+);
+
+const pawToeMaterial = new THREE.MeshStandardMaterial({
+  color: 0xaaa9a4,
+  roughness: 0.48
+});
+
+for (let i = 0; i < 3; i++) {
+  const toeCurve = new THREE.LineCurve3(
+    new THREE.Vector3(2.46 + i * 0.075, 0.89, 1.045 - i * 0.01),
+    new THREE.Vector3(2.5 + i * 0.075, 0.82, 1.055 - i * 0.01)
+  );
+  tube('Forepaw toe incision', toeCurve, 0.009, pawToeMaterial, 6, 5);
+}
+
+let seed = 9731;
+function random() {
+  seed = (seed * 16807) % 2147483647;
+  return (seed - 1) / 2147483646;
+}
+
+const toothGeometry = new THREE.BoxGeometry(0.018, 0.2, 0.022);
+for (let i = 0; i < 92; i++) {
+  const mark = new THREE.Mesh(toothGeometry, incisionMaterial);
+  const front = i < 68;
+  if (front) {
+    mark.position.set(
+      -3.12 + random() * 6.24,
+      0.16 + random() * 0.37,
+      1.626
+    );
+    mark.rotation.z = -0.22 + random() * 0.44;
+    mark.scale.y = 0.35 + random() * 0.85;
+    mark.scale.x = 0.6 + random() * 0.8;
+  } else {
+    const sideSign = random() > 0.5 ? 1 : -1;
+    mark.position.set(
+      sideSign * 3.326,
+      0.16 + random() * 0.37,
+      -1.35 + random() * 2.7
+    );
+    mark.rotation.y = Math.PI * 0.5;
+    mark.rotation.z = -0.18 + random() * 0.36;
+    mark.scale.y = 0.35 + random() * 0.75;
+  }
+  mark.castShadow = false;
+  mark.receiveShadow = true;
+  hound.add(mark);
+}
+
+const floorMaterial = new THREE.MeshStandardMaterial({
+  color: 0xc9c4bb,
+  roughness: 0.86,
+  metalness: 0
+});
+
+const floor = new THREE.Mesh(new THREE.CircleGeometry(13, 96), floorMaterial);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = 0.015;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const ambient = new THREE.HemisphereLight(0xf4f1e9, 0x77736c, 1.7);
+scene.add(ambient);
+
+const keyLight = new THREE.DirectionalLight(0xfff7e8, 4.3);
+keyLight.position.set(5.5, 8.5, 6.5);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -6;
+keyLight.shadow.camera.right = 6;
+keyLight.shadow.camera.top = 6;
+keyLight.shadow.camera.bottom = -5;
+keyLight.shadow.camera.near = 1;
+keyLight.shadow.camera.far = 22;
+keyLight.shadow.bias = -0.00035;
+keyLight.shadow.normalBias = 0.025;
+scene.add(keyLight);
+
+const fillLight = new THREE.DirectionalLight(0xcbd8ea, 1.8);
+fillLight.position.set(-5, 4.5, 3.2);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xffe6c8, 2.0);
+rimLight.position.set(-3.5, 5.8, -6);
+scene.add(rimLight);
+
+window.addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+</script>
+</body>
+</html>

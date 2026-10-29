@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Volcanic Crater Vents</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#2a1418}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================ config / palette ================================ */
+const PAL = {
+  skyTop: '#31203c', skyMid: '#6e2f3e', skyLow: '#b4502e', skyHorizon: '#e87a3a',
+  fog: 0x55322c,
+  basaltA: '#3b3b42', basaltB: '#26262c', basaltC: '#4c4c55',
+  ash: '#443c34', ashLight: '#564c42',
+  vein: '#ff6a22', veinHot: '#ffd24a',
+  lavaBase: '#2a0a06', lavaMid: '#a02c0c', lavaHot: '#ffdf60',
+  water: 0x3fae9e, waterDeep: 0x0d2a28,
+  obsidian: 0x14181d, deadwood: 0x5a4a3c,
+  smoke: 0x6a5a55, steam: 0xd8d0c8,
+  glow: 0xff5a20
+};
+const SEED = 40273;
+const CONE = { x: -40, z: -18, R: 14, H: 19 };   // parasitic cone on the caldera flank
+
+/* ================================ prng / helpers ================================ */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng  = mulberry32(SEED);
+const rand = (lo, hi) => lo + rng() * (hi - lo);
+function hashNoise(x, y, z){
+  const s = Math.sin(x * 127.1 + y * 311.7 + z * 74.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+// caldera cross-section profile: [radius, height] pairs from the lake shore outward
+const PROFILE = [[15.5, 1.2], [17, 3.5], [19, 6.5], [22, 9], [25.5, 10.5], [30, 7], [35, 3], [40, 0.8], [46, 0.2], [300, 0]];
+function craterY(r){
+  if (r <= PROFILE[0][0]) return PROFILE[0][1];
+  for (let i = 1; i < PROFILE.length; i++){
+    if (r <= PROFILE[i][0]){
+      const [r0, y0] = PROFILE[i - 1], [r1, y1] = PROFILE[i];
+      return y0 + (y1 - y0) * (r - r0) / (r1 - r0);
+    }
+  }
+  return 0;
+}
+function coneY(x, z){
+  const d = Math.hypot(x - CONE.x, z - CONE.z);
+  return Math.max(0, CONE.H * (1 - d / CONE.R) - 0.5);
+}
+const terrainY = (x, z) => Math.max(craterY(Math.hypot(x, z)), coneY(x, z), 0);
+
+/* ================================ canvas textures ================================ */
+function makeCanvas(w, h){
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  return [c, c.getContext('2d')];
+}
+function toTex(c, rx = 1, ry = 1){
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  return t;
+}
+function basaltCanvas(){
+  const [c, g] = makeCanvas(256, 256);
+  g.fillStyle = PAL.basaltA; g.fillRect(0, 0, 256, 256);
+  g.globalAlpha = 0.5;
+  for (let i = 0; i < 80; i++){
+    g.fillStyle = rng() < 0.5 ? PAL.basaltB : PAL.basaltC;
+    g.beginPath();
+    g.ellipse(rand(0, 256), rand(0, 256), rand(8, 30), rand(6, 20), rand(0, 3.2), 0, 6.3);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+  for (let i = 0; i < 40; i++){
+    g.strokeStyle = 'rgba(8,8,10,0.5)'; g.lineWidth = rand(1, 2.4);
+    g.beginPath(); g.moveTo(rand(0, 256), rand(0, 256));
+    g.lineTo(rand(0, 256), rand(0, 256)); g.stroke();
+  }
+  return c;
+}
+function veinCanvas(){
+  // veins live only in the lower-v band, i.e. the crater's inner wall / cone base
+  const [c, g] = makeCanvas(512, 512);
+  g.fillStyle = '#000'; g.fillRect(0, 0, 512, 512);
+  g.shadowColor = 'rgba(255,90,20,0.8)'; g.shadowBlur = 6;
+  for (let v = 0; v < 9; v++){
+    let x = rand(0, 512), y = rand(15, 90);
+    for (const [w, col] of [[4, 'rgba(190,45,8,0.6)'], [1.6, PAL.vein]]){
+      g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round';
+      let px = x, py = y;
+      g.beginPath(); g.moveTo(px, py);
+      for (let s = 0; s < 9 && py < 205; s++){
+        px += rand(-18, 18); py += rand(14, 30);
+        g.lineTo(px, py);
+      }
+      g.stroke();
+    }
+  }
+  return c;
+}
+function lavaCanvas(){
+  const [c, g] = makeCanvas(256, 256);
+  g.fillStyle = PAL.lavaBase; g.fillRect(0, 0, 256, 256);
+  for (let i = 0; i < 13; i++){
+    let x = rand(0, 256);
+    for (const [w, col] of [[7, PAL.lavaMid], [2.4, PAL.lavaHot]]){
+      g.strokeStyle = col; g.lineWidth = w; g.lineCap = 'round';
+      let px = x, py = -10;
+      g.beginPath(); g.moveTo(px, py);
+      while (py < 266){ px += rand(-14, 14); py += rand(20, 40); g.lineTo(px, py); }
+      g.stroke();
+    }
+  }
+  return c;
+}
+function ashCanvas(){
+  const [c, g] = makeCanvas(512, 512);
+  g.fillStyle = PAL.ash; g.fillRect(0, 0, 512, 512);
+  for (let i = 0; i < 2400; i++){
+    g.fillStyle = rng() < 0.55 ? `rgba(70,62,56,${rand(0.1, 0.3)})` : `rgba(12,10,9,${rand(0.1, 0.3)})`;
+    g.fillRect(rand(0, 512), rand(0, 512), rand(1, 4), rand(1, 4));
+  }
+  for (let i = 0; i < 24; i++){
+    g.fillStyle = `rgba(60,55,50,${rand(0.1, 0.22)})`;
+    g.beginPath();
+    g.ellipse(rand(0, 512), rand(0, 512), rand(20, 70), rand(10, 40), rand(0, 3.2), 0, 6.3);
+    g.fill();
+  }
+  return c;
+}
+function skyCanvas(){
+  const [c, g] = makeCanvas(64, 512);
+  const grad = g.createLinearGradient(0, 0, 0, 512);
+  grad.addColorStop(0.0, PAL.skyTop);
+  grad.addColorStop(0.45, PAL.skyMid);
+  grad.addColorStop(0.68, PAL.skyLow);
+  grad.addColorStop(0.85, PAL.skyHorizon);
+  grad.addColorStop(1.0, '#f2955a');
+  g.fillStyle = grad; g.fillRect(0, 0, 64, 512);
+  return c;
+}
+function waterCanvas(){
+  const [c, g] = makeCanvas(256, 256);
+  const grad = g.createRadialGradient(128, 128, 12, 128, 128, 130);
+  grad.addColorStop(0, '#5cb4a4');
+  grad.addColorStop(0.45, '#2f9a8c');
+  grad.addColorStop(1, '#1a6a5e');
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 256);
+  g.globalAlpha = 0.16;
+  for (let i = 0; i < 26; i++){
+    g.strokeStyle = rng() < 0.5 ? '#7fd0c0' : '#155a50';
+    g.lineWidth = rand(1.5, 4);
+    g.beginPath();
+    g.arc(128, 128, rand(16, 125), rand(0, 6.3), rand(0, 6.3) + rand(0.6, 2.4));
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  return c;
+}
+function smokeCanvas(){
+  const [c, g] = makeCanvas(128, 128);
+  const grad = g.createRadialGradient(64, 64, 6, 64, 64, 62);
+  grad.addColorStop(0, 'rgba(255,255,255,0.9)');
+  grad.addColorStop(0.55, 'rgba(255,255,255,0.35)');
+  grad.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grad; g.fillRect(0, 0, 128, 128);
+  return c;
+}
+const smokeTex = toTex(smokeCanvas());
+const lavaTex  = toTex(lavaCanvas(), 1, 3);
+
+/* ================================ materials ================================ */
+const MAT = {
+  rock:     new THREE.MeshStandardMaterial({ map: toTex(basaltCanvas(), 3, 3), roughness: 0.95 }),
+  crater:   new THREE.MeshStandardMaterial({
+              map: toTex(basaltCanvas(), 6, 2), emissiveMap: toTex(veinCanvas(), 3, 1),
+              emissive: PAL.glow, emissiveIntensity: 1.0, roughness: 0.92 }),
+  cone:     new THREE.MeshStandardMaterial({
+              map: toTex(basaltCanvas(), 6, 2), emissiveMap: toTex(veinCanvas(), 2, 1),
+              emissive: PAL.glow, emissiveIntensity: 1.15, roughness: 0.92 }),
+  ground:   new THREE.MeshStandardMaterial({ map: toTex(ashCanvas(), 14, 14), roughness: 1 }),
+  lava:     new THREE.MeshStandardMaterial({
+              map: lavaTex, emissiveMap: lavaTex, emissive: 0xffffff,
+              emissiveIntensity: 1.7, roughness: 0.6, side: THREE.DoubleSide }),
+  crack:    new THREE.MeshStandardMaterial({
+              map: lavaTex, emissiveMap: lavaTex, emissive: 0xffffff, emissiveIntensity: 1.4,
+              transparent: true, opacity: 0.95, roughness: 0.7 }),
+  water:    new THREE.MeshStandardMaterial({
+              map: toTex(waterCanvas()), emissive: 0x175a50, emissiveIntensity: 0.4,
+              roughness: 0.12, metalness: 0.3, transparent: true, opacity: 0.94 }),
+  waterBed: new THREE.MeshStandardMaterial({ color: PAL.waterDeep, roughness: 0.6 }),
+  obsidian: new THREE.MeshStandardMaterial({ color: PAL.obsidian, roughness: 0.14, metalness: 0.55, flatShading: true }),
+  deadwood: new THREE.MeshStandardMaterial({ color: PAL.deadwood, roughness: 1 }),
+  ridge:    new THREE.MeshStandardMaterial({ color: 0x2c1b20, roughness: 1 })
+};
+
+/* ================================ renderer / scene / camera ================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 120, 430);
+
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 900);
+camera.position.set(45, 35, 49);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(-2, 6, -2);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 40;
+controls.maxDistance = 130;
+controls.maxPolarAngle = 1.32;
+
+/* ================================ builder: sky & backdrop ridges ================================ */
+function buildSky(){
+  return new THREE.Mesh(
+    new THREE.SphereGeometry(340, 32, 20),
+    new THREE.MeshBasicMaterial({ map: toTex(skyCanvas()), side: THREE.BackSide, fog: false })
+  );
+}
+function buildRidges(){
+  const g = new THREE.Group();
+  const geo = new THREE.SphereGeometry(1, 20, 12);
+  const defs = [
+    [-150, -170, 95, 30], [30, -205, 110, 36], [170, -130, 90, 26],
+    [-210, -30, 88, 24], [215, 40, 92, 27], [-160, 160, 100, 30],
+    [40, 210, 108, 32], [180, 155, 86, 25]
+  ];
+  for (const [x, z, r, h] of defs){
+    const m = new THREE.Mesh(geo, MAT.ridge);
+    m.scale.set(r, h, r * 0.75);
+    m.position.set(x, -4, z);
+    g.add(m);
+  }
+  return g;
+}
+
+/* ================================ builder: ash plain & ground cracks ================================ */
+function buildGround(){
+  const g = new THREE.Group();
+  const plain = new THREE.Mesh(new THREE.CircleGeometry(280, 64), MAT.ground);
+  plain.rotation.x = -Math.PI / 2;
+  plain.receiveShadow = true;
+  g.add(plain);
+  const duneGeo = new THREE.SphereGeometry(1, 16, 10);
+  for (const [x, z, r, h] of [[62, 26, 16, 2.2], [-20, 62, 20, 2.6], [58, -34, 14, 1.8], [-64, 34, 18, 2.4]]){
+    const dune = new THREE.Mesh(duneGeo, MAT.ground);
+    dune.scale.set(r, h, r * 0.8);
+    dune.position.set(x, -0.4, z);
+    dune.receiveShadow = true;
+    g.add(dune);
+  }
+  // glowing fissures radiating across the flat ash beyond the skirt
+  for (let i = 0; i < 5; i++){
+    const az = rand(-0.4, 0.6) + i * 1.15;
+    const r0 = rand(46, 50);
+    const len = rand(4, 8);
+    const crack = new THREE.Mesh(new THREE.PlaneGeometry(rand(0.35, 0.65), len), MAT.crack);
+    crack.rotation.set(-Math.PI / 2, 0, -az + Math.PI / 2);
+    crack.position.set(Math.cos(az) * (r0 + len / 2), 0.09, Math.sin(az) * (r0 + len / 2));
+    g.add(crack);
+  }
+  return g;
+}
+
+/* ================================ builder: caldera, cliffs & crater lake ================================ */
+function buildCaldera(){
+  const g = new THREE.Group();
+  // profile runs outer->inner so the lathe winding faces outward/upward
+  const pts = PROFILE.slice(0, 9).reverse().map(([r, y]) => new THREE.Vector2(r, y));
+  const bowl = new THREE.Mesh(new THREE.LatheGeometry(pts, 64), MAT.crater);
+  bowl.castShadow = bowl.receiveShadow = true;
+  g.add(bowl);
+  // ring of hexagonal basalt columns forming the inner cliffs above the lake
+  const colGeo = new THREE.CylinderGeometry(1, 1.15, 1, 6);
+  const columns = new THREE.InstancedMesh(colGeo, MAT.rock, 96);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 96; i++){
+    const az = (i / 96) * Math.PI * 2 + rand(-0.02, 0.02);
+    const r = 20 + rand(-1.2, 1.6);
+    const h = rand(2.4, 6.2);
+    const w = rand(0.9, 1.7);
+    dummy.position.set(Math.cos(az) * r, terrainY(Math.cos(az) * r, Math.sin(az) * r) - 1.5 + h / 2, Math.sin(az) * r);
+    dummy.scale.set(w, h, w);
+    dummy.rotation.set(rand(-0.06, 0.06), rand(0, Math.PI), rand(-0.06, 0.06));
+    dummy.updateMatrix();
+    columns.setMatrixAt(i, dummy.matrix);
+  }
+  columns.castShadow = columns.receiveShadow = true;
+  g.add(columns);
+  // jagged blocks tumbled along the rim crest
+  const rimGeo = new THREE.DodecahedronGeometry(1, 0);
+  const rim = new THREE.InstancedMesh(rimGeo, MAT.rock, 42);
+  for (let i = 0; i < 42; i++){
+    const az = (i / 42) * Math.PI * 2 + rand(-0.06, 0.06);
+    const r = 25.5 + rand(-1.2, 1.2);
+    const s = rand(0.9, 2.3);
+    dummy.position.set(Math.cos(az) * r, terrainY(Math.cos(az) * r, Math.sin(az) * r) + s * 0.3, Math.sin(az) * r);
+    dummy.scale.set(s, s * rand(0.7, 1.2), s);
+    dummy.rotation.set(rand(0, 3.1), rand(0, 3.1), rand(0, 3.1));
+    dummy.updateMatrix();
+    rim.setMatrixAt(i, dummy.matrix);
+  }
+  rim.castShadow = true;
+  g.add(rim);
+  // shattered basalt slabs littering the near skirt
+  const slabGeo = new THREE.BoxGeometry(1, 0.28, 1.6);
+  const slabs = new THREE.InstancedMesh(slabGeo, MAT.rock, 12);
+  for (let i = 0; i < 12; i++){
+    const az = rand(0.15, 1.65);
+    const r = rand(28, 40);
+    const x = Math.cos(az) * r, z = Math.sin(az) * r;
+    const s = rand(0.9, 2);
+    dummy.position.set(x, terrainY(x, z) + 0.2, z);
+    dummy.scale.set(s, s, s);
+    dummy.rotation.set(rand(-0.3, 0.3), rand(0, Math.PI), rand(-0.3, 0.3));
+    dummy.updateMatrix();
+    slabs.setMatrixAt(i, dummy.matrix);
+  }
+  slabs.castShadow = slabs.receiveShadow = true;
+  g.add(slabs);
+  return g;
+}
+function buildLake(){
+  const g = new THREE.Group();
+  const bed = new THREE.Mesh(new THREE.CircleGeometry(16.8, 48), MAT.waterBed);
+  bed.rotation.x = -Math.PI / 2;
+  bed.position.y = 1.9;
+  g.add(bed);
+  const water = new THREE.Mesh(new THREE.CircleGeometry(17, 48), MAT.water);
+  water.rotation.x = -Math.PI / 2;
+  water.position.y = 2.35;
+  g.add(water);
+  // dark shore rocks breaking the waterline
+  const shoreGeo = new THREE.DodecahedronGeometry(1, 0);
+  const shore = new THREE.InstancedMesh(shoreGeo, MAT.rock, 26);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 26; i++){
+    const az = (i / 26) * Math.PI * 2 + rand(-0.1, 0.1);
+    const r = 16 + rand(-0.6, 1.2);
+    const s = rand(0.5, 1.3);
+    dummy.position.set(Math.cos(az) * r, 2.2 + rand(-0.3, 0.3), Math.sin(az) * r);
+    dummy.scale.set(s, s * rand(0.6, 1), s);
+    dummy.rotation.set(rand(0, 3.1), rand(0, 3.1), rand(0, 3.1));
+    dummy.updateMatrix();
+    shore.setMatrixAt(i, dummy.matrix);
+  }
+  g.add(shore);
+  g.userData.water = water;
+  return g;
+}
+
+/* ================================ builder: cone, lava flow & pool ================================ */
+function buildCone(){
+  const g = new THREE.Group();
+  const geo = new THREE.ConeGeometry(CONE.R, CONE.H, 40, 5);
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++){
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    const rr = Math.hypot(x, z);
+    if (rr < 0.01) continue;
+    const amp = 0.55 * (0.25 + (CONE.H / 2 - y) / CONE.H);
+    const n = hashNoise(Math.round(x * 8) / 8, Math.round(y * 8) / 8, Math.round(z * 8) / 8) * 2 - 1;
+    pos.setX(i, x + (x / rr) * n * amp);
+    pos.setZ(i, z + (z / rr) * n * amp);
+  }
+  geo.computeVertexNormals();
+  const cone = new THREE.Mesh(geo, MAT.cone);
+  cone.position.set(CONE.x, CONE.H / 2 - 0.5, CONE.z);
+  cone.castShadow = cone.receiveShadow = true;
+  g.add(cone);
+  // glowing vent throat at the summit
+  const throat = new THREE.Mesh(new THREE.CylinderGeometry(2.2, 1.4, 1.6, 12), MAT.rock);
+  throat.position.set(CONE.x, CONE.H - 0.9, CONE.z);
+  const core = new THREE.Mesh(new THREE.CircleGeometry(1.7, 16),
+    new THREE.MeshBasicMaterial({ color: PAL.lavaHot }));
+  core.rotation.x = -Math.PI / 2;
+  core.position.set(CONE.x, CONE.H - 0.15, CONE.z);
+  g.add(throat, core);
+  return g;
+}
+function buildLavaFlow(){
+  // ribbon marching down the cone flank and out over the ash, hugging terrainY
+  const steps = 16;
+  const len = 26;
+  const dir = new THREE.Vector3(0.08, 0, 1).normalize();
+  const side = new THREE.Vector3(-dir.z, 0, dir.x);
+  const geo = new THREE.PlaneGeometry(1, 1, 2, steps);
+  const pos = geo.attributes.position;
+  const start = new THREE.Vector2(CONE.x + dir.x * 2, CONE.z + dir.z * 2);
+  for (let r = 0; r <= steps; r++){
+    const t = r / steps;
+    const cx = start.x + dir.x * t * len;
+    const cz = start.y + dir.z * t * len;
+    const y = terrainY(cx, cz) + 0.5;
+    const w = 1.8 + t * 2.6 + Math.sin(t * 9.7) * 0.4;
+    for (let col = 0; col < 3; col++){
+      const off = (col - 1) * (w / 2);
+      const i = r * 3 + col;
+      pos.setXYZ(i, cx + side.x * off, y, cz + side.z * off);
+    }
+  }
+  geo.computeVertexNormals();
+  const flow = new THREE.Mesh(geo, MAT.lava);
+  // molten pool where the flow spills onto the plain
+  const endX = start.x + dir.x * len, endZ = start.y + dir.z * len;
+  const pool = new THREE.Mesh(new THREE.CircleGeometry(3.4, 24), MAT.lava);
+  pool.rotation.x = -Math.PI / 2;
+  pool.position.set(endX, terrainY(endX, endZ) + 0.3, endZ);
+  const g = new THREE.Group();
+  g.add(flow, pool);
+  return g;
+}
+
+/* ================================ builder: fumaroles, boulders, dead trees ================================ */
+function buildFumarole(){
+  const g = new THREE.Group();
+  const h = rand(1.3, 1.9);
+  const mound = new THREE.Mesh(new THREE.CylinderGeometry(rand(0.55, 0.75), rand(1.6, 2.2), h, 9), MAT.rock);
+  mound.position.y = h * 0.45;
+  mound.castShadow = mound.receiveShadow = true;
+  g.add(mound);
+  const vent = new THREE.Mesh(new THREE.CircleGeometry(0.42, 10),
+    new THREE.MeshBasicMaterial({ color: 0xffa050 }));
+  vent.rotation.x = -Math.PI / 2;
+  vent.position.y = h * 0.96;
+  g.add(vent);
+  g.userData.top = vent.position.y;
+  return g;
+}
+function buildObsidian(){
+  const s = rand(0.8, 2.4);
+  const rock = new THREE.Mesh(new THREE.IcosahedronGeometry(1, 0), MAT.obsidian);
+  rock.scale.set(s, s * rand(0.6, 1.1), s * rand(0.7, 1.2));
+  rock.rotation.set(rand(0, 3.1), rand(0, 3.1), rand(0, 3.1));
+  rock.castShadow = rock.receiveShadow = true;
+  return rock;
+}
+function addBranch(parent, y, len, r, depth, tiltMax){
+  const pivot = new THREE.Group();
+  pivot.position.y = y;
+  pivot.rotation.set(rand(-tiltMax, tiltMax), rand(0, Math.PI * 2), rand(-tiltMax, tiltMax));
+  const seg = new THREE.Mesh(new THREE.CylinderGeometry(r * 0.55, r, len, 5), MAT.deadwood);
+  seg.position.y = len / 2;
+  seg.castShadow = r > 0.15;      // twigs skip the shadow map to avoid scribbly ground shadows
+  pivot.add(seg);
+  parent.add(pivot);
+  if (depth > 0){
+    const kids = rng() < 0.45 ? 3 : 2;
+    for (let k = 0; k < kids; k++){
+      addBranch(pivot, len * rand(0.55, 0.95), len * rand(0.55, 0.75), r * 0.6, depth - 1, 0.95);
+    }
+  }
+}
+function buildDeadTree(){
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.3, 0.48, 3, 6), MAT.deadwood);
+  trunk.position.y = 1.5;
+  trunk.castShadow = true;
+  g.add(trunk);
+  for (let b = 0; b < 3; b++) addBranch(g, rand(2.1, 3), rand(1.9, 2.6), 0.26, 2, 0.8);
+  g.scale.setScalar(rand(1.1, 1.6));
+  g.rotation.y = rand(0, Math.PI * 2);
+  return g;
+}
+
+/* ================================ builder: smoke / steam plume system ================================ */
+const plumes = [];
+function makePlume(origin, count, baseScale, rise, lean, tint, opacity, speed){
+  const g = new THREE.Group();
+  g.position.copy(origin);
+  const parts = [];
+  for (let i = 0; i < count; i++){
+    const s = new THREE.Sprite(new THREE.SpriteMaterial({
+      map: smokeTex, color: tint, transparent: true, opacity: 0, depthWrite: false
+    }));
+    parts.push({ s, phase: i / count, wob: rand(0, Math.PI * 2) });
+    g.add(s);
+  }
+  g.userData = { parts, baseScale, rise, lean, opacity, speed };
+  plumes.push(g);
+  return g;
+}
+function updatePlumes(t){
+  for (const p of plumes){
+    const d = p.userData;
+    for (const q of d.parts){
+      const f = (t * d.speed + q.phase) % 1;
+      const y = f * d.rise;
+      const sway = Math.sin(t * 0.7 + q.wob + y * 0.25);
+      q.s.position.set(sway * (0.4 + f * 1.6) + f * f * d.lean, y, Math.cos(t * 0.6 + q.wob) * (0.3 + f * 1.2));
+      const sc = d.baseScale * (0.45 + f * 2.4);
+      q.s.scale.set(sc, sc, 1);
+      q.s.material.opacity = d.opacity * Math.sin(Math.PI * f);
+    }
+  }
+}
+
+/* ================================ builder: ash motes & embers ================================ */
+function makePointCloud(count, spread, yLo, yHi, size, color, opacity, blending){
+  const arr = new Float32Array(count * 3);
+  for (let i = 0; i < count; i++){
+    const az = rand(0, Math.PI * 2), r = Math.sqrt(rng()) * spread;
+    arr[i * 3] = Math.cos(az) * r;
+    arr[i * 3 + 1] = rand(yLo, yHi);
+    arr[i * 3 + 2] = Math.sin(az) * r;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(arr, 3));
+  const mat = new THREE.PointsMaterial({
+    size, color, map: smokeTex, transparent: true, opacity, depthWrite: false,
+    blending: blending || THREE.NormalBlending, sizeAttenuation: true
+  });
+  return new THREE.Points(geo, mat);
+}
+
+/* ================================ assembly / layout ================================ */
+scene.add(buildSky(), buildRidges(), buildGround(), buildCaldera(), buildCone(), buildLavaFlow());
+const lake = buildLake();
+scene.add(lake);
+
+// fumaroles hissing on the outer skirt
+const fumaroleSpots = [[30, 20], [8, 41], [-16, 34], [40, -12]];
+for (const [x, z] of fumaroleSpots){
+  const f = buildFumarole();
+  f.position.set(x, terrainY(x, z) - 0.15, z);
+  scene.add(f);
+  scene.add(makePlume(new THREE.Vector3(x, terrainY(x, z) + f.userData.top, z), 6, 1.3, 9, 1.6, PAL.steam, 0.4, 0.11));
+}
+
+// obsidian boulders strewn across the ash
+const boulderSpots = [[26, 30], [34, 8], [-4, 44], [-30, 30], [48, 22], [-48, 8], [14, -38], [-12, -42], [52, -8], [22, 25], [-25, -14]];
+for (const [x, z] of boulderSpots){
+  const b = buildObsidian();
+  b.position.set(x + rand(-1.5, 1.5), terrainY(x, z) + 0.4, z + rand(-1.5, 1.5));
+  scene.add(b);
+}
+
+// gnarled dead trees on the plain
+const treeSpots = [[56, 14], [26, 52], [-20, 53], [50, -33], [-55, 26]];
+for (const [x, z] of treeSpots){
+  const tr = buildDeadTree();
+  tr.position.set(x, terrainY(x, z), z);
+  scene.add(tr);
+}
+
+// steam drifting off the crater lake, and the dark eruption column
+scene.add(makePlume(new THREE.Vector3(0, 2.8, 0), 8, 5.5, 12, 2.5, 0xbcd8d0, 0.2, 0.05));
+scene.add(makePlume(new THREE.Vector3(CONE.x, CONE.H - 0.4, CONE.z), 14, 5.2, 42, 11, PAL.smoke, 0.6, 0.05));
+
+// drifting ash motes and hot embers riding the updraft
+const ashA = makePointCloud(240, 62, 3, 30, 0.6, 0x9a8d82, 0.35);
+const ashB = makePointCloud(200, 55, 6, 36, 0.45, 0x7a6f66, 0.28);
+const embers = makePointCloud(70, 7, 0, 16, 0.55, 0xff8038, 0.9, THREE.AdditiveBlending);
+embers.position.set(CONE.x, CONE.H - 2, CONE.z);
+scene.add(ashA, ashB, embers);
+
+/* ================================ lighting rig ================================ */
+const keyLight = new THREE.DirectionalLight(0xff9a58, 2.7);
+keyLight.position.set(64, 66, 30);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.camera.left = -75; keyLight.shadow.camera.right = 75;
+keyLight.shadow.camera.top = 75; keyLight.shadow.camera.bottom = -75;
+keyLight.shadow.camera.near = 20; keyLight.shadow.camera.far = 240;
+keyLight.shadow.bias = -0.0006;
+keyLight.shadow.normalBias = 0.6;
+scene.add(keyLight);
+
+const hemi = new THREE.HemisphereLight(0xb06848, 0x2c211c, 0.85);
+scene.add(hemi);
+
+const summitGlow = new THREE.PointLight(PAL.glow, 46, 48, 2);
+summitGlow.position.set(CONE.x, CONE.H + 2.5, CONE.z);
+scene.add(summitGlow);
+
+const flowGlow = new THREE.PointLight(0xff4a10, 30, 34, 2);
+flowGlow.position.set(CONE.x + 1, 5, CONE.z + 16);
+scene.add(flowGlow);
+
+const lakeGlow = new THREE.PointLight(0x39b0a0, 9, 34, 2);
+lakeGlow.position.set(0, 6, 0);
+scene.add(lakeGlow);
+
+/* ================================ animation loop ================================ */
+const clock = new THREE.Clock();
+const waterMesh = lake.userData.water;
+
+function animate(){
+  const t = clock.getElapsedTime();
+  // 1) smoke column, fumarole steam and lake mist billow upward
+  updatePlumes(t);
+  // 2) the lava flow inches downhill (texture crawl) and its glow breathes
+  lavaTex.offset.y = t * 0.045;
+  MAT.lava.emissiveIntensity = 1.7 + Math.sin(t * 1.6) * 0.25;
+  // 3) drifting ash motes circulate on slow thermals
+  ashA.rotation.y = t * 0.016;
+  ashA.position.y = Math.sin(t * 0.3) * 0.8;
+  ashB.rotation.y = -t * 0.011;
+  ashB.position.y = Math.cos(t * 0.23) * 1.1;
+  embers.rotation.y = t * 0.12;
+  embers.material.opacity = 0.65 + Math.sin(t * 5.2) * 0.25;
+  // 4) vent light flicker
+  summitGlow.intensity = 46 * (0.82 + 0.14 * Math.sin(t * 6.7) + 0.06 * Math.sin(t * 11.3));
+  flowGlow.intensity = 30 * (0.85 + 0.15 * Math.sin(t * 5.1 + 2));
+  // 5) crater-lake surface shimmer
+  waterMesh.rotation.z = t * 0.02;
+  MAT.water.emissiveIntensity = 0.55 + Math.sin(t * 0.9) * 0.12;
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+/* ================================ resize ================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

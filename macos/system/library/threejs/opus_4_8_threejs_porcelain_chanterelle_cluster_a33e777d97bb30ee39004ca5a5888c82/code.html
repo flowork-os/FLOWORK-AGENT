@@ -1,0 +1,854 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Porcelain Chanterelle Cluster</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16171a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: rgba(235, 228, 216, 0.42); letter-spacing: 0.09em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Porcelain Chanterelle Cluster &mdash; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x14151a);
+scene.fog = new THREE.Fog(0x14151a, 0.9, 3.4);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.01, 100);
+camera.position.set(0.30, 0.20, 0.42);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.055;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.85;
+controls.target.set(0, 0.085, 0);
+controls.minDistance = 0.18;
+controls.maxDistance = 1.4;
+controls.maxPolarAngle = Math.PI * 0.54;
+
+/* ============================================================
+   Environment (procedural studio env map for glaze reflections)
+   ============================================================ */
+function makeStudioEnvironment() {
+  const env = new THREE.Scene();
+
+  // Large gradient dome
+  const domeGeo = new THREE.SphereGeometry(10, 32, 24);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      top:    { value: new THREE.Color(0x2b2f3a) },
+      mid:    { value: new THREE.Color(0x14151a) },
+      bottom: { value: new THREE.Color(0x090a0c) }
+    },
+    vertexShader: `
+      varying vec3 vPos;
+      void main() {
+        vPos = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: `
+      varying vec3 vPos;
+      uniform vec3 top;
+      uniform vec3 mid;
+      uniform vec3 bottom;
+      void main() {
+        float h = vPos.y * 0.5 + 0.5;
+        vec3 c = mix(bottom, mid, smoothstep(0.0, 0.5, h));
+        c = mix(c, top, smoothstep(0.45, 1.0, h));
+        gl_FragColor = vec4(c, 1.0);
+      }
+    `
+  });
+  env.add(new THREE.Mesh(domeGeo, domeMat));
+
+  // Soft-box style emissive panels give the glaze crisp specular highlights.
+  function panel(w, h, color, intensity, pos, lookAt) {
+    const m = new THREE.Mesh(
+      new THREE.PlaneGeometry(w, h),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity), side: THREE.DoubleSide })
+    );
+    m.position.set(pos[0], pos[1], pos[2]);
+    m.lookAt(lookAt[0], lookAt[1], lookAt[2]);
+    env.add(m);
+  }
+
+  panel(7, 4.5, 0xffffff, 3.2, [-4.0,  4.2,  3.4], [0, 0, 0]);   // key softbox
+  panel(6, 5.0, 0xdbe6ff, 1.15, [ 5.2,  1.6, -1.4], [0, 0, 0]);  // cool fill
+  panel(5, 2.4, 0xfff0dd, 1.55, [ 0.4,  2.0,  5.4], [0, 0, 0]);  // front strip (glaze highlight)
+  panel(8, 2.0, 0xffe9d0, 0.85, [-1.0, -2.4, -4.2], [0, 0, 0]);  // warm bounce from below
+  panel(3.4, 3.4, 0xffffff, 2.0, [ 1.0,  5.6, -2.6], [0, 0, 0]); // top rim
+
+  const pmrem = new THREE.PMREMGenerator(renderer);
+  pmrem.compileEquirectangularShader();
+  const rt = pmrem.fromScene(env, 0.035);
+  pmrem.dispose();
+
+  domeGeo.dispose();
+  domeMat.dispose();
+  env.traverse(function (o) {
+    if (o.isMesh) {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) o.material.dispose();
+    }
+  });
+
+  return rt.texture;
+}
+
+const envMap = makeStudioEnvironment();
+scene.environment = envMap;
+
+/* ============================================================
+   Hand-painted apricot blush texture (procedural canvas)
+   Soft, watercolor-like washes over a pale-gold porcelain body.
+   ============================================================ */
+function makeBlushTexture(seed) {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const ctx = c.getContext('2d');
+
+  // Base porcelain body: warm ivory with a faint gold cast.
+  ctx.fillStyle = '#f6ecd8';
+  ctx.fillRect(0, 0, S, S);
+
+  // Deterministic pseudo-random
+  let s = seed * 9781.31 + 17.0;
+  function rnd() {
+    s = Math.sin(s) * 43758.5453;
+    return s - Math.floor(s);
+  }
+
+  // Vertical gold gradient: creamier at the top of the cap, warmer down the stem.
+  const g = ctx.createLinearGradient(0, 0, 0, S);
+  g.addColorStop(0.00, 'rgba(255, 246, 226, 0.95)');
+  g.addColorStop(0.42, 'rgba(247, 226, 179, 0.55)');
+  g.addColorStop(0.78, 'rgba(240, 213, 165, 0.55)');
+  g.addColorStop(1.00, 'rgba(250, 238, 216, 0.85)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, S, S);
+
+  // Apricot blushes — soft radial washes, brushed by hand around the cap rim.
+  ctx.globalCompositeOperation = 'multiply';
+  const blushes = 26;
+  for (let i = 0; i < blushes; i++) {
+    const x = rnd() * S;
+    const y = Math.pow(rnd(), 0.75) * S * 0.92;
+    const rx = 42 + rnd() * 105;
+    const ry = rx * (0.42 + rnd() * 0.6);
+    const a = 0.10 + rnd() * 0.17;
+
+    ctx.save();
+    ctx.translate(x, y);
+    ctx.rotate((rnd() - 0.5) * 1.6);
+    const rg = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    rg.addColorStop(0.0, 'rgba(246, 176, 122, ' + a.toFixed(3) + ')');
+    rg.addColorStop(0.45, 'rgba(249, 199, 152, ' + (a * 0.62).toFixed(3) + ')');
+    rg.addColorStop(1.0, 'rgba(255, 255, 255, 0)');
+    ctx.fillStyle = rg;
+    ctx.scale(1, ry / rx);
+    ctx.beginPath();
+    ctx.arc(0, 0, rx, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
+
+    // wrap-around copy so the seam stays invisible
+    if (x < rx || x > S - rx) {
+      const x2 = x < rx ? x + S : x - S;
+      ctx.save();
+      ctx.translate(x2, y);
+      const rg2 = ctx.createRadialGradient(0, 0, 0, 0, 0, rx);
+      rg2.addColorStop(0.0, 'rgba(246, 176, 122, ' + a.toFixed(3) + ')');
+      rg2.addColorStop(0.45, 'rgba(249, 199, 152, ' + (a * 0.62).toFixed(3) + ')');
+      rg2.addColorStop(1.0, 'rgba(255, 255, 255, 0)');
+      ctx.fillStyle = rg2;
+      ctx.scale(1, ry / rx);
+      ctx.beginPath();
+      ctx.arc(0, 0, rx, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  // A few finer apricot brush strokes running down the flutes.
+  for (let i = 0; i < 34; i++) {
+    const x = rnd() * S;
+    const y0 = rnd() * S * 0.7;
+    const len = 40 + rnd() * 150;
+    const w = 3 + rnd() * 9;
+    const grad = ctx.createLinearGradient(x, y0, x + (rnd() - 0.5) * 26, y0 + len);
+    grad.addColorStop(0.0, 'rgba(255,255,255,0)');
+    grad.addColorStop(0.5, 'rgba(243, 186, 138, ' + (0.05 + rnd() * 0.09).toFixed(3) + ')');
+    grad.addColorStop(1.0, 'rgba(255,255,255,0)');
+    ctx.strokeStyle = grad;
+    ctx.lineWidth = w;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.quadraticCurveTo(x + (rnd() - 0.5) * 22, y0 + len * 0.5, x + (rnd() - 0.5) * 30, y0 + len);
+    ctx.stroke();
+  }
+
+  // Very subtle cool shadow in the deep funnel (top of the UV = cap interior).
+  ctx.globalCompositeOperation = 'multiply';
+  const dg = ctx.createLinearGradient(0, 0, 0, S * 0.22);
+  dg.addColorStop(0, 'rgba(226, 216, 208, 0.55)');
+  dg.addColorStop(1, 'rgba(255, 255, 255, 0)');
+  ctx.fillStyle = dg;
+  ctx.fillRect(0, 0, S, S * 0.22);
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.ClampToEdgeWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+/* Faint glaze micro-variation for roughness — keeps the sheen from looking CG-uniform. */
+function makeGlazeRoughnessTexture() {
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = S; c.height = S;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#2c2c2c';
+  ctx.fillRect(0, 0, S, S);
+
+  let s = 4.117;
+  function rnd() {
+    s = Math.sin(s * 12.9898 + 78.233) * 43758.5453;
+    return s - Math.floor(s);
+  }
+  for (let i = 0; i < 240; i++) {
+    const x = rnd() * S, y = rnd() * S, r = 6 + rnd() * 46;
+    const rg = ctx.createRadialGradient(x, y, 0, x, y, r);
+    const v = rnd() > 0.5 ? 255 : 0;
+    rg.addColorStop(0, 'rgba(' + v + ',' + v + ',' + v + ',' + (0.035 + rnd() * 0.05).toFixed(3) + ')');
+    rg.addColorStop(1, 'rgba(' + v + ',' + v + ',' + v + ',0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath();
+    ctx.arc(x, y, r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = THREE.RepeatWrapping;
+  tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  return tex;
+}
+
+const roughTex = makeGlazeRoughnessTexture();
+
+function porcelainMaterial(seed) {
+  return new THREE.MeshPhysicalMaterial({
+    map: makeBlushTexture(seed),
+    color: 0xffffff,
+    roughness: 0.16,
+    roughnessMap: roughTex,
+    metalness: 0.0,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.055,
+    sheen: 0.35,
+    sheenRoughness: 0.5,
+    sheenColor: new THREE.Color(0xffe6c4),
+    envMapIntensity: 1.15,
+    side: THREE.DoubleSide,
+    transmission: 0.0,
+    ior: 1.52,
+    specularIntensity: 1.0
+  });
+}
+
+/* ============================================================
+   Small math helpers
+   ============================================================ */
+function hash1(n) {
+  const x = Math.sin(n * 127.1) * 43758.5453;
+  return x - Math.floor(x);
+}
+function smootherstep(e0, e1, x) {
+  let t = (x - e0) / (e1 - e0);
+  t = Math.max(0, Math.min(1, t));
+  return t * t * t * (t * (t * 6 - 15) + 10);
+}
+function clamp(v, a, b) { return Math.max(a, Math.min(b, v)); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+/* ============================================================
+   ONE Chanterelle body (trumpet/funnel cap + ridged, gilled stem)
+   Built as a lathe-like swept surface with:
+     - a vertical profile that flares from a slim base to a funnel rim
+     - a wavy rim (undulating cap edge, classic chanterelle)
+     - vertical false-gill ridges running down the underside & stem
+     - a slight S-curve lean of the whole axis
+   ============================================================ */
+function buildChanterelle(opts) {
+  const RAD = opts.radialSegments;   // around
+  const VER = opts.heightSegments;   // along the axis
+  const H = opts.height;
+  const seed = opts.seed;
+
+  // -- Axis lean: a gentle S curve so the trumpet tips outward.
+  const leanDir = opts.leanDir.clone().normalize();
+  const leanAmt = opts.lean;
+
+  function axisAt(t) {
+    // t in [0,1] from base to rim
+    const bend = Math.pow(t, 1.65) * leanAmt + Math.sin(t * Math.PI) * leanAmt * 0.22;
+    return new THREE.Vector3(leanDir.x * bend, H * t, leanDir.z * bend);
+  }
+
+  // -- Radius profile: narrow foot -> slightly pinched stem -> flaring funnel.
+  function baseRadius(t) {
+    const stemR = opts.stemRadius;
+    const capR = opts.capRadius;
+
+    // stem section (0 .. flareStart): tapers gently upward, slightly bulbous at foot
+    const flareStart = opts.flareStart;
+
+    if (t < flareStart) {
+      const u = t / flareStart;
+      const foot = 1.0 + 0.36 * Math.pow(1.0 - u, 2.1);      // thicker at the base
+      const waist = 1.0 - 0.10 * Math.sin(u * Math.PI * 0.9); // subtle waist
+      return stemR * foot * waist;
+    }
+    // funnel section: accelerating flare to the rim
+    const u = (t - flareStart) / (1 - flareStart);
+    const flare = Math.pow(u, 1.55);
+    const r = lerp(stemR * 0.98, capR, flare);
+    // slight outward roll right at the very edge
+    const edgeRoll = 1.0 + 0.075 * smootherstep(0.86, 1.0, u);
+    return r * edgeRoll;
+  }
+
+  // -- Wavy rim: the cap edge undulates and dips (lobed chanterelle margin).
+  const lobes = opts.lobes;
+  const lobePhase = hash1(seed * 3.7) * Math.PI * 2;
+  const lobePhase2 = hash1(seed * 8.1) * Math.PI * 2;
+
+  function rimWave(theta) {
+    // combination of two harmonics -> irregular, hand-formed look
+    return Math.sin(theta * lobes + lobePhase) * 1.0
+         + Math.sin(theta * (lobes * 2) + lobePhase2) * 0.34
+         + Math.sin(theta * 3 + lobePhase * 0.7) * 0.22;
+  }
+
+  // -- False gills: vertical blunt ridges on the outside/underside of the funnel.
+  const gillCount = opts.gillCount;
+  const gillPhase = hash1(seed * 5.3) * Math.PI * 2;
+
+  function gillProfile(theta) {
+    // rounded ridges (not sharp): |cos| shaped bumps
+    const c = Math.cos(theta * gillCount + gillPhase);
+    return Math.pow(Math.abs(c), 0.72) * Math.sign(1) * (c >= 0 ? 1 : 1) * 0.5 + 0.5 * 0.0
+      ? 0 : 0; // placeholder never used
+  }
+
+  // Cleaner gill shaping function (rounded ridge crests)
+  function gillBump(theta) {
+    const c = Math.cos(theta * gillCount + gillPhase);
+    // remap cos to a soft, rounded ridge in [0,1]
+    const k = 0.5 + 0.5 * c;
+    return Math.pow(k, 0.85);
+  }
+
+  // Gill strength along the axis: zero at the very foot, strongest on the
+  // funnel underside, fading out just under the rim edge.
+  function gillStrength(t) {
+    const a = smootherstep(0.05, 0.30, t);
+    const b = 1.0 - smootherstep(0.90, 1.0, t);
+    return a * b * (0.55 + 0.45 * smootherstep(0.25, 0.72, t));
+  }
+
+  // Cap-inner dish: the funnel is hollow, so we build an inner wall too.
+  // Wall thickness tapers thinner near the rim (porcelain-like).
+  function wallThickness(t) {
+    return lerp(opts.thickBase, opts.thickRim, smootherstep(0.15, 1.0, t));
+  }
+
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  // Build the outer surface, then the inner surface, then stitch the rim.
+  // Rows: VER+1 per shell.
+  const cols = RAD + 1;
+
+  function surfacePoint(t, theta, inner) {
+    const axis = axisAt(t);
+
+    let r = baseRadius(t);
+
+    // wavy rim influence: only in the upper funnel, ramping in
+    const rimInf = smootherstep(opts.flareStart + 0.08, 1.0, t);
+    const wave = rimWave(theta);
+    r += wave * opts.rimWaveAmp * rimInf * (r / Math.max(opts.capRadius, 1e-5));
+
+    // vertical offset from the wavy margin (edge goes up and down)
+    const yWave = wave * opts.rimWaveY * Math.pow(rimInf, 1.6);
+
+    // gills push the OUTER surface outward as ridges
+    const gs = gillStrength(t);
+    const gb = gillBump(theta);
+    let gill = gb * gs * opts.gillDepth;
+
+    // Only the outer shell carries ridges; the inner funnel stays smooth-ish
+    if (inner) gill *= 0.18;
+
+    const thick = wallThickness(t);
+    const rr = inner ? Math.max(r - thick, 0.0006) : r + gill;
+
+    const x = axis.x + Math.cos(theta) * rr;
+    const z = axis.z + Math.sin(theta) * rr;
+    const y = axis.y + yWave;
+
+    return new THREE.Vector3(x, y, z);
+  }
+
+  function pushShell(inner) {
+    const startIndex = positions.length / 3;
+
+    for (let j = 0; j <= VER; j++) {
+      // bias sampling toward the flare where curvature is high
+      const tRaw = j / VER;
+      const t = Math.pow(tRaw, 0.92);
+      for (let i = 0; i <= RAD; i++) {
+        const theta = (i / RAD) * Math.PI * 2;
+        const p = surfacePoint(t, theta, inner);
+        positions.push(p.x, p.y, p.z);
+        normals.push(0, 1, 0); // computed later
+        uvs.push(i / RAD, 1.0 - t);
+      }
+    }
+
+    for (let j = 0; j < VER; j++) {
+      for (let i = 0; i < RAD; i++) {
+        const a = startIndex + j * cols + i;
+        const b = startIndex + (j + 1) * cols + i;
+        const c = startIndex + (j + 1) * cols + i + 1;
+        const d = startIndex + j * cols + i + 1;
+        if (inner) {
+          indices.push(a, c, b, a, d, c);
+        } else {
+          indices.push(a, b, c, a, c, d);
+        }
+      }
+    }
+    return startIndex;
+  }
+
+  const outerStart = pushShell(false);
+  const innerStart = pushShell(true);
+
+  // Stitch the rim (top row of outer -> top row of inner) into a rounded lip.
+  {
+    const outerTop = outerStart + VER * cols;
+    const innerTop = innerStart + VER * cols;
+    for (let i = 0; i < RAD; i++) {
+      const a = outerTop + i;
+      const b = outerTop + i + 1;
+      const c = innerTop + i + 1;
+      const d = innerTop + i;
+      indices.push(a, c, b);
+      indices.push(a, d, c);
+    }
+  }
+
+  // Close the bottom: cap the foot with a small fan so the base is watertight.
+  {
+    const outerBot = outerStart;
+    const innerBot = innerStart;
+    for (let i = 0; i < RAD; i++) {
+      const a = outerBot + i;
+      const b = outerBot + i + 1;
+      const c = innerBot + i + 1;
+      const d = innerBot + i;
+      indices.push(a, b, c);
+      indices.push(a, c, d);
+    }
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/* ============================================================
+   Shared swollen base that the three trumpets grow out of
+   ============================================================ */
+function buildSharedBase(stems) {
+  const RAD = 128;
+  const VER = 56;
+  const H = 0.030;
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+  const cols = RAD + 1;
+
+  // Metaball-ish radial field: base radius blends toward each stem's foot.
+  function radiusAt(theta, t) {
+    // t: 0 at the ground, 1 at the top of the base collar
+    const ct = Math.cos(theta), st = Math.sin(theta);
+
+    let r = 0.0;
+    for (let k = 0; k < stems.length; k++) {
+      const s = stems[k];
+      const dx = ct - s.x / Math.max(0.0001, Math.hypot(s.x, s.z) || 1);
+      // simple soft-max blend on distance from each stem center
+      const cx = s.x, cz = s.z;
+      const px = ct, pz = st;
+      // project: how strongly this direction points at stem k
+      const dist = Math.hypot(cx, cz);
+      let align = 1.0;
+      if (dist > 1e-6) {
+        align = (px * cx + pz * cz) / dist;
+      }
+      const lobe = s.foot + dist * Math.max(0, align) * 1.15;
+      r = Math.max(r, lobe * 0.999 + 0.0001 * dx * 0.0);
+    }
+
+    // smooth the lobes together a bit
+    let soft = 0;
+    let wsum = 0;
+    for (let k = 0; k < stems.length; k++) {
+      const s = stems[k];
+      const cx = s.x, cz = s.z;
+      const dist = Math.hypot(cx, cz);
+      let align = dist > 1e-6 ? (ct * cx + st * cz) / dist : 1.0;
+      const w = Math.pow(Math.max(0.0, align * 0.5 + 0.5), 5.0) + 0.10;
+      soft += (s.foot + dist * Math.max(0, align) * 1.15) * w;
+      wsum += w;
+    }
+    soft /= wsum;
+
+    r = lerp(soft, r, 0.35);
+
+    // vertical shaping: widest at the very bottom (a spreading, rooted foot),
+    // pinching in as it rises into the stems.
+    const spread = 1.0 + 0.42 * Math.pow(1.0 - t, 2.2);
+    const pinch = lerp(1.0, 0.80, smootherstep(0.35, 1.0, t));
+    // faint vertical rooting wrinkles
+    const wrinkle = 1.0 + 0.018 * Math.sin(theta * 13.0 + 0.7) * (1.0 - t) +
+                          0.012 * Math.sin(theta * 7.0 + 2.1) * (1.0 - t);
+
+    return r * spread * pinch * wrinkle;
+  }
+
+  for (let j = 0; j <= VER; j++) {
+    const t = j / VER;
+    // dome the bottom slightly so it sits on the ground plane
+    const y = -0.004 + t * H;
+    for (let i = 0; i <= RAD; i++) {
+      const theta = (i / RAD) * Math.PI * 2;
+      let r = radiusAt(theta, t);
+      // round the very bottom edge instead of a hard corner
+      const bevel = smootherstep(0.0, 0.14, t);
+      r *= lerp(0.72, 1.0, bevel);
+      const yy = y + (1.0 - bevel) * -0.0035;
+      positions.push(Math.cos(theta) * r, yy, Math.sin(theta) * r);
+      uvs.push(i / RAD, 1.0 - t * 0.35);
+    }
+  }
+
+  for (let j = 0; j < VER; j++) {
+    for (let i = 0; i < RAD; i++) {
+      const a = j * cols + i;
+      const b = (j + 1) * cols + i;
+      const c = (j + 1) * cols + i + 1;
+      const d = j * cols + i + 1;
+      indices.push(a, b, c, a, c, d);
+    }
+  }
+
+  // Flat-ish bottom disc
+  const centerIdx = positions.length / 3;
+  positions.push(0, -0.0075, 0);
+  uvs.push(0.5, 1.0);
+  for (let i = 0; i < RAD; i++) {
+    const a = i;
+    const b = i + 1;
+    indices.push(centerIdx, b, a);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+/* ============================================================
+   Assemble the cluster: ONE object, three trumpets, one base.
+   Real-world scale: caps ~55-75mm tall (units = meters).
+   ============================================================ */
+const cluster = new THREE.Group();
+scene.add(cluster);
+
+const shroomSpecs = [
+  {
+    seed: 1.0,
+    height: 0.086,
+    stemRadius: 0.0088,
+    capRadius: 0.0305,
+    flareStart: 0.40,
+    rimWaveAmp: 0.0044,
+    rimWaveY: 0.0072,
+    lobes: 5,
+    gillCount: 26,
+    gillDepth: 0.00135,
+    thickBase: 0.0055,
+    thickRim: 0.0014,
+    lean: 0.0125,
+    leanDir: new THREE.Vector3(1.0, 0, 0.18),
+    offset: new THREE.Vector3(0.0085, 0.0, 0.0022),
+    yaw: 0.0,
+    radialSegments: 176,
+    heightSegments: 96
+  },
+  {
+    seed: 2.0,
+    height: 0.070,
+    stemRadius: 0.0079,
+    capRadius: 0.0262,
+    flareStart: 0.44,
+    rimWaveAmp: 0.0040,
+    rimWaveY: 0.0068,
+    lobes: 6,
+    gillCount: 24,
+    gillDepth: 0.00125,
+    thickBase: 0.0050,
+    thickRim: 0.0013,
+    lean: 0.0140,
+    leanDir: new THREE.Vector3(-0.62, 0, 0.78),
+    offset: new THREE.Vector3(-0.0058, 0.0, 0.0072),
+    yaw: 2.1,
+    radialSegments: 168,
+    heightSegments: 92
+  },
+  {
+    seed: 3.0,
+    height: 0.058,
+    stemRadius: 0.0072,
+    capRadius: 0.0218,
+    flareStart: 0.46,
+    rimWaveAmp: 0.0036,
+    rimWaveY: 0.0058,
+    lobes: 4,
+    gillCount: 22,
+    gillDepth: 0.00115,
+    thickBase: 0.0046,
+    thickRim: 0.0012,
+    lean: 0.0135,
+    leanDir: new THREE.Vector3(-0.52, 0, -0.85),
+    offset: new THREE.Vector3(-0.0044, 0.0, -0.0080),
+    yaw: 4.0,
+    radialSegments: 160,
+    heightSegments: 88
+  }
+];
+
+const shroomMeshes = [];
+
+for (let i = 0; i < shroomSpecs.length; i++) {
+  const s = shroomSpecs[i];
+  const geo = buildChanterelle(s);
+  const mat = porcelainMaterial(s.seed);
+  const mesh = new THREE.Mesh(geo, mat);
+  mesh.castShadow = true;
+  mesh.receiveShadow = true;
+  mesh.position.copy(s.offset);
+  mesh.rotation.y = s.yaw;
+  // a touch of tilt so the cluster does not look mechanically vertical
+  mesh.rotation.z = (hash1(s.seed * 11.3) - 0.5) * 0.05;
+  mesh.rotation.x = (hash1(s.seed * 19.7) - 0.5) * 0.05;
+  cluster.add(mesh);
+  shroomMeshes.push(mesh);
+}
+
+// Shared foot
+const baseGeo = buildSharedBase([
+  { x: shroomSpecs[0].offset.x, z: shroomSpecs[0].offset.z, foot: shroomSpecs[0].stemRadius * 1.42 },
+  { x: shroomSpecs[1].offset.x, z: shroomSpecs[1].offset.z, foot: shroomSpecs[1].stemRadius * 1.42 },
+  { x: shroomSpecs[2].offset.x, z: shroomSpecs[2].offset.z, foot: shroomSpecs[2].stemRadius * 1.42 }
+]);
+const baseMat = porcelainMaterial(7.0);
+baseMat.roughness = 0.20;
+const baseMesh = new THREE.Mesh(baseGeo, baseMat);
+baseMesh.castShadow = true;
+baseMesh.receiveShadow = true;
+cluster.add(baseMesh);
+
+/* --- A couple of tiny porcelain "buttons": nascent fruiting bodies at the foot,
+       which is very characteristic of a real chanterelle cluster. --- */
+function buildButton(seed, r, h) {
+  const geo = new THREE.SphereGeometry(r, 40, 28, 0, Math.PI * 2, 0, Math.PI * 0.62);
+  const pos = geo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const theta = Math.atan2(v.z, v.x);
+    const k = 1.0 + 0.05 * Math.sin(theta * 9.0 + seed * 3.1);
+    v.x *= k;
+    v.z *= k;
+    v.y *= h / r;
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const buttonSpecs = [
+  { p: new THREE.Vector3(0.0128, 0.0035, -0.0102), r: 0.0052, h: 0.0090, seed: 11.0 },
+  { p: new THREE.Vector3(-0.0135, 0.0030, -0.0018), r: 0.0040, h: 0.0068, seed: 13.0 }
+];
+for (let i = 0; i < buttonSpecs.length; i++) {
+  const b = buttonSpecs[i];
+  const m = new THREE.Mesh(buildButton(b.seed, b.r, b.h), porcelainMaterial(b.seed));
+  m.position.copy(b.p);
+  m.rotation.z = (hash1(b.seed) - 0.5) * 0.5;
+  m.rotation.x = (hash1(b.seed * 2.0) - 0.5) * 0.5;
+  m.castShadow = true;
+  m.receiveShadow = true;
+  cluster.add(m);
+}
+
+/* Center the whole cluster horizontally and rest it on y = 0. */
+{
+  const box = new THREE.Box3().setFromObject(cluster);
+  const center = new THREE.Vector3();
+  box.getCenter(center);
+  cluster.position.x -= center.x;
+  cluster.position.z -= center.z;
+  cluster.position.y -= box.min.y;
+}
+
+/* ============================================================
+   Ground: shadow-only plane
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(6, 6),
+  new THREE.ShadowMaterial({ opacity: 0.42, color: 0x000000 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0.0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint contact-glow disc under the figurine so it does not float.
+const glow = new THREE.Mesh(
+  new THREE.CircleGeometry(0.16, 64),
+  new THREE.MeshBasicMaterial({
+    color: 0x1e2029,
+    transparent: true,
+    opacity: 0.55,
+    depthWrite: false
+  })
+);
+glow.rotation.x = -Math.PI / 2;
+glow.position.y = -0.0006;
+scene.add(glow);
+
+/* ============================================================
+   Lighting: hemisphere + key / fill / rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xdfe8ff, 0x241d16, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff4e2, 2.6);
+key.position.set(-0.28, 0.42, 0.30);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.02;
+key.shadow.camera.far = 1.6;
+key.shadow.camera.left = -0.10;
+key.shadow.camera.right = 0.10;
+key.shadow.camera.top = 0.12;
+key.shadow.camera.bottom = -0.04;
+key.shadow.bias = -0.0006;
+key.shadow.normalBias = 0.0016;
+key.shadow.radius = 3.5;
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 0.04, 0);
+
+const fill = new THREE.DirectionalLight(0xcfdcff, 0.75);
+fill.position.set(0.42, 0.20, 0.28);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9ad, 1.5);
+rim.position.set(0.16, 0.30, -0.44);
+scene.add(rim);
+
+// Small warm bounce from the floor to keep the underside of the caps luminous.
+const bounce = new THREE.PointLight(0xffd7b0, 0.30, 0.55, 2.0);
+bounce.position.set(0.02, 0.012, 0.07);
+scene.add(bounce);
+
+/* ============================================================
+   Resize + render loop
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

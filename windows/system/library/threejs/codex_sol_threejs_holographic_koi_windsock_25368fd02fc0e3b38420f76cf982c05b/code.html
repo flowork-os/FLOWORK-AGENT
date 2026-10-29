@@ -1,0 +1,465 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Holographic Koi Streamer</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #02050d; }
+    canvas { display: block; width: 100%; height: 100%; }
+  </style>
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x02050d);
+scene.fog = new THREE.FogExp2(0x02050d, 0.027);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(-8.4, 3.3, 9.7);
+camera.lookAt(0.25, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.045;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.enablePan = false;
+controls.minDistance = 7;
+controls.maxDistance = 19;
+controls.target.set(0.35, 0, 0);
+
+scene.add(new THREE.HemisphereLight(0x89eaff, 0x16052d, 1.8));
+
+const keyLight = new THREE.DirectionalLight(0x8ffff0, 4.2);
+keyLight.position.set(-5, 7, 8);
+keyLight.castShadow = true;
+scene.add(keyLight);
+
+const magentaLight = new THREE.PointLight(0xff238f, 45, 18, 2);
+magentaLight.position.set(3, -3, 5);
+scene.add(magentaLight);
+
+const goldLight = new THREE.PointLight(0xffca62, 32, 16, 2);
+goldLight.position.set(-4, 1, -5);
+scene.add(goldLight);
+
+const koi = new THREE.Group();
+koi.rotation.z = -0.035;
+scene.add(koi);
+
+const sharedUniforms = {
+  uTime: { value: 0 },
+  uOpacity: { value: 0.78 }
+};
+
+const bodyVertexShader = `
+  varying vec2 vUv;
+  varying vec3 vWorldPosition;
+  varying vec3 vWorldNormal;
+
+  void main() {
+    vUv = uv;
+    vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+    vWorldPosition = worldPosition.xyz;
+    vWorldNormal = normalize(mat3(modelMatrix) * normal);
+    gl_Position = projectionMatrix * viewMatrix * worldPosition;
+  }
+`;
+
+const bodyFragmentShader = `
+  precision highp float;
+
+  uniform float uTime;
+  uniform float uOpacity;
+
+  varying vec2 vUv;
+  varying vec3 vWorldPosition;
+  varying vec3 vWorldNormal;
+
+  vec3 spectrum(float x) {
+    vec3 teal = vec3(0.02, 1.00, 0.82);
+    vec3 magenta = vec3(1.00, 0.04, 0.62);
+    vec3 gold = vec3(1.00, 0.72, 0.16);
+    float a = 0.5 + 0.5 * sin(x);
+    float b = 0.5 + 0.5 * sin(x + 2.094);
+    float c = 0.5 + 0.5 * sin(x + 4.188);
+    return teal * a + magenta * b + gold * c;
+  }
+
+  void main() {
+    vec3 N = normalize(vWorldNormal);
+    vec3 V = normalize(cameraPosition - vWorldPosition);
+    float facing = abs(dot(N, V));
+    float fresnel = pow(1.0 - facing, 2.25);
+
+    float foldPhase = vWorldPosition.x * 1.65 + vWorldPosition.y * 2.1 - vWorldPosition.z * 1.35;
+    vec3 iridescence = spectrum(foldPhase + fresnel * 6.5 + uTime * 0.13);
+    iridescence = mix(iridescence, vec3(0.94, 1.0, 1.0), pow(facing, 7.0) * 0.38);
+
+    vec2 scaleGrid = vec2(vUv.x * 18.0, vUv.y * 11.0);
+    float row = floor(scaleGrid.y);
+    scaleGrid.x += mod(row, 2.0) * 0.5;
+    vec2 cell = fract(scaleGrid) - vec2(0.5, 0.46);
+    cell.y *= 1.12;
+    float scaleDistance = length(cell);
+    float scaleArc = smoothstep(0.48, 0.43, scaleDistance) *
+                     smoothstep(0.31, 0.36, scaleDistance);
+    float lowerArc = smoothstep(-0.10, 0.12, cell.y);
+    float flank = pow(abs(sin(vUv.y * 6.2831853)), 5.0);
+    float scaleGlow = scaleArc * lowerArc * (0.22 + 0.78 * flank);
+
+    float scan = 0.5 + 0.5 * sin(gl_FragCoord.y * 1.42 + uTime * 4.0);
+    float fineScan = smoothstep(0.82, 1.0, scan);
+    float lengthPulse = 0.5 + 0.5 * sin(vUv.x * 75.0 - uTime * 1.6);
+
+    vec3 color = iridescence * (0.32 + facing * 0.46 + fresnel * 1.25);
+    color += vec3(0.22, 1.0, 0.9) * scaleGlow * 1.7;
+    color += vec3(0.45, 0.8, 1.0) * fineScan * 0.055;
+    color += iridescence * lengthPulse * 0.035;
+
+    float alpha = uOpacity * (0.42 + 0.36 * facing + 0.34 * fresnel);
+    alpha += scaleGlow * 0.18;
+    gl_FragColor = vec4(color, clamp(alpha, 0.18, 0.94));
+  }
+`;
+
+const hologramMaterial = new THREE.ShaderMaterial({
+  uniforms: sharedUniforms,
+  vertexShader: bodyVertexShader,
+  fragmentShader: bodyFragmentShader,
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide,
+  blending: THREE.NormalBlending
+});
+
+function createBodyGeometry() {
+  const lengthSegments = 104;
+  const radialSegments = 48;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= lengthSegments; i++) {
+    const u = i / lengthSegments;
+    const x = THREE.MathUtils.lerp(-3.25, 2.55, u);
+    const envelope = Math.sin(Math.PI * Math.min(u / 0.92, 1.0));
+    const centerY = 0.13 * Math.sin(u * Math.PI * 3.1) +
+                    0.08 * Math.sin(u * Math.PI * 8.0);
+    const centerZ = 0.20 * Math.sin(u * Math.PI * 2.15 + 0.45) * envelope;
+    const mainRadius = 1.18 * (1.0 - 0.68 * u);
+    const shoulder = 1.0 + 0.13 * Math.sin(Math.PI * u);
+    const radius = mainRadius * shoulder;
+
+    for (let j = 0; j <= radialSegments; j++) {
+      const v = j / radialSegments;
+      const angle = v * Math.PI * 2;
+      const fold = 1.0 +
+        0.055 * Math.sin(angle * 5.0 + u * 15.0) +
+        0.035 * Math.sin(angle * 9.0 - u * 24.0);
+      const verticalRadius = radius * fold;
+      const lateralRadius = radius * (0.88 + 0.08 * Math.sin(u * Math.PI)) * fold;
+      const ripple = 0.055 * envelope * Math.sin(u * 35.0 + angle * 2.0);
+
+      positions.push(
+        x,
+        centerY + Math.cos(angle) * verticalRadius + ripple * Math.cos(angle),
+        centerZ + Math.sin(angle) * lateralRadius + ripple * Math.sin(angle)
+      );
+      uvs.push(u, v);
+    }
+  }
+
+  const stride = radialSegments + 1;
+  for (let i = 0; i < lengthSegments; i++) {
+    for (let j = 0; j < radialSegments; j++) {
+      const a = i * stride + j;
+      const b = a + stride;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  geometry.computeBoundingSphere();
+  return geometry;
+}
+
+const body = new THREE.Mesh(createBodyGeometry(), hologramMaterial);
+body.renderOrder = 2;
+koi.add(body);
+
+const rimUniforms = {
+  uTime: sharedUniforms.uTime
+};
+
+const rimMaterial = new THREE.ShaderMaterial({
+  uniforms: rimUniforms,
+  vertexShader: `
+    varying vec3 vNormal;
+    varying vec3 vWorldPosition;
+    void main() {
+      vNormal = normalize(mat3(modelMatrix) * normal);
+      vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+      vWorldPosition = worldPosition.xyz;
+      gl_Position = projectionMatrix * viewMatrix * worldPosition;
+    }
+  `,
+  fragmentShader: `
+    precision highp float;
+    uniform float uTime;
+    varying vec3 vNormal;
+    varying vec3 vWorldPosition;
+    void main() {
+      vec3 V = normalize(cameraPosition - vWorldPosition);
+      float edge = pow(1.0 - abs(dot(normalize(vNormal), V)), 1.6);
+      float phase = vWorldPosition.y * 4.0 + vWorldPosition.z * 3.0 + uTime * 0.18;
+      vec3 a = vec3(0.02, 1.0, 0.84);
+      vec3 b = vec3(1.0, 0.05, 0.65);
+      vec3 c = vec3(1.0, 0.72, 0.18);
+      vec3 color = mix(a, b, 0.5 + 0.5 * sin(phase));
+      color = mix(color, c, 0.5 + 0.5 * sin(phase + 2.2));
+      color *= 0.8 + edge * 2.0;
+      gl_FragColor = vec4(color, 0.82);
+    }
+  `,
+  transparent: true,
+  depthWrite: false,
+  side: THREE.DoubleSide
+});
+
+const mouthRim = new THREE.Mesh(
+  new THREE.TorusGeometry(1.19, 0.105, 16, 72),
+  rimMaterial
+);
+mouthRim.position.x = -3.27;
+mouthRim.rotation.y = Math.PI * 0.5;
+mouthRim.scale.set(1, 1, 0.93);
+mouthRim.renderOrder = 4;
+koi.add(mouthRim);
+
+const innerRim = new THREE.Mesh(
+  new THREE.TorusGeometry(1.105, 0.025, 10, 72),
+  new THREE.MeshBasicMaterial({
+    color: 0x69fff1,
+    transparent: true,
+    opacity: 0.65,
+    blending: THREE.AdditiveBlending,
+    depthWrite: false
+  })
+);
+innerRim.position.x = -3.34;
+innerRim.rotation.y = Math.PI * 0.5;
+innerRim.scale.set(1, 1, 0.93);
+innerRim.renderOrder = 5;
+koi.add(innerRim);
+
+function createTailGeometry(sign) {
+  const lengthSegments = 48;
+  const widthSegments = 10;
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let i = 0; i <= lengthSegments; i++) {
+    const s = i / lengthSegments;
+    const x = 2.38 + s * 2.28;
+    const split = Math.pow(s, 0.72);
+    const centerY = sign * (0.17 + 0.56 * split) +
+                    sign * 0.09 * Math.sin(s * 7.0);
+    const centerZ = 0.10 * Math.sin(s * 11.0 + sign * 0.8) +
+                    0.18 * s * Math.sin(s * 4.8 + 0.5);
+    const halfWidth = THREE.MathUtils.lerp(0.35, 0.28, s) *
+                      (1.0 + 0.24 * Math.sin(Math.PI * s));
+    const taper = 1.0 - 0.38 * Math.pow(s, 5.0);
+
+    for (let j = 0; j <= widthSegments; j++) {
+      const t = j / widthSegments;
+      const across = (t - 0.5) * 2.0;
+      const flutter = Math.sin(s * 15.0 + across * 2.2 + sign) * 0.055 * s;
+      positions.push(
+        x,
+        centerY + across * halfWidth * taper,
+        centerZ + flutter + 0.055 * across * across * Math.sin(s * 8.0)
+      );
+      uvs.push(s, t);
+    }
+  }
+
+  const stride = widthSegments + 1;
+  for (let i = 0; i < lengthSegments; i++) {
+    for (let j = 0; j < widthSegments; j++) {
+      const a = i * stride + j;
+      const b = a + stride;
+      const c = b + 1;
+      const d = a + 1;
+      indices.push(a, b, d, b, c, d);
+    }
+  }
+
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+for (const sign of [-1, 1]) {
+  const tail = new THREE.Mesh(createTailGeometry(sign), hologramMaterial);
+  tail.renderOrder = 3;
+  koi.add(tail);
+}
+
+const finMaterial = hologramMaterial.clone();
+finMaterial.uniforms = {
+  uTime: sharedUniforms.uTime,
+  uOpacity: { value: 0.61 }
+};
+
+function createFinGeometry(sign) {
+  const positions = new Float32Array([
+    -1.35, -0.08, sign * 0.88,
+    -0.15, -0.22, sign * 0.74,
+    -0.20, -0.65, sign * 1.48,
+    -1.05, -0.48, sign * 1.34
+  ]);
+  const uvs = new Float32Array([
+    0, 0,
+    1, 0,
+    1, 1,
+    0, 1
+  ]);
+  const geometry = new THREE.BufferGeometry();
+  geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geometry.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geometry.setIndex([0, 1, 3, 1, 2, 3]);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
+for (const sign of [-1, 1]) {
+  const fin = new THREE.Mesh(createFinGeometry(sign), finMaterial);
+  fin.renderOrder = 3;
+  koi.add(fin);
+}
+
+const eyeOuterMaterial = new THREE.MeshPhysicalMaterial({
+  color: 0x8ffff5,
+  emissive: 0x14cfc6,
+  emissiveIntensity: 2.8,
+  roughness: 0.18,
+  metalness: 0.25,
+  transparent: true,
+  opacity: 0.88,
+  clearcoat: 1
+});
+
+const eyeInnerMaterial = new THREE.MeshBasicMaterial({
+  color: 0xff2b9a,
+  transparent: true,
+  opacity: 0.96
+});
+
+function addEye(side) {
+  const eye = new THREE.Group();
+  eye.position.set(-2.58, 0.35, side * 0.91);
+
+  const outer = new THREE.Mesh(new THREE.SphereGeometry(0.31, 28, 18), eyeOuterMaterial);
+  outer.scale.set(1.0, 1.0, 0.24);
+  eye.add(outer);
+
+  const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.145, 24, 14), eyeInnerMaterial);
+  pupil.position.z = side * 0.075;
+  pupil.scale.set(1.0, 1.0, 0.22);
+  eye.add(pupil);
+
+  koi.add(eye);
+}
+
+addEye(1);
+addEye(-1);
+
+const crestGeometry = new THREE.BufferGeometry();
+crestGeometry.setAttribute('position', new THREE.Float32BufferAttribute([
+  -1.9, 0.88, -0.05,
+  -0.9, 1.40, 0.02,
+   0.2, 0.91, 0.03,
+  -1.9, 0.88,  0.05,
+  -0.9, 1.40, 0.08,
+   0.2, 0.91, 0.09
+], 3));
+crestGeometry.setAttribute('uv', new THREE.Float32BufferAttribute([
+  0, 0, 0.5, 1, 1, 0,
+  0, 0, 0.5, 1, 1, 0
+], 2));
+crestGeometry.setIndex([0, 1, 2, 3, 5, 4]);
+crestGeometry.computeVertexNormals();
+
+const crest = new THREE.Mesh(crestGeometry, finMaterial);
+crest.renderOrder = 3;
+koi.add(crest);
+
+const haloMaterial = new THREE.MeshBasicMaterial({
+  color: 0x39e7ff,
+  transparent: true,
+  opacity: 0.12,
+  blending: THREE.AdditiveBlending,
+  depthWrite: false
+});
+
+const halo = new THREE.Mesh(new THREE.SphereGeometry(3.6, 32, 18), haloMaterial);
+halo.scale.set(1.35, 0.53, 0.63);
+halo.position.x = 0.2;
+halo.renderOrder = 0;
+koi.add(halo);
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const elapsed = clock.getElapsedTime();
+  sharedUniforms.uTime.value = elapsed;
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+</script>
+</body>
+</html>

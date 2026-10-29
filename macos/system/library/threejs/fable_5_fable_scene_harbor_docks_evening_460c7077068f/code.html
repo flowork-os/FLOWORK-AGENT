@@ -1,0 +1,700 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Harbor Docks at Evening</title>
+<style>
+html, body { margin: 0; height: 100%; overflow: hidden; background: #22304f; }
+canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================== CONFIG / PALETTE ==============================
+// Harbor Docks at Evening -- a working fishing wharf at golden hour.
+const SEED = 460077 ^ 0xA5EED;           // fixed seed: layout is fully reproducible
+const PAL = {
+  skyTop: '#2c3a63', skyMid: '#8a5a63', skyLow: '#e08a55', horizon: '#ffcf7d',
+  fog: 0xdda06b, sun: 0xffb066, sunDisc: 0xffe2a8,
+  water: 0x27566b, plank: '#8a7a63', zinc: '#7e8a8a',
+  hullRed: '#7c2f24', cabin: 0xe8e2d2, navy: 0x2c3e50,
+  rope: 0xc9b489, rust: 0x8a4a2c, gull: 0xf0eee8
+};
+const DOCK_TOP = 1.35;                   // wharf deck height above still water
+
+// =============================== PRNG / HELPERS ===============================
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr = (a, b) => a + (b - a) * rand();                // uniform in [a, b)
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+function mesh(geo, mat, x = 0, y = 0, z = 0) {            // shadowed mesh shorthand
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+const box = (w, h, d) => new THREE.BoxGeometry(w, h, d);
+const cyl = (rt, rb, h, s = 14) => new THREE.CylinderGeometry(rt, rb, h, s);
+
+// ============================ PROCEDURAL TEXTURES =============================
+function tex(w, h, draw, rx = 1, ry = 1) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.anisotropy = 8;
+  return t;
+}
+function speckle(g, w, h, n, palette) {                   // weathering noise dots
+  for (let i = 0; i < n; i++) {
+    g.fillStyle = pick(palette);
+    g.globalAlpha = rr(0.05, 0.28);
+    g.fillRect(rand() * w, rand() * h, rr(1, 3), rr(1, 3));
+  }
+  g.globalAlpha = 1;
+}
+const plankTex = tex(512, 512, (g, w, h) => {
+  g.fillStyle = PAL.plank; g.fillRect(0, 0, w, h);
+  speckle(g, w, h, 1500, ['#6f6250', '#9c8c73', '#7d6f5b', '#5c5142']);
+  for (let row = 0; row < 8; row++) {                     // weathered deck boards
+    const y = row * 64;
+    g.fillStyle = 'rgba(40,34,26,0.85)'; g.fillRect(0, y, w, 3);
+    g.strokeStyle = 'rgba(60,52,40,0.35)';
+    for (let s = 0; s < 5; s++) {                         // grain streaks
+      const gy = y + rr(8, 60);
+      g.beginPath(); g.moveTo(0, gy); g.quadraticCurveTo(w / 2, gy + rr(-4, 4), w, gy);
+      g.stroke();
+    }
+    g.fillStyle = 'rgba(30,26,20,0.9)';                   // butt joints + nails
+    const bx = rand() * w;
+    g.fillRect(bx, y, 3, 64);
+    g.fillRect((bx + 40) % w, y + 14, 3, 3); g.fillRect((bx + 40) % w, y + 46, 3, 3);
+  }
+}, 6, 3);
+const corrTex = tex(256, 256, (g, w, h) => {
+  g.fillStyle = PAL.zinc; g.fillRect(0, 0, w, h);
+  for (let x = 0; x < w; x += 10) {                       // corrugation ribs
+    g.fillStyle = 'rgba(255,255,255,0.16)'; g.fillRect(x, 0, 3, h);
+    g.fillStyle = 'rgba(20,26,28,0.28)'; g.fillRect(x + 5, 0, 3, h);
+  }
+  for (let s = 0; s < 12; s++) {                          // rust streaks
+    const x = rand() * w, len = rr(40, 160);
+    const gr = g.createLinearGradient(0, 0, 0, len);
+    gr.addColorStop(0, 'rgba(138,74,44,0.55)'); gr.addColorStop(1, 'rgba(138,74,44,0)');
+    g.save(); g.translate(x, rand() * h * 0.4); g.fillStyle = gr;
+    g.fillRect(-2, 0, 4 + rand() * 3, len); g.restore();
+  }
+  g.fillStyle = 'rgba(40,44,40,0.35)'; g.fillRect(0, h - 30, w, 30); // grime base
+}, 4, 1);
+const crateTex = tex(256, 256, (g, w, h) => {
+  g.fillStyle = '#a08558'; g.fillRect(0, 0, w, h);
+  speckle(g, w, h, 700, ['#8a7048', '#b5996a', '#6e5838']);
+  g.strokeStyle = 'rgba(50,40,26,0.8)'; g.lineWidth = 3;
+  for (let i = 1; i < 4; i++) {                           // slats
+    g.beginPath(); g.moveTo(0, i * 64); g.lineTo(w, i * 64); g.stroke();
+  }
+  g.strokeStyle = '#5c4a30'; g.lineWidth = 14; g.strokeRect(7, 7, w - 14, h - 14);
+  g.fillStyle = 'rgba(30,40,60,0.85)'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold 34px Arial'; g.fillText('PIER 7', w / 2, h / 2 - 14);
+  g.font = 'bold 22px Arial'; g.fillText('FISH CO.', w / 2, h / 2 + 20);
+});
+const hullTex = tex(256, 256, (g, w, h) => {
+  g.fillStyle = PAL.hullRed; g.fillRect(0, 0, w, h);
+  speckle(g, w, h, 900, ['#5e211a', '#93402f', '#6e2a20', '#4a3a34']);
+  for (let s = 0; s < 10; s++) {                          // salt + rust runs
+    g.fillStyle = 'rgba(60,40,32,0.4)';
+    g.fillRect(rand() * w, rand() * h * 0.5, rr(2, 5), rr(30, 120));
+  }
+}, 3, 1);
+const skyTex = tex(256, 512, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0.0, PAL.skyTop); gr.addColorStop(0.3, PAL.skyMid);
+  gr.addColorStop(0.47, PAL.skyLow); gr.addColorStop(0.55, PAL.horizon);
+  gr.addColorStop(0.72, '#b9855c'); gr.addColorStop(1.0, '#8a6a50');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+const glintTex = tex(128, 512, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  for (let i = 0; i < 90; i++) {                          // broken sun-path sparkle
+    g.fillStyle = 'rgba(255,220,160,' + rr(0.1, 0.55).toFixed(2) + ')';
+    g.fillRect(rand() * w, rand() * h, rr(6, 40), rr(1.5, 3.5));
+  }
+});
+const doorTex = tex(256, 256, (g, w, h) => {
+  g.fillStyle = '#5e6a68'; g.fillRect(0, 0, w, h);
+  for (let x = 0; x < w; x += 14) {
+    g.fillStyle = 'rgba(255,255,255,0.1)'; g.fillRect(x, 0, 4, h);
+    g.fillStyle = 'rgba(16,20,22,0.3)'; g.fillRect(x + 7, 0, 4, h);
+  }
+  g.strokeStyle = '#3a4240'; g.lineWidth = 10;
+  g.strokeRect(5, 5, w - 10, h - 10);
+  g.beginPath(); g.moveTo(8, h - 8); g.lineTo(w - 8, 8); g.stroke(); // brace
+  g.fillStyle = 'rgba(138,74,44,0.5)'; g.fillRect(0, h - 24, w, 24);
+});
+const signTex = tex(512, 128, (g, w, h) => {
+  g.fillStyle = '#22304f'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#e8e2d2'; g.lineWidth = 6; g.strokeRect(8, 8, w - 16, h - 16);
+  g.fillStyle = '#e8e2d2'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold 72px Arial'; g.fillText('PIER 7 · DOCKS', w / 2, h / 2 + 2);
+});
+const windowRowTex = tex(512, 128, (g, w, h) => {
+  g.fillStyle = '#2a3234'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 4; i++) {                           // lit evening windows
+    const gr = g.createLinearGradient(0, 20, 0, h - 20);
+    gr.addColorStop(0, '#ffd894'); gr.addColorStop(1, '#b06a31');
+    g.fillStyle = gr; g.fillRect(20 + i * 124, 18, 88, h - 36);
+    g.fillStyle = '#1c2426'; g.fillRect(20 + i * 124 + 41, 18, 6, h - 36);
+    g.fillStyle = gr;
+  }
+});
+const nameTex = tex(256, 64, (g, w, h) => {
+  g.fillStyle = '#22304f'; g.fillRect(0, 0, w, h);
+  g.fillStyle = '#f0e6c8'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = 'bold 38px Arial'; g.fillText('ROSA MARIE', w / 2, h / 2 + 2);
+});
+const wireTex = tex(128, 128, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(52,44,34,0.95)'; g.lineWidth = 3;
+  for (let i = 0; i <= 8; i++) {                          // lobster-trap mesh
+    g.beginPath(); g.moveTo(i * 16, 0); g.lineTo(i * 16, h); g.stroke();
+    g.beginPath(); g.moveTo(0, i * 16); g.lineTo(w, i * 16); g.stroke();
+  }
+});
+
+// ================================= MATERIALS ==================================
+const MAT = {
+  water: new THREE.MeshStandardMaterial({ color: PAL.water, roughness: 0.3, metalness: 0.22 }),
+  plank: new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.9 }),
+  beam: new THREE.MeshStandardMaterial({ color: 0x5c4f3e, roughness: 0.92 }),
+  piling: new THREE.MeshStandardMaterial({ color: 0x4a4034, roughness: 0.95 }),
+  corr: new THREE.MeshStandardMaterial({ map: corrTex, roughness: 0.6, metalness: 0.5 }),
+  roof: new THREE.MeshStandardMaterial({ color: 0x5e6e6a, roughness: 0.65, metalness: 0.45 }),
+  crate: new THREE.MeshStandardMaterial({ map: crateTex, roughness: 0.85 }),
+  hullSide: new THREE.MeshStandardMaterial({ map: hullTex, roughness: 0.7, metalness: 0.15 }),
+  hullDark: new THREE.MeshStandardMaterial({ color: 0x3a2622, roughness: 0.8 }),
+  deckWood: new THREE.MeshStandardMaterial({ color: 0x9c8a6e, roughness: 0.9 }),
+  cabin: new THREE.MeshStandardMaterial({ color: PAL.cabin, roughness: 0.55 }),
+  navy: new THREE.MeshStandardMaterial({ color: PAL.navy, roughness: 0.5 }),
+  mast: new THREE.MeshStandardMaterial({ color: 0x6e5a40, roughness: 0.85 }),
+  steel: new THREE.MeshStandardMaterial({ color: 0x62686c, roughness: 0.45, metalness: 0.7 }),
+  craneY: new THREE.MeshStandardMaterial({ color: 0xc98a2e, roughness: 0.5, metalness: 0.4 }),
+  rope: new THREE.MeshStandardMaterial({ color: PAL.rope, roughness: 0.95 }),
+  dark: new THREE.MeshStandardMaterial({ color: 0x26262a, roughness: 0.7, metalness: 0.4 }),
+  rustMetal: new THREE.MeshStandardMaterial({ color: PAL.rust, roughness: 0.72, metalness: 0.35 }),
+  rubber: new THREE.MeshStandardMaterial({ color: 0x1f1d1c, roughness: 0.95 }),
+  buoyRed: new THREE.MeshStandardMaterial({ color: 0xc04030, roughness: 0.5 }),
+  buoyGrn: new THREE.MeshStandardMaterial({ color: 0x3a7a4a, roughness: 0.5 }),
+  gull: new THREE.MeshStandardMaterial({ color: PAL.gull, roughness: 0.8 }),
+  gullWing: new THREE.MeshStandardMaterial({ color: 0xb8bcc0, roughness: 0.8, side: THREE.DoubleSide }),
+  beak: new THREE.MeshStandardMaterial({ color: 0xd88a2e, roughness: 0.6 }),
+  fishBox: new THREE.MeshStandardMaterial({ color: 0x6a92a8, roughness: 0.75 }),
+  glassWarm: new THREE.MeshStandardMaterial({ color: 0x443322, emissive: 0xffc26a, emissiveIntensity: 1, roughness: 0.3 }),
+  wire: new THREE.MeshStandardMaterial({ map: wireTex, transparent: true, alphaTest: 0.35, side: THREE.DoubleSide, roughness: 0.9 }),
+  navRed: new THREE.MeshBasicMaterial({ color: 0xff4a3a }),
+  navGrn: new THREE.MeshBasicMaterial({ color: 0x4aff6a }),
+  lampGlow: new THREE.MeshBasicMaterial({ color: 0xffe2a8 }),
+  line: new THREE.LineBasicMaterial({ color: 0x2a2622 })
+};
+
+// ============================== SCENE / RENDERER ==============================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.skyTop);
+scene.fog = new THREE.Fog(PAL.fog, 55, 200);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 600);
+camera.position.set(17, 8.5, -22);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.16;
+document.body.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.6, -0.5);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 14;
+controls.maxDistance = 55;
+controls.maxPolarAngle = 1.44;
+
+// ========================== WATER / SKY / BACKDROP ============================
+const waterGeo = new THREE.PlaneGeometry(480, 480, 72, 72);
+waterGeo.rotateX(-Math.PI / 2);
+const water = new THREE.Mesh(waterGeo, MAT.water);
+water.receiveShadow = true;
+scene.add(water);
+const waterBase = waterGeo.attributes.position.array.slice();
+const sky = new THREE.Mesh(new THREE.SphereGeometry(230, 32, 16),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+scene.add(sky);
+const sunDir = new THREE.Vector3(-0.82, 0.15, -0.55).normalize();
+const sunDisc = new THREE.Mesh(new THREE.SphereGeometry(8, 20, 20),
+  new THREE.MeshBasicMaterial({ color: PAL.sunDisc, fog: false }));
+sunDisc.position.copy(sunDir).multiplyScalar(218);
+const sunHalo = new THREE.Mesh(new THREE.SphereGeometry(21, 20, 20),
+  new THREE.MeshBasicMaterial({ color: 0xff9a58, transparent: true, opacity: 0.28, fog: false }));
+sunHalo.position.copy(sunDisc.position);
+scene.add(sunDisc, sunHalo);
+const glintGeo = new THREE.PlaneGeometry(8, 62);
+glintGeo.rotateZ(0.98);                                   // long axis toward the sun
+const glint = new THREE.Mesh(glintGeo,
+  new THREE.MeshBasicMaterial({ map: glintTex, transparent: true, opacity: 0.32,
+    blending: THREE.AdditiveBlending, depthWrite: false }));
+glint.rotation.x = -Math.PI / 2;
+glint.position.set(-22, 0.09, -18);
+scene.add(glint);
+const headlandMat = new THREE.MeshBasicMaterial({ color: 0x3a3450 });
+for (const [x, z, w, h] of [[-70, -95, 90, 7], [65, -80, 70, 5], [110, 20, 60, 6]]) {
+  const hill = new THREE.Mesh(cyl(w * 0.4, w * 0.52, h, 10), headlandMat);
+  hill.position.set(x, h / 2 - 0.6, z);                   // hazy far headlands
+  scene.add(hill);
+}
+
+// ========================= FOCAL BUILDERS (structures) ========================
+function buildDock() {                                    // timber wharf on piles
+  const g = new THREE.Group();
+  const deck = mesh(box(32, 0.28, 12), MAT.plank, -2, DOCK_TOP - 0.14, 3);
+  g.add(deck);
+  g.add(mesh(box(32, 0.34, 0.34), MAT.beam, -2, DOCK_TOP - 0.36, -2.85)); // edge waler
+  const piles = new THREE.InstancedMesh(cyl(0.17, 0.19, 2.6, 10), MAT.piling, 22);
+  piles.castShadow = true;
+  const d = new THREE.Object3D();
+  for (let i = 0; i < 22; i++) {                          // support piles
+    const front = i < 13;
+    d.position.set(front ? -17.4 + i * 2.55 : -16 + (i - 13) * 3.4,
+      0.35, front ? -2.9 : 8.8);
+    d.rotation.y = rr(0, 3);
+    d.updateMatrix();
+    piles.setMatrixAt(i, d.matrix);
+  }
+  g.add(piles);
+  for (const x of [-16, -10, -4, 2, 7, 12]) {             // mooring bollards
+    g.add(mesh(cyl(0.13, 0.15, 0.5, 12), MAT.dark, x, DOCK_TOP + 0.25, -2.35));
+    g.add(mesh(cyl(0.2, 0.16, 0.14, 12), MAT.dark, x, DOCK_TOP + 0.52, -2.35));
+  }
+  for (const x of [-7.6, 0.2, 4.6]) {                     // tire fenders on face
+    const tire = mesh(new THREE.TorusGeometry(0.3, 0.11, 8, 16), MAT.rubber, x, 0.85, -3.02);
+    g.add(tire, mesh(cyl(0.02, 0.02, 0.55), MAT.rope, x, 1.4, -3.02));
+  }
+  const ladder = new THREE.Group();                       // dock ladder
+  for (const lx of [-0.22, 0.22]) ladder.add(mesh(box(0.06, 1.9, 0.06), MAT.steel, lx, 0, 0));
+  for (let i = 0; i < 5; i++) ladder.add(mesh(box(0.44, 0.05, 0.05), MAT.steel, 0, -0.75 + i * 0.38, 0));
+  ladder.position.set(9.5, 0.85, -3.05);
+  g.add(ladder);
+  return g;
+}
+function buildWarehouse() {                               // corrugated fish shed
+  const g = new THREE.Group();
+  g.add(mesh(box(11, 4.2, 6.2), MAT.corr, 0, 2.1, 0));
+  for (const s of [-1, 1]) {                              // gable roof slabs
+    const slab = mesh(box(11.6, 0.16, 3.75), MAT.roof, 0, 5.08, s * 1.55);
+    slab.rotation.x = s * 0.514;
+    g.add(slab);
+  }
+  g.add(mesh(box(11.7, 0.22, 0.3), MAT.dark, 0, 5.95, 0)); // ridge cap
+  const gableGeo = new THREE.ShapeGeometry(new THREE.Shape(
+    [new THREE.Vector2(-3.1, 0), new THREE.Vector2(3.1, 0), new THREE.Vector2(0, 1.75)]));
+  for (const s of [-1, 1]) {                              // gable end infill
+    const gable = mesh(gableGeo, MAT.corr, s * 5.5, 4.2, 0);
+    gable.rotation.y = s * Math.PI / 2;
+    g.add(gable);
+  }
+  const door = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 3.1),
+    new THREE.MeshStandardMaterial({ map: doorTex, roughness: 0.6, metalness: 0.4 }));
+  door.position.set(-2.2, 1.56, -3.12);                   // sliding door + rail
+  door.rotation.y = Math.PI;
+  g.add(door);
+  g.add(mesh(box(4.4, 0.12, 0.12), MAT.steel, -2.2, 3.3, -3.16));
+  const winRow = new THREE.Mesh(new THREE.PlaneGeometry(4.4, 1), MAT.glassWarm.clone());
+  winRow.material.emissiveMap = windowRowTex;
+  winRow.material.map = windowRowTex;
+  winRow.position.set(2.6, 3.4, -3.12);
+  winRow.rotation.y = Math.PI;
+  g.add(winRow);
+  const sign = new THREE.Mesh(new THREE.PlaneGeometry(4.6, 1.15),
+    new THREE.MeshBasicMaterial({ map: signTex }));
+  sign.position.set(-2.2, 3.9, -3.14);
+  sign.rotation.y = Math.PI;
+  g.add(sign);
+  const ring = mesh(new THREE.TorusGeometry(0.34, 0.09, 8, 20), MAT.buoyRed, 4.2, 2, -3.14);
+  g.add(ring);                                            // life ring on wall
+  g.add(mesh(cyl(0.07, 0.07, 4.6, 8), MAT.dark, 5.3, 2.3, -3.05)); // downpipe
+  return g;
+}
+function hullPts(s) {                                     // trawler deck outline
+  const p = [[4.6, 0], [3.6, 0.8], [1.4, 1.45], [-2.6, 1.5], [-4.1, 1.05],
+    [-4.6, 0], [-4.1, -1.05], [-2.6, -1.5], [1.4, -1.45], [3.6, -0.8]];
+  return p.map(q => new THREE.Vector2(q[0] * s, q[1] * s));
+}
+function buildTrawler() {                                 // moored fishing trawler
+  const g = new THREE.Group();
+  const hullGeo = new THREE.ExtrudeGeometry(new THREE.Shape(hullPts(1)),
+    { depth: 1.1, bevelEnabled: true, bevelThickness: 0.55, bevelSize: 0.5, bevelSegments: 3 });
+  hullGeo.rotateX(-Math.PI / 2);
+  const hull = new THREE.Mesh(hullGeo, [MAT.hullDark, MAT.hullSide]);
+  hull.castShadow = true; hull.receiveShadow = true;
+  hull.position.y = -0.75;
+  g.add(hull);
+  const deckGeo = new THREE.ExtrudeGeometry(new THREE.Shape(hullPts(0.9)),
+    { depth: 0.07, bevelEnabled: false });
+  deckGeo.rotateX(-Math.PI / 2);
+  g.add(mesh(deckGeo, MAT.deckWood, 0, 0.84, 0));
+  const wallShape = new THREE.Shape(hullPts(1));
+  wallShape.holes.push(new THREE.Path(hullPts(0.87).reverse()));
+  const wallGeo = new THREE.ExtrudeGeometry(wallShape, { depth: 0.42, bevelEnabled: false });
+  wallGeo.rotateX(-Math.PI / 2);
+  const wall = new THREE.Mesh(wallGeo, MAT.hullSide);
+  wall.castShadow = true;
+  wall.position.y = 0.82;
+  g.add(wall);
+  const house = mesh(box(1.7, 1.15, 1.6), MAT.cabin, -2.3, 1.49, 0); // wheelhouse
+  g.add(house);
+  g.add(mesh(box(1.74, 0.42, 1.64), MAT.glassWarm, -2.3, 1.78, 0)); // glowing windows
+  g.add(mesh(box(1.9, 0.1, 1.8), MAT.navy, -2.3, 2.11, 0));
+  const stack = mesh(cyl(0.11, 0.14, 1.6), MAT.buoyRed, -3.5, 1.71, -0.35);
+  stack.rotation.z = -0.12;                               // raked smokestack
+  g.add(stack);
+  g.add(mesh(new THREE.SphereGeometry(0.05, 8, 8), MAT.navRed, -2.3, 1.85, 0.85));
+  g.add(mesh(new THREE.SphereGeometry(0.05, 8, 8), MAT.navGrn, -2.3, 1.85, -0.85));
+  const mainMast = mesh(cyl(0.055, 0.08, 3.6, 8), MAT.mast, 1.3, 2.2, 0);
+  const aftMast = mesh(cyl(0.045, 0.06, 2.6, 8), MAT.mast, -3.6, 2.2, 0);
+  const boom = mesh(cyl(0.04, 0.05, 2.6, 8), MAT.mast, 2.15, 1.62, 0);
+  boom.rotation.z = -1.15;                                // cargo boom off mast
+  g.add(mainMast, aftMast, boom);
+  g.add(mesh(box(0.24, 0.05, 1.1), MAT.mast, 1.3, 3.4, 0)); // crosstree
+  const rigPts = [                                        // standing + running rigging
+    [1.3, 4, 0, 4.5, 1.22, 0], [1.3, 4, 0, -3.6, 3.5, 0],
+    [-3.6, 3.5, 0, -4.5, 1.22, 0],
+    [1.3, 3.95, 0, 1.15, 1.24, 1.28], [1.3, 3.95, 0, 1.15, 1.24, -1.28],
+    [1.3, 3.6, 0, 3.35, 2.15, 0], [-3.6, 3.3, 0, -2.3, 2.12, 0]
+  ].flat();
+  const rigGeo = new THREE.BufferGeometry();
+  rigGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(rigPts), 3));
+  g.add(new THREE.LineSegments(rigGeo, MAT.line));
+  const winch = mesh(cyl(0.16, 0.16, 0.7), MAT.steel, 0.4, 1.05, 0);
+  winch.rotation.x = Math.PI / 2;                         // deck winch drum
+  g.add(winch, mesh(box(0.12, 0.3, 0.8), MAT.dark, 0.05, 0.98, 0));
+  const trapDeck = buildLobsterTrap();
+  trapDeck.position.set(-0.9, 0.9, 0.55);
+  trapDeck.rotation.y = 0.5;
+  const crateDeck = mesh(box(0.7, 0.7, 0.7), MAT.crate, -0.6, 1.2, -0.6);
+  g.add(trapDeck, crateDeck);
+  const name = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 0.34),
+    new THREE.MeshBasicMaterial({ map: nameTex }));
+  name.position.set(-4.65, 0.6, 0);                       // stern name board
+  name.rotation.y = -Math.PI / 2;
+  g.add(name);
+  return g;
+}
+function buildCrane() {                                   // dockside jib crane
+  const base = new THREE.Group();
+  base.add(mesh(cyl(0.55, 0.72, 0.5, 16), MAT.dark, 0, 0.25, 0));
+  const slew = new THREE.Group();
+  slew.position.y = 0.5;
+  base.add(slew);
+  slew.add(mesh(cyl(0.42, 0.5, 0.7, 12), MAT.craneY, 0, 0.35, 0));
+  slew.add(mesh(box(1.25, 1.15, 1.5), MAT.craneY, 0, 1.3, 0.35));  // cab
+  slew.add(mesh(box(1.1, 0.5, 0.08), MAT.glassWarm, 0, 1.42, -0.42));
+  slew.add(mesh(box(0.9, 0.8, 0.9), MAT.dark, 0, 1.1, 1.25));      // counterweight
+  const jib = new THREE.Group();
+  jib.position.set(0, 1.75, -0.3);
+  jib.rotation.x = 0.56;
+  jib.add(mesh(box(0.26, 0.26, 7), MAT.craneY, 0, 0, -3.5));
+  jib.add(mesh(box(0.3, 0.3, 0.5), MAT.dark, 0, 0, -6.9));
+  slew.add(jib);
+  slew.add(mesh(box(0.14, 1, 0.14), MAT.craneY, 0, 2.3, 0.5)); // pendant a-frame
+  const tip = new THREE.Vector3(0, 1.75 + 7 * Math.sin(0.56), -0.3 - 7 * Math.cos(0.56));
+  const pendGeo = new THREE.BufferGeometry().setFromPoints(
+    [new THREE.Vector3(0, 2.78, 0.5), tip]);              // back pendant line
+  slew.add(new THREE.Line(pendGeo, MAT.line));
+  const load = new THREE.Group();                         // swinging hook + crate
+  load.position.copy(tip);
+  load.add(mesh(cyl(0.03, 0.03, 3.1, 6), MAT.steel, 0, -1.55, 0));
+  load.add(mesh(new THREE.TorusGeometry(0.09, 0.03, 6, 12), MAT.steel, 0, -3.14, 0));
+  load.add(mesh(box(0.85, 0.85, 0.85), MAT.crate, 0, -3.65, 0));
+  slew.add(load);
+  return { group: base, slew, load };
+}
+
+// ========================== SUPPORTING PROP BUILDERS ==========================
+function buildLobsterTrap() {                             // wire trap on runners
+  const g = new THREE.Group();
+  g.add(mesh(box(0.85, 0.06, 0.5), MAT.beam, 0, 0.03, 0));
+  const arch = new THREE.Mesh(new THREE.CylinderGeometry(0.26, 0.26, 0.82, 10, 1, true, 0, Math.PI), MAT.wire);
+  arch.rotation.z = Math.PI / 2;
+  arch.position.y = 0.07;
+  arch.castShadow = true;
+  g.add(arch);
+  for (const s of [-1, 1]) {                              // mesh end caps
+    const cap = new THREE.Mesh(new THREE.CircleGeometry(0.26, 12, 0, Math.PI), MAT.wire);
+    cap.position.set(s * 0.41, 0.07, 0);
+    cap.rotation.y = s * Math.PI / 2;
+    g.add(cap);
+  }
+  return g;
+}
+function buildRopeCoil() {                                // coiled mooring line
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const ring = mesh(new THREE.TorusGeometry(0.3 - i * 0.02, 0.055, 6, 18), MAT.rope,
+      rr(-0.02, 0.02), 0.05 + i * 0.075, rr(-0.02, 0.02));
+    ring.rotation.x = Math.PI / 2;
+    ring.rotation.z = rr(0, 3);
+    g.add(ring);
+  }
+  return g;
+}
+function buildGull() {                                    // perched herring gull
+  const g = new THREE.Group();
+  const body = mesh(new THREE.SphereGeometry(0.16, 12, 10), MAT.gull, 0, 0.16, 0);
+  body.scale.set(1.55, 1, 1);
+  g.add(body);
+  g.add(mesh(new THREE.SphereGeometry(0.09, 10, 8), MAT.gull, 0.22, 0.3, 0));
+  const beak = mesh(new THREE.ConeGeometry(0.03, 0.12, 8), MAT.beak, 0.34, 0.29, 0);
+  beak.rotation.z = -Math.PI / 2;
+  g.add(beak);
+  const tail = mesh(box(0.16, 0.03, 0.1), MAT.gullWing, -0.26, 0.19, 0);
+  tail.rotation.z = 0.25;
+  g.add(tail);
+  for (const s of [-1, 1]) {
+    const wing = mesh(box(0.3, 0.03, 0.12), MAT.gullWing, -0.03, 0.24, s * 0.1);
+    wing.rotation.x = s * 0.35;
+    g.add(wing);
+  }
+  return g;
+}
+function buildFlyingGull() {                              // circling gull, flapping
+  const g = new THREE.Group();
+  const body = mesh(new THREE.SphereGeometry(0.14, 10, 8), MAT.gull, 0, 0, 0);
+  body.scale.set(1.7, 0.9, 0.9);
+  g.add(body);
+  g.add(mesh(new THREE.SphereGeometry(0.08, 8, 8), MAT.gull, 0.22, 0.06, 0));
+  const wings = [];
+  for (const s of [-1, 1]) {
+    const wg = new THREE.PlaneGeometry(0.34, 0.75);
+    wg.rotateX(-Math.PI / 2);                             // lie flat, span along z
+    wg.translate(0, 0, s * 0.375);                        // hinge at body side
+    const w = mesh(wg, MAT.gullWing, 0, 0.03, 0);
+    g.add(w);
+    wings.push(w);
+  }
+  return { group: g, wings };
+}
+function buildBuoy(mat) {                                 // bobbing channel buoy
+  const g = new THREE.Group();
+  const b = mesh(new THREE.SphereGeometry(0.36, 14, 12), mat, 0, 0.06, 0);
+  b.scale.y = 0.82;
+  g.add(b);
+  g.add(mesh(cyl(0.05, 0.16, 0.5, 10), mat, 0, 0.5, 0));
+  g.add(mesh(new THREE.SphereGeometry(0.05, 8, 8), MAT.lampGlow, 0, 0.78, 0));
+  return g;
+}
+function buildLampPost() {                                // cast-iron dock lamp
+  const g = new THREE.Group();
+  g.add(mesh(cyl(0.05, 0.08, 3.3, 10), MAT.dark, 0, 1.65, 0));
+  const arm = mesh(cyl(0.035, 0.035, 0.9, 8), MAT.dark, 0, 3.3, -0.4);
+  arm.rotation.x = Math.PI / 2;
+  g.add(arm);
+  g.add(mesh(cyl(0.16, 0.28, 0.22, 10), MAT.dark, 0, 3.28, -0.82));
+  const bulb = mesh(new THREE.SphereGeometry(0.11, 10, 8), MAT.lampGlow, 0, 3.16, -0.82);
+  const light = new THREE.PointLight(0xffd9a0, 9, 13, 2);
+  light.position.set(0, 3, -0.82);
+  g.add(bulb, light);
+  return { group: g, light };
+}
+function buildLighthouse() {                              // far breakwater light
+  const g = new THREE.Group();
+  g.add(mesh(cyl(0.9, 1.3, 6.5, 12), MAT.cabin, 0, 3.25, 0));
+  g.add(mesh(cyl(1, 1.05, 1.3, 12), MAT.buoyRed, 0, 5.4, 0));
+  const lamp = new THREE.Mesh(new THREE.SphereGeometry(0.55, 10, 8),
+    new THREE.MeshBasicMaterial({ color: 0xffe9a0, transparent: true }));
+  lamp.position.y = 6.9;
+  g.add(lamp, mesh(new THREE.ConeGeometry(0.9, 0.8, 10), MAT.dark, 0, 7.6, 0));
+  return { group: g, lamp: lamp.material };
+}
+
+// ============================ ASSEMBLY / LAYOUT ===============================
+scene.add(buildDock());
+const warehouse = buildWarehouse();
+warehouse.position.set(-7, DOCK_TOP, 5.4);
+scene.add(warehouse);
+const trawler = buildTrawler();
+trawler.position.set(-2, 0, -6.6);
+trawler.rotation.y = 0.05;
+scene.add(trawler);
+const crane = buildCrane();
+crane.group.position.set(8.5, DOCK_TOP, 2.6);
+scene.add(crane.group);
+for (const [bx, bz, s, ry] of [[1.6, 4.6, 1, 0.15], [2.9, 4.3, 0.82, -0.4], [0.4, 3.6, 0.9, 0.7],
+  [11.5, 5.2, 1.1, 0.05], [12.6, 4.6, 0.85, 0.5]]) {      // crate stacks
+  const c = mesh(box(1.1, 1.1, 1.1), MAT.crate, bx, DOCK_TOP + 0.55 * s, bz);
+  c.scale.setScalar(s);
+  c.rotation.y = ry;
+  scene.add(c);
+}
+const topCrate = mesh(box(0.9, 0.9, 0.9), MAT.crate, 1.9, DOCK_TOP + 1.55, 4.6);
+topCrate.rotation.y = 0.35;
+scene.add(topCrate);
+for (let i = 0; i < 5; i++) {                             // lobster trap wall
+  const t = buildLobsterTrap();
+  t.position.set(-15.6 + (i % 3) * 1, DOCK_TOP + Math.floor(i / 3) * 0.42, 1 + Math.floor(i / 3) * 0.1);
+  t.rotation.y = rr(-0.12, 0.12);
+  scene.add(t);
+}
+for (const [x, z] of [[-3.4, 0.4], [6.2, 0.9], [-11.5, -0.9]]) {
+  const coil = buildRopeCoil();
+  coil.position.set(x, DOCK_TOP, z);
+  scene.add(coil);
+}
+for (let i = 0; i < 3; i++) {                             // blue fish boxes
+  const fb = mesh(box(0.9, 0.28, 0.6), MAT.fishBox, -13.2, DOCK_TOP + 0.14 + i * 0.29, 3.2);
+  fb.rotation.y = rr(-0.15, 0.15);
+  scene.add(fb);
+}
+const barrel = mesh(cyl(0.34, 0.34, 0.9, 14), MAT.rustMetal, 13.4, DOCK_TOP + 0.45, 3);
+scene.add(barrel);
+const moorings = [                                        // sagging mooring lines
+  [[2.55, 1.2, -6.8], [2, 1.87, -2.35]],
+  [[-6.55, 1.2, -6.35], [-10, 1.87, -2.35]]
+];
+for (const [a, b] of moorings) {
+  const curve = new THREE.QuadraticBezierCurve3(new THREE.Vector3(...a),
+    new THREE.Vector3((a[0] + b[0]) / 2, 0.55, (a[2] + b[2]) / 2), new THREE.Vector3(...b));
+  scene.add(new THREE.Mesh(new THREE.TubeGeometry(curve, 18, 0.032, 6), MAT.rope));
+}
+const gullSpots = [];                                     // pilings with gulls
+for (const [x, z, hasGull] of [[-16.8, -3.9, true], [4.2, -4.1, true], [12.6, -3.7, false]]) {
+  const pile = mesh(cyl(0.16, 0.19, 3, 10), MAT.piling, x, 1, z);
+  scene.add(pile);
+  if (hasGull) gullSpots.push([x, 2.52, z]);
+}
+gullSpots.push([-6.2, DOCK_TOP + 6.06, 5.4]);             // one on warehouse ridge
+for (const [x, y, z] of gullSpots) {
+  const gull = buildGull();
+  gull.position.set(x, y, z);
+  gull.rotation.y = rr(0, 6.28);
+  scene.add(gull);
+}
+const flyer = buildFlyingGull();
+scene.add(flyer.group);
+const buoys = [];
+for (const [x, z, red] of [[-8, -11, true], [3.5, -14, false], [12, -9.5, true], [-17, -13, false]]) {
+  const b = buildBuoy(red ? MAT.buoyRed : MAT.buoyGrn);
+  b.position.set(x, 0, z);
+  scene.add(b);
+  buoys.push(b);
+}
+const lamps = [];
+for (const x of [-12, 4.5]) {
+  const lp = buildLampPost();
+  lp.group.position.set(x, DOCK_TOP, -0.9);
+  scene.add(lp.group);
+  lamps.push(lp);
+}
+const lighthouse = buildLighthouse();
+lighthouse.group.position.set(-58, 0, -44);
+lighthouse.group.scale.setScalar(2.2);
+scene.add(lighthouse.group);
+const mistGeo = new THREE.BufferGeometry();               // low evening sea mist
+const mistPos = new Float32Array(110 * 3);
+for (let i = 0; i < 110; i++) {
+  mistPos[i * 3] = rr(-40, 40); mistPos[i * 3 + 1] = rr(0.4, 4); mistPos[i * 3 + 2] = rr(-45, 20);
+}
+mistGeo.setAttribute('position', new THREE.BufferAttribute(mistPos, 3));
+const mist = new THREE.Points(mistGeo, new THREE.PointsMaterial({
+  color: 0xffc998, size: 0.14, transparent: true, opacity: 0.32,
+  blending: THREE.AdditiveBlending, depthWrite: false }));
+scene.add(mist);
+
+// ================================= LIGHTING ===================================
+const sunLight = new THREE.DirectionalLight(PAL.sun, 2.5);
+sunLight.position.set(-34, 12, -23);                      // low golden-hour sun
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -34;
+sunLight.shadow.camera.right = 34;
+sunLight.shadow.camera.top = 34;
+sunLight.shadow.camera.bottom = -34;
+sunLight.shadow.camera.near = 5;
+sunLight.shadow.camera.far = 110;
+sunLight.shadow.bias = -0.0004;
+sunLight.shadow.normalBias = 0.3;
+scene.add(sunLight, sunLight.target);
+scene.add(new THREE.HemisphereLight(0xffb87a, 0x24344a, 0.62));
+const bounce = new THREE.DirectionalLight(0x5a6a9a, 0.35); // cool dusk fill
+bounce.position.set(20, 14, 24);
+scene.add(bounce);
+
+// =============================== ANIMATION LOOP ===============================
+const clock = new THREE.Clock();
+const wPos = waterGeo.attributes.position;
+function animate() {
+  const t = clock.getElapsedTime();
+  for (let i = 0; i < wPos.count; i++) {                  // gentle rolling water
+    const x = waterBase[i * 3], z = waterBase[i * 3 + 2];
+    wPos.array[i * 3 + 1] = Math.sin(x * 0.22 + t * 1.05) * 0.07
+      + Math.cos(z * 0.19 + t * 0.8) * 0.09 + Math.sin((x + z) * 0.08 + t * 0.5) * 0.06;
+  }
+  wPos.needsUpdate = true;
+  waterGeo.computeVertexNormals();
+  glint.material.opacity = 0.24 + Math.sin(t * 1.7) * 0.07;    // shimmering sun path
+  glintTex.offset.y = t * 0.05;
+  trawler.rotation.z = Math.sin(t * 0.5) * 0.024;         // trawler sways at moorings
+  trawler.rotation.x = Math.sin(t * 0.33 + 1) * 0.014;
+  trawler.position.y = Math.sin(t * 0.45) * 0.06;
+  buoys.forEach((b, i) => {                               // buoys bob and tip
+    b.position.y = Math.sin(t * 0.85 + i * 1.7) * 0.11 - 0.02;
+    b.rotation.x = Math.sin(t * 0.6 + i) * 0.08;
+    b.rotation.z = Math.cos(t * 0.5 + i * 2.1) * 0.08;
+  });
+  crane.slew.rotation.y = Math.sin(t * 0.11) * 0.2;       // crane slews slowly
+  crane.load.rotation.x = Math.sin(t * 0.72) * 0.055;     // hook load pendulum
+  crane.load.rotation.z = Math.sin(t * 0.57 + 1.2) * 0.05;
+  const ga = t * 0.28;                                    // gull circles the harbor
+  flyer.group.position.set(Math.cos(ga) * 11, 8.4 + Math.sin(t * 0.5) * 0.5, -7 + Math.sin(ga) * 9);
+  flyer.group.rotation.y = -ga - Math.PI / 2;
+  flyer.group.rotation.z = Math.sin(t * 3.1) * 0.12;
+  flyer.wings[0].rotation.x = -Math.sin(t * 5.6) * 0.55;
+  flyer.wings[1].rotation.x = Math.sin(t * 5.6) * 0.55;
+  lamps.forEach((lp, i) => {                              // warm lamps breathe
+    lp.light.intensity = 8.6 + Math.sin(t * 9 + i * 2) * 0.5 + Math.sin(t * 2.3 + i) * 0.4;
+  });
+  lighthouse.lamp.opacity = 0.25 + 0.75 * Math.pow(Math.max(0, Math.sin(t * 1.1)), 3);
+  mist.rotation.y = t * 0.015;                            // sea mist drifts
+  controls.update();
+  renderer.render(scene, camera);
+}
+renderer.setAnimationLoop(animate);
+
+// ================================== RESIZE ====================================
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

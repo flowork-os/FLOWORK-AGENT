@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Toon Mushroom Cottage</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #26272d; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 13px/1.4 system-ui, sans-serif; color: #cfd2da; opacity: 0.5;
+    letter-spacing: 0.02em; pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit • scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ */
+/*  Renderer / Scene / Camera                                          */
+/* ------------------------------------------------------------------ */
+const app = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+app.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x25262c);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(8.4, 5.6, 9.6);
+
+/* ------------------------------------------------------------------ */
+/*  Toon gradient map (chunky cel shading)                             */
+/* ------------------------------------------------------------------ */
+function toonGradient(steps) {
+  const data = new Uint8Array(steps);
+  for (let i = 0; i < steps; i++) data[i] = Math.round((i / (steps - 1)) * 255);
+  const tex = new THREE.DataTexture(data, steps, 1, THREE.RedFormat);
+  tex.minFilter = THREE.NearestFilter;
+  tex.magFilter = THREE.NearestFilter;
+  tex.needsUpdate = true;
+  return tex;
+}
+const grad = toonGradient(4);
+
+function toon(color, opts = {}) {
+  return new THREE.MeshToonMaterial({ color, gradientMap: grad, ...opts });
+}
+
+/* Palette */
+const MAT = {
+  body:      toon(0xf3e4bb),
+  bodyTrim:  toon(0xe8d29a),
+  roof:      toon(0xe23a3a),
+  spot:      toon(0xfbf5ea),
+  gill:      toon(0xfdf2d6),
+  door:      toon(0x8a5230),
+  doorFrame: toon(0xf0dcab),
+  knob:      toon(0xf2c94c),
+  glass:     toon(0xffe3b0, { emissive: 0xffbf63, emissiveIntensity: 0.55 }),
+  winFrame:  toon(0xf5ecd2),
+  grass:     toon(0x6cbf5a),
+  stem:      toon(0xead39a),
+};
+
+/* ------------------------------------------------------------------ */
+/*  Profiles & helpers                                                 */
+/* ------------------------------------------------------------------ */
+// Stalk outer radius as a function of height (for placing door/windows)
+const STALK_R = [
+  [0.0, 1.55], [0.35, 1.80], [0.90, 1.90], [1.50, 1.88],
+  [2.20, 1.72], [2.90, 1.50], [3.40, 1.38], [3.60, 1.32],
+];
+function radiusAtHeight(y) {
+  if (y <= STALK_R[0][0]) return STALK_R[0][1];
+  for (let i = 1; i < STALK_R.length; i++) {
+    if (y <= STALK_R[i][0]) {
+      const a = STALK_R[i - 1], b = STALK_R[i];
+      const t = (y - a[0]) / (b[0] - a[0]);
+      return a[1] + (b[1] - a[1]) * t;
+    }
+  }
+  return STALK_R[STALK_R.length - 1][1];
+}
+// Position & orient an object flat against the stalk surface at azimuth/height
+function placeOnStalk(obj, azDeg, y, out = 0.04) {
+  const R = radiusAtHeight(y);
+  const az = azDeg * Math.PI / 180;
+  const nx = Math.sin(az), nz = Math.cos(az);
+  obj.position.set((R + out) * nx, y, (R + out) * nz);
+  obj.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(nx, 0, nz));
+}
+
+/* ------------------------------------------------------------------ */
+/*  Build the cottage                                                  */
+/* ------------------------------------------------------------------ */
+const cottage = new THREE.Group();
+scene.add(cottage);
+
+/* --- Grassy knoll base --- */
+const mound = new THREE.Mesh(new THREE.SphereGeometry(2.35, 40, 20), MAT.grass);
+mound.scale.set(1, 0.12, 1);
+mound.position.y = -0.12;
+mound.castShadow = true;
+mound.receiveShadow = true;
+cottage.add(mound);
+
+/* --- Fat cream stalk (body) via lathe --- */
+const stalkPts = [
+  [0, 0], [1.55, 0], [1.80, 0.35], [1.90, 0.90], [1.88, 1.50],
+  [1.72, 2.20], [1.50, 2.90], [1.38, 3.40], [1.32, 3.60], [0, 3.60],
+].map(p => new THREE.Vector2(p[0], p[1]));
+const stalk = new THREE.Mesh(new THREE.LatheGeometry(stalkPts, 72), MAT.body);
+stalk.castShadow = true;
+stalk.receiveShadow = true;
+cottage.add(stalk);
+
+// soft trim ring where cap meets stalk
+const trim = new THREE.Mesh(new THREE.TorusGeometry(1.36, 0.12, 16, 60), MAT.bodyTrim);
+trim.rotation.x = Math.PI / 2;
+trim.position.y = 3.34;
+trim.castShadow = true;
+cottage.add(trim);
+
+/* --- Oversized domed red toadstool cap --- */
+const capGroup = new THREE.Group();
+capGroup.position.y = 3.32;
+cottage.add(capGroup);
+
+const capPts = [
+  [0.00, 1.62], [0.70, 1.56], [1.40, 1.40], [2.10, 1.10],
+  [2.70, 0.70], [3.15, 0.30], [3.36, 0.00],
+].map(p => new THREE.Vector2(p[0], p[1]));
+
+const cap = new THREE.Mesh(new THREE.LatheGeometry(capPts, 96), MAT.roof);
+cap.castShadow = true;
+cap.receiveShadow = true;
+capGroup.add(cap);
+
+// concave cream underside (gills disc)
+const underPts = [
+  [3.18, 0.03], [2.60, 0.20], [1.90, 0.34], [1.20, 0.44], [0.60, 0.50], [0.00, 0.52],
+].map(p => new THREE.Vector2(p[0], p[1]));
+const under = new THREE.Mesh(new THREE.LatheGeometry(underPts, 96),
+  new THREE.MeshToonMaterial({ color: 0xfdf2d6, gradientMap: grad, side: THREE.DoubleSide }));
+capGroup.add(under);
+
+// thin radial gill lines under the cap for storybook detail
+const gillMat = new THREE.MeshToonMaterial({ color: 0xecdcb0, gradientMap: grad, side: THREE.DoubleSide });
+const nGills = 30;
+for (let i = 0; i < nGills; i++) {
+  const a = (i / nGills) * Math.PI * 2;
+  const g = new THREE.Mesh(new THREE.BoxGeometry(1.9, 0.02, 0.05), gillMat);
+  g.position.set(Math.cos(a) * 2.05, 0.24, Math.sin(a) * 2.05);
+  g.rotation.y = -a;
+  g.rotation.z = -0.14;
+  capGroup.add(g);
+}
+
+/* --- Scalloped skirt around the rim --- */
+const nScal = 22, scalRing = 3.14;
+for (let i = 0; i < nScal; i++) {
+  const a = (i / nScal) * Math.PI * 2;
+  const s = new THREE.Mesh(new THREE.SphereGeometry(0.44, 18, 14), MAT.gill);
+  s.scale.set(1.05, 0.9, 1.05);
+  s.position.set(Math.cos(a) * scalRing, -0.02, Math.sin(a) * scalRing);
+  s.castShadow = true;
+  capGroup.add(s);
+}
+
+/* --- White polka-dot spots on the dome --- */
+const capSpline = new THREE.SplineCurve(capPts);
+const Y = new THREE.Vector3(0, 1, 0);
+const dotRings = [
+  { t: 0.14, n: 5, s: 0.32, off: 0.25 },
+  { t: 0.32, n: 7, s: 0.40, off: 0.62 },
+  { t: 0.50, n: 8, s: 0.44, off: 0.12 },
+  { t: 0.66, n: 9, s: 0.40, off: 0.55 },
+];
+for (const ring of dotRings) {
+  const p = capSpline.getPoint(ring.t);
+  const tan = capSpline.getTangent(ring.t);
+  let n2x = -tan.y, n2y = tan.x;
+  const l = Math.hypot(n2x, n2y); n2x /= l; n2y /= l;
+  for (let j = 0; j < ring.n; j++) {
+    const a = ring.off + (j / ring.n) * Math.PI * 2;
+    const ca = Math.cos(a), sa = Math.sin(a);
+    const pos = new THREE.Vector3(p.x * ca, p.y, p.x * sa);
+    const nrm = new THREE.Vector3(n2x * ca, n2y, n2x * sa).normalize();
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(ring.s, 20, 14), MAT.spot);
+    dot.scale.set(1, 0.32, 1);
+    dot.quaternion.setFromUnitVectors(Y, nrm);
+    dot.position.copy(pos).addScaledVector(nrm, 0.02);
+    capGroup.add(dot);
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Arched door                                                        */
+/* ------------------------------------------------------------------ */
+function archShape(w, bottom, straightTop, apex) {
+  const s = new THREE.Shape();
+  s.moveTo(-w, bottom);
+  s.lineTo(-w, straightTop);
+  s.quadraticCurveTo(-w, apex, 0, apex);
+  s.quadraticCurveTo(w, apex, w, straightTop);
+  s.lineTo(w, bottom);
+  s.closePath();
+  return s;
+}
+
+const doorGroup = new THREE.Group();
+
+// frame (slightly larger arch, cream)
+const frameGeo = new THREE.ExtrudeGeometry(
+  archShape(0.76, -1.0, 0.28, 1.02),
+  { depth: 0.14, bevelEnabled: true, bevelThickness: 0.04, bevelSize: 0.04, bevelSegments: 2 }
+);
+const frame = new THREE.Mesh(frameGeo, MAT.doorFrame);
+frame.position.z = -0.02;
+frame.castShadow = true;
+doorGroup.add(frame);
+
+// door slab (wood)
+const doorGeo = new THREE.ExtrudeGeometry(
+  archShape(0.62, -0.88, 0.14, 0.88),
+  { depth: 0.20, bevelEnabled: true, bevelThickness: 0.03, bevelSize: 0.03, bevelSegments: 2 }
+);
+const door = new THREE.Mesh(doorGeo, MAT.door);
+door.position.z = 0.04;
+door.castShadow = true;
+doorGroup.add(door);
+
+// plank grooves
+for (let i = -1; i <= 1; i++) {
+  const plank = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.5, 0.04),
+    new THREE.MeshToonMaterial({ color: 0x6d3f24, gradientMap: grad }));
+  plank.position.set(i * 0.36, -0.1, 0.25);
+  doorGroup.add(plank);
+}
+
+// knob
+const knob = new THREE.Mesh(new THREE.SphereGeometry(0.08, 20, 16), MAT.knob);
+knob.position.set(0.4, -0.1, 0.3);
+doorGroup.add(knob);
+
+placeOnStalk(doorGroup, 0, 0.92, -0.02);
+cottage.add(doorGroup);
+
+/* ------------------------------------------------------------------ */
+/*  Two little round windows                                           */
+/* ------------------------------------------------------------------ */
+function makeWindow() {
+  const g = new THREE.Group();
+
+  const glass = new THREE.Mesh(new THREE.CircleGeometry(0.42, 40), MAT.glass);
+  g.add(glass);
+
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.44, 0.075, 16, 44), MAT.winFrame);
+  ring.position.z = 0.02;
+  g.add(ring);
+
+  const mV = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.82, 0.05), MAT.winFrame);
+  mV.position.z = 0.03;
+  g.add(mV);
+  const mH = new THREE.Mesh(new THREE.BoxGeometry(0.82, 0.05, 0.05), MAT.winFrame);
+  mH.position.z = 0.03;
+  g.add(mH);
+
+  g.traverse(o => { if (o.isMesh) o.castShadow = true; });
+  return g;
+}
+
+const winL = makeWindow();
+placeOnStalk(winL, -30, 2.15, 0.05);
+cottage.add(winL);
+
+const winR = makeWindow();
+placeOnStalk(winR, 30, 2.15, 0.05);
+cottage.add(winR);
+
+/* ------------------------------------------------------------------ */
+/*  Ground plane (receives shadows only)                               */
+/* ------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(30, 64),
+  new THREE.ShadowMaterial({ opacity: 0.28 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.02;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------ */
+/*  Lighting: hemisphere fill + key + rim                              */
+/* ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xbcd6ff, 0x4a3a2a, 0.55);
+scene.add(hemi);
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+
+const key = new THREE.DirectionalLight(0xfff2dc, 2.3);
+key.position.set(6.5, 10, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -9;
+key.shadow.camera.right = 9;
+key.shadow.camera.top = 10;
+key.shadow.camera.bottom = -3;
+key.shadow.bias = -0.0004;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0xbfd4ff, 0.55);
+fill.position.set(-7, 4, 3);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.0);
+rim.position.set(-3, 6, -8);
+scene.add(rim);
+
+/* ------------------------------------------------------------------ */
+/*  Controls                                                           */
+/* ------------------------------------------------------------------ */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 2.3, 0);
+controls.minDistance = 6;
+controls.maxDistance = 22;
+controls.maxPolarAngle = Math.PI * 0.52;
+controls.update();
+
+/* ------------------------------------------------------------------ */
+/*  Resize + render loop                                               */
+/* ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

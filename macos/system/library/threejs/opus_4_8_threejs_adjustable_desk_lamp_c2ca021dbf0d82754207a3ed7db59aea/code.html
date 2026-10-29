@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Adjustable Desk Lamp — procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #e3e5e9; }
+  #info {
+    position: fixed; left: 12px; bottom: 10px; z-index: 10;
+    font: 12px/1.4 system-ui, sans-serif; color: #4a4f57;
+    background: rgba(255,255,255,0.6); padding: 6px 10px; border-radius: 6px;
+    pointer-events: none;
+  }
+  canvas { display: block; }
+</style>
+<!-- three.js + OrbitControls loaded ONLY via importmap from jsDelivr CDN -->
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="info">Adjustable desk lamp — drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* =========================================================================
+   Units: millimetres (1 world unit = 1 mm). Real-world desk-lamp proportions.
+   ========================================================================= */
+
+/* -------------------------------------------------------------------------
+   Renderer
+   ------------------------------------------------------------------------- */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+/* -------------------------------------------------------------------------
+   Scene + neutral studio environment (procedural, for metal reflections)
+   ------------------------------------------------------------------------- */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0xe3e5e9);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+/* -------------------------------------------------------------------------
+   Camera (auto-framed later)
+   ------------------------------------------------------------------------- */
+const camera = new THREE.PerspectiveCamera(
+  42, window.innerWidth / window.innerHeight, 1, 8000
+);
+camera.position.set(700, 500, 850);
+
+/* -------------------------------------------------------------------------
+   Lighting: hemisphere fill + directional key (shadows) + subtle fill
+   ------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xffffff, 0x555a60, 0.9);
+hemi.position.set(0, 1000, 0);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xfff4e6, 2.4);
+keyLight.position.set(420, 780, 560);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.bias = -0.0003;
+keyLight.shadow.normalBias = 1.0;
+const sc = keyLight.shadow.camera;
+sc.near = 100; sc.far = 3000;
+sc.left = -800; sc.right = 800; sc.top = 900; sc.bottom = -200;
+sc.updateProjectionMatrix();
+keyLight.target.position.set(0, 200, 60);
+scene.add(keyLight);
+scene.add(keyLight.target);
+
+const fillLight = new THREE.DirectionalLight(0xbcd0ff, 0.5);
+fillLight.position.set(-500, 350, -400);
+scene.add(fillLight);
+
+/* -------------------------------------------------------------------------
+   Ground / soft contact-shadow plane
+   ------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(8000, 8000),
+  new THREE.MeshStandardMaterial({ color: 0xcbced3, roughness: 0.96, metalness: 0.0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* -------------------------------------------------------------------------
+   Materials — matte metal finish per part
+   ------------------------------------------------------------------------- */
+const metalMat = new THREE.MeshStandardMaterial({   // arms + shade shell
+  color: 0x43474d, metalness: 0.85, roughness: 0.52
+});
+const baseMat = new THREE.MeshStandardMaterial({    // heavy weighted base
+  color: 0x34373c, metalness: 0.8, roughness: 0.58
+});
+const jointMat = new THREE.MeshStandardMaterial({   // pivot barrels / bolts
+  color: 0x2c2f33, metalness: 0.9, roughness: 0.4
+});
+const springMat = new THREE.MeshStandardMaterial({  // tension springs (bright steel)
+  color: 0x9aa1a9, metalness: 0.98, roughness: 0.32
+});
+const reflectorMat = new THREE.MeshStandardMaterial({ // painted white shade interior
+  color: 0xf3f1ea, metalness: 0.05, roughness: 0.35, side: THREE.DoubleSide
+});
+const bulbMat = new THREE.MeshStandardMaterial({    // glowing bulb
+  color: 0xfff6df, emissive: 0xffd98a, emissiveIntensity: 2.4,
+  metalness: 0.0, roughness: 0.4
+});
+
+/* -------------------------------------------------------------------------
+   Small geometry helpers
+   ------------------------------------------------------------------------- */
+
+// A round rod (cylinder) standing on the XZ origin, extending +Y by `length`.
+function makeRod(length, radius, mat, name) {
+  const g = new THREE.CylinderGeometry(radius, radius, length, 20);
+  g.translate(0, length / 2, 0);
+  const m = new THREE.Mesh(g, mat);
+  m.name = name;
+  return m;
+}
+
+// A pivot barrel: cylinder lying along the X axis with two bolt caps.
+function makeBarrel(radius, len, name) {
+  const grp = new THREE.Group();
+  grp.name = name;
+  const bg = new THREE.CylinderGeometry(radius, radius, len, 28);
+  bg.rotateZ(Math.PI / 2);
+  const barrel = new THREE.Mesh(bg, jointMat);
+  barrel.name = name + '_barrel';
+  grp.add(barrel);
+  // bolt caps on each end
+  for (const s of [-1, 1]) {
+    const cg = new THREE.CylinderGeometry(radius * 0.55, radius * 0.55, 6, 16);
+    cg.rotateZ(Math.PI / 2);
+    const cap = new THREE.Mesh(cg, jointMat);
+    cap.position.x = s * (len / 2 + 2);
+    cap.name = name + '_cap';
+    grp.add(cap);
+  }
+  return grp;
+}
+
+// A helical curve used to generate a coil spring with TubeGeometry.
+class HelixCurve extends THREE.Curve {
+  constructor(radius, height, turns) {
+    super();
+    this.radius = radius; this.height = height; this.turns = turns;
+  }
+  getPoint(t, target = new THREE.Vector3()) {
+    const a = t * this.turns * Math.PI * 2;
+    return target.set(
+      this.radius * Math.cos(a),
+      t * this.height,
+      this.radius * Math.sin(a)
+    );
+  }
+}
+
+// A coil spring standing on the XZ origin, extending +Y by `height`.
+function makeSpring(radius, height, turns, tube, name) {
+  const g = new THREE.TubeGeometry(
+    new HelixCurve(radius, height, turns),
+    Math.ceil(turns * 16), tube, 8, false
+  );
+  const m = new THREE.Mesh(g, springMat);
+  m.name = name;
+  return m;
+}
+
+/* -------------------------------------------------------------------------
+   Build the lamp — a hierarchy of pivoting groups posed like an anglepoise.
+
+   Frame convention for each arm segment: it grows along local +Y from its
+   pivot (y = 0) up to y = length. Nested groups are rotated about X so the
+   lamp reaches up and forward (+Z), with the shade angled down over a desk.
+   ------------------------------------------------------------------------- */
+const lamp = new THREE.Group();
+lamp.name = 'AdjustableDeskLamp';
+
+// --- key dimensions (mm) ---
+const PIVOT_Y   = 48;    // height of the base pivot above the floor
+const L1        = 300;   // lower arm length
+const L2        = 280;   // upper arm length
+const ROD_R     = 5;     // arm rod radius
+const ROD_GAP   = 24;    // spacing between the twin parallel rods
+
+// --- pose angles (radians, rotation about X) ---
+const A1 = 0.50;                 // lower arm lean forward from vertical
+const A2 = 0.60;                 // upper arm bend, relative to lower arm
+const S  = 0.25;                 // final shade axis tilt from vertical (world)
+const A3 = S - A1 - A2;          // head bend so the shade hangs down-forward
+
+/* ---- 1. Heavy round weighted base ---- */
+const base = new THREE.Group();
+base.name = 'base';
+
+const baseDisc = new THREE.Mesh(
+  new THREE.CylinderGeometry(88, 96, 20, 64), baseMat
+);
+baseDisc.position.y = 10; baseDisc.name = 'baseDisc';
+base.add(baseDisc);
+
+const baseTier = new THREE.Mesh(
+  new THREE.CylinderGeometry(56, 86, 18, 64), baseMat
+);
+baseTier.position.y = 29; baseTier.name = 'baseTier';
+base.add(baseTier);
+
+const baseBoss = new THREE.Mesh(
+  new THREE.CylinderGeometry(20, 26, 14, 40), baseMat
+);
+baseBoss.position.y = 43; baseBoss.name = 'baseBoss';
+base.add(baseBoss);
+
+// felt-like ring under the base (rests on the floor)
+const baseFoot = new THREE.Mesh(
+  new THREE.CylinderGeometry(96, 96, 2, 64),
+  new THREE.MeshStandardMaterial({ color: 0x1c1d20, roughness: 0.95, metalness: 0.0 })
+);
+baseFoot.position.y = 1; baseFoot.name = 'baseFoot';
+base.add(baseFoot);
+
+// little on/off switch knob on the base top
+const knob = new THREE.Mesh(
+  new THREE.CylinderGeometry(7, 7, 8, 24), jointMat
+);
+knob.position.set(40, 40, 24); knob.name = 'switchKnob';
+base.add(knob);
+
+lamp.add(base);
+
+/* ---- 2. Lower arm segment (pivots on the base) ---- */
+const lowerPivot = new THREE.Group();
+lowerPivot.name = 'lowerArmPivot';
+lowerPivot.position.set(0, PIVOT_Y, 0);
+lowerPivot.rotation.x = A1;
+
+lowerPivot.add(makeBarrel(15, ROD_GAP + 16, 'baseJoint'));   // base pivot joint
+// twin parallel rods
+const lRodA = makeRod(L1, ROD_R, metalMat, 'lowerRodA'); lRodA.position.x = -ROD_GAP / 2;
+const lRodB = makeRod(L1, ROD_R, metalMat, 'lowerRodB'); lRodB.position.x =  ROD_GAP / 2;
+lowerPivot.add(lRodA, lRodB);
+// tension spring running up the front of the segment
+const lSpring = makeSpring(10, L1 - 60, 22, 3, 'lowerSpring');
+lSpring.position.set(0, 30, 15);
+lowerPivot.add(lSpring);
+
+/* ---- 3. Upper arm segment (pivots at the elbow) ---- */
+const elbow = new THREE.Group();
+elbow.name = 'elbowPivot';
+elbow.position.set(0, L1, 0);
+elbow.rotation.x = A2;
+
+elbow.add(makeBarrel(15, ROD_GAP + 16, 'elbowJoint'));       // elbow pivot joint
+const uRodA = makeRod(L2, ROD_R, metalMat, 'upperRodA'); uRodA.position.x = -ROD_GAP / 2;
+const uRodB = makeRod(L2, ROD_R, metalMat, 'upperRodB'); uRodB.position.x =  ROD_GAP / 2;
+elbow.add(uRodA, uRodB);
+const uSpring = makeSpring(10, L2 - 60, 20, 3, 'upperSpring');
+uSpring.position.set(0, 30, 15);
+elbow.add(uSpring);
+
+lowerPivot.add(elbow);
+lamp.add(lowerPivot);
+
+/* ---- 4. Head + conical shade (pivots at the top of the upper arm) ---- */
+const head = new THREE.Group();
+head.name = 'headPivot';
+head.position.set(0, L2, 0);
+head.rotation.x = A3;
+
+head.add(makeBarrel(14, ROD_GAP + 12, 'headJoint'));         // head pivot joint
+
+// small ball joint + neck connecting the head to the shade (extends -Y)
+const ballJoint = new THREE.Mesh(new THREE.SphereGeometry(13, 24, 18), jointMat);
+ballJoint.position.y = -16; ballJoint.name = 'ballJoint';
+head.add(ballJoint);
+
+const neck = new THREE.Mesh(new THREE.CylinderGeometry(7, 9, 22, 20), metalMat);
+neck.position.y = -30; neck.name = 'shadeNeck';
+head.add(neck);
+
+// conical shade group (opening faces local -Y = downward)
+const shade = new THREE.Group();
+shade.name = 'shade';
+
+const SHADE_H = 128, SHADE_TOP = 22, SHADE_BOT = 68;
+const shadeShell = new THREE.Mesh(
+  new THREE.CylinderGeometry(SHADE_TOP, SHADE_BOT, SHADE_H, 64, 1, true), metalMat
+);
+shadeShell.name = 'shadeShell';
+shade.add(shadeShell);
+
+// white reflective interior (slightly inset)
+const shadeInner = new THREE.Mesh(
+  new THREE.CylinderGeometry(SHADE_TOP - 1.5, SHADE_BOT - 2, SHADE_H - 3, 64, 1, true),
+  reflectorMat
+);
+shadeInner.name = 'shadeInterior';
+shade.add(shadeInner);
+
+// closed cap on the narrow top of the shade + finial
+const shadeCap = new THREE.Mesh(
+  new THREE.CylinderGeometry(SHADE_TOP, SHADE_TOP + 3, 6, 40), metalMat
+);
+shadeCap.position.y = SHADE_H / 2; shadeCap.name = 'shadeCap';
+shade.add(shadeCap);
+
+const finial = new THREE.Mesh(new THREE.SphereGeometry(7, 20, 16), jointMat);
+finial.position.y = SHADE_H / 2 + 6; finial.name = 'finial';
+shade.add(finial);
+
+// glowing bulb tucked inside the shade
+const bulb = new THREE.Mesh(new THREE.SphereGeometry(18, 24, 18), bulbMat);
+bulb.position.y = SHADE_H / 2 - 34; bulb.name = 'bulb';
+shade.add(bulb);
+
+// warm point light emitted from the bulb (no shadow, subtle glow)
+const bulbLight = new THREE.PointLight(0xffe0a0, 0.6, 900, 2.0);
+bulbLight.position.copy(bulb.position);
+shade.add(bulbLight);
+
+// place shade below the neck, narrow end up
+shade.position.y = -30 - SHADE_H / 2 - 2;
+head.add(shade);
+
+elbow.add(head);
+
+/* ---- assemble ---- */
+scene.add(lamp);
+
+// every solid mesh casts and receives shadows
+lamp.traverse((o) => {
+  if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; }
+});
+
+/* -------------------------------------------------------------------------
+   Center the lamp at the origin and rest it exactly on the ground plane
+   ------------------------------------------------------------------------- */
+{
+  const box = new THREE.Box3().setFromObject(lamp);
+  const center = box.getCenter(new THREE.Vector3());
+  lamp.position.x -= center.x;   // center horizontally
+  lamp.position.z -= center.z;
+  lamp.position.y -= box.min.y;  // drop onto the floor (min.y -> 0)
+}
+
+/* -------------------------------------------------------------------------
+   Auto-frame the camera to the object's bounding box
+   ------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.8;
+controls.minDistance = 200;
+controls.maxDistance = 3000;
+controls.maxPolarAngle = Math.PI * 0.495; // stay above the floor
+
+function frameObject() {
+  const box = new THREE.Box3().setFromObject(lamp);
+  const size = box.getSize(new THREE.Vector3());
+  const center = box.getCenter(new THREE.Vector3());
+
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const fov = camera.fov * Math.PI / 180;
+  let dist = (maxDim / 2) / Math.tan(fov / 2);
+  dist *= 1.5; // padding
+
+  camera.position.set(
+    center.x + dist * 0.75,
+    center.y + dist * 0.45,
+    center.z + dist * 0.95
+  );
+  camera.near = dist / 100;
+  camera.far = dist * 100;
+  camera.updateProjectionMatrix();
+
+  controls.target.copy(center);
+  controls.update();
+}
+frameObject();
+
+/* -------------------------------------------------------------------------
+   Resize handling
+   ------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* -------------------------------------------------------------------------
+   Render loop
+   ------------------------------------------------------------------------- */
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

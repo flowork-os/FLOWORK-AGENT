@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Harbor Docks at Evening</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#20303c}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   HARBOR DOCKS AT EVENING — a working timber quay at golden hour.
+   config/palette -> prng+helpers -> canvas textures -> materials -> builders
+   -> renderer+environment -> assembly -> lighting -> animation -> resize
+   ========================================================================== */
+
+/* ---------- 1. CONFIG & PALETTE ------------------------------------------ */
+const CONFIG = {
+  seed: 730914,
+  shadowRes: 2048,
+  fogColor: 0xb08a6e, fogNear: 75, fogFar: 300,
+  sunDir: new THREE.Vector3(-0.624, 0.242, 0.743).normalize(), // low sun, out over the water
+  dock: { w: 36, d: 20, top: 2.4, cx: -6, cz: -8 }
+};
+const PAL = {
+  timber: 0x8a6f52, timberDark: 0x5d4835, piling: 0x4f4033, tyre: 0x211f1d,
+  steelBlue: 0x3f5966, steelPale: 0x93a5aa, rust: 0x8a4b2c,
+  hullRed: 0x7d3327, cabinCream: 0xd9d2be, deckWood: 0x9c7c52,
+  rope: 0xb39b70, netGreen: 0x35513f, gullWhite: 0xeceae4, gullGrey: 0x8a939a,
+  buoyOrange: 0xd9622b, buoyYellow: 0xe0a83a, lampWarm: 0xffd39a,
+  glass: 0x1d2c33, hill: 0x5c4c41
+};
+
+/* ---------- 2. SEEDED PRNG & GEOMETRY HELPERS ---------------------------- */
+function mulberry32(a){
+  return function(){
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(CONFIG.seed);
+const rr = (a, b) => a + rand() * (b - a);
+const deg = d => d * Math.PI / 180;
+function mk(geo, mat, x = 0, y = 0, z = 0){
+  const m = new THREE.Mesh(geo, mat);
+  m.position.set(x, y, z); m.castShadow = true; m.receiveShadow = true; return m;
+}
+const box = (w, h, d, mat, x, y, z) => mk(new THREE.BoxGeometry(w, h, d), mat, x, y, z);
+const cyl = (rt, rb, h, seg, mat, x, y, z) => mk(new THREE.CylinderGeometry(rt, rb, h, seg), mat, x, y, z);
+const sph = (r, mat, x, y, z) => mk(new THREE.SphereGeometry(r, 16, 12), mat, x, y, z);
+
+/* ---------- 3. PROCEDURAL CANVAS TEXTURES -------------------------------- */
+function canvasTex(w, h, draw, rx = 1, ry = 1){
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 8; return t;
+}
+function grime(ctx, w, h, n, colors, min, max){
+  for (let i = 0; i < n; i++){
+    ctx.fillStyle = colors[Math.floor(rand() * colors.length)];
+    ctx.globalAlpha = rr(0.05, 0.28);
+    ctx.fillRect(rand() * w, rand() * h, rr(min, max), rr(min, max));
+  }
+  ctx.globalAlpha = 1;
+}
+const TEX = {};
+TEX.sky = canvasTex(1024, 512, (c, w, h) => {          // equirectangular golden sky
+  const g = c.createLinearGradient(0, 0, 0, h);
+  g.addColorStop(0.00, '#22375e'); g.addColorStop(0.24, '#4d5c82'); g.addColorStop(0.40, '#a98180');
+  g.addColorStop(0.47, '#e7a568'); g.addColorStop(0.52, '#ffd08e'); g.addColorStop(0.56, '#c9906a');
+  g.addColorStop(0.70, '#736c66'); g.addColorStop(1.00, '#33404a');
+  c.fillStyle = g; c.fillRect(0, 0, w, h);
+  for (const cx of [882, -142]){                                 // the low sun (wraps at the seam)
+    const s = c.createRadialGradient(cx, 216, 0, cx, 216, 210);
+    s.addColorStop(0, '#fff8e2'); s.addColorStop(0.14, '#ffd99e');
+    s.addColorStop(0.5, 'rgba(240,164,94,0.35)'); s.addColorStop(1, 'rgba(220,140,80,0)');
+    c.fillStyle = s; c.fillRect(cx - 215, 6, 430, 424);
+  }
+  c.globalAlpha = 0.28; c.fillStyle = '#f6d9b4';                  // stratus banding
+  for (let i = 0; i < 26; i++){
+    c.beginPath(); c.ellipse(rand() * w, rr(140, 246), rr(60, 260), rr(3, 11), 0, 0, 6.283); c.fill();
+  }
+  c.globalAlpha = 1;
+});
+TEX.sky.mapping = THREE.EquirectangularReflectionMapping;
+TEX.plank = canvasTex(512, 512, (c, w, h) => {         // weathered deck planking
+  c.fillStyle = '#8a6f52'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 8; i++){
+    const y = i * 64;
+    c.fillStyle = ['#9a7f5e', '#7d6448', '#a58a66', '#6f5940'][i % 4];
+    c.fillRect(0, y, w, 61);
+    c.fillStyle = '#463829'; c.fillRect(0, y + 61, w, 3);
+    c.globalAlpha = 0.32; c.strokeStyle = '#5c4a35'; c.lineWidth = 1.2;
+    for (let k = 0; k < 14; k++){                      // long grain streaks
+      c.beginPath(); c.moveTo(rand() * w, y + rr(4, 56)); c.lineTo(rand() * w, y + rr(4, 56)); c.stroke();
+    }
+    c.globalAlpha = 1; c.fillStyle = '#3d3125';
+    for (let k = 0; k < 4; k++) c.fillRect(rr(20, w - 20), y + rr(8, 48), 4, 4);   // bolt heads
+  }
+  grime(c, w, h, 900, ['#b9a582', '#5a4835', '#cbbb99'], 3, 12);
+}, 6, 4);
+TEX.corrugated = canvasTex(256, 256, (c, w, h) => {    // ribbed warehouse siding
+  for (let x = 0; x < w; x += 16){
+    const g = c.createLinearGradient(x, 0, x + 16, 0);
+    g.addColorStop(0, '#5c6a6c'); g.addColorStop(0.45, '#98a6a6'); g.addColorStop(1, '#4c5859');
+    c.fillStyle = g; c.fillRect(x, 0, 16, h);
+  }
+  c.globalAlpha = 0.5; c.fillStyle = '#7d4526';        // rust weeping down the ribs
+  for (let i = 0; i < 40; i++) c.fillRect(rand() * w, rr(0, h * 0.6), rr(2, 6), rr(20, 130));
+  c.globalAlpha = 1;
+  grime(c, w, h, 500, ['#3f4a4b', '#a9b4b2', '#6d4128'], 2, 9);
+}, 5, 2);
+TEX.hull = canvasTex(512, 256, (c, w, h) => {          // painted, streaked steel plating
+  c.fillStyle = '#2f5b52'; c.fillRect(0, 0, w, h);
+  grime(c, w, h, 1400, ['#24473f', '#3d6f64', '#153029'], 3, 14);
+  c.globalAlpha = 0.55; c.fillStyle = '#7d3f21';
+  for (let i = 0; i < 44; i++) c.fillRect(rand() * w, rr(0, h * 0.5), rr(2, 7), rr(18, 90));
+  c.globalAlpha = 0.28; c.fillStyle = '#101c1a';
+  for (let i = 0; i < 5; i++) c.fillRect(0, i * 52 + 24, w, 3);   // plate seams
+  c.globalAlpha = 1;
+}, 3, 1);
+TEX.crate = canvasTex(256, 256, (c, w, h) => {         // stencilled timber crate
+  c.fillStyle = '#9d7c4d'; c.fillRect(0, 0, w, h);
+  for (let i = 0; i < 5; i++){ c.fillStyle = i % 2 ? '#8d6e42' : '#a98a58'; c.fillRect(0, i * 52, w, 48); }
+  c.strokeStyle = '#6a5231'; c.lineWidth = 7; c.strokeRect(4, 4, w - 8, h - 8);
+  c.beginPath(); c.moveTo(6, 6); c.lineTo(w - 6, h - 6); c.stroke();
+  c.fillStyle = '#3b3226'; c.font = 'bold 32px sans-serif'; c.textAlign = 'center';
+  c.fillText('CATCH', w / 2, 118); c.fillText('No. 14', w / 2, 156);
+  grime(c, w, h, 400, ['#6d552f', '#c0a274'], 3, 10);
+});
+TEX.rust = canvasTex(256, 256, (c, w, h) => {
+  c.fillStyle = '#8a4b2c'; c.fillRect(0, 0, w, h);
+  grime(c, w, h, 2200, ['#5a3018', '#b2703f', '#3a2314', '#c98a53'], 3, 14);
+}, 2, 1);
+TEX.net = canvasTex(128, 128, (c, w, h) => {           // netting with real holes
+  c.clearRect(0, 0, w, h); c.strokeStyle = '#d2dccf'; c.lineWidth = 4;
+  for (let i = 0; i <= 8; i++){
+    const p = i * 16;
+    c.beginPath(); c.moveTo(p, 0); c.lineTo(p, h); c.moveTo(0, p); c.lineTo(w, p); c.stroke();
+  }
+}, 5, 3);
+TEX.waterNorm = canvasTex(512, 512, (c, w, h) => {     // procedural ripple normal map
+  const img = c.createImageData(w, h), ph = [rr(0, 9), rr(0, 9), rr(0, 9), rr(0, 9)];
+  const hf = (x, y) => Math.sin(x * 0.09 + ph[0]) * Math.cos(y * 0.07 + ph[1]) * 0.6
+    + Math.sin((x + y) * 0.16 + ph[2]) * 0.3 + Math.cos(x * 0.23 - y * 0.19 + ph[3]) * 0.16;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++){
+    const i = (y * w + x) * 4;
+    const nx = (hf(x + 1, y) - hf(x - 1, y)) * 0.5, ny = (hf(x, y + 1) - hf(x, y - 1)) * 0.5;
+    const L = Math.hypot(nx, ny, 1);
+    img.data[i] = (-nx / L * 0.5 + 0.5) * 255; img.data[i + 1] = (-ny / L * 0.5 + 0.5) * 255;
+    img.data[i + 2] = (1 / L * 0.5 + 0.5) * 255; img.data[i + 3] = 255;
+  }
+  c.putImageData(img, 0, 0);
+}, 24, 24);
+TEX.waterNorm.colorSpace = THREE.NoColorSpace;
+TEX.glow = canvasTex(128, 128, (c, w, h) => {
+  const g = c.createRadialGradient(64, 64, 0, 64, 64, 64);
+  g.addColorStop(0, 'rgba(255,235,196,1)'); g.addColorStop(0.35, 'rgba(255,190,120,0.5)');
+  g.addColorStop(1, 'rgba(255,170,90,0)'); c.fillStyle = g; c.fillRect(0, 0, w, h);
+});
+
+/* ---------- 4. MATERIAL PALETTE ------------------------------------------ */
+const std = (o) => new THREE.MeshStandardMaterial(Object.assign({ envMapIntensity: 0.85 }, o));
+const MAT = {
+  water: std({ color: 0x224651, roughness: 0.1, metalness: 0.9, envMapIntensity: 1.7,
+    normalMap: TEX.waterNorm, normalScale: new THREE.Vector2(0.45, 0.45) }),
+  plank: std({ map: TEX.plank, roughness: 0.92 }),
+  timber: std({ color: PAL.timber, roughness: 0.94 }),
+  timberDark: std({ color: PAL.timberDark, roughness: 0.95 }),
+  piling: std({ color: PAL.piling, roughness: 0.98 }),
+  tyre: std({ color: PAL.tyre, roughness: 0.96 }),
+  corrugated: std({ map: TEX.corrugated, roughness: 0.7, metalness: 0.45 }),
+  steel: std({ color: PAL.steelBlue, roughness: 0.55, metalness: 0.75 }),
+  steelPale: std({ color: PAL.steelPale, roughness: 0.5, metalness: 0.6 }),
+  rust: std({ map: TEX.rust, roughness: 0.95, metalness: 0.2 }),
+  rustPlain: std({ color: PAL.rust, roughness: 0.95, metalness: 0.2 }),
+  hull: std({ map: TEX.hull, roughness: 0.62, metalness: 0.35 }),
+  hullRed: std({ color: PAL.hullRed, roughness: 0.8, metalness: 0.2 }),
+  cabin: std({ color: PAL.cabinCream, roughness: 0.62 }),
+  deckWood: std({ color: PAL.deckWood, roughness: 0.9 }),
+  crate: std({ map: TEX.crate, roughness: 0.9 }),
+  rope: std({ color: PAL.rope, roughness: 0.95 }),
+  net: std({ map: TEX.net, color: PAL.netGreen, roughness: 0.95,
+    transparent: true, alphaTest: 0.4, side: THREE.DoubleSide }),
+  gull: std({ color: PAL.gullWhite, roughness: 0.75 }),
+  gullGrey: std({ color: PAL.gullGrey, roughness: 0.8 }),
+  beak: std({ color: 0xe0a13a, roughness: 0.6 }),
+  buoyA: std({ color: PAL.buoyOrange, roughness: 0.55 }),
+  buoyB: std({ color: PAL.buoyYellow, roughness: 0.55 }),
+  glass: std({ color: PAL.glass, roughness: 0.1, metalness: 0.5, emissive: 0xffb469, emissiveIntensity: 0.55 }),
+  lamp: std({ color: 0x2e2a26, emissive: PAL.lampWarm, emissiveIntensity: 2.2, roughness: 0.5 }),
+  hill: std({ color: PAL.hill, roughness: 1.0 })
+};
+
+/* ---------- 5. BUILDERS -------------------------------------------------- */
+// 5a. Open harbour water: a wide swelling plane driven from the render loop.
+function buildWater(){
+  const geo = new THREE.PlaneGeometry(460, 460, 64, 64);
+  geo.rotateX(-Math.PI / 2);
+  const m = new THREE.Mesh(geo, MAT.water);
+  m.receiveShadow = true; return m;
+}
+
+// 5b. The timber quay: decking, edge beams, pilings, ladder and tyre fenders.
+function buildDock(){
+  const g = new THREE.Group(), W = CONFIG.dock.w, D = CONFIG.dock.d, T = CONFIG.dock.top;
+  g.add(box(W, 0.44, D, MAT.plank, 0, T - 0.22, 0),
+    box(W + 0.5, 0.62, 0.7, MAT.timberDark, 0, T - 0.74, D / 2 - 0.1),
+    box(W + 0.5, 0.62, 0.7, MAT.timberDark, 0, T - 0.74, -D / 2 + 0.1),
+    box(0.7, 0.62, D, MAT.timberDark, -W / 2 + 0.1, T - 0.74, 0),
+    box(0.7, 0.62, D, MAT.timberDark, W / 2 - 0.1, T - 0.74, 0));
+  for (let i = 0; i <= 7; i++){                        // piling bents under the deck
+    const x = -W / 2 + 2.2 + i * ((W - 4.4) / 7);
+    for (const z of [D / 2 - 1.2, -1.5, -D / 2 + 1.6]) g.add(cyl(0.3, 0.36, 7.2, 10, MAT.piling, x, -1.1, z));
+    g.add(box(0.34, 0.3, D - 2, MAT.timberDark, x, 1.9, 0));
+  }
+  for (const x of [-14, -5.5, 3, 12]){                 // tall mooring piles for the gulls
+    g.add(cyl(0.36, 0.42, 8.4, 10, MAT.piling, x, 0.4, D / 2 + 0.9),
+      cyl(0.44, 0.44, 0.2, 10, MAT.timberDark, x, 4.65, D / 2 + 0.9));
+  }
+  const ladder = new THREE.Group();                    // quay ladder down to the water
+  for (let i = 0; i < 7; i++) ladder.add(cyl(0.05, 0.05, 0.7, 6, MAT.steel, 0, i * 0.42, 0).rotateZ(Math.PI / 2));
+  ladder.add(box(0.07, 3.0, 0.07, MAT.steel, -0.33, 1.2, 0), box(0.07, 3.0, 0.07, MAT.steel, 0.33, 1.2, 0));
+  ladder.position.set(8.5, -0.6, D / 2 + 0.35); g.add(ladder);
+  for (const x of [-11, 0, 9]){                        // hanging tyre fenders
+    const t = mk(new THREE.TorusGeometry(0.46, 0.17, 8, 16), MAT.tyre, x, 1.0, D / 2 + 0.5);
+    g.add(t, cyl(0.03, 0.03, 0.9, 6, MAT.rope, x, 1.75, D / 2 + 0.5));
+  }
+  return g;
+}
+
+// 5c. Corrugated warehouse with a roller shutter and lit office windows.
+function buildWarehouse(){
+  const g = new THREE.Group(), W = 15, H = 5.4, D = 10;
+  g.add(box(W, H, D, MAT.corrugated, 0, H / 2, 0),
+    box(W + 0.5, 0.3, D + 0.5, MAT.rustPlain, 0, H + 0.15, 0),
+    box(6.0, 4.2, 0.22, MAT.steelPale, -2.6, 2.1, D / 2 + 0.06),     // roller shutter
+    box(6.4, 0.4, 0.5, MAT.rustPlain, -2.6, 4.4, D / 2 + 0.14));
+  for (const s of [-1, 1]){                            // shallow gable roof
+    const p = box(W + 0.8, 0.24, D / 2 + 0.9, MAT.corrugated, 0, H + 0.9, s * (D / 4 + 0.2));
+    p.rotation.x = s * deg(11); g.add(p);
+  }
+  g.add(box(W + 0.9, 0.3, 0.4, MAT.rustPlain, 0, H + 1.62, 0));
+  for (let i = 0; i < 3; i++){                         // office windows, lights on
+    const x = 3.6 + (i - 1) * 2.2;
+    g.add(box(1.7, 1.1, 0.16, MAT.glass, x, 3.5, D / 2 + 0.06),
+      box(1.95, 0.16, 0.32, MAT.rustPlain, x, 4.15, D / 2 + 0.14));
+  }
+  g.add(box(7.4, 1.2, 0.24, MAT.timberDark, -2.6, 5.9, D / 2 - 0.5));
+  for (const s of [-1, 1]) g.add(cyl(0.14, 0.14, 1.1, 8, MAT.rustPlain, s * 5.6, H + 1.9, -1.5));
+  const lamp = box(0.62, 0.26, 0.5, MAT.lamp, 0, 4.86, D / 2 + 0.32); lamp.castShadow = false;
+  g.add(lamp, box(0.86, 0.2, 0.7, MAT.rustPlain, 0, 5.06, D / 2 + 0.32));
+  return g;
+}
+
+// 5d. The moored trawler — hull, wheelhouse, mast, standing rigging, net drum.
+function buildTrawler(){
+  const g = new THREE.Group();
+  const plan = new THREE.Shape();                      // deck outline, bow toward +x
+  plan.moveTo(-8.0, -2.4); plan.lineTo(5.2, -2.4);
+  plan.quadraticCurveTo(8.2, -1.3, 9.0, 0);
+  plan.quadraticCurveTo(8.2, 1.3, 5.2, 2.4);
+  plan.lineTo(-8.0, 2.4); plan.quadraticCurveTo(-9.3, 0, -8.0, -2.4);
+  const hullGeo = new THREE.ExtrudeGeometry(plan, { depth: 2.6, bevelEnabled: true,
+    bevelThickness: 0.7, bevelSize: 0.6, bevelSegments: 2 });
+  hullGeo.rotateX(-Math.PI / 2);                       // cap group renders as deck planking
+  g.add(mk(hullGeo, [MAT.deckWood, MAT.hull], 0, -1.15, 0));
+  const bootGeo = new THREE.ExtrudeGeometry(plan, { depth: 0.8, bevelEnabled: false });
+  bootGeo.rotateX(-Math.PI / 2);
+  const boot = mk(bootGeo, MAT.hullRed, 0, -0.85, 0); boot.scale.set(1.024, 1, 1.024);
+  const strakeGeo = new THREE.ExtrudeGeometry(plan, { depth: 0.22, bevelEnabled: false });
+  strakeGeo.rotateX(-Math.PI / 2);
+  const strake = mk(strakeGeo, MAT.cabin, 0, 1.43, 0); strake.scale.set(1.03, 1, 1.03);
+  g.add(boot, strake);
+  for (let i = 0; i < 8; i++){                          // deck rail stanchions and wires
+    const x = -7 + i * 2;
+    for (const z of [-1.66, 1.66]) g.add(cyl(0.045, 0.045, 0.62, 6, MAT.steelPale, x, 2.46, z));
+  }
+  const railMat = new THREE.LineBasicMaterial({ color: 0xb9c2c2 });
+  for (const z of [-1.66, 1.66]) for (const y of [2.5, 2.74]){
+    const pts = [new THREE.Vector3(-7, y, z), new THREE.Vector3(7, y, z)];
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), railMat));
+  }
+  // Wheelhouse aft, warm glazing, signal mast and nav light
+  g.add(box(4.4, 2.3, 3.4, MAT.cabin, -4.6, 3.3, 0),
+    box(4.7, 0.24, 3.7, MAT.steelPale, -4.6, 4.56, 0),
+    box(3.0, 1.0, 2.8, MAT.cabin, -4.6, 5.16, 0),
+    box(4.2, 0.9, 0.12, MAT.glass, -4.6, 3.8, 1.72),
+    box(0.12, 0.9, 3.0, MAT.glass, -2.44, 3.8, 0),
+    box(0.12, 0.9, 3.0, MAT.glass, -6.76, 3.8, 0),
+    cyl(0.07, 0.07, 2.4, 8, MAT.steelPale, -4.6, 6.86, 0),
+    box(0.9, 0.1, 0.1, MAT.steelPale, -4.6, 7.66, 0));
+  const navLight = sph(0.14, MAT.lamp, -4.6, 8.1, 0); navLight.castShadow = false; g.add(navLight);
+  // Foremast, derrick boom and standing rigging
+  g.add(cyl(0.13, 0.19, 9.2, 10, MAT.steelPale, 2.2, 6.75, 0),
+    box(2.4, 0.12, 0.12, MAT.steelPale, 2.2, 9.85, 0));
+  const boom = cyl(0.12, 0.15, 6.4, 8, MAT.steelPale, -0.4, 5.8, 0);
+  boom.rotation.z = deg(58); g.add(boom);
+  const rigMat = new THREE.LineBasicMaterial({ color: 0x2c2620 });
+  for (const e of [[8.4, 2.3, 0], [-8.4, 2.4, 0], [1.4, 2.6, 1.7], [3.0, 2.6, -1.7], [-4.6, 5.7, 0]]){
+    const pts = [new THREE.Vector3(2.2, 11.25, 0), new THREE.Vector3(e[0], e[1], e[2])];
+    g.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), rigMat));
+  }
+  // Net drum with hauled netting, fish crates, bow winch and hull fenders
+  const drum = cyl(0.85, 0.85, 3.0, 14, MAT.rustPlain, -1.4, 3.0, 0); drum.rotation.x = Math.PI / 2;
+  const netWrap = cyl(1.16, 1.16, 2.7, 16, MAT.net, -1.4, 3.0, 0); netWrap.rotation.x = Math.PI / 2;
+  g.add(drum, netWrap, box(0.3, 1.7, 3.4, MAT.rustPlain, -1.4, 2.6, 0));
+  for (const x of [4.3, 5.9]) g.add(box(1.2, 0.55, 1.3, MAT.crate, x, 2.43, rr(-0.5, 0.5)));
+  g.add(cyl(0.28, 0.3, 0.7, 10, MAT.rustPlain, 7.3, 2.5, 0),
+    box(0.9, 0.5, 1.9, MAT.timberDark, 0.6, 2.4, 0));              // deck hatch
+  for (const z of [-2.55, 2.55]) for (const x of [-6.5, -2.0, 3.0]){
+    const t = mk(new THREE.TorusGeometry(0.4, 0.15, 8, 14), MAT.tyre, x, 0.7, z);
+    t.rotation.y = Math.PI / 2; g.add(t);
+  }
+  return g;
+}
+
+// 5e. Dockside lattice crane with a slewing jib and a swinging hook.
+function buildCrane(){
+  const g = new THREE.Group(), H = 8.6;
+  for (const sx of [-1, 1]) for (const sz of [-1, 1]) g.add(cyl(0.11, 0.14, H, 6, MAT.rustPlain, sx * 0.85, H / 2, sz * 0.85));
+  for (let i = 1; i <= 5; i++){                        // rungs and cross bracing
+    const y = i * H / 6;
+    g.add(box(1.8, 0.1, 0.1, MAT.rustPlain, 0, y, 0.85), box(1.8, 0.1, 0.1, MAT.rustPlain, 0, y, -0.85),
+      box(0.1, 0.1, 1.8, MAT.rustPlain, 0.85, y, 0), box(0.1, 0.1, 1.8, MAT.rustPlain, -0.85, y, 0));
+    const br = box(2.3, 0.08, 0.08, MAT.rustPlain, 0, y - H / 12, 0.85);
+    br.rotation.z = deg(i % 2 ? 40 : -40); g.add(br);
+  }
+  g.add(box(2.6, 0.3, 2.6, MAT.steel, 0, H + 0.15, 0), box(2.0, 1.5, 2.2, MAT.rust, -0.4, H + 1.05, 0),
+    box(1.5, 0.9, 0.12, MAT.glass, 0.66, H + 1.2, 0));
+  const jib = new THREE.Group();
+  const arm = cyl(0.13, 0.2, 12.5, 6, MAT.rustPlain, 0, H + 2.9, 5.4); arm.rotation.x = deg(76);
+  const tie = cyl(0.05, 0.05, 9.6, 6, MAT.steelPale, 0, H + 3.6, 3.8); tie.rotation.x = deg(112);
+  jib.add(arm, tie, cyl(0.09, 0.09, 2.4, 6, MAT.rustPlain, 0, H + 1.9, 0));
+  const hook = new THREE.Group();
+  const claw = mk(new THREE.TorusGeometry(0.34, 0.09, 8, 14, 4.4), MAT.rust, 0, -0.6, 0);
+  claw.rotation.x = Math.PI / 2;
+  hook.add(cyl(0.03, 0.03, 4.2, 6, MAT.steelPale, 0, 2.1, 0), box(0.42, 0.5, 0.42, MAT.rust, 0, -0.1, 0), claw);
+  hook.position.set(0, 9.0, 11.3); jib.add(hook); g.add(jib);
+  return { group: g, jib, hook };
+}
+
+// 5f. Deck props: crate stacks, lobster traps, bollards, rope coils.
+function buildCrateStack(n){
+  const g = new THREE.Group();
+  let y = 0;
+  for (let i = 0; i < n; i++){
+    const w = rr(1.4, 1.9), h = rr(0.7, 1.0), d = rr(1.1, 1.5);
+    const c = box(w, h, d, MAT.crate, rr(-0.18, 0.18), y + h / 2, rr(-0.18, 0.18));
+    c.rotation.y = rr(-0.28, 0.28); g.add(c); y += h;
+  }
+  return g;
+}
+function buildLobsterTrap(){
+  const g = new THREE.Group();
+  g.add(box(1.5, 0.72, 1.0, MAT.net, 0, 0.36, 0),
+    box(1.6, 0.09, 0.14, MAT.timberDark, 0, 0.05, 0.36), box(1.6, 0.09, 0.14, MAT.timberDark, 0, 0.05, -0.36),
+    box(1.6, 0.08, 0.12, MAT.timberDark, 0, 0.72, 0));
+  return g;
+}
+function buildBollard(){
+  const g = new THREE.Group();
+  g.add(cyl(0.24, 0.32, 0.85, 12, MAT.steel, 0, 0.43, 0), sph(0.26, MAT.steel, 0, 0.88, 0),
+    cyl(0.4, 0.44, 0.12, 12, MAT.steel, 0, 0.06, 0));
+  return g;
+}
+function buildRopeCoil(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++){
+    const t = mk(new THREE.TorusGeometry(0.52 - i * 0.09, 0.085, 7, 18), MAT.rope,
+      rr(-0.05, 0.05), 0.09 + i * 0.15, rr(-0.05, 0.05));
+    t.rotation.x = Math.PI / 2; t.rotation.z = rand() * 6.283; g.add(t);
+  }
+  return g;
+}
+
+// 5g. Wildlife and floats: perched gulls, bobbing buoys, quay lamps, far hills.
+function buildGull(){
+  const g = new THREE.Group();
+  const body = sph(0.22, MAT.gull, 0, 0.24, 0); body.scale.set(1.6, 0.95, 0.9);
+  const head = sph(0.12, MAT.gull, 0.26, 0.42, 0);
+  const tail = mk(new THREE.ConeGeometry(0.12, 0.34, 6), MAT.gullGrey, -0.42, 0.26, 0);
+  tail.rotation.z = deg(96);
+  const beak = mk(new THREE.ConeGeometry(0.045, 0.18, 6), MAT.beak, 0.4, 0.41, 0);
+  beak.rotation.z = deg(-90); head.add(beak);
+  const wings = [];
+  for (const s of [-1, 1]){                            // pivoted so they can flap
+    const pivot = new THREE.Group(); pivot.position.set(-0.05, 0.3, s * 0.1);
+    const w = sph(0.2, MAT.gullGrey, -0.02, 0, s * 0.28); w.scale.set(1.45, 0.22, 1.5);
+    pivot.add(w); g.add(pivot); wings.push(pivot);
+  }
+  g.add(body, head, tail);
+  for (const s of [-1, 1]) g.add(cyl(0.02, 0.02, 0.16, 5, MAT.beak, 0.02, 0.06, s * 0.07));
+  return { group: g, head, wings };
+}
+function buildBuoy(kind){
+  const g = new THREE.Group();
+  const f = sph(0.42, kind ? MAT.buoyA : MAT.buoyB, 0, 0, 0); f.scale.y = 1.25;
+  const band = mk(new THREE.TorusGeometry(0.38, 0.055, 7, 16), MAT.timberDark, 0, 0.09, 0);
+  band.rotation.x = Math.PI / 2;
+  g.add(f, band, cyl(0.04, 0.04, 1.0, 6, MAT.steelPale, 0, 0.92, 0),
+    sph(0.11, kind ? MAT.buoyB : MAT.buoyA, 0, 1.46, 0));
+  return g;
+}
+// 5h. A clinker dinghy tied off below the quay ladder.
+function buildDinghy(){
+  const g = new THREE.Group();
+  const plan = new THREE.Shape();
+  plan.moveTo(-1.6, -0.72); plan.lineTo(1.0, -0.72);
+  plan.quadraticCurveTo(1.75, -0.38, 2.0, 0);
+  plan.quadraticCurveTo(1.75, 0.38, 1.0, 0.72);
+  plan.lineTo(-1.6, 0.72); plan.quadraticCurveTo(-1.95, 0, -1.6, -0.72);
+  const geo = new THREE.ExtrudeGeometry(plan, { depth: 0.86, bevelEnabled: true,
+    bevelThickness: 0.34, bevelSize: 0.3, bevelSegments: 2 });
+  geo.rotateX(-Math.PI / 2);
+  g.add(mk(geo, [MAT.deckWood, MAT.timber], 0, -0.62, 0));       // open sole, planked sides
+  for (const x of [-0.9, 0.4]) g.add(box(0.14, 0.13, 1.2, MAT.timberDark, x, 0.6, 0));
+  const oar = cyl(0.04, 0.04, 2.4, 6, MAT.timber, -0.2, 0.66, 0.24);
+  oar.rotation.set(0, deg(14), deg(84)); g.add(oar, box(0.32, 0.05, 0.14, MAT.timber, 0.85, 0.66, 0.54));
+  return g;
+}
+// 5i. Bait shack, pallet of fish boxes and a life ring on the quay.
+function buildBaitShack(){
+  const g = new THREE.Group();
+  g.add(box(3.8, 2.6, 3.2, MAT.timber, 0, 1.3, 0), box(1.0, 1.9, 0.12, MAT.timberDark, -0.9, 0.95, 1.62),
+    box(1.1, 0.9, 0.12, MAT.glass, 1.0, 1.7, 1.62));
+  for (const s of [-1, 1]){
+    const p = box(4.3, 0.16, 2.0, MAT.timberDark, 0, 3.0, s * 0.86);
+    p.rotation.x = s * deg(16); g.add(p);
+  }
+  const lamp = sph(0.14, MAT.lamp, 0, 2.5, 1.75); lamp.castShadow = false;
+  g.add(box(4.4, 0.14, 0.24, MAT.timberDark, 0, 3.28, 0), lamp);
+  return g;
+}
+function buildFishBoxes(){
+  const g = new THREE.Group();
+  g.add(box(1.6, 0.16, 1.2, MAT.timberDark, 0, 0.08, 0));      // pallet
+  for (let i = 0; i < 5; i++){
+    const b = box(1.35, 0.28, 1.0, i % 2 ? MAT.buoyB : MAT.steelPale, rr(-0.09, 0.09), 0.3 + i * 0.3, rr(-0.07, 0.07));
+    b.rotation.y = rr(-0.12, 0.12); g.add(b);
+  }
+  return g;
+}
+function buildLifeRing(){
+  const g = new THREE.Group();
+  g.add(cyl(0.07, 0.09, 1.7, 8, MAT.timberDark, 0, 0.85, 0));
+  for (let i = 0; i < 4; i++){
+    const q = mk(new THREE.TorusGeometry(0.42, 0.1, 8, 10, Math.PI / 2), i % 2 ? MAT.gull : MAT.buoyA, 0, 1.5, 0.12);
+    q.rotation.z = i * Math.PI / 2; g.add(q);
+  }
+  return g;
+}
+function buildLampPost(){
+  const g = new THREE.Group();
+  const bulb = sph(0.17, MAT.lamp, 0.8, 4.62, 0); bulb.castShadow = false;
+  g.add(cyl(0.11, 0.16, 5.0, 8, MAT.steel, 0, 2.5, 0), box(0.9, 0.1, 0.1, MAT.steel, 0.4, 4.98, 0),
+    mk(new THREE.ConeGeometry(0.42, 0.4, 10), MAT.steel, 0.8, 4.84, 0), bulb);
+  return g;
+}
+function buildHill(w, h){
+  const m = cyl(w * 0.28, w, h, 7, MAT.hill, 0, h / 2, 0);
+  m.rotation.y = rand() * 6.283; m.castShadow = false; return m;
+}
+
+/* ---------- 6. RENDERER & IMAGE-BASED ENVIRONMENT ------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.0;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = TEX.sky;
+scene.fog = new THREE.Fog(CONFIG.fogColor, CONFIG.fogNear, CONFIG.fogFar);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromEquirectangular(TEX.sky).texture;   // golden sky lights + reflects
+pmrem.dispose();
+
+/* ---------- 7. SCENE ASSEMBLY -------------------------------------------- */
+const DX = CONFIG.dock.cx, DZ = CONFIG.dock.cz, DECK = CONFIG.dock.top;
+const EDGE = DZ + CONFIG.dock.d / 2, BOAT_Z = EDGE + 4.6;
+const water = buildWater();
+const dock = buildDock(); dock.position.set(DX, 0, DZ);
+const warehouse = buildWarehouse(); warehouse.position.set(-15, DECK, -12);
+const crane = buildCrane(); crane.group.position.set(8, DECK, -11);
+const trawler = buildTrawler(); trawler.position.set(-4, 0, BOAT_Z);
+scene.add(water, dock, warehouse, crane.group, trawler);
+
+for (const x of [-19, 6]){
+  const lp = buildLampPost(); lp.position.set(x, DECK, EDGE - 2.6); scene.add(lp);
+}
+for (const [x, z, n] of [[-2.0, -13.5, 3], [1.6, -15.6, 2], [-5.2, -11.6, 3]]){
+  const st = buildCrateStack(n); st.position.set(x, DECK, z); scene.add(st);
+}
+for (let i = 0; i < 9; i++){                            // lobster traps stacked on the quay
+  const col = Math.floor(i / 3), t = buildLobsterTrap();
+  t.position.set(-13.6 + col * 2.1, DECK + (i % 3) * 0.74, -3.4 + col * 0.5);
+  t.rotation.y = rr(-0.2, 0.2); scene.add(t);
+}
+const shack = buildBaitShack(); shack.position.set(9.5, DECK, -15.4); shack.rotation.y = deg(-14);
+const ring = buildLifeRing(); ring.position.set(-6.2, DECK, EDGE - 0.7);
+const dinghy = buildDinghy(); dinghy.position.set(9.8, 0, EDGE + 2.6); dinghy.rotation.y = deg(9);
+scene.add(shack, ring, dinghy);
+for (const [x, z] of [[3.2, -6.4], [-19.5, -3.0], [-17.4, -4.6]]){
+  const fb = buildFishBoxes(); fb.position.set(x, DECK, z); fb.rotation.y = rr(-0.4, 0.4); scene.add(fb);
+}
+const gangway = box(1.1, 0.12, 4.4, MAT.deckWood, -6.0, 2.3, EDGE + 1.7);
+gangway.rotation.x = deg(4); scene.add(gangway);
+for (const x of [-18, -9, 0, 10]){
+  const b = buildBollard(); b.position.set(x, DECK, EDGE - 1.1); scene.add(b);
+}
+for (const [x, z] of [[-16.5, -4.4], [-3.4, -5.8], [4.6, -3.4], [10.5, -9.0]]){
+  const c = buildRopeCoil(); c.position.set(x, DECK, z); c.rotation.y = rand() * 6.283; scene.add(c);
+}
+const gulls = [];
+for (const [x, y, z, ry] of [[-20, 4.75, EDGE + 0.9, 2.1], [-11.5, 4.75, EDGE + 0.9, -1.3],
+  [6, 4.75, EDGE + 0.9, 0.6], [-15, 9.42, -12, -2.4]]){
+  const gl = buildGull(); gl.group.position.set(x, y, z); gl.group.rotation.y = ry;
+  scene.add(gl.group); gulls.push(gl);
+}
+const flyers = [];
+for (let i = 0; i < 3; i++){                            // gulls wheeling over the basin
+  const gl = buildGull(); gl.group.scale.setScalar(1.15);
+  gl.userData = { r: rr(20, 31), y: rr(11, 16), ph: rr(0, 6.283), sp: rr(0.1, 0.17) };
+  scene.add(gl.group); flyers.push(gl);
+}
+const buoys = [];
+for (let i = 0; i < 7; i++){
+  const b = buildBuoy(i % 2);
+  b.userData = { ph: rr(0, 6.283), sp: rr(0.5, 0.95) };
+  b.position.set(rr(-28, 16), 0, rr(11, 24)); scene.add(b); buoys.push(b);
+}
+for (const [x, z] of [[-23, -14], [-2, -16.8], [10.5, -15]]){        // oil drums
+  const d = cyl(0.44, 0.44, 1.2, 14, MAT.rust, x, DECK + 0.6, z);
+  d.rotation.y = rand() * 6.283; scene.add(d);
+}
+for (const [bx, sx] of [[-9, -11.6], [0, -1.4]]){       // mooring lines to the bollards
+  const curve = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(bx, DECK + 0.7, EDGE - 1.1),
+    new THREE.Vector3((bx + sx) / 2, DECK - 0.55, (EDGE + BOAT_Z) / 2),
+    new THREE.Vector3(sx, 1.7, BOAT_Z - 2.3)
+  ]);
+  scene.add(mk(new THREE.TubeGeometry(curve, 26, 0.06, 6), MAT.rope, 0, 0, 0));
+}
+for (let i = 0; i < 7; i++){                            // far headland across the bay
+  const a = rr(-2.9, -0.25), d = rr(150, 240), h = buildHill(rr(18, 42), rr(10, 26));
+  h.position.set(Math.cos(a) * d, -2, Math.sin(a) * d); scene.add(h);
+}
+
+/* ---------- 8. LIGHTING RIG ---------------------------------------------- */
+const sun = new THREE.DirectionalLight(0xffc07a, 3.1);
+sun.position.copy(CONFIG.sunDir).multiplyScalar(70);
+sun.castShadow = true;
+sun.shadow.mapSize.set(CONFIG.shadowRes, CONFIG.shadowRes);
+sun.shadow.camera.left = -36; sun.shadow.camera.right = 36;
+sun.shadow.camera.top = 32; sun.shadow.camera.bottom = -28;
+sun.shadow.camera.near = 6; sun.shadow.camera.far = 170;
+sun.shadow.bias = -0.0008; sun.shadow.normalBias = 0.04;
+const rim = new THREE.DirectionalLight(0x8fb0d8, 0.45);      // cool shadow-side separation
+rim.position.set(48, 22, -36);
+scene.add(sun, sun.target, rim, new THREE.HemisphereLight(0xffce9a, 0x2b3d44, 0.45));
+
+const quayLightA = new THREE.PointLight(PAL.lampWarm, 20, 26, 2.0);
+quayLightA.position.set(-18.2, DECK + 4.6, EDGE - 2.6);
+const quayLightB = new THREE.PointLight(PAL.lampWarm, 20, 26, 2.0);
+quayLightB.position.set(6.8, DECK + 4.6, EDGE - 2.6);
+const shedLight = new THREE.PointLight(0xffb877, 13, 18, 2.0); shedLight.position.set(-15, DECK + 4.8, -6.6);
+const boatLight = new THREE.PointLight(0xffc98a, 9, 14, 2.0); boatLight.position.set(-8.6, 3.4, BOAT_Z);
+scene.add(quayLightA, quayLightB, shedLight, boatLight);
+
+/* ---------- 9. CAMERA & CONTROLS ----------------------------------------- */
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.5, 900);
+camera.position.set(28, 13, 31);                             // out on the water, hero side
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(-3, 4.2, -3);
+controls.enableDamping = true; controls.dampingFactor = 0.05;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.7;
+controls.minDistance = 28; controls.maxDistance = 95;
+controls.minPolarAngle = deg(40); controls.maxPolarAngle = deg(84);
+controls.update();
+
+/* ---------- 10. ANIMATION LOOP ------------------------------------------- */
+const clock = new THREE.Clock();
+const wPos = water.geometry.attributes.position;
+const wBase = Float32Array.from(wPos.array);
+
+function animate(){
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // (a) the harbour swell, with ripple normals drifting across the surface
+  for (let i = 0; i < wPos.count; i++){
+    const x = wBase[i * 3], z = wBase[i * 3 + 2];
+    wPos.setY(i, Math.sin(x * 0.085 + t * 0.75) * 0.2 + Math.cos(z * 0.11 - t * 0.55) * 0.14
+      + Math.sin((x + z) * 0.05 + t * 0.4) * 0.1);
+  }
+  wPos.needsUpdate = true; water.geometry.computeVertexNormals();
+  TEX.waterNorm.offset.set(t * 0.008, t * 0.014);
+  // (b) buoys bob and lean on the swell
+  for (const b of buoys){
+    const u = b.userData, s = Math.sin(t * u.sp + u.ph);
+    b.position.y = s * 0.24 - 0.1;
+    b.rotation.z = s * 0.14; b.rotation.x = Math.cos(t * u.sp * 0.8 + u.ph) * 0.12;
+  }
+  // (c) the trawler works slowly against her mooring lines
+  const sw = Math.sin(t * 0.42), sw2 = Math.sin(t * 0.29 + 1.1);
+  trawler.position.y = sw * 0.11; trawler.position.z = BOAT_Z + sw2 * 0.09;
+  trawler.rotation.z = sw * 0.021; trawler.rotation.x = sw2 * 0.013;
+  // (d) the crane hook drifts; lamps and cabin glass warm up as dusk settles
+  crane.jib.rotation.y = Math.sin(t * 0.17) * 0.09;
+  crane.hook.rotation.z = Math.sin(t * 0.63) * 0.05;
+  crane.hook.position.y = 9.0 + Math.sin(t * 0.45) * 0.16;
+  const flick = 0.9 + 0.08 * Math.sin(t * 2.4) + 0.05 * Math.sin(t * 8.3 + 0.7);
+  MAT.lamp.emissiveIntensity = 2.0 * flick;
+  MAT.glass.emissiveIntensity = 0.5 + 0.09 * Math.sin(t * 1.3);
+  quayLightA.intensity = quayLightB.intensity = 16 + 6 * flick;
+  // (e) perched gulls turn their heads and shuffle their footing
+  for (let i = 0; i < gulls.length; i++){
+    gulls[i].head.rotation.y = Math.sin(t * 0.7 + i * 1.9) * 0.6;
+    gulls[i].group.rotation.z = Math.sin(t * 1.6 + i) * 0.025;
+    gulls[i].wings[0].rotation.x = -Math.abs(Math.sin(t * 0.5 + i)) * 0.12;
+    gulls[i].wings[1].rotation.x = Math.abs(Math.sin(t * 0.5 + i)) * 0.12;
+  }
+  // (f) three gulls wheel slowly over the basin on flapping wings
+  for (let i = 0; i < flyers.length; i++){
+    const f = flyers[i], u = f.userData, a = t * u.sp + u.ph;
+    f.group.position.set(-4 + Math.cos(a) * u.r, u.y + Math.sin(a * 2.3) * 0.9, -2 + Math.sin(a) * u.r * 0.7);
+    f.group.rotation.y = -a - Math.PI / 2;
+    f.group.rotation.z = Math.cos(a) * 0.22;
+    const flap = Math.sin(t * 3.4 + i * 2.0) * 0.5;
+    f.wings[0].rotation.x = -flap; f.wings[1].rotation.x = flap;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ---------- 11. RESIZE --------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

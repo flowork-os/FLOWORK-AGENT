@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Old Library Hall</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#241a12} canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ============================================================
+// 1. CONFIG & PALETTE (dark academia)
+// ============================================================
+const SEED = 18811021;
+const HALL = { w: 30, d: 23, h: 14 };                      // grand hall shell
+const FOG_COLOR = 0x241a12;
+const SPINE_HUES = [8, 22, 120, 210, 350, 42];             // muted book-cloth hues
+
+// ============================================================
+// 2. SEEDED PRNG & SMALL HELPERS
+// ============================================================
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rand = mulberry32(SEED);
+const rr = (a, b) => a + rand() * (b - a);
+const ri = (a, b) => Math.floor(rr(a, b + 1));
+const pick = (arr) => arr[Math.floor(rand() * arr.length)];
+
+function sh(m) { m.castShadow = true; m.receiveShadow = true; return m; }
+function box(w, h, d, mat) { return sh(new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)); }
+function cyl(rt, rb, h, mat, seg = 12) { return sh(new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), mat)); }
+function makeCtx(w, h) {
+  const cv = document.createElement('canvas');
+  cv.width = w; cv.height = h;
+  return [cv, cv.getContext('2d')];
+}
+function toTex(cv, rx = 1, ry = 1) {
+  const t = new THREE.CanvasTexture(cv);
+  t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.repeat.set(rx, ry);
+  t.anisotropy = 4;
+  return t;
+}
+
+// ============================================================
+// 3. PROCEDURAL CANVAS TEXTURES
+// ============================================================
+function makeParquetTexture() {                            // herringbone oak, well trodden
+  const [cv, g] = makeCtx(512, 512);
+  g.fillStyle = '#2c1d12'; g.fillRect(0, 0, 512, 512);
+  for (let y = -64; y < 576; y += 64) {
+    for (let x = -64; x < 576; x += 64) {
+      for (const s of [1, -1]) {
+        g.save(); g.translate(x + (s > 0 ? 0 : 32), y + (s > 0 ? 0 : 32)); g.rotate(s * Math.PI / 4);
+        g.fillStyle = `hsl(${rr(22, 32)}, ${rr(30, 45)}%, ${rr(16, 26)}%)`;
+        g.fillRect(-44, -10, 88, 20);
+        g.strokeStyle = 'rgba(12,7,4,0.7)'; g.lineWidth = 2; g.strokeRect(-44, -10, 88, 20);
+        g.restore();
+      }
+    }
+  }
+  g.globalAlpha = 0.08;                                    // faint varnish sheen patches
+  for (let i = 0; i < 20; i++) { g.fillStyle = '#e8c88a'; g.beginPath(); g.arc(rr(0, 512), rr(0, 512), rr(30, 90), 0, Math.PI * 2); g.fill(); }
+  g.globalAlpha = 1;
+  return toTex(cv, 4, 3);
+}
+function makePanelingTexture() {                           // raised walnut wall panels
+  const [cv, g] = makeCtx(256, 256);
+  g.fillStyle = '#38260f'; g.fillRect(0, 0, 256, 256);
+  for (const x of [14, 142]) {
+    g.fillStyle = '#452e14'; g.fillRect(x, 18, 100, 220);
+    g.strokeStyle = 'rgba(230,190,120,0.28)'; g.lineWidth = 4; g.strokeRect(x + 10, 28, 80, 200);
+    g.strokeStyle = 'rgba(10,6,3,0.8)'; g.strokeRect(x + 2, 22, 96, 212);
+  }
+  return toTex(cv, 6, 1);
+}
+function makeSpineTexture() {                              // one shelf-row of book spines
+  const [cv, g] = makeCtx(512, 160);
+  g.fillStyle = '#170f08'; g.fillRect(0, 0, 512, 160);
+  let x = 4;
+  while (x < 500) {
+    const w = rr(13, 32), h = rr(118, 152), hue = pick(SPINE_HUES);
+    g.fillStyle = `hsl(${hue}, ${rr(22, 45)}%, ${rr(18, 38)}%)`;
+    g.fillRect(x, 160 - h, w, h);
+    g.fillStyle = 'rgba(212,178,106,0.85)';                // gilt title bands
+    g.fillRect(x + 1, 160 - h + 10, w - 2, 3);
+    g.fillRect(x + 1, 160 - h + 22, w - 2, 2);
+    g.fillStyle = 'rgba(0,0,0,0.35)'; g.fillRect(x + w - 2, 160 - h, 2, h);
+    x += w + (rand() < 0.12 ? rr(6, 16) : 1);              // occasional gap on the shelf
+  }
+  return toTex(cv);
+}
+function makeGlobeTexture() {                              // aged sepia terrestrial globe
+  const [cv, g] = makeCtx(512, 256);
+  g.fillStyle = '#c9ae7d'; g.fillRect(0, 0, 512, 256);
+  for (let i = 0; i < 9; i++) {                            // wandering landmasses
+    const cx = rr(30, 480), cy = rr(40, 216), r = rr(24, 62);
+    g.fillStyle = `hsl(${rr(30, 42)}, ${rr(30, 42)}%, ${rr(28, 38)}%)`;
+    g.beginPath();
+    for (let k = 0; k <= 9; k++) {
+      const a = (k / 9) * Math.PI * 2, rad = r * rr(0.55, 1.25);
+      const px = cx + Math.cos(a) * rad, py = cy + Math.sin(a) * rad * 0.7;
+      k === 0 ? g.moveTo(px, py) : g.lineTo(px, py);
+    }
+    g.closePath(); g.fill();
+  }
+  g.strokeStyle = 'rgba(70,50,25,0.4)'; g.lineWidth = 1;   // graticule lines
+  for (let x = 0; x < 512; x += 42) { g.beginPath(); g.moveTo(x, 0); g.lineTo(x, 256); g.stroke(); }
+  for (let y = 0; y < 256; y += 42) { g.beginPath(); g.moveTo(0, y); g.lineTo(512, y); g.stroke(); }
+  return toTex(cv);
+}
+function makeWindowTexture() {                             // arched pane, low evening sun
+  const [cv, g] = makeCtx(256, 512);
+  g.fillStyle = '#453a2c'; g.fillRect(0, 0, 256, 512);     // stone surround fills corners
+  g.save();
+  g.beginPath(); g.moveTo(30, 500); g.lineTo(30, 150); g.arc(128, 150, 98, Math.PI, 0); g.lineTo(226, 500); g.closePath();
+  g.clip();
+  const grad = g.createLinearGradient(0, 40, 0, 500);
+  grad.addColorStop(0, '#6d5a76'); grad.addColorStop(0.45, '#e8a960'); grad.addColorStop(1, '#ffcf8a');
+  g.fillStyle = grad; g.fillRect(0, 0, 256, 512);
+  const sun = g.createRadialGradient(96, 380, 8, 96, 380, 90);
+  sun.addColorStop(0, 'rgba(255,240,205,0.95)'); sun.addColorStop(1, 'rgba(255,220,160,0)');
+  g.fillStyle = sun; g.fillRect(0, 0, 256, 512);
+  g.strokeStyle = '#1d150c'; g.lineWidth = 7;              // leaded tracery
+  for (const x of [95, 161]) { g.beginPath(); g.moveTo(x, 150); g.lineTo(x, 500); g.stroke(); }
+  for (const y of [260, 360, 445]) { g.beginPath(); g.moveTo(30, y); g.lineTo(226, y); g.stroke(); }
+  g.beginPath(); g.arc(128, 150, 60, Math.PI, 0); g.stroke();
+  g.beginPath(); g.moveTo(128, 150); g.lineTo(128, 90); g.stroke();
+  g.restore();
+  g.strokeStyle = '#241c12'; g.lineWidth = 14;             // heavy outer casing
+  g.beginPath(); g.moveTo(30, 505); g.lineTo(30, 150); g.arc(128, 150, 98, Math.PI, 0); g.lineTo(226, 505); g.stroke();
+  return toTex(cv);
+}
+function makeRugTexture() {                                // long bordered library rug
+  const [cv, g] = makeCtx(512, 320);
+  g.fillStyle = '#54221f'; g.fillRect(0, 0, 512, 320);
+  g.fillStyle = '#2c3d30'; g.fillRect(0, 0, 512, 320);
+  g.fillStyle = '#54221f'; g.fillRect(22, 22, 468, 276);
+  g.strokeStyle = '#c9a35c'; g.lineWidth = 5; g.strokeRect(34, 34, 444, 252);
+  g.strokeStyle = 'rgba(201,163,92,0.4)'; g.lineWidth = 2;
+  for (let x = 60; x < 470; x += 52) {                     // repeating diamond motif
+    g.beginPath(); g.moveTo(x, 160); g.lineTo(x + 26, 108); g.lineTo(x + 52, 160); g.lineTo(x + 26, 212); g.closePath(); g.stroke();
+  }
+  g.strokeStyle = '#c9a35c'; g.lineWidth = 3;
+  g.beginPath(); g.moveTo(230, 160); g.lineTo(256, 96); g.lineTo(282, 160); g.lineTo(256, 224); g.closePath(); g.stroke();
+  return toTex(cv);
+}
+function makeAtlasTexture() {                              // open atlas spread
+  const [cv, g] = makeCtx(512, 384);
+  g.fillStyle = '#e6d7b2'; g.fillRect(0, 0, 512, 384);
+  const gut = g.createLinearGradient(226, 0, 286, 0);
+  gut.addColorStop(0, 'rgba(90,70,40,0)'); gut.addColorStop(0.5, 'rgba(90,70,40,0.55)'); gut.addColorStop(1, 'rgba(90,70,40,0)');
+  g.fillStyle = gut; g.fillRect(226, 0, 60, 384);
+  g.fillStyle = '#b3a071';                                 // left page: charted coastline
+  g.beginPath(); g.moveTo(30, 300); g.bezierCurveTo(60, 180, 140, 240, 180, 120);
+  g.lineTo(210, 60); g.lineTo(30, 60); g.closePath(); g.fill();
+  g.strokeStyle = '#6e4f2a'; g.lineWidth = 2; g.stroke();
+  g.strokeStyle = '#9c2f22'; g.setLineDash([6, 5]);        // plotted voyage
+  g.beginPath(); g.moveTo(60, 320); g.bezierCurveTo(120, 260, 170, 220, 205, 150); g.stroke();
+  g.setLineDash([]);
+  g.strokeStyle = '#6e4f2a'; g.beginPath(); g.arc(160, 300, 26, 0, Math.PI * 2); g.stroke();
+  g.beginPath(); g.moveTo(160, 274); g.lineTo(160, 326); g.moveTo(134, 300); g.lineTo(186, 300); g.stroke();
+  g.strokeStyle = 'rgba(70,58,40,0.75)'; g.lineWidth = 3;  // right page: dense entries
+  for (let y = 70; y < 330; y += 16) { g.beginPath(); g.moveTo(300, y); g.lineTo(300 + rr(120, 180), y); g.stroke(); }
+  return toTex(cv);
+}
+function makePortraitTexture() {                           // somber ancestral portrait
+  const [cv, g] = makeCtx(256, 320);
+  const bg = g.createRadialGradient(128, 120, 20, 128, 160, 240);
+  bg.addColorStop(0, `hsl(${rr(20, 40)}, 30%, ${rr(24, 32)}%)`); bg.addColorStop(1, '#0f0a06');
+  g.fillStyle = bg; g.fillRect(0, 0, 256, 320);
+  g.fillStyle = '#171009';
+  g.beginPath(); g.ellipse(128, 128, 46, 58, 0, 0, Math.PI * 2); g.fill();          // head
+  g.beginPath(); g.moveTo(50, 320); g.quadraticCurveTo(128, 170, 206, 320); g.fill(); // shoulders
+  g.fillStyle = 'rgba(226,190,140,0.35)';
+  g.beginPath(); g.ellipse(112, 118, 16, 26, -0.2, 0, Math.PI * 2); g.fill();        // candle-lit cheek
+  g.fillStyle = 'rgba(240,225,200,0.5)'; g.fillRect(96, 208, 64, 10);                // white collar
+  return toTex(cv);
+}
+function makeClockFaceTexture() {                          // enamel clock dial
+  const [cv, g] = makeCtx(128, 128);
+  g.fillStyle = '#e9ddc2'; g.beginPath(); g.arc(64, 64, 60, 0, Math.PI * 2); g.fill();
+  g.strokeStyle = '#241a10'; g.lineWidth = 4; g.stroke();
+  for (let i = 0; i < 12; i++) {
+    const a = i / 12 * Math.PI * 2;
+    g.lineWidth = i % 3 === 0 ? 4 : 2;
+    g.beginPath(); g.moveTo(64 + Math.cos(a) * 48, 64 + Math.sin(a) * 48);
+    g.lineTo(64 + Math.cos(a) * 55, 64 + Math.sin(a) * 55); g.stroke();
+  }
+  g.lineWidth = 4; g.beginPath(); g.moveTo(64, 64); g.lineTo(64 + 28, 64 - 20); g.stroke();
+  g.lineWidth = 3; g.beginPath(); g.moveTo(64, 64); g.lineTo(64 - 10, 64 - 40); g.stroke();
+  return toTex(cv);
+}
+function makeCatalogTexture() {                            // card-catalogue drawer front
+  const [cv, g] = makeCtx(256, 256);
+  g.fillStyle = '#3d2915'; g.fillRect(0, 0, 256, 256);
+  for (let r = 0; r < 5; r++) for (let c = 0; c < 4; c++) {
+    const x = 8 + c * 62, y = 8 + r * 50;
+    g.fillStyle = '#4a3119'; g.fillRect(x, y, 54, 42);
+    g.strokeStyle = 'rgba(0,0,0,0.6)'; g.lineWidth = 2; g.strokeRect(x, y, 54, 42);
+    g.fillStyle = '#d8c9a2'; g.fillRect(x + 12, y + 8, 30, 12);
+    g.fillStyle = '#c9a35c'; g.beginPath(); g.arc(x + 27, y + 30, 4, 0, Math.PI * 2); g.fill();
+  }
+  return toTex(cv);
+}
+
+// ============================================================
+// 4. MATERIALS
+// ============================================================
+const M = {
+  parquet:  new THREE.MeshStandardMaterial({ map: makeParquetTexture(), roughness: 0.65 }),
+  panel:    new THREE.MeshStandardMaterial({ map: makePanelingTexture(), roughness: 0.85, side: THREE.DoubleSide }),
+  plaster:  new THREE.MeshStandardMaterial({ color: 0x4a4034, roughness: 1, side: THREE.DoubleSide }),
+  ceiling:  new THREE.MeshStandardMaterial({ color: 0x33261a, roughness: 1, side: THREE.DoubleSide }),
+  woodDark: new THREE.MeshStandardMaterial({ color: 0x3a2412, roughness: 0.8 }),
+  woodMid:  new THREE.MeshStandardMaterial({ color: 0x5a3a1e, roughness: 0.75 }),
+  woodRed:  new THREE.MeshStandardMaterial({ color: 0x5e2f22, roughness: 0.7 }),
+  brass:    new THREE.MeshStandardMaterial({ color: 0xb08d4a, roughness: 0.35, metalness: 0.85 }),
+  iron:     new THREE.MeshStandardMaterial({ color: 0x2b2b2e, roughness: 0.6, metalness: 0.6 }),
+  leather:  new THREE.MeshStandardMaterial({ color: 0x4a2c1c, roughness: 0.85 }),
+  paper:    new THREE.MeshStandardMaterial({ color: 0xd8c49a, roughness: 0.95 }),
+  greenShade: new THREE.MeshStandardMaterial({ color: 0x1f5c40, emissive: 0x2f8f5a, emissiveIntensity: 0.85, side: THREE.DoubleSide }),
+  flame:    new THREE.MeshBasicMaterial({ color: 0xffd9a0 }),
+  globe:    new THREE.MeshStandardMaterial({ map: makeGlobeTexture(), roughness: 0.7 }),
+  windowPane: new THREE.MeshBasicMaterial({ map: makeWindowTexture() }),
+  rug:      new THREE.MeshStandardMaterial({ map: makeRugTexture(), roughness: 1 }),
+  atlas:    new THREE.MeshStandardMaterial({ map: makeAtlasTexture(), roughness: 0.9 }),
+  clockFace: new THREE.MeshBasicMaterial({ map: makeClockFaceTexture() }),
+  catalog:  new THREE.MeshStandardMaterial({ map: makeCatalogTexture(), roughness: 0.8 }),
+};
+const bookHues = () => new THREE.MeshStandardMaterial({ color: new THREE.Color(`hsl(${pick(SPINE_HUES)}, ${ri(24, 44)}%, ${ri(20, 36)}%)`), roughness: 0.85 });
+const spineMats = [0, 1, 2].map(() => {
+  const front = new THREE.MeshStandardMaterial({ map: makeSpineTexture(), roughness: 0.9 });
+  return [M.woodDark, M.woodDark, M.woodDark, M.woodDark, front, M.woodDark];
+});
+const portraitMats = [0, 1].map(() => new THREE.MeshStandardMaterial({ map: makePortraitTexture(), roughness: 0.9 }));
+
+// ============================================================
+// 5. BUILDER FUNCTIONS (each returns a THREE.Group)
+// ============================================================
+function buildHall() {                                     // shell: floor, walls, ceiling
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(HALL.w, HALL.d), M.parquet);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const mkWall = (w, x, z, ry) => {
+    const wall = new THREE.Mesh(new THREE.PlaneGeometry(w, HALL.h), M.plaster);
+    wall.position.set(x, HALL.h / 2, z); wall.rotation.y = ry; wall.receiveShadow = true; g.add(wall);
+  };
+  mkWall(HALL.w, 0, -HALL.d / 2, 0);                       // north (mezzanine wall)
+  mkWall(HALL.w, 0, HALL.d / 2, Math.PI);                  // south
+  mkWall(HALL.d, HALL.w / 2, 0, -Math.PI / 2);             // east (great bookcases)
+  const wainscot = (w, x, z, ry) => {
+    const p = new THREE.Mesh(new THREE.PlaneGeometry(w, 2.4), M.panel);
+    p.position.set(x, 1.2, z); p.rotation.y = ry; p.receiveShadow = true; g.add(p);
+  };
+  wainscot(HALL.w, 0, HALL.d / 2 - 0.02, Math.PI);
+  // west wall carries the arched windows: built from segments so evening light enters
+  const seg = (h, d, y, z) => { const s = box(0.4, h, d, M.plaster); s.position.set(-HALL.w / 2, y, z); g.add(s); };
+  seg(2.6, HALL.d, 1.3, 0);                                // below the sills
+  seg(4.9, HALL.d, 11.55, 0);                              // above the arches
+  [[-9.75, 3.5], [-3.25, 3.0], [3.25, 3.0], [9.75, 3.5]].forEach(([z, w]) => seg(6.5, w, 5.85, z));
+  [-6.5, 0, 6.5].forEach(z => {
+    const pane = new THREE.Mesh(new THREE.PlaneGeometry(3.5, 6.9), M.windowPane);
+    pane.rotation.y = Math.PI / 2; pane.position.set(-HALL.w / 2 + 0.06, 5.9, z); g.add(pane);
+    const sill = box(0.6, 0.14, 3.9, M.woodDark); sill.position.set(-HALL.w / 2 + 0.32, 2.62, z); g.add(sill);
+  });
+  for (const x of [-6.5, 0.5, 7.5]) {                     // clerestory arches over the gallery
+    const arch = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 3.0), M.windowPane);
+    arch.position.set(x, 12.35, -HALL.d / 2 + 0.06); g.add(arch);
+  }
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(HALL.w, HALL.d), M.ceiling);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = HALL.h; ceil.receiveShadow = true; g.add(ceil);
+  for (let i = -2; i <= 2; i++) {                          // coffering beams both ways
+    const bx = box(HALL.w, 0.5, 0.55, M.woodDark); bx.position.set(0, HALL.h - 0.28, i * 4.5); g.add(bx);
+    const bz = box(0.55, 0.5, HALL.d, M.woodDark); bz.position.set(i * 6, HALL.h - 0.28, 0); g.add(bz);
+  }
+  return g;
+}
+function buildBookshelf(w, h, rows) {                      // towering case of dense spines
+  const g = new THREE.Group();
+  const back = box(w, h, 0.08, M.woodDark); back.position.set(0, h / 2, -0.32); g.add(back);
+  for (const s of [-1, 1]) { const side = box(0.14, h, 0.8, M.woodMid); side.position.set(s * (w / 2 - 0.07), h / 2, 0); g.add(side); }
+  const cap = box(w + 0.24, 0.16, 0.9, M.woodMid); cap.position.set(0, h - 0.08, 0); g.add(cap);
+  const rowH = (h - 0.5) / rows;
+  for (let r = 0; r <= rows; r++) { const shelf = box(w - 0.2, 0.09, 0.72, M.woodMid); shelf.position.set(0, 0.2 + r * rowH, 0); g.add(shelf); }
+  for (let r = 0; r < rows; r++) {
+    const books = sh(new THREE.Mesh(new THREE.BoxGeometry(w - 0.4, rowH - 0.24, 0.5), pick(spineMats)));
+    books.position.set(0, 0.2 + r * rowH + rowH / 2, -0.02); g.add(books);
+  }
+  return g;
+}
+function buildLibraryLadder(h) {                           // rolling ladder hooked on rail
+  const g = new THREE.Group();
+  for (const s of [-1, 1]) { const rail = box(0.09, h, 0.16, M.woodRed); rail.position.set(s * 0.42, h / 2, 0); g.add(rail); }
+  for (let i = 0; i < Math.floor(h / 0.55); i++) { const rung = cyl(0.035, 0.035, 0.82, M.woodRed, 8); rung.rotation.z = Math.PI / 2; rung.position.y = 0.5 + i * 0.55; g.add(rung); }
+  for (const s of [-1, 1]) {                               // brass hook wheels at the top
+    const hook = sh(new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.03, 8, 14), M.brass));
+    hook.position.set(s * 0.42, h + 0.02, -0.05); g.add(hook);
+  }
+  return g;
+}
+function buildMezzanine() {                                // railed gallery over the north end
+  const g = new THREE.Group();
+  const deck = box(HALL.w, 0.28, 3.4, M.woodMid); deck.position.set(0, 6.6, -9.8); g.add(deck);
+  const fascia = box(HALL.w, 0.5, 0.1, M.woodDark); fascia.position.set(0, 6.42, -8.06); g.add(fascia);
+  for (let x = -13.5; x <= 13.5; x += 1.35) {              // turned balusters
+    const post = cyl(0.045, 0.06, 1.0, M.woodDark, 8); post.position.set(x, 7.25, -8.15); g.add(post);
+  }
+  const railTop = box(HALL.w, 0.1, 0.16, M.woodRed); railTop.position.set(0, 7.8, -8.15); g.add(railTop);
+  for (const x of [-10, -3.5, 3.5, 10]) {                  // support columns with capitals
+    const col = cyl(0.22, 0.26, 6.45, M.woodDark, 12); col.position.set(x, 3.23, -8.35); g.add(col);
+    const capi = box(0.7, 0.14, 0.7, M.woodMid); capi.position.set(x, 6.4, -8.35); g.add(capi);
+  }
+  return g;
+}
+class HelixCurve extends THREE.Curve {
+  constructor(r, totalAngle, height) { super(); this.r = r; this.ta = totalAngle; this.h = height; }
+  getPoint(t) { const a = this.ta * t; return new THREE.Vector3(Math.cos(a) * this.r, this.h * t, Math.sin(a) * this.r); }
+}
+function buildSpiralStair() {                              // iron spiral up to the gallery
+  const g = new THREE.Group();
+  const steps = 15, dA = 0.46, dY = 6.6 / steps;
+  const column = cyl(0.15, 0.18, 7.4, M.iron, 12); column.position.y = 3.7; g.add(column);
+  const finial = sh(new THREE.Mesh(new THREE.SphereGeometry(0.16, 10, 8), M.brass)); finial.position.y = 7.5; g.add(finial);
+  for (let i = 0; i < steps; i++) {
+    const a = i * dA;
+    const step = box(1.5, 0.07, 0.5, M.woodMid);
+    step.position.set(Math.cos(a) * 0.92, (i + 1) * dY, Math.sin(a) * 0.92);
+    step.rotation.y = -a; g.add(step);
+    const riser = cyl(0.03, 0.03, (i + 1) * dY, M.iron, 6); // slim support under tread nose
+    riser.position.set(Math.cos(a) * 1.55, (i + 1) * dY / 2, Math.sin(a) * 1.55); g.add(riser);
+  }
+  const helix = new HelixCurve(1.62, steps * dA, 6.6);
+  const railGeo = new THREE.TubeGeometry(helix, 60, 0.04, 6);
+  const rail = sh(new THREE.Mesh(railGeo, M.brass)); rail.position.y = 1.0; g.add(rail);
+  return g;
+}
+function buildBankersLamp() {                              // brass stem, green glass shade
+  const g = new THREE.Group();
+  const base = cyl(0.1, 0.13, 0.04, M.brass, 12); base.position.y = 0.02; g.add(base);
+  const stem = cyl(0.02, 0.02, 0.3, M.brass, 8); stem.position.y = 0.18; g.add(stem);
+  const shade = sh(new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.16, 0.14, 12, 1, true), M.greenShade));
+  shade.position.y = 0.36; g.add(shade);
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), M.flame);
+  glow.position.y = 0.31; g.add(glow);
+  const light = new THREE.PointLight(0xffe2b0, 5, 4.5, 1.8);
+  light.position.y = 0.32; g.add(light);
+  return g;
+}
+function buildReadingDesk(withAtlas) {                     // long desk, lamps, book stacks
+  const g = new THREE.Group();
+  const top = box(6.0, 0.12, 1.7, M.woodRed); top.position.y = 1.5; g.add(top);
+  const apron = box(5.6, 0.24, 1.4, M.woodDark); apron.position.y = 1.34; g.add(apron);
+  for (const sx of [-1, 1]) {
+    const end = box(0.16, 1.44, 1.5, M.woodDark); end.position.set(sx * 2.8, 0.72, 0); g.add(end);
+    const foot = box(0.5, 0.12, 1.6, M.woodMid); foot.position.set(sx * 2.8, 0.06, 0); g.add(foot);
+  }
+  const stretcher = box(5.4, 0.14, 0.16, M.woodMid); stretcher.position.y = 0.45; g.add(stretcher);
+  for (const sx of [-1.9, 1.9]) { const lamp = buildBankersLamp(); lamp.position.set(sx, 1.56, -0.35); g.add(lamp); }
+  for (let s = 0; s < 3; s++) {                            // studied piles left behind
+    const stack = buildBookPile(ri(2, 4), 0.34);
+    stack.position.set(rr(-2.4, 2.4), 1.56, rr(0.1, 0.55)); g.add(stack);
+  }
+  if (withAtlas) {                                         // the open atlas, mid-desk
+    const cover = box(1.5, 0.06, 1.05, M.leather); cover.position.set(0.3, 1.6, 0.15); cover.rotation.y = -0.18; g.add(cover);
+    for (const s of [-1, 1]) {
+      const page = new THREE.Mesh(new THREE.PlaneGeometry(0.72, 1.0), M.atlas);
+      page.rotation.set(-Math.PI / 2 + s * 0.1, 0, -0.18 + s * 0.02);
+      page.position.set(0.3 + s * 0.36, 1.66, 0.15); g.add(page);
+    }
+  }
+  const bench = box(4.6, 0.1, 0.45, M.woodMid); bench.position.set(0, 0.95, 1.45); g.add(bench);
+  for (const sx of [-2.1, 2.1]) { const bl = box(0.12, 0.9, 0.4, M.woodDark); bl.position.set(sx, 0.45, 1.45); g.add(bl); }
+  return g;
+}
+function buildBookPile(n, s = 1) {                         // haphazard stack of tomes
+  const g = new THREE.Group();
+  let y = 0;
+  for (let i = 0; i < n; i++) {
+    const h = rr(0.09, 0.16) * s * 2.4, w = rr(0.9, 1.3) * s, d = rr(0.65, 0.9) * s;
+    const book = box(w, h, d, bookHues());
+    book.position.set(rr(-0.06, 0.06) * s, y + h / 2, rr(-0.06, 0.06) * s);
+    book.rotation.y = rr(-0.35, 0.35);
+    y += h; g.add(book);
+  }
+  return g;
+}
+function buildGlobe() {                                    // grand floor globe, gently turning
+  const g = new THREE.Group();
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    const leg = cyl(0.045, 0.06, 1.35, M.woodDark, 8);
+    leg.position.set(Math.cos(a) * 0.42, 0.65, Math.sin(a) * 0.42);
+    leg.rotation.set(Math.sin(a) * 0.32, 0, -Math.cos(a) * 0.32); g.add(leg);
+  }
+  const hoop = sh(new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.045, 8, 24), M.woodMid));
+  hoop.rotation.x = Math.PI / 2; hoop.position.y = 1.12; g.add(hoop);
+  const tilt = new THREE.Group(); tilt.position.y = 1.95; tilt.rotation.z = 0.41; g.add(tilt);
+  const sphere = sh(new THREE.Mesh(new THREE.SphereGeometry(0.82, 28, 20), M.globe));
+  tilt.add(sphere);
+  const meridian = sh(new THREE.Mesh(new THREE.TorusGeometry(0.9, 0.03, 8, 32), M.brass));
+  tilt.add(meridian);
+  const axis = cyl(0.02, 0.02, 2.0, M.brass, 8); tilt.add(axis);
+  g.userData.sphere = sphere;
+  return g;
+}
+function buildChandelier() {                               // candle ring over the desks
+  const g = new THREE.Group();
+  const ring = sh(new THREE.Mesh(new THREE.TorusGeometry(1.5, 0.06, 8, 28), M.brass));
+  ring.rotation.x = Math.PI / 2; g.add(ring);
+  const hub = cyl(0.1, 0.16, 0.5, M.brass, 10); hub.position.y = 0.1; g.add(hub);
+  g.userData.flames = [];
+  for (let i = 0; i < 8; i++) {
+    const a = (i / 8) * Math.PI * 2, x = Math.cos(a) * 1.5, z = Math.sin(a) * 1.5;
+    const cup = cyl(0.055, 0.04, 0.09, M.brass, 8); cup.position.set(x, 0.06, z); g.add(cup);
+    const candle = cyl(0.03, 0.03, 0.22, M.paper, 8); candle.position.set(x, 0.2, z); g.add(candle);
+    const flame = new THREE.Mesh(new THREE.SphereGeometry(0.035, 6, 6), M.flame);
+    flame.scale.y = 1.8; flame.position.set(x, 0.37, z); g.add(flame);
+    g.userData.flames.push(flame);
+  }
+  for (const a of [0.4, 2.5, 4.6]) {                       // suspension chains
+    const chain = cyl(0.02, 0.02, 4.9, M.iron, 6);
+    chain.position.set(Math.cos(a) * 0.75, 2.45, Math.sin(a) * 0.75);
+    chain.rotation.set(Math.sin(a) * 0.3, 0, -Math.cos(a) * 0.3); g.add(chain);
+  }
+  const light = new THREE.PointLight(0xffb066, 58, 24, 1.8);
+  light.position.y = 0.5; g.add(light);
+  g.userData.light = light;
+  return g;
+}
+function buildTallClock() {                                // longcase clock, ticking away
+  const g = new THREE.Group();
+  const body = box(0.95, 4.6, 0.55, M.woodRed); body.position.y = 2.3; g.add(body);
+  const crown = box(1.15, 0.22, 0.7, M.woodDark); crown.position.y = 4.7; g.add(crown);
+  const plinth = box(1.15, 0.3, 0.7, M.woodDark); plinth.position.y = 0.15; g.add(plinth);
+  const face = new THREE.Mesh(new THREE.CircleGeometry(0.34, 24), M.clockFace);
+  face.position.set(0, 3.95, 0.29); g.add(face);
+  const doorGlass = box(0.5, 2.2, 0.03, M.iron); doorGlass.position.set(0, 2.0, 0.27); g.add(doorGlass);
+  const pend = new THREE.Group(); pend.position.set(0, 3.15, 0.31); g.add(pend);
+  const rod = cyl(0.015, 0.015, 1.6, M.brass, 6); rod.position.y = -0.8; pend.add(rod);
+  const bob = sh(new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.14, 0.03, 16), M.brass));
+  bob.rotation.x = Math.PI / 2; bob.position.y = -1.55; pend.add(bob);
+  g.userData.pendulum = pend;
+  return g;
+}
+function buildCardCatalog() {                              // oak card-catalogue chest
+  const g = new THREE.Group();
+  const body = sh(new THREE.Mesh(new THREE.BoxGeometry(1.7, 1.6, 0.7),
+    [M.woodMid, M.woodMid, M.woodMid, M.woodMid, M.catalog, M.woodMid]));
+  body.position.y = 1.0; g.add(body);
+  for (const sx of [-0.7, 0.7]) { const leg = cyl(0.05, 0.04, 0.4, M.woodDark, 8); leg.position.set(sx, 0.2, 0.2); g.add(leg); }
+  for (const sx of [-0.7, 0.7]) { const leg = cyl(0.05, 0.04, 0.4, M.woodDark, 8); leg.position.set(sx, 0.2, -0.2); g.add(leg); }
+  const tray = buildBookPile(2, 0.5); tray.position.set(0.2, 1.8, 0); g.add(tray);
+  return g;
+}
+function buildPortrait(mat) {                              // gilt-framed ancestor
+  const g = new THREE.Group();
+  const frame = box(1.5, 1.85, 0.08, M.brass); g.add(frame);
+  const art = new THREE.Mesh(new THREE.PlaneGeometry(1.28, 1.62), mat);
+  art.position.z = 0.05; g.add(art);
+  return g;
+}
+function buildDustMotes() {                                // dust hanging in the sunbeams
+  const N = 130;
+  const geo = new THREE.BufferGeometry();
+  const pos = new Float32Array(N * 3), speed = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    pos[i * 3] = rr(-13, 3); pos[i * 3 + 1] = rr(0.5, 9.5); pos[i * 3 + 2] = rr(-7.5, 7.5);
+    speed[i] = rr(0.04, 0.18);
+  }
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({ color: 0xffd9a0, size: 0.06, transparent: true, opacity: 0.5,
+    blending: THREE.AdditiveBlending, depthWrite: false });
+  const pts = new THREE.Points(geo, mat);
+  pts.userData = { base: pos.slice(), speed };
+  return pts;
+}
+
+// ============================================================
+// 6. RENDERER / SCENE / CAMERA / CONTROLS
+// ============================================================
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.2;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(FOG_COLOR);
+scene.fog = new THREE.Fog(FOG_COLOR, 20, 72);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 130);
+camera.position.set(4.1, 6.4, 7.0);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 3.6, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 4.5;
+controls.maxDistance = 8.6;                                // orbit stays clear of the gallery
+controls.minPolarAngle = 0.6;
+controls.maxPolarAngle = 1.42;
+
+// ============================================================
+// 7. ASSEMBLY & LAYOUT
+// ============================================================
+scene.add(buildHall());
+scene.add(buildMezzanine());
+
+// east wall: three towering cases with the brass ladder rail across them
+for (const z of [-7, 0, 7]) {
+  const case_ = buildBookshelf(6.6, 12, 8);
+  case_.position.set(HALL.w / 2 - 0.45, 0, z); case_.rotation.y = -Math.PI / 2;
+  scene.add(case_);
+}
+const railEast = cyl(0.035, 0.035, 20.5, M.brass, 8);
+railEast.rotation.x = Math.PI / 2; railEast.position.set(HALL.w / 2 - 1.15, 8.9, 0);
+scene.add(railEast);
+const ladderA = buildLibraryLadder(8.8);
+ladderA.position.set(HALL.w / 2 - 2.6, 0, 2.6); ladderA.rotation.y = -Math.PI / 2; ladderA.rotation.x = -0.17;
+scene.add(ladderA);
+
+// north wall: cases under the mezzanine and along the gallery above
+for (const x of [-11, -4.5, 2, 8.5]) {
+  const lower = buildBookshelf(5.9, 6.2, 4);
+  lower.position.set(x, 0, -HALL.d / 2 + 0.45); scene.add(lower);
+}
+for (const x of [-10, -3, 4, 10]) {
+  const upper = buildBookshelf(5.4, 4.2, 3);
+  upper.position.set(x, 6.78, -HALL.d / 2 + 0.45); scene.add(upper);
+}
+const railNorth = cyl(0.035, 0.035, 17, M.brass, 8);
+railNorth.rotation.z = Math.PI / 2; railNorth.position.set(-3, 4.9, -HALL.d / 2 + 1.1);
+scene.add(railNorth);
+const ladderB = buildLibraryLadder(4.8);
+ladderB.position.set(-6.4, 0, -HALL.d / 2 + 2.3); ladderB.rotation.x = -0.2;
+scene.add(ladderB);
+
+const stair = buildSpiralStair();
+stair.position.set(8.2, 0, -6.3); stair.rotation.y = 1.9;
+scene.add(stair);
+
+const rug = new THREE.Mesh(new THREE.PlaneGeometry(13, 8), M.rug);
+rug.rotation.x = -Math.PI / 2; rug.position.set(-0.5, 0.02, 2.8); rug.receiveShadow = true;
+scene.add(rug);
+
+const deskA = buildReadingDesk(true);
+deskA.position.set(-2.2, 0, 1.4); deskA.rotation.y = 0.06; scene.add(deskA);
+const deskB = buildReadingDesk(false);
+deskB.position.set(1.6, 0, 4.6); deskB.rotation.y = -0.05; scene.add(deskB);
+
+const globe = buildGlobe();
+globe.position.set(-6.8, 0, -3.2); scene.add(globe);
+const globeSphere = globe.userData.sphere;
+
+const chandelier = buildChandelier();
+chandelier.position.set(0, 9.1, 2.6); scene.add(chandelier);
+const flames = chandelier.userData.flames, chandLight = chandelier.userData.light;
+
+const clock = buildTallClock();
+clock.position.set(7.6, 0, HALL.d / 2 - 0.45); clock.rotation.y = Math.PI; scene.add(clock);
+const pendulum = clock.userData.pendulum;
+
+const catalog = buildCardCatalog();
+catalog.position.set(-8.5, 0, HALL.d / 2 - 0.65); catalog.rotation.y = Math.PI; scene.add(catalog);
+
+for (const [x, z, n] of [[3.4, 7.6, 5], [-5.6, 5.4, 4], [11.2, -3.4, 6], [-11.4, -6.9, 3]]) {
+  const pile = buildBookPile(n); pile.position.set(x, 0, z); scene.add(pile);
+}
+for (const [x, y] of [[-3.2, 6.3], [3.8, 6.3]]) {          // portraits above the wainscot
+  const p = buildPortrait(portraitMats[x < 0 ? 0 : 1]);
+  p.position.set(x, y, HALL.d / 2 - 0.1); p.rotation.y = Math.PI; scene.add(p);
+}
+const motes = buildDustMotes(); scene.add(motes);
+
+// ============================================================
+// 8. LIGHTING RIG (low evening sun + candle warmth)
+// ============================================================
+const sun = new THREE.DirectionalLight(0xffb46a, 5.2);
+sun.position.set(-26, 14, 6);
+sun.target.position.set(4, 0, -2);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -22; sun.shadow.camera.right = 22;
+sun.shadow.camera.top = 22; sun.shadow.camera.bottom = -22;
+sun.shadow.camera.near = 1; sun.shadow.camera.far = 80;
+sun.shadow.bias = -0.0004;
+sun.shadow.normalBias = 0.03;
+scene.add(sun, sun.target);
+
+scene.add(new THREE.HemisphereLight(0x55617e, 0x352818, 0.62));
+scene.add(new THREE.AmbientLight(0x453522, 0.52));
+
+const deskGlow = new THREE.SpotLight(0xffd9a3, 220, 22, 0.85, 0.8, 2); // soft pool over the desks
+deskGlow.position.set(-0.5, 11, 3); deskGlow.target.position.set(-0.5, 0, 3);
+scene.add(deskGlow, deskGlow.target);
+
+for (const [x, z, ry] of [[5.25, -HALL.d / 2 + 0.35, 0], [-7.75, -HALL.d / 2 + 0.35, 0]]) {
+  const sconce = new THREE.Group();                        // candle sconces under the gallery
+  const arm = box(0.12, 0.5, 0.14, M.brass); arm.position.y = -0.2; sconce.add(arm);
+  const candle = cyl(0.035, 0.035, 0.26, M.paper, 8); candle.position.set(0, 0.06, 0.12); sconce.add(candle);
+  const fl = new THREE.Mesh(new THREE.SphereGeometry(0.04, 6, 6), M.flame);
+  fl.scale.y = 1.8; fl.position.set(0, 0.26, 0.12); sconce.add(fl); flames.push(fl);
+  const pl = new THREE.PointLight(0xffc98a, 14, 12, 1.8); pl.position.set(0, 0.32, 0.3); sconce.add(pl);
+  sconce.position.set(x, 5.3, z); sconce.rotation.y = ry; scene.add(sconce);
+}
+
+// ============================================================
+// 9. ANIMATION LOOP
+// ============================================================
+const clockTimer = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clockTimer.getElapsedTime();
+  // (a) the great globe turns at a scholar's pace
+  globeSphere.rotation.y = t * 0.16;
+  // (b) candle flames flicker; chandelier light breathes with them
+  for (let i = 0; i < flames.length; i++) {
+    const f = 1 + Math.sin(t * 9 + i * 2.1) * 0.16 + Math.sin(t * 23 + i * 5.7) * 0.08;
+    flames[i].scale.set(f * 0.9, 1.8 * f, f * 0.9);
+  }
+  chandLight.intensity = 58 * (1 + Math.sin(t * 11.3) * 0.06 + Math.sin(t * 5.1) * 0.05);
+  // (c) the longcase pendulum keeps the hush measured
+  pendulum.rotation.z = Math.sin(t * 1.9) * 0.16;
+  // (d) dust motes drift through the slanted evening light
+  const mp = motes.geometry.attributes.position;
+  const mb = motes.userData.base, ms = motes.userData.speed;
+  for (let i = 0; i < ms.length; i++) {
+    mp.array[i * 3 + 1] = 0.5 + ((mb[i * 3 + 1] - 0.5 + t * ms[i]) % 9.0);
+    mp.array[i * 3] = mb[i * 3] + Math.sin(t * 0.3 + i * 1.7) * 0.3;
+  }
+  mp.needsUpdate = true;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+// ============================================================
+// 10. RESIZE
+// ============================================================
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

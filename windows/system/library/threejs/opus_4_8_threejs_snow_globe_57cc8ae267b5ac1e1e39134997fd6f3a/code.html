@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Snow Globe · procedural three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #15161a; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    color: #9aa3b2; font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    letter-spacing: .04em; opacity: .55; user-select: none; pointer-events: none;
+    text-align: center;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">drag to orbit · scroll to zoom</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene & camera
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15161a);
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.1, 100);
+camera.position.set(2.9, 1.95, 3.5);
+
+// Procedural environment for refraction / reflections on the glass
+const pmrem = new THREE.PMREMGenerator(renderer);
+const roomEnv = new RoomEnvironment();
+scene.environment = pmrem.fromScene(roomEnv, 0.04).texture;
+roomEnv.dispose && roomEnv.dispose();
+pmrem.dispose();
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere + warm key + cool fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbcd4ff, 0x201d18, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2df, 2.4);
+key.position.set(3.2, 5.6, 3.4);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 5;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+const sc = key.shadow.camera;
+sc.near = 0.5; sc.far = 20; sc.left = -3; sc.right = 3; sc.top = 3; sc.bottom = -3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8e6, 0.55);
+fill.position.set(-4.2, 2.0, -1.5);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xe8f1ff, 1.15);
+rim.position.set(-2.0, 3.4, -5.0);
+scene.add(rim);
+
+const cozy = new THREE.PointLight(0xffb774, 6.0, 6, 2);
+cozy.position.set(1.4, 1.1, 1.6);
+scene.add(cozy);
+
+// ---------------------------------------------------------------------------
+// Ground: receives shadow only
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.32 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ===========================================================================
+// THE SNOW GLOBE  (single centered object)
+// ===========================================================================
+const globe = new THREE.Group();
+scene.add(globe);
+
+const GLOBE_R = 1.0;
+const GLOBE_CY = 1.4;               // glass sphere centre height
+
+// --- Turned wooden base (LatheGeometry) -----------------------------------
+const baseProfile = [
+  [0.00, 0.00],
+  [0.58, 0.00],
+  [0.645, 0.045],
+  [0.665, 0.11],
+  [0.605, 0.185],   // decorative groove
+  [0.645, 0.245],
+  [0.71,  0.335],
+  [0.79,  0.44],
+  [0.855, 0.53],    // top outer rim
+  [0.80,  0.56],
+  [0.73,  0.565],   // inner lip where the glass seats
+  [0.72,  0.52],
+  [0.00,  0.52]
+].map(p => new THREE.Vector2(p[0], p[1]));
+
+const baseGeo = new THREE.LatheGeometry(baseProfile, 96);
+baseGeo.computeVertexNormals();
+const woodMat = new THREE.MeshStandardMaterial({
+  color: 0x7a4a26, roughness: 0.5, metalness: 0.06, envMapIntensity: 0.7
+});
+const base = new THREE.Mesh(baseGeo, woodMat);
+base.castShadow = true;
+base.receiveShadow = true;
+globe.add(base);
+
+// darker decorative band
+const band = new THREE.Mesh(
+  new THREE.TorusGeometry(0.62, 0.022, 16, 96),
+  new THREE.MeshStandardMaterial({ color: 0x4c2c15, roughness: 0.45, metalness: 0.1 })
+);
+band.rotation.x = Math.PI / 2;
+band.position.y = 0.185;
+band.castShadow = true;
+globe.add(band);
+
+// --- Snow mound (deformed flattened dome) ---------------------------------
+const moundGeo = new THREE.SphereGeometry(0.5, 64, 40);
+{
+  const pos = moundGeo.attributes.position;
+  const v = new THREE.Vector3();
+  for (let i = 0; i < pos.count; i++) {
+    v.fromBufferAttribute(pos, i);
+    const n = 0.028 * (Math.sin(5.0 * v.x + 1.3) * Math.cos(4.4 * v.z) +
+                       0.5 * Math.sin(9.0 * v.z + v.x));
+    const s = 1 + Math.max(0, v.y) * 0 + n;
+    v.multiplyScalar(s);
+    pos.setXYZ(i, v.x, v.y, v.z);
+  }
+  moundGeo.computeVertexNormals();
+}
+const snowMat = new THREE.MeshStandardMaterial({
+  color: 0xf4f8ff, roughness: 0.82, metalness: 0.0, envMapIntensity: 0.5
+});
+const mound = new THREE.Mesh(moundGeo, snowMat);
+mound.scale.set(1.0, 0.5, 1.0);
+mound.position.y = 0.47;
+mound.receiveShadow = true;
+globe.add(mound);
+
+// --- Frosted pine tree ----------------------------------------------------
+const tree = new THREE.Group();
+globe.add(tree);
+
+const barkMat = new THREE.MeshStandardMaterial({ color: 0x4a3320, roughness: 0.85, metalness: 0.0 });
+const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.05, 0.18, 16), barkMat);
+trunk.position.y = 0.70;
+tree.add(trunk);
+
+const foliageMat = new THREE.MeshStandardMaterial({
+  color: 0x35604a, roughness: 0.78, metalness: 0.0, envMapIntensity: 0.35
+});
+const frostMat = new THREE.MeshStandardMaterial({
+  color: 0xeef5ff, roughness: 0.7, metalness: 0.0, envMapIntensity: 0.5
+});
+
+// tiers: [radius, height, baseY]
+const tiers = [
+  [0.36, 0.40, 0.80],
+  [0.28, 0.34, 0.98],
+  [0.205, 0.30, 1.15],
+  [0.135, 0.26, 1.32]
+];
+for (const [r, h, by] of tiers) {
+  const cone = new THREE.Mesh(new THREE.ConeGeometry(r, h, 32, 1), foliageMat);
+  cone.position.y = by + h / 2;
+  tree.add(cone);
+}
+// snowy top cap
+const cap = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.14, 20), frostMat);
+cap.position.y = 1.60;
+tree.add(cap);
+
+// scattered frost / snow clumps clinging to the branches
+const clumpGeo = new THREE.IcosahedronGeometry(1, 0);
+for (const [r, h, by] of tiers) {
+  const n = 10;
+  for (let i = 0; i < n; i++) {
+    const t = 0.08 + Math.random() * 0.82;               // base->apex
+    const rad = r * (1 - t);
+    const a = Math.random() * Math.PI * 2;
+    const clump = new THREE.Mesh(clumpGeo, frostMat);
+    const s = 0.018 + Math.random() * 0.026;
+    clump.scale.setScalar(s);
+    clump.position.set(
+      Math.cos(a) * (rad + s * 0.4),
+      by + h * t + 0.01,
+      Math.sin(a) * (rad + s * 0.4)
+    );
+    clump.rotation.set(Math.random() * 3, Math.random() * 3, Math.random() * 3);
+    tree.add(clump);
+  }
+}
+
+// --- Suspended snow flecks (animated points) ------------------------------
+function makeFlakeTexture() {
+  const s = 64;
+  const c = document.createElement('canvas');
+  c.width = c.height = s;
+  const ctx = c.getContext('2d');
+  const g = ctx.createRadialGradient(s / 2, s / 2, 0, s / 2, s / 2, s / 2);
+  g.addColorStop(0.0, 'rgba(255,255,255,1)');
+  g.addColorStop(0.35, 'rgba(255,255,255,0.85)');
+  g.addColorStop(1.0, 'rgba(255,255,255,0)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, s, s);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+const SNOW_N = 520;
+const SNOW_R = 0.86;
+const flakeX = new Float32Array(SNOW_N);
+const flakeZ = new Float32Array(SNOW_N);
+const flakeY = new Float32Array(SNOW_N);
+const flakeTop = new Float32Array(SNOW_N);
+const flakeBot = new Float32Array(SNOW_N);
+const flakeSpd = new Float32Array(SNOW_N);
+const flakePhase = new Float32Array(SNOW_N);
+const flakePos = new Float32Array(SNOW_N * 3);
+
+for (let i = 0; i < SNOW_N; i++) {
+  const rr = SNOW_R * 0.94 * Math.sqrt(Math.random());
+  const a = Math.random() * Math.PI * 2;
+  const x = Math.cos(a) * rr;
+  const z = Math.sin(a) * rr;
+  const yr = Math.sqrt(Math.max(0, SNOW_R * SNOW_R - x * x - z * z)) * 0.97;
+  const top = GLOBE_CY + yr;
+  const bot = Math.max(GLOBE_CY - yr, 0.80);
+  flakeX[i] = x; flakeZ[i] = z;
+  flakeTop[i] = top; flakeBot[i] = bot;
+  flakeY[i] = bot + Math.random() * (top - bot);
+  flakeSpd[i] = 0.045 + Math.random() * 0.075;
+  flakePhase[i] = Math.random() * Math.PI * 2;
+}
+
+const snowGeo = new THREE.BufferGeometry();
+snowGeo.setAttribute('position', new THREE.BufferAttribute(flakePos, 3));
+const snowPointsMat = new THREE.PointsMaterial({
+  size: 0.028,
+  map: makeFlakeTexture(),
+  transparent: true,
+  opacity: 0.9,
+  depthWrite: false,
+  sizeAttenuation: true,
+  color: 0xffffff
+});
+const snow = new THREE.Points(snowGeo, snowPointsMat);
+snow.renderOrder = 2;
+globe.add(snow);
+
+// --- Water volume (subtle bluish tint) ------------------------------------
+const water = new THREE.Mesh(
+  new THREE.SphereGeometry(GLOBE_R * 0.955, 48, 32),
+  new THREE.MeshPhysicalMaterial({
+    color: 0xbfe2f2, transparent: true, opacity: 0.06,
+    roughness: 0.25, metalness: 0.0, depthWrite: false,
+    transmission: 0.0, envMapIntensity: 0.3
+  })
+);
+water.position.y = GLOBE_CY;
+water.renderOrder = 1;
+globe.add(water);
+
+// --- Refractive glass dome ------------------------------------------------
+const glassMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.0,
+  roughness: 0.02,
+  transmission: 1.0,
+  thickness: 0.55,
+  ior: 1.5,
+  clearcoat: 1.0,
+  clearcoatRoughness: 0.04,
+  reflectivity: 0.5,
+  transparent: true,
+  opacity: 1.0,
+  depthWrite: false,
+  envMapIntensity: 1.6,
+  attenuationColor: new THREE.Color(0xeaf6ff),
+  attenuationDistance: 6.0,
+  side: THREE.FrontSide
+});
+const glass = new THREE.Mesh(new THREE.SphereGeometry(GLOBE_R, 96, 72), glassMat);
+glass.position.y = GLOBE_CY;
+glass.renderOrder = 3;
+globe.add(glass);
+
+// thin brass gasket ring at the water line / seat
+const collar = new THREE.Mesh(
+  new THREE.TorusGeometry(0.545, 0.028, 20, 96),
+  new THREE.MeshStandardMaterial({ color: 0xcaa15a, roughness: 0.35, metalness: 0.85, envMapIntensity: 1.0 })
+);
+collar.rotation.x = Math.PI / 2;
+collar.position.y = 0.565;
+collar.castShadow = true;
+globe.add(collar);
+
+// ---------------------------------------------------------------------------
+// Controls
+// ---------------------------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.enablePan = false;
+controls.minDistance = 2.2;
+controls.maxDistance = 8.0;
+controls.maxPolarAngle = 1.62;
+controls.target.set(0, 1.12, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize
+// ---------------------------------------------------------------------------
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+// ---------------------------------------------------------------------------
+// Animation loop
+// ---------------------------------------------------------------------------
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  const t = clock.elapsedTime;
+
+  for (let i = 0; i < SNOW_N; i++) {
+    let y = flakeY[i] - flakeSpd[i] * dt;
+    if (y < flakeBot[i]) y = flakeTop[i];
+    flakeY[i] = y;
+    const sway = 0.02 * Math.sin(t * 0.7 + flakePhase[i]);
+    const swayZ = 0.02 * Math.cos(t * 0.55 + flakePhase[i] * 1.3);
+    flakePos[i * 3 + 0] = flakeX[i] + sway;
+    flakePos[i * 3 + 1] = y;
+    flakePos[i * 3 + 2] = flakeZ[i] + swayZ;
+  }
+  snowGeo.attributes.position.needsUpdate = true;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Origami Zeppelin</title>
+<style>
+  html, body { margin:0; padding:0; height:100%; overflow:hidden; background:#15161a; }
+  canvas { display:block; }
+</style>
+</head>
+<body>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------
+   Renderer / Scene / Camera
+------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15161a);
+scene.fog = new THREE.Fog(0x15161a, 26, 70);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(9.5, 3.6, 12.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 6;
+controls.maxDistance = 45;
+controls.target.set(0, 0.15, 0);
+
+/* ------------------------------------------------------------------
+   Lighting: hemi + key + fill + rim
+------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0xbfd2ff, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 3.0);
+key.position.set(7.5, 11, 6.5);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 45;
+const S = 11;
+key.shadow.camera.left = -S;
+key.shadow.camera.right = S;
+key.shadow.camera.top = S;
+key.shadow.camera.bottom = -S;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6d8, 0.7);
+fill.position.set(-8, 3.5, 7);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.5);
+rim.position.set(-5.5, 4.5, -9);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0xfff0dd, 6.0, 22, 2.0);
+bounce.position.set(0, -3.2, 2.0);
+scene.add(bounce);
+
+/* ------------------------------------------------------------------
+   Shadow-only ground
+------------------------------------------------------------------ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -4.6;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ------------------------------------------------------------------
+   Paper materials — pale ivory, flat-shaded, matte
+------------------------------------------------------------------ */
+const paperOuter = new THREE.MeshStandardMaterial({
+  color: 0xf2ecdc,
+  roughness: 0.88,
+  metalness: 0.0,
+  flatShading: true,
+  side: THREE.FrontSide
+});
+const paperInner = new THREE.MeshStandardMaterial({
+  color: 0xdccfb6,
+  roughness: 0.95,
+  metalness: 0.0,
+  flatShading: true,
+  side: THREE.BackSide
+});
+const paperDouble = new THREE.MeshStandardMaterial({
+  color: 0xeee7d5,
+  roughness: 0.9,
+  metalness: 0.0,
+  flatShading: true,
+  side: THREE.DoubleSide
+});
+const creaseMat = new THREE.LineBasicMaterial({ color: 0x8d8270, transparent: true, opacity: 0.5 });
+
+const zeppelin = new THREE.Group();
+scene.add(zeppelin);
+
+/* ==================================================================
+   Helpers
+================================================================== */
+
+// Build a non-indexed BufferGeometry from triangles
+function triGeometry(tris) {
+  const pos = [];
+  for (const t of tris) {
+    pos.push(t[0].x, t[0].y, t[0].z, t[1].x, t[1].y, t[1].z, t[2].x, t[2].y, t[2].z);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+function addPaper(geom, group, shadow = true) {
+  const outer = new THREE.Mesh(geom, paperOuter);
+  const inner = new THREE.Mesh(geom, paperInner);
+  outer.castShadow = shadow; outer.receiveShadow = true;
+  inner.castShadow = false;  inner.receiveShadow = true;
+  group.add(outer, inner);
+  return outer;
+}
+
+function addCreases(geom, group) {
+  const lines = new THREE.LineSegments(new THREE.EdgesGeometry(geom, 12), creaseMat);
+  group.add(lines);
+  return lines;
+}
+
+/* ==================================================================
+   HULL — faceted cigar-shaped balloon from folded paper
+   Cross-section: N-gon (mountain folds at vertices, valley planes
+   between). Longitudinal profile: sharp-tapered nose + tail.
+================================================================== */
+const SEG = 12;                 // radial facets (mountain creases)
+const HULL_LEN = 12.0;
+const R_MAX = 2.05;
+
+// Longitudinal stations: t along axis (-1 .. 1), radius factor
+// Profile hand-shaped: sharp nose cone, long parallel belly, tapered tail.
+const stations = [
+  { t: -1.000, r: 0.000 },   // nose point
+  { t: -0.905, r: 0.300 },   // nose crease ring 1
+  { t: -0.780, r: 0.560 },
+  { t: -0.620, r: 0.790 },
+  { t: -0.430, r: 0.935 },
+  { t: -0.200, r: 1.000 },
+  { t:  0.060, r: 1.000 },
+  { t:  0.290, r: 0.955 },
+  { t:  0.500, r: 0.855 },
+  { t:  0.690, r: 0.700 },
+  { t:  0.840, r: 0.510 },
+  { t:  0.945, r: 0.290 },
+  { t:  1.000, r: 0.075 },   // tail truncation (small flat cap)
+];
+
+// Alternating rotational offset per ring gives the crisp zig-zag
+// mountain/valley "twisted-facet" look of a folded paper balloon.
+const half = Math.PI / SEG;
+
+function ringPoints(idx) {
+  const st = stations[idx];
+  const x = st.t * HULL_LEN * 0.5;
+  const rad = st.r * R_MAX;
+  // alternate rings by a half-step: creates diamond (miura-like) facets
+  const twist = (idx % 2 === 0) ? 0 : half;
+  const pts = [];
+  for (let i = 0; i < SEG; i++) {
+    const a = (i / SEG) * Math.PI * 2 + twist;
+    // slight radial modulation so every other vertex sits proud (mountain fold)
+    const mod = (i % 2 === 0) ? 1.0 : 0.955;
+    pts.push(new THREE.Vector3(x, Math.sin(a) * rad * mod, Math.cos(a) * rad * mod));
+  }
+  return pts;
+}
+
+const rings = stations.map((_, i) => ringPoints(i));
+
+const hullTris = [];
+
+// Nose apex fan (ring 0 collapses to a point)
+const noseApex = new THREE.Vector3(stations[0].t * HULL_LEN * 0.5, 0, 0);
+for (let i = 0; i < SEG; i++) {
+  const a = rings[1][i];
+  const b = rings[1][(i + 1) % SEG];
+  hullTris.push([noseApex, b, a]);
+}
+
+// Body bands — triangulated in a zig-zag so creases are visible
+for (let s = 1; s < stations.length - 1; s++) {
+  const A = rings[s], B = rings[s + 1];
+  for (let i = 0; i < SEG; i++) {
+    const j = (i + 1) % SEG;
+    // zig-zag diagonal direction flips per ring => diamond crease lattice
+    if (s % 2 === 0) {
+      hullTris.push([A[i], B[j], B[i]]);
+      hullTris.push([A[i], A[j], B[j]]);
+    } else {
+      hullTris.push([A[i], A[j], B[i]]);
+      hullTris.push([A[j], B[j], B[i]]);
+    }
+  }
+}
+
+// Tail cap fan to a single point (the pinched paper tip)
+const tailApex = new THREE.Vector3(HULL_LEN * 0.5 + 0.42, 0, 0);
+const lastRing = rings[rings.length - 1];
+for (let i = 0; i < SEG; i++) {
+  const a = lastRing[i];
+  const b = lastRing[(i + 1) % SEG];
+  hullTris.push([tailApex, a, b]);
+}
+
+const hullGeo = triGeometry(hullTris);
+const hullGroup = new THREE.Group();
+addPaper(hullGeo, hullGroup);
+addCreases(hullGeo, hullGroup);
+zeppelin.add(hullGroup);
+
+/* ==================================================================
+   NOSE REINFORCEMENT — folded paper "cap" panels over the nose
+================================================================== */
+const capTris = [];
+const capApex = new THREE.Vector3(-HULL_LEN * 0.5 - 0.10, 0, 0);
+const capRing = [];
+const capR = R_MAX * 0.62;
+const capX = -HULL_LEN * 0.5 + 2.05;
+for (let i = 0; i < 6; i++) {
+  const a = (i / 6) * Math.PI * 2 + half;
+  capRing.push(new THREE.Vector3(capX, Math.sin(a) * capR * 1.03, Math.cos(a) * capR * 1.03));
+}
+for (let i = 0; i < 6; i++) {
+  const p = capRing[i], q = capRing[(i + 1) % 6];
+  // outward crease ridge between adjacent cap corners
+  const mid = p.clone().add(q).multiplyScalar(0.5);
+  const dir = new THREE.Vector3(0, mid.y, mid.z).normalize();
+  const ridge = mid.clone().addScaledVector(dir, 0.10).setX(capX - 0.55);
+  capTris.push([capApex, ridge, p]);
+  capTris.push([capApex, q, ridge]);
+  capTris.push([p, ridge, q]);
+}
+const capGeo = triGeometry(capTris);
+const capGroup = new THREE.Group();
+addPaper(capGeo, capGroup);
+addCreases(capGeo, capGroup);
+zeppelin.add(capGroup);
+
+/* ==================================================================
+   TAIL FINS — sharp folded paper fins (4, cruciform)
+================================================================== */
+function makeFin() {
+  const g = new THREE.Group();
+  // Fin is a folded kite: a spine ridge with two flanking panels.
+  const root0 = new THREE.Vector3(-0.05, 0.0, 0.0);   // forward root
+  const root1 = new THREE.Vector3(2.10, 0.0, 0.0);    // aft root
+  const tipF  = new THREE.Vector3(1.05, 1.62, 0.0);   // forward tip
+  const tipA  = new THREE.Vector3(2.30, 1.30, 0.0);   // aft tip
+  const spineMid = new THREE.Vector3(1.20, 0.80, 0.085);
+  const spineMidB = new THREE.Vector3(1.20, 0.80, -0.085);
+
+  const tris = [
+    // front face (creased along spine)
+    [root0, spineMid, tipF],
+    [root0, root1, spineMid],
+    [root1, tipA, spineMid],
+    [spineMid, tipA, tipF],
+    // back face
+    [root0, tipF, spineMidB],
+    [root0, spineMidB, root1],
+    [root1, spineMidB, tipA],
+    [spineMidB, tipF, tipA],
+  ];
+  const geo = triGeometry(tris);
+  const m = new THREE.Mesh(geo, paperDouble);
+  m.castShadow = true; m.receiveShadow = true;
+  g.add(m);
+  g.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 10), creaseMat));
+  return g;
+}
+
+const finRoot = new THREE.Group();
+finRoot.position.x = HULL_LEN * 0.5 - 2.35;
+for (let i = 0; i < 4; i++) {
+  const f = makeFin();
+  f.rotation.x = (i / 4) * Math.PI * 2 + Math.PI / 4;
+  f.position.y = 0;
+  finRoot.add(f);
+}
+zeppelin.add(finRoot);
+
+/* ==================================================================
+   GONDOLA — a small creased paper boat hanging beneath the hull
+================================================================== */
+const gondola = new THREE.Group();
+{
+  const L = 2.05, W = 0.62, Hh = 0.50;
+  // sharp folded hull of the gondola: pointed bow & stern, keel crease
+  const keelF = new THREE.Vector3(-L * 0.5, -Hh * 0.62, 0);
+  const keelA = new THREE.Vector3( L * 0.5, -Hh * 0.62, 0);
+  const keelM = new THREE.Vector3( 0,       -Hh, 0);
+
+  const rimFL = new THREE.Vector3(-L * 0.44,  Hh * 0.42, -W * 0.30);
+  const rimFR = new THREE.Vector3(-L * 0.44,  Hh * 0.42,  W * 0.30);
+  const rimML = new THREE.Vector3( 0,         Hh * 0.50, -W * 0.5);
+  const rimMR = new THREE.Vector3( 0,         Hh * 0.50,  W * 0.5);
+  const rimAL = new THREE.Vector3( L * 0.44,  Hh * 0.42, -W * 0.30);
+  const rimAR = new THREE.Vector3( L * 0.44,  Hh * 0.42,  W * 0.30);
+
+  const tris = [
+    // left flank
+    [keelF, rimFL, keelM], [keelM, rimFL, rimML],
+    [keelM, rimML, rimAL], [keelM, rimAL, keelA],
+    // right flank
+    [keelF, keelM, rimFR], [keelM, rimMR, rimFR],
+    [keelM, rimAR, rimMR], [keelM, keelA, rimAR],
+    // deck (folded flat top with a centre valley crease)
+    [rimFL, rimFR, rimML], [rimFR, rimMR, rimML],
+    [rimML, rimMR, rimAL], [rimMR, rimAR, rimAL],
+  ];
+  const geo = triGeometry(tris);
+  const m = new THREE.Mesh(geo, paperDouble);
+  m.castShadow = true; m.receiveShadow = true;
+  gondola.add(m);
+  gondola.add(new THREE.LineSegments(new THREE.EdgesGeometry(geo, 8), creaseMat));
+
+  // tiny folded cabin roof (a single creased tent of paper)
+  const rTris = [];
+  const rx = 0.52, rz = 0.26, ry0 = Hh * 0.50, ry1 = Hh * 0.50 + 0.30;
+  const p1 = new THREE.Vector3(-rx, ry0, -rz);
+  const p2 = new THREE.Vector3( rx, ry0, -rz);
+  const p3 = new THREE.Vector3( rx, ry0,  rz);
+  const p4 = new THREE.Vector3(-rx, ry0,  rz);
+  const rA = new THREE.Vector3(-rx * 0.72, ry1, 0);
+  const rB = new THREE.Vector3( rx * 0.72, ry1, 0);
+  rTris.push([p1, p2, rB], [p1, rB, rA]);
+  rTris.push([p4, rA, rB], [p4, rB, p3]);
+  rTris.push([p1, rA, p4], [p2, p3, rB]);
+  const rGeo = triGeometry(rTris);
+  const rm = new THREE.Mesh(rGeo, paperDouble);
+  rm.castShadow = true; rm.receiveShadow = true;
+  gondola.add(rm);
+  gondola.add(new THREE.LineSegments(new THREE.EdgesGeometry(rGeo, 8), creaseMat));
+
+  gondola.position.set(-0.55, -2.42, 0);
+}
+zeppelin.add(gondola);
+
+/* ==================================================================
+   SUSPENSION — folded paper straps joining gondola to hull
+================================================================== */
+function strap(x, lean) {
+  const topY = -R_MAX * 0.92;
+  const botY = gondola.position.y + 0.34;
+  const w = 0.075;
+  const tris = [];
+  const a = new THREE.Vector3(x - 0.16, topY, -w);
+  const b = new THREE.Vector3(x + 0.16, topY,  w);
+  const c = new THREE.Vector3(x + lean, botY,  w * 0.5);
+  const d = new THREE.Vector3(x + lean, botY, -w * 0.5);
+  const midT = new THREE.Vector3(x + lean * 0.5, (topY + botY) * 0.5, w * 1.5);
+  tris.push([a, b, midT], [b, c, midT], [c, d, midT], [d, a, midT]);
+  const g = triGeometry(tris);
+  const m = new THREE.Mesh(g, paperDouble);
+  m.castShadow = true; m.receiveShadow = true;
+  const grp = new THREE.Group();
+  grp.add(m);
+  grp.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 8), creaseMat));
+  return grp;
+}
+zeppelin.add(strap(-1.35, 0.10));
+zeppelin.add(strap(0.25, -0.10));
+
+/* ==================================================================
+   PROPELLER — small folded paper blades at the gondola stern
+================================================================== */
+const propGroup = new THREE.Group();
+{
+  const bladeTris = [];
+  for (let i = 0; i < 3; i++) {
+    const a = (i / 3) * Math.PI * 2;
+    const r = 0.42;
+    const p0 = new THREE.Vector3(0, 0, 0);
+    const p1 = new THREE.Vector3(0.05, Math.sin(a) * r, Math.cos(a) * r);
+    const p2 = new THREE.Vector3(-0.05, Math.sin(a + 0.55) * r * 0.75, Math.cos(a + 0.55) * r * 0.75);
+    bladeTris.push([p0, p1, p2]);
+  }
+  const g = triGeometry(bladeTris);
+  const m = new THREE.Mesh(g, paperDouble);
+  m.castShadow = true; m.receiveShadow = true;
+  propGroup.add(m);
+  propGroup.add(new THREE.LineSegments(new THREE.EdgesGeometry(g, 5), creaseMat));
+  propGroup.position.set(gondola.position.x + 1.15, gondola.position.y - 0.05, 0);
+}
+zeppelin.add(propGroup);
+
+/* ==================================================================
+   Final placement — one centered object
+================================================================== */
+zeppelin.rotation.z = 0.02;
+const box = new THREE.Box3().setFromObject(zeppelin);
+const center = box.getCenter(new THREE.Vector3());
+zeppelin.position.sub(center);
+zeppelin.position.y += 0.0;
+
+const box2 = new THREE.Box3().setFromObject(zeppelin);
+ground.position.y = box2.min.y - 2.6;
+
+/* ------------------------------------------------------------------
+   Loop
+------------------------------------------------------------------ */
+addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+const clock = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  propGroup.rotation.x = t * 2.2;
+  zeppelin.position.y += Math.sin(t * 0.7) * 0.0016;
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

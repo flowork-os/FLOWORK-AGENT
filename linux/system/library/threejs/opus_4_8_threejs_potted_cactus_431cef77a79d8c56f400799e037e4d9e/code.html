@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Tiny Potted Cactus</title>
+  <style>
+    html, body { margin: 0; height: 100%; overflow: hidden; background: #d9d9d6; }
+    #app { width: 100vw; height: 100vh; display: block; }
+  </style>
+
+  <!-- Import map: three.js + OrbitControls from jsDelivr (three@0.160.0) ONLY -->
+  <script type="importmap">
+  {
+    "imports": {
+      "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+    }
+  }
+  </script>
+</head>
+<body>
+  <canvas id="app"></canvas>
+
+  <script type="module">
+    import * as THREE from 'three';
+    import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+    // ------------------------------------------------------------------
+    // Renderer
+    // ------------------------------------------------------------------
+    const canvas = document.getElementById('app');
+    const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.toneMapping = THREE.ACESFilmicToneMapping;
+    renderer.toneMappingExposure = 1.0;
+    renderer.outputColorSpace = THREE.SRGBColorSpace;
+    renderer.shadowMap.enabled = true;
+    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+    // ------------------------------------------------------------------
+    // Scene & neutral studio background
+    // ------------------------------------------------------------------
+    const scene = new THREE.Scene();
+    scene.background = new THREE.Color(0xd9d9d6);
+
+    // ------------------------------------------------------------------
+    // Camera (auto-framed after the model is built)
+    // ------------------------------------------------------------------
+    const camera = new THREE.PerspectiveCamera(
+      40, window.innerWidth / window.innerHeight, 0.01, 100
+    );
+
+    // ------------------------------------------------------------------
+    // Lighting: hemisphere fill + directional key (shadows) + soft fill
+    // ------------------------------------------------------------------
+    const hemi = new THREE.HemisphereLight(0xffffff, 0x9a8b7a, 0.75);
+    hemi.position.set(0, 1, 0);
+    scene.add(hemi);
+
+    const keyLight = new THREE.DirectionalLight(0xfff4e6, 2.4);
+    keyLight.position.set(3.5, 5.5, 3.0);
+    keyLight.castShadow = true;
+    keyLight.shadow.mapSize.set(2048, 2048);
+    keyLight.shadow.camera.near = 0.5;
+    keyLight.shadow.camera.far = 20;
+    keyLight.shadow.camera.left = -3;
+    keyLight.shadow.camera.right = 3;
+    keyLight.shadow.camera.top = 3;
+    keyLight.shadow.camera.bottom = -3;
+    keyLight.shadow.bias = -0.0004;
+    keyLight.shadow.radius = 4;
+    scene.add(keyLight);
+
+    const fillLight = new THREE.DirectionalLight(0xbcd4ff, 0.6);
+    fillLight.position.set(-4, 2.5, -2.5);
+    scene.add(fillLight);
+
+    // ------------------------------------------------------------------
+    // Procedural textures (CanvasTexture)
+    // ------------------------------------------------------------------
+
+    // Subtle terracotta surface texture (warm mottled clay)
+    function makeTerracottaTexture() {
+      const size = 256;
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#b85c3c';
+      ctx.fillRect(0, 0, size, size);
+      // mottling
+      for (let i = 0; i < 2200; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const r = Math.random() * 3 + 0.5;
+        const shade = Math.random();
+        if (shade > 0.5) ctx.fillStyle = `rgba(150,70,45,${Math.random() * 0.4})`;
+        else ctx.fillStyle = `rgba(210,130,95,${Math.random() * 0.35})`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+      return tex;
+    }
+
+    // Dark packed potting soil (granular)
+    function makeSoilTexture() {
+      const size = 256;
+      const c = document.createElement('canvas');
+      c.width = c.height = size;
+      const ctx = c.getContext('2d');
+      ctx.fillStyle = '#3a2a1c';
+      ctx.fillRect(0, 0, size, size);
+      for (let i = 0; i < 6000; i++) {
+        const x = Math.random() * size;
+        const y = Math.random() * size;
+        const r = Math.random() * 2.2 + 0.4;
+        const t = Math.random();
+        if (t > 0.7) ctx.fillStyle = `rgba(90,66,44,${Math.random() * 0.8})`;
+        else if (t > 0.4) ctx.fillStyle = `rgba(25,17,10,${Math.random() * 0.9})`;
+        else ctx.fillStyle = `rgba(60,44,28,${Math.random() * 0.7})`;
+        ctx.beginPath();
+        ctx.arc(x, y, r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      const tex = new THREE.CanvasTexture(c);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      return tex;
+    }
+
+    const terracottaTex = makeTerracottaTexture();
+    const soilTex = makeSoilTexture();
+
+    // ------------------------------------------------------------------
+    // The model group (centered at origin, resting on ground)
+    // ------------------------------------------------------------------
+    const cactusPlant = new THREE.Group();
+    cactusPlant.name = 'TinyPottedCactus';
+
+    // --- Real-world scale (metres). A desk cactus pot ~7cm tall. ---
+    const potBottomR = 0.030;   // pot base radius
+    const potTopR    = 0.042;   // pot rim radius (tapered outward)
+    const potHeight  = 0.070;   // pot height
+    const rimHeight  = 0.010;   // lip band height
+
+    // ==================================================================
+    // PART 1: Terracotta pot (kept as a separate part) — tapered body + rim
+    // ==================================================================
+    const potMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: terracottaTex,
+      roughness: 0.9,
+      metalness: 0.0,
+    });
+
+    // Tapered pot wall (open cylinder, slightly flared toward the top)
+    const potBodyGeo = new THREE.CylinderGeometry(
+      potTopR, potBottomR, potHeight, 48, 1, true
+    );
+    const potBody = new THREE.Mesh(potBodyGeo, potMat);
+    potBody.name = 'PotBody';
+    potBody.position.y = potHeight / 2;
+    potBody.castShadow = true;
+    potBody.receiveShadow = true;
+    cactusPlant.add(potBody);
+
+    // Closed pot bottom so it reads as solid
+    const potBottomGeo = new THREE.CircleGeometry(potBottomR, 48);
+    const potBottom = new THREE.Mesh(potBottomGeo, potMat);
+    potBottom.name = 'PotBottom';
+    potBottom.rotation.x = -Math.PI / 2;
+    potBottom.position.y = 0.0005; // just above ground to avoid z-fighting
+    potBottom.receiveShadow = true;
+    cactusPlant.add(potBottom);
+
+    // Raised rim lip band at the top of the pot
+    const rimGeo = new THREE.CylinderGeometry(
+      potTopR * 1.06, potTopR * 1.02, rimHeight, 48, 1, true
+    );
+    const rim = new THREE.Mesh(rimGeo, potMat);
+    rim.name = 'PotRim';
+    rim.position.y = potHeight - rimHeight / 2 + 0.001;
+    rim.castShadow = true;
+    rim.receiveShadow = true;
+    cactusPlant.add(rim);
+
+    // Thin torus to cap/round the rim edge nicely
+    const rimEdgeGeo = new THREE.TorusGeometry(potTopR * 1.04, 0.003, 12, 48);
+    const rimEdge = new THREE.Mesh(rimEdgeGeo, potMat);
+    rimEdge.name = 'PotRimEdge';
+    rimEdge.rotation.x = Math.PI / 2;
+    rimEdge.position.y = potHeight + 0.001;
+    rimEdge.castShadow = true;
+    rimEdge.receiveShadow = true;
+    cactusPlant.add(rimEdge);
+
+    // ==================================================================
+    // PART 2: Packed soil surface just below the rim
+    // ==================================================================
+    const soilLevel = potHeight - 0.012; // soil sits a bit below the rim
+    const soilTopR = potTopR * 0.96;
+
+    const soilMat = new THREE.MeshStandardMaterial({
+      color: 0xffffff,
+      map: soilTex,
+      roughness: 1.0,
+      metalness: 0.0,
+    });
+
+    // Slightly domed soil top (packed, mounded a touch in the middle)
+    const soilGeo = new THREE.SphereGeometry(
+      soilTopR, 40, 20, 0, Math.PI * 2, 0, Math.PI * 0.5
+    );
+    // Flatten the dome so it's a gentle mound, not a full hemisphere
+    soilGeo.scale(1, 0.14, 1);
+    const soil = new THREE.Mesh(soilGeo, soilMat);
+    soil.name = 'Soil';
+    soil.position.y = soilLevel;
+    soil.receiveShadow = true;
+    cactusPlant.add(soil);
+
+    // ==================================================================
+    // PART 3: Ribbed globular cactus body
+    // ==================================================================
+    // Build a ribbed globe by displacing a sphere's vertices radially,
+    // using a cosine "flute" pattern around the vertical axis.
+    const cactusRadius = 0.030;
+    const ribCount = 12;         // number of vertical ribs
+    const ribDepth = 0.16;       // how deep the flutes cut in (fraction of r)
+
+    const cactusGeo = new THREE.SphereGeometry(cactusRadius, 96, 64);
+    {
+      const pos = cactusGeo.attributes.position;
+      const v = new THREE.Vector3();
+      for (let i = 0; i < pos.count; i++) {
+        v.fromBufferAttribute(pos, i);
+        const len = v.length();
+        // angle around the vertical (Y) axis
+        const theta = Math.atan2(v.z, v.x);
+        // vertical parameter (0 at bottom, 1 at top)
+        const t = (v.y / cactusRadius + 1) * 0.5;
+        // ribs: valleys between rounded ridges
+        const rib = Math.cos(theta * ribCount);
+        // ribs fade toward the very top/bottom so it stays rounded
+        const taper = Math.sin(Math.PI * t);
+        const factor = 1.0 - ribDepth * 0.5 * (1 - rib) * taper;
+        // slightly squash the globe (taller than wide reads as a barrel cactus)
+        v.setLength(len * factor);
+        pos.setXYZ(i, v.x, v.y, v.z);
+      }
+      cactusGeo.computeVertexNormals();
+    }
+    // Make it a touch taller than a perfect sphere (barrel/globular)
+    cactusGeo.scale(1.0, 1.18, 1.0);
+
+    const cactusMat = new THREE.MeshStandardMaterial({
+      color: 0x4f7d3a,
+      roughness: 0.65,
+      metalness: 0.0,
+    });
+
+    const cactusBody = new THREE.Mesh(cactusGeo, cactusMat);
+    cactusBody.name = 'CactusBody';
+    // Sit the cactus so its base nestles slightly into the soil mound
+    const cactusHeight = cactusRadius * 1.18;
+    cactusBody.position.y = soilLevel + cactusHeight * 0.72;
+    cactusBody.castShadow = true;
+    cactusBody.receiveShadow = true;
+    cactusPlant.add(cactusBody);
+
+    // Small growth tip / areole crown highlight at the very top
+    const crownGeo = new THREE.SphereGeometry(cactusRadius * 0.22, 24, 16);
+    crownGeo.scale(1, 0.5, 1);
+    const crownMat = new THREE.MeshStandardMaterial({
+      color: 0x6f9c4e,
+      roughness: 0.55,
+      metalness: 0.0,
+    });
+    const crown = new THREE.Mesh(crownGeo, crownMat);
+    crown.name = 'CactusCrown';
+    crown.position.y = cactusBody.position.y + cactusHeight * 0.98;
+    crown.castShadow = true;
+    cactusPlant.add(crown);
+
+    // ==================================================================
+    // PART 4: Small spine clusters along the ridges
+    // ==================================================================
+    const spineMat = new THREE.MeshStandardMaterial({
+      color: 0xe9ddc0,
+      roughness: 0.5,
+      metalness: 0.0,
+    });
+
+    const spinesGroup = new THREE.Group();
+    spinesGroup.name = 'SpineClusters';
+
+    // A single spine as a thin cone
+    const spineGeo = new THREE.ConeGeometry(0.0009, 0.008, 6);
+
+    // Helper: place a cluster of a few spines at a surface point,
+    // oriented to point radially outward from the cactus centre.
+    const up = new THREE.Vector3(0, 1, 0);
+    const centre = cactusBody.position.clone();
+
+    function surfacePoint(theta, phi) {
+      // approximate the ribbed radius at this direction to seat spines on ridges
+      const rib = Math.cos(theta * ribCount);
+      const t = (Math.cos(phi) + 1) * 0.5; // phi: 0 top -> PI bottom
+      const taper = Math.sin(Math.PI * t);
+      const factor = 1.0 - ribDepth * 0.5 * (1 - rib) * taper;
+      const r = cactusRadius * factor;
+      const x = r * Math.sin(phi) * Math.cos(theta);
+      const y = r * Math.cos(phi) * 1.18; // match the vertical scale
+      const z = r * Math.sin(phi) * Math.sin(theta);
+      return new THREE.Vector3(x, y, z);
+    }
+
+    // Place clusters on each ridge (theta at cos()=1 => ridge crest),
+    // at several heights down the body.
+    const heightSteps = 6;
+    for (let rc = 0; rc < ribCount; rc++) {
+      // ridge crest angle (where cos(theta*ribCount) = 1)
+      const theta = (rc / ribCount) * Math.PI * 2;
+      for (let hs = 1; hs <= heightSteps; hs++) {
+        // phi from near-top to near-bottom of the body
+        const phi = (hs / (heightSteps + 1)) * Math.PI * 0.86 + 0.18;
+
+        const localPos = surfacePoint(theta, phi);
+        const worldPos = localPos.clone().add(centre);
+
+        // outward normal direction (radial)
+        const normal = localPos.clone().normalize();
+
+        // Cluster: 3–4 little spines fanning outward
+        const cluster = new THREE.Group();
+        cluster.position.copy(worldPos);
+
+        // orient the cluster so +Y aligns to the outward normal
+        const quat = new THREE.Quaternion().setFromUnitVectors(up, normal);
+        cluster.quaternion.copy(quat);
+
+        const nSpines = 3 + (hs % 2);
+        for (let s = 0; s < nSpines; s++) {
+          const spine = new THREE.Mesh(spineGeo, spineMat);
+          spine.castShadow = true;
+          // fan the spines out slightly around the normal
+          const a = (s / nSpines) * Math.PI * 2;
+          const tilt = 0.5 + Math.random() * 0.15;
+          spine.position.y = 0.003; // lift base off the surface
+          spine.rotation.z = Math.cos(a) * tilt;
+          spine.rotation.x = Math.sin(a) * tilt;
+          spinesGroup.add(spineToWorld(spine, cluster));
+        }
+      }
+    }
+
+    // Bake a cluster's child spine into world space under spinesGroup
+    // (keeps a flat, shadow-friendly hierarchy).
+    function spineToWorld(spine, cluster) {
+      cluster.add(spine);
+      cluster.updateMatrixWorld(true);
+      spine.applyMatrix4(cluster.matrixWorld);
+      cluster.remove(spine);
+      return spine;
+    }
+
+    cactusPlant.add(spinesGroup);
+
+    // Little cluster of areole fuzz dots at spine bases for readability
+    // (tiny pale spheres) — cheap and reads well at desk scale.
+    const areoleMat = new THREE.MeshStandardMaterial({
+      color: 0xf2ead2, roughness: 0.9, metalness: 0.0
+    });
+    const areoleGeo = new THREE.SphereGeometry(0.0016, 8, 6);
+    for (let rc = 0; rc < ribCount; rc++) {
+      const theta = (rc / ribCount) * Math.PI * 2;
+      for (let hs = 1; hs <= heightSteps; hs++) {
+        const phi = (hs / (heightSteps + 1)) * Math.PI * 0.86 + 0.18;
+        const localPos = surfacePoint(theta, phi);
+        const a = new THREE.Mesh(areoleGeo, areoleMat);
+        a.position.copy(localPos.clone().add(centre));
+        a.castShadow = true;
+        spinesGroup.add(a);
+      }
+    }
+
+    // Add the assembled plant to the scene
+    scene.add(cactusPlant);
+
+    // ------------------------------------------------------------------
+    // Soft ground / contact-shadow plane the object rests on
+    // ------------------------------------------------------------------
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: 0xcfcfca,
+      roughness: 0.95,
+      metalness: 0.0,
+    });
+    const ground = new THREE.Mesh(new THREE.PlaneGeometry(4, 4), groundMat);
+    ground.name = 'Ground';
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = 0;
+    ground.receiveShadow = true;
+    scene.add(ground);
+
+    // ------------------------------------------------------------------
+    // Center the model at the origin and rest it on the ground (y=0)
+    // ------------------------------------------------------------------
+    {
+      const box = new THREE.Box3().setFromObject(cactusPlant);
+      const center = new THREE.Vector3();
+      box.getCenter(center);
+      // Recenter horizontally on origin, and lift so its base sits on y=0.
+      cactusPlant.position.x -= center.x;
+      cactusPlant.position.z -= center.z;
+      cactusPlant.position.y -= box.min.y;
+    }
+
+    // ------------------------------------------------------------------
+    // OrbitControls with damping + gentle autoRotate
+    // ------------------------------------------------------------------
+    const controls = new OrbitControls(camera, renderer.domElement);
+    controls.enableDamping = true;
+    controls.dampingFactor = 0.05;
+    controls.autoRotate = true;
+    controls.autoRotateSpeed = 0.9;
+    controls.minDistance = 0.12;
+    controls.maxDistance = 1.2;
+    controls.maxPolarAngle = Math.PI * 0.52; // keep camera above ground
+
+    // ------------------------------------------------------------------
+    // Auto-frame the camera to the model's bounding box
+    // ------------------------------------------------------------------
+    function frameObject() {
+      const box = new THREE.Box3().setFromObject(cactusPlant);
+      const size = box.getSize(new THREE.Vector3());
+      const center = box.getCenter(new THREE.Vector3());
+
+      const maxDim = Math.max(size.x, size.y, size.z);
+      const fov = camera.fov * (Math.PI / 180);
+      let dist = (maxDim / 2) / Math.tan(fov / 2);
+      dist *= 2.1; // padding around the object
+
+      // Look slightly down at the plant
+      camera.position.set(
+        center.x + dist * 0.7,
+        center.y + dist * 0.55,
+        center.z + dist * 0.9
+      );
+      controls.target.copy(center);
+      camera.near = dist / 100;
+      camera.far = dist * 100;
+      camera.updateProjectionMatrix();
+      controls.update();
+    }
+    frameObject();
+
+    // Aim the shadow-casting key light at the plant
+    keyLight.target.position.copy(controls.target);
+    scene.add(keyLight.target);
+
+    // ------------------------------------------------------------------
+    // Resize handling
+    // ------------------------------------------------------------------
+    window.addEventListener('resize', () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // ------------------------------------------------------------------
+    // Render loop
+    // ------------------------------------------------------------------
+    function animate() {
+      requestAnimationFrame(animate);
+      controls.update();
+      renderer.render(scene, camera);
+    }
+    animate();
+  </script>
+</body>
+</html>

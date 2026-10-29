@@ -1,0 +1,384 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Houseplant with Pot &amp; Saucer</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #17181b; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+    color: rgba(230,230,235,0.42); user-select: none; pointer-events: none;
+    letter-spacing: 0.02em;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Procedural houseplant · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ------------------------------------------------------------------ *
+ *  Units are centimeters. The whole plant sits with the saucer base
+ *  at y = 0 and is centered on the origin in X/Z.
+ * ------------------------------------------------------------------ */
+
+// ---- Renderer -------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.08;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---- Scene / Camera -------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x17181b);
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 2000);
+camera.position.set(52, 36, 66);
+
+// Subtle studio environment for realistic PBR reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+pmrem.dispose();
+
+// ---- Controls -------------------------------------------------------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 16, 0);
+controls.minDistance = 32;
+controls.maxDistance = 170;
+controls.minPolarAngle = 0.18;
+controls.maxPolarAngle = Math.PI * 0.5;
+
+// ---- Lighting -------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xbfd4e8, 0x2c2620, 0.55);
+scene.add(hemi);
+
+const keyLight = new THREE.DirectionalLight(0xfff3e2, 2.3);
+keyLight.position.set(36, 62, 26);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(2048, 2048);
+keyLight.shadow.bias = -0.0004;
+keyLight.shadow.normalBias = 0.03;
+const sc = keyLight.shadow.camera;
+sc.near = 1; sc.far = 220;
+sc.left = -45; sc.right = 45; sc.top = 55; sc.bottom = -10;
+sc.updateProjectionMatrix();
+scene.add(keyLight);
+keyLight.target.position.set(0, 16, 0);
+scene.add(keyLight.target);
+
+const fillLight = new THREE.DirectionalLight(0x9db4d0, 0.55);
+fillLight.position.set(-44, 28, 12);
+scene.add(fillLight);
+
+const rimLight = new THREE.DirectionalLight(0xffffff, 1.5);
+rimLight.position.set(-16, 40, -48);
+scene.add(rimLight);
+
+// ---- Shadow-catching ground ----------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(500, 500),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---- Deterministic RNG ---------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260706);
+const rand = (a, b) => a + (b - a) * rng();
+const D2R = THREE.MathUtils.degToRad;
+
+/* ================================================================== *
+ *  CERAMIC POT + SAUCER  (revolved profiles via LatheGeometry)
+ * ================================================================== */
+const ceramicMat = new THREE.MeshStandardMaterial({
+  color: 0xba5b3c,
+  roughness: 0.82,
+  metalness: 0.0
+});
+const ceramicInner = new THREE.MeshStandardMaterial({
+  color: 0x7d3a25,
+  roughness: 0.95,
+  metalness: 0.0,
+  side: THREE.DoubleSide
+});
+
+function latheFromPoints(pts, mat, seg = 80) {
+  const v2 = pts.map(p => new THREE.Vector2(p[0], p[1]));
+  const geo = new THREE.LatheGeometry(v2, seg);
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+// Pot: tapered, wider at top, small rim lip. Base rests on saucer floor.
+const potProfile = [
+  [0.0, 0.0], [5.6, 0.0], [5.9, 0.4], [6.5, 4.0], [7.3, 9.0],
+  [8.0, 14.2], [8.15, 15.0], [7.5, 15.0], [7.35, 14.1],
+  [6.9, 6.0], [6.2, 2.2], [5.8, 2.0], [0.0, 2.0]
+];
+const pot = latheFromPoints(potProfile, ceramicMat, 84);
+pot.position.y = 0.8;
+scene.add(pot);
+
+// Matching shallow drip saucer beneath the pot
+const saucerProfile = [
+  [0.0, 0.0], [9.8, 0.0], [10.5, 0.35], [10.8, 2.15],
+  [10.2, 2.4], [9.9, 2.15], [9.4, 0.9], [8.8, 0.75], [0.0, 0.7]
+];
+const saucer = latheFromPoints(saucerProfile, ceramicMat, 84);
+saucer.position.y = 0.0;
+scene.add(saucer);
+
+/* ================================================================== *
+ *  SOIL  (open cylinder + flattened dome cap + scattered pebbles)
+ * ================================================================== */
+const soilGroup = new THREE.Group();
+scene.add(soilGroup);
+
+const soilMat = new THREE.MeshStandardMaterial({ color: 0x3a2c20, roughness: 1.0, metalness: 0.0 });
+
+const soilWall = new THREE.Mesh(
+  new THREE.CylinderGeometry(7.15, 6.9, 3.6, 44, 1, true),
+  soilMat
+);
+soilWall.position.y = 12.4;
+soilWall.receiveShadow = true;
+soilGroup.add(soilWall);
+
+const soilCap = new THREE.Mesh(
+  new THREE.SphereGeometry(7.15, 44, 22, 0, Math.PI * 2, 0, Math.PI * 0.5),
+  soilMat
+);
+soilCap.position.y = 14.0;
+soilCap.scale.y = 0.15;
+soilCap.castShadow = true;
+soilCap.receiveShadow = true;
+soilGroup.add(soilCap);
+
+// pebbles / soil clumps on the dome
+const pebbleGeo = new THREE.IcosahedronGeometry(1, 0);
+const pebbleCols = [0x3a2f26, 0x4d4038, 0x5f5346, 0x2c241d, 0x6b5a48];
+const domeH = 7.15 * 0.15;
+for (let i = 0; i < 30; i++) {
+  const ang = rand(0, Math.PI * 2);
+  const r = Math.sqrt(rng()) * 6.4;
+  const y = 14.0 + domeH * (1 - (r / 7.15) * (r / 7.15));
+  const mat = new THREE.MeshStandardMaterial({
+    color: pebbleCols[Math.floor(rng() * pebbleCols.length)],
+    roughness: 1.0, metalness: 0.0
+  });
+  const p = new THREE.Mesh(pebbleGeo, mat);
+  const s = rand(0.14, 0.4);
+  p.scale.set(s, s * rand(0.55, 0.9), s);
+  p.position.set(Math.cos(ang) * r, y + s * 0.25, Math.sin(ang) * r);
+  p.rotation.set(rand(0, 6.28), rand(0, 6.28), rand(0, 6.28));
+  p.castShadow = true;
+  p.receiveShadow = true;
+  soilGroup.add(p);
+}
+
+/* ================================================================== *
+ *  PLANT — bushy cluster of broad leaves on stems
+ * ================================================================== */
+
+// Procedural broad-leaf geometry: an arced midrib, a width profile
+// (narrow base -> broad middle -> pointed tip), a keel fold, and a
+// baked-in green vertex gradient with a subtle midrib vein.
+function createLeafGeometry(L, W, theta0, thetaTip, channel, hue) {
+  const segsL = 20, segsW = 8;
+  const positions = [], uvs = [], colors = [], indices = [];
+
+  // integrate the midrib curve (reach outward, rise up, then droop)
+  const mr = [], mu = [];
+  let reach = 0, up = 0;
+  for (let i = 0; i <= segsL; i++) {
+    mr.push(reach); mu.push(up);
+    const t = i / segsL;
+    const theta = theta0 + (thetaTip - theta0) * t;
+    const ds = L / segsL;
+    reach += Math.cos(theta) * ds;
+    up += Math.sin(theta) * ds;
+  }
+
+  const col = new THREE.Color();
+  for (let i = 0; i <= segsL; i++) {
+    const t = i / segsL;
+    const wp = Math.pow(Math.sin(Math.PI * Math.min(1, t)), 0.62); // width profile
+    const halfW = 0.5 * W * wp;
+    for (let j = 0; j <= segsW; j++) {
+      const s = j / segsW;
+      const off = s - 0.5;
+      const edge = Math.abs(off) * 2;         // 0 at midrib -> 1 at edge
+      const z = off * 2 * halfW;              // blade width
+      const dip = channel * edge * edge * (halfW + 0.6); // keel fold (edges drop)
+      positions.push(mr[i], mu[i] - dip, z);
+      uvs.push(s, t);
+
+      // green gradient: darker at base & along the midrib vein, lighter toward tip/edges
+      const vein = 1.0 - Math.min(1.0, edge * 6.0); // narrow midrib band
+      const light = 0.19 + 0.15 * t + 0.05 * edge - 0.05 * vein;
+      const sat = 0.58 - 0.14 * t - 0.06 * vein;
+      col.setHSL(hue - 0.015 * t, THREE.MathUtils.clamp(sat, 0.2, 0.8),
+                 THREE.MathUtils.clamp(light, 0.08, 0.55));
+      colors.push(col.r, col.g, col.b);
+    }
+  }
+
+  const rowW = segsW + 1;
+  for (let i = 0; i < segsL; i++) {
+    for (let j = 0; j < segsW; j++) {
+      const a = i * rowW + j, b = a + 1, c = a + rowW, d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.setIndex(indices);
+  g.computeVertexNormals();
+  return g;
+}
+
+// A gently curving stem (petiole) from near the soil centre out to the leaf base
+function createStem(baseR, topR, topH, radius) {
+  const p0 = new THREE.Vector3(baseR * 0.2, -1.2, 0);
+  const p1 = new THREE.Vector3(baseR * 0.7, topH * 0.35, 0);
+  const p2 = new THREE.Vector3(topR * 0.75, topH * 0.75, 0);
+  const p3 = new THREE.Vector3(topR, topH, 0);
+  const curve = new THREE.CatmullRomCurve3([p0, p1, p2, p3]);
+  const geo = new THREE.TubeGeometry(curve, 24, radius, 8, false);
+  return { geo, top: p3 };
+}
+
+// Waxy leaf material — vertex colors carry the green gradient
+const leafMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  vertexColors: true,
+  roughness: 0.52,
+  metalness: 0.0,
+  clearcoat: 0.35,
+  clearcoatRoughness: 0.5,
+  sheen: 0.28,
+  sheenRoughness: 0.6,
+  sheenColor: new THREE.Color(0x9fd08a),
+  side: THREE.DoubleSide
+});
+
+const stemMat = new THREE.MeshStandardMaterial({ color: 0x4c7a34, roughness: 0.7, metalness: 0.0 });
+
+const plant = new THREE.Group();
+plant.position.set(0, 14.4, 0);
+scene.add(plant);
+
+function addArm(phi, o) {
+  const arm = new THREE.Group();
+  arm.rotation.y = phi;
+  plant.add(arm);
+
+  const stem = createStem(o.baseR, o.topR, o.topH, o.stemRadius);
+  const stemMesh = new THREE.Mesh(stem.geo, stemMat);
+  stemMesh.castShadow = true;
+  stemMesh.receiveShadow = true;
+  arm.add(stemMesh);
+
+  const geo = createLeafGeometry(o.L, o.W, o.theta0, o.thetaTip, o.channel, o.hue);
+  const leaf = new THREE.Mesh(geo, leafMat);
+  leaf.castShadow = true;
+  leaf.receiveShadow = true;
+  leaf.position.copy(stem.top);
+  leaf.rotation.z = o.tiltZ;
+  leaf.rotation.x = o.roll;
+  arm.add(leaf);
+}
+
+// Outer ring — large, arching, drooping leaves
+for (let k = 0; k < 9; k++) {
+  addArm(k / 9 * Math.PI * 2 + rand(-0.2, 0.2), {
+    baseR: rand(0.5, 1.5), topR: rand(3.0, 5.5), topH: rand(2.5, 5.0), stemRadius: 0.46,
+    L: rand(20, 27), W: rand(9, 12),
+    theta0: D2R(rand(58, 70)), thetaTip: D2R(rand(-28, -12)),
+    channel: rand(0.10, 0.18), hue: rand(0.28, 0.33),
+    tiltZ: D2R(rand(-6, 6)), roll: D2R(rand(-16, 16))
+  });
+}
+// Inner ring — medium, more upright leaves
+for (let k = 0; k < 6; k++) {
+  addArm(k / 6 * Math.PI * 2 + 0.3 + rand(-0.25, 0.25), {
+    baseR: rand(0.3, 1.0), topR: rand(1.5, 3.0), topH: rand(4.5, 8.0), stemRadius: 0.4,
+    L: rand(14, 20), W: rand(7, 10),
+    theta0: D2R(rand(70, 84)), thetaTip: D2R(rand(-6, 8)),
+    channel: rand(0.12, 0.2), hue: rand(0.29, 0.34),
+    tiltZ: D2R(rand(-5, 5)), roll: D2R(rand(-12, 12))
+  });
+}
+// Central young shoots — small, tightly upright
+for (let k = 0; k < 3; k++) {
+  addArm(k / 3 * Math.PI * 2 + rand(-0.3, 0.3), {
+    baseR: rand(0.1, 0.5), topR: rand(0.6, 1.6), topH: rand(6.5, 10.0), stemRadius: 0.32,
+    L: rand(8, 13), W: rand(4.5, 7),
+    theta0: D2R(rand(80, 88)), thetaTip: D2R(rand(20, 45)),
+    channel: rand(0.15, 0.22), hue: rand(0.30, 0.36),
+    tiltZ: D2R(rand(-4, 4)), roll: D2R(rand(-8, 8))
+  });
+}
+
+/* ================================================================== *
+ *  Render loop & resize
+ * ================================================================== */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

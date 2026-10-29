@@ -1,0 +1,628 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Late-Night Ramen Shop</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#150d09}
+  canvas{display:block}
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================== CONFIG & PALETTE ============================== */
+const ROOM = { W: 13, D: 11, H: 4.4 };            // interior span x, z, ceiling height
+const W2 = ROOM.W / 2, D2 = ROOM.D / 2;
+const DOOR = { cz: 0.3, w: 1.7, top: 2.35 };      // noren doorway on the west wall
+const COUNTER = { cx: 0, cz: -1.25, len: 8.4, h: 1.0 };
+
+const PAL = {
+  floor: 0x6d4a30, wainscot: 0x7c5533, plaster: 0xe4cfa4, ceiling: 0x4a3320,
+  counter: 0xb07f4a, darkWood: 0x5a3c22, beam: 0x6b4527,
+  steel: 0x9aa4aa, iron: 0x33363b, vinylRed: 0xa53c30,
+  lantern: 0xffb36b, lanternRed: 0xd8402c, stove: 0xff6a1f,
+  noren: 0x2b3a63, norenWhite: 0xf1ede2,
+  broth: 0xe8c98f, noodle: 0xf0dfa8, naruto: 0xf5eee6,
+  sakeGreen: 0x39543c, sakeBrown: 0x6a4126, night: 0x0d1322
+};
+
+/* ============================== PRNG & SMALL HELPERS ============================== */
+function mulberry32(seed) {
+  return function () {
+    seed |= 0; seed = seed + 0x6D2B79F5 | 0;
+    let t = Math.imul(seed ^ seed >>> 15, 1 | seed);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(19881122);
+const rand = (a = 1, b) => (b === undefined ? rng() * a : a + rng() * (b - a));
+const pick = arr => arr[Math.floor(rng() * arr.length)];
+const flick = t => 0.55 + 0.2 * Math.sin(t * 7.9) + 0.15 * Math.sin(t * 5.1 + 1.3) + 0.1 * Math.sin(t * 12.7 + 4.1);
+
+/* ============================== CANVAS TEXTURES ============================== */
+function makeTexture(w, h, draw, repX = 1, repY = 1) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(repX, repY);
+  t.colorSpace = THREE.SRGBColorSpace; t.anisotropy = 4;
+  return t;
+}
+function scribble(g, x, y, w, h, n, ink) {           // vertical brush "handwriting"
+  g.strokeStyle = ink; g.lineCap = 'round';
+  for (let i = 0; i < n; i++) {
+    const cx = x + (i + 0.5) * w / n;
+    let cy = y;
+    while (cy < y + h - 6) {
+      const seg = 7 + rand(12);
+      g.lineWidth = 1.5 + rand(2.5);
+      g.beginPath(); g.moveTo(cx + rand(-3, 3), cy);
+      g.quadraticCurveTo(cx + rand(-5, 5), cy + seg / 2, cx + rand(-3, 3), cy + seg);
+      g.stroke(); cy += seg + 3 + rand(5);
+    }
+  }
+}
+function woodDraw(tone) {
+  return (g, w, h) => {
+    g.fillStyle = tone; g.fillRect(0, 0, w, h);
+    for (let p = 0; p < 5; p++) {
+      const y0 = p * h / 5;
+      g.strokeStyle = 'rgba(40,22,8,0.8)'; g.lineWidth = 3; g.strokeRect(-2, y0, w + 4, h / 5);
+      for (let s = 0; s < 8; s++) {
+        g.strokeStyle = `rgba(58,34,14,${0.15 + rand(0.25)})`; g.lineWidth = 1 + rand(1.4);
+        const gy = y0 + rand(h / 5); g.beginPath(); g.moveTo(0, gy);
+        g.bezierCurveTo(w * 0.3, gy + rand(-5, 5), w * 0.7, gy + rand(-5, 5), w, gy); g.stroke();
+      }
+      if (rng() < 0.6) {
+        g.fillStyle = 'rgba(45,26,10,0.7)';
+        g.beginPath(); g.ellipse(rand(w), y0 + rand(8, h / 5 - 8), 4 + rand(4), 2.5 + rand(2), 0, 0, 7); g.fill();
+      }
+    }
+  };
+}
+const floorTex    = makeTexture(512, 512, woodDraw('#6d4a30'), 4, 4);
+const counterTex  = makeTexture(512, 512, woodDraw('#b07f4a'), 3, 1);
+const wainscotTex = makeTexture(512, 256, woodDraw('#7c5533'), 4, 1);
+const plasterTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#e4cfa4'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 500; i++) {
+    g.fillStyle = `rgba(${150 + rand(60) | 0},${125 + rand(50) | 0},${85 + rand(40) | 0},0.16)`;
+    g.fillRect(rand(w), rand(h), 1 + rand(3), 1 + rand(3));
+  }
+}, 4, 2);
+const tileTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#c9c2ae'; g.fillRect(0, 0, w, h);
+  const s = 32;
+  for (let y = 0; y < h; y += s) for (let x = 0; x < w; x += s) {
+    const v = 205 + rand(28);
+    g.fillStyle = `rgb(${v | 0},${(v * 0.97) | 0},${(v * 0.88) | 0})`;
+    g.fillRect(x + 1.5, y + 1.5, s - 3, s - 3);
+  }
+}, 5, 3);
+const menuTex = makeTexture(1024, 256, (g, w, h) => {
+  g.fillStyle = '#4a3320'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 7; i++) {                       // row of handwritten tags
+    const x = 18 + i * 143;
+    g.fillStyle = i % 3 === 2 ? '#e8dcbc' : '#f4ead0';
+    g.fillRect(x, 18, 112, h - 36);
+    g.strokeStyle = '#8a2f22'; g.lineWidth = 5; g.strokeRect(x, 18, 112, h - 36);
+    g.fillStyle = '#b8382a'; g.fillRect(x + 34, 26, 44, 20);
+    scribble(g, x + 18, 58, 80, h - 96, 2, 'rgba(30,24,20,0.9)');
+  }
+});
+const boardTex = makeTexture(256, 320, (g, w, h) => {
+  g.fillStyle = '#2b2f2b'; g.fillRect(0, 0, w, h);
+  g.strokeStyle = '#a8763e'; g.lineWidth = 14; g.strokeRect(4, 4, w - 8, h - 8);
+  g.fillStyle = '#e5d8b8'; g.fillRect(70, 22, 116, 30);
+  scribble(g, 30, 70, w - 60, h - 100, 4, 'rgba(238,232,214,0.85)');
+});
+const norenTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#2b3a63'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 260; i++) {
+    g.fillStyle = 'rgba(255,255,255,0.03)'; g.fillRect(rand(w), rand(h), 1.5, 5);
+  }
+  g.strokeStyle = '#f1ede2'; g.lineWidth = 9;
+  g.beginPath(); g.arc(w / 2, h * 0.36, 52, 0, 7); g.stroke();
+  scribble(g, w / 2 - 15, h * 0.6, 30, h * 0.33, 1, 'rgba(241,237,226,0.95)');
+  g.fillStyle = '#f1ede2'; g.fillRect(0, 0, w, 12);
+});
+const lanternTex = makeTexture(256, 256, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, '#e9b06a'); gr.addColorStop(0.5, '#ffd9a0'); gr.addColorStop(1, '#d98d4e');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.strokeStyle = 'rgba(150,70,30,0.4)'; g.lineWidth = 2;
+  for (let y = 12; y < h; y += 22) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+  g.fillStyle = 'rgba(200,50,30,0.85)';
+  g.beginPath(); g.ellipse(w / 2, h / 2, 40, 56, 0, 0, 7); g.fill();
+  scribble(g, w / 2 - 12, h / 2 - 40, 24, 80, 1, 'rgba(255,240,220,0.9)');
+}, 1, 1);
+const nightTex = makeTexture(256, 256, (g, w, h) => {
+  const gr = g.createLinearGradient(0, 0, 0, h);
+  gr.addColorStop(0, '#080d1c'); gr.addColorStop(1, '#1c2540');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+  g.fillStyle = 'rgba(255,196,110,0.8)'; g.beginPath(); g.arc(w * 0.3, h * 0.32, 9, 0, 7); g.fill();
+  g.fillStyle = 'rgba(255,196,110,0.16)'; g.beginPath(); g.arc(w * 0.3, h * 0.32, 34, 0, 7); g.fill();
+  g.fillStyle = '#11182c';                            // hinted alley silhouettes
+  g.fillRect(w * 0.55, h * 0.2, w * 0.3, h * 0.8); g.fillRect(0, h * 0.5, w * 0.22, h * 0.5);
+});
+const puffTex = makeTexture(128, 128, (g, w, h) => {
+  const gr = g.createRadialGradient(w / 2, h / 2, 2, w / 2, h / 2, w / 2);
+  gr.addColorStop(0, 'rgba(255,255,255,0.95)'); gr.addColorStop(0.45, 'rgba(255,255,255,0.4)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, w, h);
+});
+const narutoTex = makeTexture(64, 64, (g, w, h) => {
+  g.fillStyle = '#f5eee6'; g.beginPath(); g.arc(32, 32, 30, 0, 7); g.fill();
+  g.strokeStyle = '#e0576a'; g.lineWidth = 6;
+  g.beginPath();
+  for (let a = 0; a < 12; a += 0.2) { const r = 2 + a * 2.1; g.lineTo(32 + Math.cos(a) * r, 32 + Math.sin(a) * r); }
+  g.stroke();
+});
+
+/* ============================== MATERIALS ============================== */
+const M = o => new THREE.MeshStandardMaterial(o);
+const matFloor    = M({ map: floorTex, roughness: 0.7, color: 0xcfa477 });
+const matCeiling  = M({ color: PAL.ceiling, roughness: 0.95 });
+const matWainscot = M({ map: wainscotTex, roughness: 0.85, color: 0xc09a68 });
+const matPlaster  = M({ map: plasterTex, roughness: 0.95 });
+const matTile     = M({ map: tileTex, roughness: 0.4 });
+const matCounter  = M({ map: counterTex, roughness: 0.5, color: 0xd8ab72 });
+const matDarkWood = M({ color: PAL.darkWood, roughness: 0.85 });
+const matBeam    = M({ color: PAL.beam, roughness: 0.9 });
+const matSteel   = M({ color: PAL.steel, roughness: 0.35, metalness: 0.8 });
+const matIron    = M({ color: PAL.iron, roughness: 0.5, metalness: 0.6 });
+const matVinyl   = M({ color: PAL.vinylRed, roughness: 0.45 });
+const matLantern = M({ map: lanternTex, emissive: 0xffc584, emissiveMap: lanternTex, emissiveIntensity: 1.35, roughness: 0.9 });
+const matNoren   = M({ map: norenTex, roughness: 1, side: THREE.DoubleSide });
+const matMenu    = M({ map: menuTex, roughness: 0.9 });
+const matBoard   = M({ map: boardTex, roughness: 0.9 });
+const matBowl    = M({ color: 0x8a2f22, roughness: 0.35 });
+const matBroth   = M({ color: PAL.broth, roughness: 0.25, emissive: 0x694a1a, emissiveIntensity: 0.35 });
+const matNoodle  = M({ color: PAL.noodle, roughness: 0.7 });
+const matChopstick = M({ color: 0xcfa46a, roughness: 0.7 });
+const matNight   = new THREE.MeshBasicMaterial({ map: nightTex, fog: false });
+const matStoveGlow = M({ color: 0x301008, emissive: PAL.stove, emissiveIntensity: 1.6 });
+const matBulb    = M({ color: 0xfff2cf, emissive: 0xffd990, emissiveIntensity: 2.2 });
+
+/* ============================== SCENE / RENDERER / CAMERA ============================== */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.night);
+scene.fog = new THREE.FogExp2(0x1c1208, 0.025);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.3;
+document.body.appendChild(renderer.domElement);
+
+const camera = new THREE.PerspectiveCamera(58, innerWidth / innerHeight, 0.1, 60);
+camera.position.set(4.5, 2.9, 1.3);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.3, -0.2);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 1.2;
+controls.minDistance = 2.6; controls.maxDistance = 4.7;
+controls.minPolarAngle = 1.04; controls.maxPolarAngle = 1.38;
+
+/* ============================== BUILDERS ============================== */
+const box = (w, h, d, mat) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+const cyl = (r1, r2, h, mat, seg = 14) => new THREE.Mesh(new THREE.CylinderGeometry(r1, r2, h, seg), mat);
+function shadowed(g) { g.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } }); return g; }
+
+// --- room shell: floor, walls with doorway, ceiling and beams ---
+function buildRoom() {
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.W, ROOM.D), matFloor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const ceil = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.W, ROOM.D), matCeiling);
+  ceil.rotation.x = Math.PI / 2; ceil.position.y = ROOM.H; ceil.receiveShadow = true; g.add(ceil);
+  for (const z of [-3.4, 0.2, 3.6]) {
+    const b = box(ROOM.W, 0.3, 0.26, matBeam);
+    b.position.set(0, ROOM.H - 0.15, z); b.castShadow = b.receiveShadow = true; g.add(b);
+  }
+  const WAIN = 1.25;
+  const wall = (w, x, z, ry, tiled) => {                     // wainscot + upper wall slab
+    const lower = box(w, WAIN, 0.24, matWainscot); lower.position.set(x, WAIN / 2, z); lower.rotation.y = ry;
+    const upper = box(w, ROOM.H - WAIN, 0.24, tiled ? matTile : matPlaster);
+    upper.position.set(x, WAIN + (ROOM.H - WAIN) / 2, z); upper.rotation.y = ry;
+    lower.receiveShadow = upper.receiveShadow = true; g.add(lower, upper);
+  };
+  wall(ROOM.W, 0, -D2, 0, true);                             // north: kitchen tiles
+  wall(ROOM.W, 0, D2, 0, false);                             // south
+  wall(ROOM.D, W2, 0, Math.PI / 2, false);                   // east
+  const L = DOOR.cz - DOOR.w / 2, R = DOOR.cz + DOOR.w / 2;  // west, split around doorway
+  wall(L + D2, -W2, (L - D2) / 2, Math.PI / 2, false);
+  wall(D2 - R, -W2, (R + D2) / 2, Math.PI / 2, false);
+  const header = box(DOOR.w, ROOM.H - DOOR.top, 0.24, matPlaster);
+  header.rotation.y = Math.PI / 2;
+  header.position.set(-W2, DOOR.top + (ROOM.H - DOOR.top) / 2, DOOR.cz); g.add(header);
+  for (const s of [-1, 1]) {                                 // doorway posts
+    const post = box(0.3, DOOR.top, 0.14, matDarkWood);
+    post.rotation.y = Math.PI / 2;
+    post.position.set(-W2, DOOR.top / 2, DOOR.cz + s * (DOOR.w / 2 + 0.05)); g.add(post);
+  }
+  const lintel = box(0.14, 0.22, DOOR.w + 0.5, matDarkWood);
+  lintel.position.set(-W2, DOOR.top + 0.05, DOOR.cz); g.add(lintel);
+  const alley = new THREE.Mesh(new THREE.PlaneGeometry(7, 5), matNight);
+  alley.rotation.y = Math.PI / 2; alley.position.set(-W2 - 2.4, 2, DOOR.cz); g.add(alley);
+  return g;
+}
+
+// --- long wooden counter with foot rail and countertop props ---
+function buildCounter() {
+  const g = new THREE.Group();
+  const base = box(COUNTER.len, COUNTER.h, 0.72, matDarkWood);
+  base.position.set(0, COUNTER.h / 2, 0);
+  const top = box(COUNTER.len + 0.3, 0.09, 1.0, matCounter);
+  top.position.set(0, COUNTER.h + 0.045, 0.06);
+  g.add(base, top);
+  for (let i = 0; i < 5; i++) {                       // front slat panelling
+    const slat = box(0.06, COUNTER.h - 0.12, 0.05, matCounter);
+    slat.position.set(-3.4 + i * 1.7, COUNTER.h / 2, 0.39); g.add(slat);
+  }
+  const rail = cyl(0.03, 0.03, COUNTER.len - 0.4, matIron, 10);
+  rail.rotation.z = Math.PI / 2; rail.position.set(0, 0.26, 0.5); g.add(rail);
+  return shadowed(g);
+}
+
+// --- round stool ---
+function buildStool() {
+  const g = new THREE.Group();
+  const seat = cyl(0.28, 0.28, 0.09, matVinyl, 18); seat.position.y = 0.62;
+  const piping = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.025, 8, 20), matVinyl);
+  piping.rotation.x = Math.PI / 2; piping.position.y = 0.585;
+  g.add(seat, piping);
+  for (let i = 0; i < 4; i++) {
+    const a = i * Math.PI / 2 + 0.4;
+    const leg = cyl(0.028, 0.035, 0.6, matDarkWood, 8);
+    leg.position.set(Math.cos(a) * 0.18, 0.3, Math.sin(a) * 0.18);
+    leg.rotation.z = Math.cos(a) * 0.16; leg.rotation.x = -Math.sin(a) * 0.16; g.add(leg);
+  }
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.2, 0.015, 6, 16), matIron);
+  ring.rotation.x = Math.PI / 2; ring.position.y = 0.18; g.add(ring);
+  return shadowed(g);
+}
+
+// --- steaming ramen bowl with chopsticks and toppings ---
+const steamPuffs = [];
+function addSteam(parent, x, y, z, count, size, rise) {
+  for (let i = 0; i < count; i++) {
+    const m = new THREE.SpriteMaterial({ map: puffTex, color: 0xf3ede2, transparent: true, opacity: 0, depthWrite: false });
+    const p = new THREE.Sprite(m); p.position.set(x, y, z);
+    steamPuffs.push({ spr: p, bx: x, by: y, bz: z, phase: i / count, wob: rand(6.28), size, rise });
+    parent.add(p);
+  }
+}
+function buildRamenBowl() {
+  const g = new THREE.Group();
+  const bowl = cyl(0.17, 0.1, 0.13, matBowl, 18); bowl.position.y = 0.065;
+  const foot = cyl(0.07, 0.08, 0.03, matBowl, 12); foot.position.y = 0.015;
+  const broth = new THREE.Mesh(new THREE.CircleGeometry(0.152, 18), matBroth);
+  broth.rotation.x = -Math.PI / 2; broth.position.y = 0.115;
+  g.add(bowl, foot, broth);
+  for (let i = 0; i < 3; i++) {                       // noodle coils peeking out
+    const coil = new THREE.Mesh(new THREE.TorusGeometry(0.035, 0.012, 6, 12), matNoodle);
+    coil.rotation.x = -Math.PI / 2 + rand(-0.3, 0.3);
+    coil.position.set(rand(-0.06, 0.06), 0.12, rand(-0.06, 0.06)); g.add(coil);
+  }
+  const naruto = cyl(0.038, 0.038, 0.014, M({ map: narutoTex, roughness: 0.6 }), 12);
+  naruto.position.set(0.06, 0.125, -0.04); g.add(naruto);
+  const nori = box(0.05, 0.07, 0.006, M({ color: 0x1d2b1e, roughness: 0.8 }));
+  nori.position.set(-0.08, 0.14, 0.05); nori.rotation.x = -0.4; g.add(nori);
+  for (const o of [-0.012, 0.012]) {                  // chopsticks resting across the rim
+    const cs = cyl(0.007, 0.005, 0.34, matChopstick, 6);
+    cs.rotation.z = Math.PI / 2 - 0.12; cs.rotation.y = 0.5;
+    cs.position.set(0.03, 0.145, o + 0.07); g.add(cs);
+  }
+  addSteam(g, 0, 0.16, 0, 6, 0.16, 0.55);
+  return shadowed(g);
+}
+
+// --- hanging paper lantern (pivot at ceiling for sway) ---
+const lanterns = [];
+function buildLantern(intensity) {
+  const g = new THREE.Group();                        // origin at ceiling mount
+  const cord = cyl(0.012, 0.012, 0.85, matIron, 6); cord.position.y = -0.425;
+  const body = new THREE.Mesh(new THREE.SphereGeometry(0.34, 18, 14), matLantern);
+  body.scale.set(1, 1.22, 1); body.position.y = -1.25;
+  const capT = cyl(0.13, 0.16, 0.07, matDarkWood, 12); capT.position.y = -0.86;
+  const capB = cyl(0.14, 0.11, 0.06, matDarkWood, 12); capB.position.y = -1.65;
+  const tassel = cyl(0.02, 0.035, 0.14, M({ color: 0xb8382a, roughness: 0.9 }), 8); tassel.position.y = -1.74;
+  g.add(cord, body, capT, capB, tassel);
+  const l = new THREE.PointLight(PAL.lantern, intensity, 9, 2); l.position.y = -1.25; g.add(l);
+  lanterns.push({ group: g, light: l, base: intensity, phase: rand(6.28) });
+  return g;
+}
+
+// --- noren doorway curtain (three swaying panels) ---
+const norenPanels = [];
+function buildNoren() {
+  const g = new THREE.Group();
+  const rod = cyl(0.025, 0.025, DOOR.w + 0.3, matDarkWood, 8);
+  rod.rotation.x = Math.PI / 2; rod.position.y = DOOR.top - 0.04; g.add(rod);
+  const pw = DOOR.w / 3 - 0.06;
+  for (let i = 0; i < 3; i++) {
+    const pivot = new THREE.Group();
+    pivot.position.set(0, DOOR.top - 0.06, -DOOR.w / 2 + DOOR.w / 6 + i * DOOR.w / 3);
+    const panel = new THREE.Mesh(new THREE.PlaneGeometry(pw, 0.95), matNoren);
+    panel.rotation.y = Math.PI / 2; panel.position.y = -0.475;
+    panel.castShadow = true; pivot.add(panel);
+    norenPanels.push({ pivot, phase: i * 1.9 });
+    g.add(pivot);
+  }
+  return g;
+}
+
+// --- kitchen stove with pots and glowing burners ---
+let stoveLight;
+function buildStove() {
+  const g = new THREE.Group();
+  const body = box(2.1, 0.92, 1.0, matSteel); body.position.y = 0.46;
+  const topPlate = box(2.1, 0.05, 1.0, matIron); topPlate.position.y = 0.945;
+  const backsplash = box(2.1, 0.5, 0.06, matSteel); backsplash.position.set(0, 1.2, -0.47);
+  g.add(body, topPlate, backsplash);
+  for (const [bx, r] of [[-0.55, 0.3], [0.55, 0.27]]) {
+    const burner = cyl(r + 0.06, r + 0.06, 0.03, matIron, 16); burner.position.set(bx, 0.98, 0);
+    const glow = cyl(r - 0.02, r - 0.02, 0.02, matStoveGlow, 16); glow.position.set(bx, 0.995, 0);
+    g.add(burner, glow);
+  }
+  for (let i = 0; i < 3; i++) {                       // dials
+    const dial = cyl(0.045, 0.045, 0.04, matIron, 10);
+    dial.rotation.x = Math.PI / 2; dial.position.set(-0.5 + i * 0.5, 0.72, 0.52); g.add(dial);
+  }
+  const stock = cyl(0.3, 0.28, 0.44, matSteel, 18); stock.position.set(-0.55, 1.22, 0);   // open stock pot
+  const soup = new THREE.Mesh(new THREE.CircleGeometry(0.27, 18), matBroth);
+  soup.rotation.x = -Math.PI / 2; soup.position.set(-0.55, 1.41, 0);
+  const pot2 = cyl(0.27, 0.25, 0.36, matSteel, 18); pot2.position.set(0.55, 1.18, 0);     // lidded pot
+  const lid = cyl(0.28, 0.26, 0.05, matIron, 18); lid.position.set(0.55, 1.39, 0);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.04, 8, 6), matIron); knob.position.set(0.55, 1.44, 0);
+  g.add(stock, soup, pot2, lid, knob);
+  for (const px of [-0.55, 0.55]) for (const s of [-1, 1]) {
+    const h = new THREE.Mesh(new THREE.TorusGeometry(0.05, 0.012, 6, 10, Math.PI), matIron);
+    h.position.set(px + s * (px < 0 ? 0.3 : 0.27), px < 0 ? 1.32 : 1.28, 0);
+    h.rotation.z = s > 0 ? -Math.PI / 2 : Math.PI / 2; g.add(h);
+  }
+  const ladle = cyl(0.012, 0.012, 0.5, matSteel, 6);
+  ladle.position.set(-0.15, 1.35, 0.1); ladle.rotation.z = 0.9; g.add(ladle);
+  addSteam(g, -0.55, 1.48, 0, 7, 0.24, 0.8);
+  addSteam(g, 0.62, 1.45, 0.05, 4, 0.16, 0.6);
+  stoveLight = new THREE.PointLight(PAL.stove, 7, 6, 2);
+  stoveLight.position.set(0, 1.15, 0.35); g.add(stoveLight);
+  const hood = box(2.3, 0.55, 0.7, matIron); hood.position.set(0, 2.85, -0.5);
+  const duct = box(0.6, ROOM.H - 3.1, 0.6, matIron); duct.position.set(0, 3.1 + (ROOM.H - 3.1) / 2, -0.55);
+  g.add(hood, duct);
+  return shadowed(g);
+}
+
+// --- stainless prep table with stacked bowls and kettle ---
+function buildPrepTable() {
+  const g = new THREE.Group();
+  const top = box(1.8, 0.06, 0.85, matSteel); top.position.y = 0.88;
+  g.add(top);
+  for (const [sx, sz] of [[-1, -1], [1, -1], [-1, 1], [1, 1]]) {
+    const leg = box(0.06, 0.86, 0.06, matSteel); leg.position.set(sx * 0.82, 0.43, sz * 0.36); g.add(leg);
+  }
+  const under = box(1.6, 0.05, 0.7, matSteel); under.position.y = 0.32; g.add(under);
+  for (let i = 0; i < 4; i++) {                       // stacked ramen bowls
+    const b = cyl(0.15, 0.09, 0.1, i % 2 ? matBowl : M({ color: 0xe8e0cc, roughness: 0.4 }), 14);
+    b.position.set(-0.6, 0.96 + i * 0.055, -0.15); g.add(b);
+  }
+  const board = box(0.5, 0.03, 0.35, matCounter); board.position.set(0.25, 0.925, 0.05);
+  const knife = box(0.26, 0.008, 0.05, matSteel); knife.position.set(0.28, 0.945, 0.12); knife.rotation.y = 0.4;
+  const negi = cyl(0.035, 0.035, 0.2, M({ color: 0x7fae56, roughness: 0.8 }), 8);
+  negi.rotation.z = Math.PI / 2; negi.position.set(0.18, 0.955, -0.02);
+  g.add(board, knife, negi);
+  const kettle = new THREE.Group();
+  const kb = new THREE.Mesh(new THREE.SphereGeometry(0.14, 14, 10), matSteel); kb.scale.y = 0.8; kb.position.y = 0.1;
+  const spout = cyl(0.025, 0.045, 0.16, matSteel, 8); spout.position.set(0.14, 0.13, 0); spout.rotation.z = -0.9;
+  const kh = new THREE.Mesh(new THREE.TorusGeometry(0.09, 0.014, 6, 12, Math.PI), matIron); kh.position.y = 0.2;
+  kettle.add(kb, spout, kh); kettle.position.set(0.62, 0.91, -0.18); g.add(kettle);
+  addSteam(g, 0.78, 1.1, -0.18, 3, 0.1, 0.4);
+  const pot = cyl(0.2, 0.18, 0.24, matIron, 14); pot.position.set(-0.45, 0.47, 0); g.add(pot);
+  return shadowed(g);
+}
+
+// --- sake rack with instanced stacked bottles ---
+function buildSakeRack() {
+  const g = new THREE.Group();
+  for (const sx of [-0.78, 0.78]) { const p = box(0.08, 2.0, 0.42, matDarkWood); p.position.set(sx, 1.0, 0); g.add(p); }
+  for (const y of [0.35, 0.95, 1.55, 1.98]) { const sh = box(1.64, 0.06, 0.42, matDarkWood); sh.position.y = y; g.add(sh); }
+  const bodies = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.075, 0.08, 0.34, 10), M({ color: 0xffffff, roughness: 0.35 }), 26);
+  const necks = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.024, 0.05, 0.14, 8), M({ color: 0x2e2620, roughness: 0.4 }), 26);
+  const d = new THREE.Object3D(), c = new THREE.Color();
+  const tones = [PAL.sakeGreen, PAL.sakeBrown, 0xd8d2c2, 0x46586e];
+  let i = 0;
+  for (const y of [0.38, 0.98, 1.58]) for (let k = 0; k < 8 && i < 26; k++) {
+    d.position.set(-0.63 + k * 0.18, y + 0.17, rand(-0.06, 0.06));
+    d.rotation.y = rand(6.28); d.updateMatrix();
+    bodies.setMatrixAt(i, d.matrix); bodies.setColorAt(i, c.setHex(pick(tones)));
+    d.position.y = y + 0.41; d.updateMatrix(); necks.setMatrixAt(i, d.matrix); i++;
+  }
+  for (; i < 26; i++) {                               // two bottles lying on the top shelf
+    d.position.set(-0.3 + (i % 2) * 0.5, 2.09, 0); d.rotation.set(0, 0, Math.PI / 2); d.updateMatrix();
+    bodies.setMatrixAt(i, d.matrix); bodies.setColorAt(i, c.setHex(pick(tones)));
+    d.position.x += 0.24; d.rotation.set(0, 0, -Math.PI / 2); d.updateMatrix();
+    necks.setMatrixAt(i, d.matrix); d.rotation.set(0, 0, 0);
+  }
+  bodies.castShadow = necks.castShadow = true;
+  g.add(bodies, necks);
+  return shadowed(g);
+}
+
+// --- straw-wrapped sake barrel (komodaru) ---
+function buildBarrel(r, h) {
+  const g = new THREE.Group();
+  const body = cyl(r, r, h, M({ map: wainscotTex, color: 0xd9b978, roughness: 1 }), 16);
+  body.position.y = h / 2; g.add(body);
+  for (const fy of [0.22, 0.78]) {
+    const rope = new THREE.Mesh(new THREE.TorusGeometry(r + 0.01, 0.02, 6, 18), matDarkWood);
+    rope.rotation.x = Math.PI / 2; rope.position.y = h * fy; g.add(rope);
+  }
+  const top = cyl(r - 0.04, r - 0.04, 0.03, M({ color: 0xe6d3a0, roughness: 1 }), 16);
+  top.position.y = h + 0.01; g.add(top);
+  const mark = cyl(r * 0.5, r * 0.5, 0.012, M({ color: 0xb8382a, roughness: 0.9 }), 12);
+  mark.rotation.x = Math.PI / 2; mark.position.set(0, h * 0.55, r + 0.005); g.add(mark);
+  return shadowed(g);
+}
+
+// --- wall of handwritten menu boards ---
+function buildMenuWall() {
+  const g = new THREE.Group();
+  const strip = new THREE.Mesh(new THREE.PlaneGeometry(5.8, 1.05), matMenu);
+  strip.position.set(0.2, 3.45, 0); g.add(strip);
+  const rail = box(6.0, 0.07, 0.09, matDarkWood); rail.position.set(0.2, 2.88, 0.02);
+  const rail2 = box(6.0, 0.07, 0.09, matDarkWood); rail2.position.set(0.2, 4.0, 0.02);
+  g.add(rail, rail2);
+  for (const [bx, by, rz] of [[-3.9, 3.3, 0.04], [3.9, 3.35, -0.05]]) {
+    const b = new THREE.Mesh(new THREE.PlaneGeometry(0.85, 1.05), matBoard);
+    b.position.set(bx, by, 0.01); b.rotation.z = rz; g.add(b);
+  }
+  return g;
+}
+
+// --- kitchen pendant lamp with warm bulb ---
+function buildPendant(lit) {
+  const g = new THREE.Group();
+  const cord = cyl(0.01, 0.01, 1.1, matIron, 6); cord.position.y = -0.55;
+  const shade = cyl(0.06, 0.22, 0.16, M({ color: 0x2f5242, roughness: 0.5, metalness: 0.4, side: THREE.DoubleSide }), 14);
+  shade.position.y = -1.14;
+  const bulb = new THREE.Mesh(new THREE.SphereGeometry(0.055, 10, 8), matBulb); bulb.position.y = -1.2;
+  g.add(cord, shade, bulb);
+  const l = new THREE.PointLight(0xffd9a0, lit, 6, 2); l.position.y = -1.28; g.add(l);
+  return g;
+}
+
+/* ============================== ASSEMBLY & LAYOUT ============================== */
+scene.add(buildRoom());
+const counter = buildCounter(); counter.position.set(COUNTER.cx, 0, COUNTER.cz); scene.add(counter);
+for (let i = 0; i < 5; i++) {
+  const st = buildStool(); st.position.set(-3.3 + i * 1.65, 0, -0.15 + rand(-0.06, 0.1));
+  st.rotation.y = rand(6.28); scene.add(st);
+}
+const bowlSpots = [[-2.2, -1.35], [-0.1, -1.3], [1.9, -1.4]];
+for (const [bx, bz] of bowlSpots) {
+  const bowl = buildRamenBowl(); bowl.position.set(bx, COUNTER.h + 0.09, bz);
+  bowl.rotation.y = rand(6.28); scene.add(bowl);
+}
+const teapot = cyl(0.11, 0.13, 0.2, M({ color: 0x3f5a54, roughness: 0.5 }), 12);
+teapot.position.set(3.3, COUNTER.h + 0.19, -1.35); teapot.castShadow = true; scene.add(teapot);
+const caddy = box(0.3, 0.12, 0.18, matDarkWood); caddy.position.set(0.95, COUNTER.h + 0.15, -1.55); scene.add(caddy);
+const soy = cyl(0.035, 0.04, 0.16, M({ color: 0x241610, roughness: 0.3 }), 8);
+soy.position.set(0.88, COUNTER.h + 0.29, -1.55); scene.add(soy);
+const shaker = cyl(0.03, 0.035, 0.12, M({ color: 0xe8e0cc, roughness: 0.5 }), 8);
+shaker.position.set(1.02, COUNTER.h + 0.27, -1.55); scene.add(shaker);
+const csCup = cyl(0.06, 0.05, 0.12, matBowl, 10); csCup.position.set(-1.2, COUNTER.h + 0.15, -1.6); scene.add(csCup);
+for (let i = 0; i < 5; i++) {
+  const stick = cyl(0.006, 0.006, 0.24, matChopstick, 5);
+  stick.position.set(-1.2 + rand(-0.03, 0.03), COUNTER.h + 0.28, -1.6 + rand(-0.03, 0.03));
+  stick.rotation.set(rand(-0.12, 0.12), 0, rand(-0.12, 0.12)); scene.add(stick);
+}
+
+const stove = buildStove(); stove.position.set(1.3, 0, -4.85); scene.add(stove);
+const prep = buildPrepTable(); prep.position.set(-2.6, 0, -4.9); scene.add(prep);
+const rack = buildSakeRack(); rack.position.set(-4.95, 0, -5.14); scene.add(rack);
+const barrelA = buildBarrel(0.36, 0.56); barrelA.position.set(4.6, 0, -4.85); scene.add(barrelA);
+const barrelB = buildBarrel(0.32, 0.5); barrelB.position.set(4.6, 0.56, -4.85); barrelB.rotation.y = 0.7; scene.add(barrelB);
+const barrelC = buildBarrel(0.34, 0.52); barrelC.position.set(5.6, 0, -4.6); barrelC.rotation.y = 2.1; scene.add(barrelC);
+
+const menuWall = buildMenuWall(); menuWall.position.set(0.3, 0, -D2 + 0.13); scene.add(menuWall);
+const noren = buildNoren(); noren.position.set(-W2 + 0.08, 0, DOOR.cz); scene.add(noren);
+
+for (const [lx, lit] of [[-2.7, 14], [0, 20], [2.7, 14]]) {   // lantern row above the counter
+  const lan = buildLantern(lit); lan.position.set(lx, ROOM.H, -1.15); scene.add(lan);
+}
+const doorLantern = buildLantern(8); doorLantern.position.set(-5.6, ROOM.H, DOOR.cz + 1.45); scene.add(doorLantern);
+const pendA = buildPendant(5); pendA.position.set(-2.6, ROOM.H, -4.6); scene.add(pendA);
+const pendB = buildPendant(5); pendB.position.set(3.3, ROOM.H, -4.4); scene.add(pendB);
+
+// supporting props: bench, crates, clock and posters on the quieter walls
+const bench = box(1.5, 0.08, 0.42, matCounter); bench.position.set(4.6, 0.46, 4.95);
+const benchL1 = box(0.08, 0.44, 0.4, matDarkWood); benchL1.position.set(4.0, 0.22, 4.95);
+const benchL2 = benchL1.clone(); benchL2.position.x = 5.2;
+[bench, benchL1, benchL2].forEach(m => { m.castShadow = m.receiveShadow = true; scene.add(m); });
+for (let i = 0; i < 3; i++) {
+  const crate = box(0.55, 0.34, 0.42, i === 2 ? matCounter : matDarkWood);
+  crate.position.set(-4.4 + rand(-0.1, 0.1), 0.17 + (i === 1 ? 0.35 : 0), 4.9 + (i === 2 ? -0.65 : 0));
+  crate.rotation.y = rand(-0.25, 0.25); crate.castShadow = true; scene.add(crate);
+}
+const clock = cyl(0.26, 0.26, 0.05, M({ color: 0xefe8d8, roughness: 0.8 }), 18);
+clock.rotation.z = Math.PI / 2; clock.position.set(W2 - 0.14, 3.0, 0.6); scene.add(clock);
+const clockRim = new THREE.Mesh(new THREE.TorusGeometry(0.26, 0.03, 8, 20), matDarkWood);
+clockRim.rotation.y = Math.PI / 2; clockRim.position.copy(clock.position); scene.add(clockRim);
+for (const [pz, pr] of [[2.9, -0.06], [-2.2, 0.05]]) {
+  const poster = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 1.0), matBoard);
+  poster.rotation.y = -Math.PI / 2; poster.rotation.z = pr;
+  poster.position.set(W2 - 0.14, 2.3, pz); scene.add(poster);
+}
+
+/* ============================== LIGHTING RIG ============================== */
+const hemi = new THREE.HemisphereLight(0x53485e, 0x40281a, 0.85);
+scene.add(hemi);
+const ambient = new THREE.AmbientLight(0x352218, 0.85);
+scene.add(ambient);
+
+const keyLight = new THREE.PointLight(0xffc584, 26, 18, 2);   // main lantern glow with shadows
+keyLight.position.set(0, 2.7, -1.15);
+keyLight.castShadow = true;
+keyLight.shadow.mapSize.set(1024, 1024);
+keyLight.shadow.bias = -0.006; keyLight.shadow.camera.near = 0.15; keyLight.shadow.camera.far = 16;
+scene.add(keyLight);
+
+const doorGlow = new THREE.PointLight(0x7fa0d8, 5, 8, 2);     // cool night spill through the noren
+doorGlow.position.set(-W2 - 1.2, 1.9, DOOR.cz);
+scene.add(doorGlow);
+
+/* ============================== ANIMATION LOOP ============================== */
+const clockT = new THREE.Clock();
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clockT.getElapsedTime();
+  for (const ln of lanterns) {                                // lanterns sway and breathe
+    ln.group.rotation.z = Math.sin(t * 0.7 + ln.phase) * 0.045;
+    ln.group.rotation.x = Math.sin(t * 0.55 + ln.phase * 1.7) * 0.035;
+    ln.light.intensity = ln.base * (0.9 + 0.14 * flick(t * 0.9 + ln.phase));
+  }
+  keyLight.intensity = 24 + 4 * flick(t * 0.8);
+  stoveLight.intensity = 5.5 + 3 * flick(t * 1.4 + 2.2);      // burner flame flutter
+  matStoveGlow.emissiveIntensity = 1.3 + 0.7 * flick(t * 1.6 + 0.7);
+  for (const p of norenPanels) {                              // noren ripples in the draft
+    p.pivot.rotation.z = Math.sin(t * 0.9 + p.phase) * 0.085 + 0.03;
+    p.pivot.rotation.x = Math.sin(t * 0.6 + p.phase * 1.3) * 0.04;
+  }
+  for (const p of steamPuffs) {                               // steam curls off bowls and pots
+    const u = (t * 0.14 + p.phase) % 1;
+    p.spr.position.set(
+      p.bx + Math.sin(u * 6.3 + p.wob) * 0.05 * (1 + u),
+      p.by + u * p.rise,
+      p.bz + Math.cos(u * 5.1 + p.wob) * 0.04 * (1 + u));
+    p.spr.scale.setScalar(p.size * (0.4 + u * 1.1));
+    p.spr.material.opacity = 0.42 * Math.sin(u * Math.PI);
+  }
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ============================== RESIZE ============================== */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

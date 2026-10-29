@@ -1,0 +1,775 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Brick-Built Dragon</title>
+<style>
+  html, body { margin: 0; padding: 0; overflow: hidden; background: #15171b; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: rgba(255,255,255,0.34); letter-spacing: 0.06em; user-select: none;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">BRICK-BUILT DRAGON — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171b);
+scene.fog = new THREE.Fog(0x15171b, 42, 96);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 400);
+camera.position.set(15.5, 9.5, 18.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.65;
+controls.minDistance = 10;
+controls.maxDistance = 52;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 5.0, 0);
+
+/* ------------------------------------------------------------------ *
+ *  LEGO unit system
+ *  1 stud pitch = 0.8 units ; 1 plate = 0.32 ; 1 brick = 0.96
+ * ------------------------------------------------------------------ */
+const P   = 0.8;    // stud pitch
+const PL  = 0.32;   // plate height
+const BR  = 0.96;   // brick height (3 plates)
+const STUD_R = 0.245;
+const STUD_H = 0.17;
+const GAP  = 0.01;  // tiny seam so bricks read as separate parts
+
+/* ------------------------------------------------------------------ *
+ *  Materials — glossy ABS plastic
+ * ------------------------------------------------------------------ */
+function plastic(color, opts = {}) {
+  return new THREE.MeshPhysicalMaterial({
+    color: new THREE.Color(color),
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.28,
+    metalness: 0.0,
+    clearcoat: opts.clearcoat !== undefined ? opts.clearcoat : 0.85,
+    clearcoatRoughness: 0.14,
+    reflectivity: 0.4,
+    sheen: 0.0,
+    transparent: !!opts.transparent,
+    opacity: opts.opacity !== undefined ? opts.opacity : 1.0,
+    transmission: opts.transmission || 0.0,
+    ior: 1.52,
+    thickness: opts.thickness || 0.0,
+    side: opts.side || THREE.FrontSide,
+    emissive: opts.emissive !== undefined ? new THREE.Color(opts.emissive) : new THREE.Color(0x000000),
+    emissiveIntensity: opts.emissiveIntensity !== undefined ? opts.emissiveIntensity : 1.0
+  });
+}
+
+const MAT = {
+  green      : plastic(0x1d8a3f),
+  greenDark  : plastic(0x146a2f),
+  greenLite  : plastic(0x2aa54c),
+  orange     : plastic(0xe8730f),
+  yellowTrans: plastic(0xf2c319, { transparent: true, opacity: 0.56, transmission: 0.55, thickness: 0.35, roughness: 0.12, side: THREE.DoubleSide }),
+  black      : plastic(0x1a1c1e, { roughness: 0.34 }),
+  darkGrey   : plastic(0x555a5e, { roughness: 0.36 }),
+  lightGrey  : plastic(0xa4aaad, { roughness: 0.34 }),
+  white      : plastic(0xeef1f2),
+  tan        : plastic(0xd8c48a),
+  red        : plastic(0xb32020),
+  eyeBlack   : plastic(0x0b0c0d, { roughness: 0.08, clearcoat: 1.0 })
+};
+
+/* ------------------------------------------------------------------ *
+ *  Shared geometry cache (instanced-ish reuse for perf & tidiness)
+ * ------------------------------------------------------------------ */
+const geoCache = new Map();
+function boxGeo(w, h, d) {
+  const k = `b|${w.toFixed(4)}|${h.toFixed(4)}|${d.toFixed(4)}`;
+  let g = geoCache.get(k);
+  if (!g) { g = new THREE.BoxGeometry(w, h, d); geoCache.set(k, g); }
+  return g;
+}
+function cylGeo(rt, rb, h, seg, open) {
+  const k = `c|${rt.toFixed(4)}|${rb.toFixed(4)}|${h.toFixed(4)}|${seg}|${open ? 1 : 0}`;
+  let g = geoCache.get(k);
+  if (!g) { g = new THREE.CylinderGeometry(rt, rb, h, seg, 1, !!open); geoCache.set(k, g); }
+  return g;
+}
+function sphGeo(r, w, h) {
+  const k = `s|${r.toFixed(4)}|${w}|${h}`;
+  let g = geoCache.get(k);
+  if (!g) { g = new THREE.SphereGeometry(r, w, h); geoCache.set(k, g); }
+  return g;
+}
+
+const STUD_GEO = cylGeo(STUD_R, STUD_R, STUD_H, 20, false);
+const TUBE_GEO = cylGeo(0.325, 0.325, 1, 20, true);   // scaled in Y at use site
+const PIN_GEO  = cylGeo(0.15, 0.15, 1, 14, false);
+
+function mesh(geo, mat) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ------------------------------------------------------------------ *
+ *  Brick factory
+ *  Returns a Group whose ORIGIN is the centre of the brick's BOTTOM face.
+ *  studsX / studsZ = footprint in studs, h = height in world units.
+ * ------------------------------------------------------------------ */
+function brick(sx, sz, h, mat, opts = {}) {
+  const g = new THREE.Group();
+  const w = sx * P - GAP * 2;
+  const d = sz * P - GAP * 2;
+
+  const body = mesh(boxGeo(w, h, d), mat);
+  body.position.y = h / 2;
+  g.add(body);
+
+  // top studs
+  if (opts.studs !== false) {
+    for (let i = 0; i < sx; i++) {
+      for (let j = 0; j < sz; j++) {
+        const s = mesh(STUD_GEO, mat);
+        s.position.set((i - (sx - 1) / 2) * P, h + STUD_H / 2, (j - (sz - 1) / 2) * P);
+        g.add(s);
+      }
+    }
+  }
+
+  // underside tubes (visible when the model is seen from below)
+  if (opts.tubes !== false && sx > 1 && sz > 1) {
+    const th = Math.min(h * 0.72, h - 0.06);
+    for (let i = 0; i < sx - 1; i++) {
+      for (let j = 0; j < sz - 1; j++) {
+        const t = mesh(TUBE_GEO, mat);
+        t.scale.set(1, th, 1);
+        t.position.set((i - (sx - 2) / 2) * P, th / 2, (j - (sz - 2) / 2) * P);
+        g.add(t);
+      }
+    }
+  } else if (opts.tubes !== false && (sx === 1) !== (sz === 1) && Math.max(sx, sz) > 1) {
+    // 1xN bricks have small rib bars underneath
+    const n = Math.max(sx, sz);
+    const th = Math.min(h * 0.6, h - 0.06);
+    for (let i = 0; i < n - 1; i++) {
+      const t = mesh(boxGeo(0.16, th, 0.16), mat);
+      const off = (i - (n - 2) / 2) * P;
+      t.position.set(sx > 1 ? off : 0, th / 2, sz > 1 ? off : 0);
+      g.add(t);
+    }
+  }
+
+  return g;
+}
+
+/* Place a brick with its bottom-centre at (x,y,z). */
+function place(parent, sx, sz, h, mat, x, y, z, rotY, opts) {
+  const b = brick(sx, sz, h, mat, opts);
+  b.position.set(x, y, z);
+  if (rotY) b.rotation.y = rotY;
+  parent.add(b);
+  return b;
+}
+
+/* Slope brick (wedge). Origin = centre of bottom face. Slopes down toward +Z. */
+function slopeBrick(sx, sz, h, mat, opts = {}) {
+  const g = new THREE.Group();
+  const w = sx * P - GAP * 2;
+  const d = sz * P - GAP * 2;
+  const lowH = opts.lowH !== undefined ? opts.lowH : PL;
+
+  const hw = w / 2, hd = d / 2;
+  // Profile in Z: full height at z=-hd, low height at z=+hd
+  const pos = [];
+  const idx = [];
+  function v(x, y, z) { pos.push(x, y, z); return pos.length / 3 - 1; }
+
+  // 8 corners of a wedge-ish prism
+  const a0 = v(-hw, 0, -hd), a1 = v(hw, 0, -hd), a2 = v(hw, 0, hd), a3 = v(-hw, 0, hd);
+  const b0 = v(-hw, h, -hd), b1 = v(hw, h, -hd), b2 = v(hw, lowH, hd), b3 = v(-hw, lowH, hd);
+
+  function quad(p, q, r, s) { idx.push(p, q, r, p, r, s); }
+  quad(a3, a2, a1, a0);       // bottom (wound for downward normal)
+  quad(b0, b1, b2, b3);       // sloped top
+  quad(a0, a1, b1, b0);       // back (tall)
+  quad(a2, a3, b3, b2);       // front (low)
+  quad(a1, a2, b2, b1);       // right
+  quad(a3, a0, b0, b3);       // left
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+
+  const m = mesh(geo, mat);
+  g.add(m);
+
+  // studs only on the flat top strip at the tall end
+  if (opts.topStuds) {
+    for (let i = 0; i < sx; i++) {
+      const s = mesh(STUD_GEO, mat);
+      s.position.set((i - (sx - 1) / 2) * P, h + STUD_H / 2, -hd + P * 0.5);
+      g.add(s);
+    }
+  }
+  return g;
+}
+
+/* Flat plate/tile with optional studs — used for wing panels & tail. */
+function plate(sx, sz, mat, opts = {}) {
+  return brick(sx, sz, opts.h || PL, mat, { studs: opts.studs !== false, tubes: opts.tubes });
+}
+
+/* Technic-style clip hinge (two prongs + pin) */
+function clipHinge(mat, pinMat) {
+  const g = new THREE.Group();
+  const armL = 0.34;
+  for (const s of [-1, 1]) {
+    const prong = mesh(cylGeo(0.19, 0.19, 0.2, 16, false), mat);
+    prong.rotation.z = Math.PI / 2;
+    prong.position.set(s * 0.24, 0, 0);
+    g.add(prong);
+    const web = mesh(boxGeo(0.18, 0.34, armL), mat);
+    web.position.set(s * 0.24, -0.13, 0.0);
+    g.add(web);
+  }
+  const pin = mesh(PIN_GEO, pinMat || MAT.darkGrey);
+  pin.scale.set(1, 0.78, 1);
+  pin.rotation.z = Math.PI / 2;
+  g.add(pin);
+  return g;
+}
+
+/* Ball-joint connector: ball + socket cup */
+function ballJoint(mat, socketMat) {
+  const g = new THREE.Group();
+  const ball = mesh(sphGeo(0.235, 20, 14), mat);
+  g.add(ball);
+  const cup = mesh(cylGeo(0.3, 0.24, 0.3, 18, false), socketMat || MAT.lightGrey);
+  cup.position.y = -0.26;
+  g.add(cup);
+  return g;
+}
+
+/* ------------------------------------------------------------------ *
+ *  THE DRAGON
+ * ------------------------------------------------------------------ */
+const dragon = new THREE.Group();
+scene.add(dragon);
+
+/* ---------- 1. BODY: stepped stack of studded blocks ---------------- */
+const body = new THREE.Group();
+dragon.add(body);
+
+const BODY_Y = 3.30;   // bottom of the lowest body brick
+
+/* layer 0 — wide belly plate (6 wide x 8 deep) */
+place(body, 6, 8, PL, MAT.greenDark, 0, BODY_Y, 0);
+
+/* layer 1 — main torso brick */
+place(body, 6, 8, BR, MAT.green, 0, BODY_Y + PL, 0);
+
+/* layer 2 — stepped in, front & rear blocks (leaves a visible step) */
+place(body, 4, 3, BR, MAT.green,     0, BODY_Y + PL + BR, -2.0);
+place(body, 4, 3, BR, MAT.greenLite, 0, BODY_Y + PL + BR,  2.0);
+place(body, 4, 2, BR, MAT.green,     0, BODY_Y + PL + BR,  0.0);
+
+/* layer 3 — shoulder deck (wing mount) */
+place(body, 4, 4, PL, MAT.greenDark, 0, BODY_Y + PL + BR * 2, -0.6);
+place(body, 2, 2, BR, MAT.green,     0, BODY_Y + PL + BR * 2 + PL, -0.6);
+
+/* layer 4 — spine ridge: contrasting ORANGE bricks */
+const spineTop = BODY_Y + PL + BR * 2 + PL + BR;
+for (let i = 0; i < 4; i++) {
+  place(body, 1, 1, PL * 2, MAT.orange, 0, spineTop, -1.6 + i * P);
+}
+/* orange spine fins (small wedge plates standing up) */
+for (let i = 0; i < 4; i++) {
+  const finGrp = new THREE.Group();
+  const fin = slopeBrick(1, 2, BR * 0.95, MAT.orange, { lowH: PL * 0.6 });
+  fin.rotation.y = Math.PI;      // slope faces backward
+  finGrp.add(fin);
+  finGrp.position.set(0, spineTop + PL * 2, -1.6 + i * P);
+  finGrp.scale.set(0.85, 0.9 - i * 0.06, 0.85);
+  body.add(finGrp);
+}
+/* one more orange plate at rear of the deck */
+place(body, 2, 1, PL, MAT.orange, 0, BODY_Y + PL + BR * 2, 1.4);
+
+/* side "greebles": studs-out headlight bricks on flanks */
+for (const sx of [-1, 1]) {
+  for (let i = 0; i < 3; i++) {
+    const sideStud = mesh(STUD_GEO, MAT.greenLite);
+    sideStud.rotation.z = Math.PI / 2 * sx;
+    sideStud.position.set(sx * (3 * P - GAP + STUD_H / 2), BODY_Y + PL + BR * 0.55, -1.6 + i * 1.6);
+    body.add(sideStud);
+  }
+  // orange 1x2 tile along the flank
+  place(body, 1, 2, PL, MAT.orange, sx * 2.0, BODY_Y - PL, -1.6, 0, { studs: false });
+}
+
+/* ---------- 2. NECK: arches on ball joints -------------------------- */
+const neck = new THREE.Group();
+neck.position.set(0, BODY_Y + PL + BR * 2 + PL, -2.7);
+dragon.add(neck);
+
+const NECK_SEGS = 5;
+let cursor = new THREE.Group();       // running transform along the arch
+neck.add(cursor);
+
+const neckNodes = [];
+for (let i = 0; i < NECK_SEGS; i++) {
+  const seg = new THREE.Group();
+  cursor.add(seg);
+
+  // ball joint at the base of this segment
+  const bj = ballJoint(MAT.lightGrey, MAT.darkGrey);
+  bj.position.y = 0.16;
+  seg.add(bj);
+
+  // the neck brick itself (2x2, shrinking)
+  const s = 1 - i * 0.055;
+  const holder = new THREE.Group();
+  holder.position.y = 0.34;
+  holder.scale.set(s, 1, s);
+  seg.add(holder);
+
+  const nb = brick(2, 2, BR * 0.82, i % 2 === 0 ? MAT.green : MAT.greenLite);
+  nb.position.set(0, 0, 0);
+  holder.add(nb);
+
+  // orange spine plate on the back of every other neck brick
+  if (i % 2 === 1) {
+    const sp = brick(1, 1, PL, MAT.orange, { tubes: false });
+    sp.position.set(0, BR * 0.82, P * 0.5);
+    holder.add(sp);
+  }
+
+  neckNodes.push(seg);
+
+  // advance the cursor: up + forward, tipping the arch over
+  const next = new THREE.Group();
+  next.position.set(0, BR * 0.82 + 0.34, 0);
+  // arch: lean forward increasingly, then level out at the head
+  const lean = THREE.MathUtils.degToRad(-16 - i * 9);
+  next.rotation.x = lean;
+  seg.add(next);
+  cursor = next;
+}
+
+/* ---------- 3. HEAD: wedge-slope snout with stud nostrils ----------- */
+const head = new THREE.Group();
+head.rotation.x = THREE.MathUtils.degToRad(30);   // level the muzzle after the arch
+cursor.add(head);
+
+/* skull block */
+const skull = place(head, 3, 4, BR, MAT.green, 0, 0.06, -0.55);
+
+/* jaw / lower plate */
+place(head, 3, 3, PL, MAT.greenDark, 0, -0.28, -0.75, 0, { studs: false });
+
+/* brow bricks (orange accent) */
+place(head, 3, 1, PL, MAT.orange, 0, 0.06 + BR, 0.55);
+
+/* snout: wedge slope tapering forward (slope descends toward +Z of the wedge,
+   so rotate 180° so it descends toward -Z = forward) */
+const snout = slopeBrick(3, 3, BR * 0.9, MAT.greenLite, { lowH: PL * 1.1, topStuds: false });
+snout.rotation.y = Math.PI;
+snout.position.set(0, 0.06, -1.95);
+head.add(snout);
+
+/* snout tip plate */
+place(head, 2, 1, PL, MAT.greenDark, 0, 0.06, -3.0, 0, { studs: false });
+
+/* TWO STUD NOSTRILS on the snout's sloped face */
+for (const sx of [-1, 1]) {
+  const nostril = mesh(STUD_GEO, MAT.black);
+  nostril.rotation.x = THREE.MathUtils.degToRad(-42);
+  nostril.position.set(sx * 0.36, 0.42, -2.72);
+  head.add(nostril);
+}
+
+/* eyes: black round tiles on light-grey plates */
+for (const sx of [-1, 1]) {
+  const socket = mesh(cylGeo(0.2, 0.2, 0.1, 18, false), MAT.white);
+  socket.rotation.z = Math.PI / 2;
+  socket.position.set(sx * (1.5 * P - 0.02), 0.62, -1.05);
+  head.add(socket);
+
+  const pupil = mesh(cylGeo(0.11, 0.11, 0.11, 16, false), MAT.eyeBlack);
+  pupil.rotation.z = Math.PI / 2;
+  pupil.position.set(sx * (1.5 * P + 0.05), 0.62, -1.05);
+  head.add(pupil);
+}
+
+/* horns: two tapered orange cones on the back of the skull */
+for (const sx of [-1, 1]) {
+  const horn = mesh(cylGeo(0.045, 0.17, 0.95, 14, false), MAT.orange);
+  horn.position.set(sx * 0.44, 0.06 + BR + 0.55, 0.55);
+  horn.rotation.set(THREE.MathUtils.degToRad(28), 0, THREE.MathUtils.degToRad(sx * 14));
+  head.add(horn);
+  const base = mesh(cylGeo(0.2, 0.2, 0.14, 14, false), MAT.lightGrey);
+  base.position.set(sx * 0.44, 0.06 + BR + 0.13, 0.42);
+  head.add(base);
+}
+
+/* small jaw teeth: white 1x1 cones under the snout */
+for (let i = 0; i < 4; i++) {
+  const sx = i < 2 ? -1 : 1;
+  const t = mesh(cylGeo(0.02, 0.075, 0.24, 10, false), MAT.white);
+  t.position.set(sx * (0.22 + (i % 2) * 0.34), -0.30, -1.85 - (i % 2) * 0.5);
+  t.rotation.x = Math.PI;
+  head.add(t);
+}
+
+/* ---------- 4. WINGS: flat translucent-yellow panels on clip hinges -- */
+function buildWing(side) {
+  const root = new THREE.Group();
+  root.position.set(side * (1.05), BODY_Y + PL + BR * 2 + PL + 0.1, -0.6);
+
+  // clip hinge assembly mounted on the shoulder deck
+  const hinge = clipHinge(MAT.lightGrey, MAT.darkGrey);
+  hinge.position.set(side * 0.55, 0.14, 0);
+  root.add(hinge);
+
+  // technic bar going outward from the hinge
+  const bar = mesh(cylGeo(0.085, 0.085, 0.9, 12, false), MAT.darkGrey);
+  bar.rotation.z = Math.PI / 2;
+  bar.position.set(side * 1.0, 0.14, 0);
+  root.add(bar);
+
+  // the pivoting wing group
+  const wing = new THREE.Group();
+  wing.position.set(side * 1.35, 0.14, 0);
+  wing.rotation.z = side * THREE.MathUtils.degToRad(24);
+  wing.rotation.y = side * THREE.MathUtils.degToRad(-12);
+  root.add(wing);
+
+  // wing spar: dark-grey technic beam along the leading edge
+  const sparLen = 5.4;
+  const spar = mesh(boxGeo(sparLen, 0.24, 0.34), MAT.darkGrey);
+  spar.position.set(side * sparLen / 2, 0, -1.5);
+  wing.add(spar);
+  // pin holes look: small studs along the spar
+  for (let i = 0; i < 6; i++) {
+    const knob = mesh(cylGeo(0.09, 0.09, 0.36, 12, false), MAT.lightGrey);
+    knob.rotation.x = Math.PI / 2;
+    knob.position.set(side * (0.5 + i * 0.85), 0, -1.5);
+    wing.add(knob);
+  }
+
+  // translucent-yellow flat panels — tapering plates fanned out
+  const panels = [
+    { sx: 4, sz: 5, x: 1.9, z: -0.1, rz: 0.00, ry: 0.00 },
+    { sx: 4, sz: 4, x: 3.9, z: 0.35, rz: 0.05, ry: 0.10 },
+    { sx: 3, sz: 3, x: 5.5, z: 0.85, rz: 0.10, ry: 0.22 }
+  ];
+  for (const pn of panels) {
+    const holder = new THREE.Group();
+    holder.position.set(side * pn.x, 0, pn.z);
+    holder.rotation.z = side * pn.rz;
+    holder.rotation.y = side * pn.ry;
+    wing.add(holder);
+    const pl = brick(pn.sx, pn.sz, PL * 0.85, MAT.yellowTrans, { tubes: false });
+    pl.position.y = -PL * 0.42;
+    holder.add(pl);
+  }
+
+  // trailing-edge scallops (translucent wedge plates)
+  for (let i = 0; i < 4; i++) {
+    const holder = new THREE.Group();
+    const wedge = slopeBrick(2, 2, PL * 0.85, MAT.yellowTrans, { lowH: 0.02 });
+    holder.add(wedge);
+    holder.position.set(side * (1.2 + i * 1.35), -0.02, 2.1 + i * 0.42);
+    holder.rotation.y = side * THREE.MathUtils.degToRad(-10 - i * 4);
+    holder.scale.set(1.1, 1, 1.25);
+    wing.add(holder);
+  }
+
+  // finger ribs: thin green bars radiating across the membrane
+  for (let i = 0; i < 3; i++) {
+    const rib = mesh(boxGeo(4.4 - i * 0.9, 0.12, 0.13), MAT.green);
+    const a = THREE.MathUtils.degToRad(16 + i * 15);
+    rib.position.set(side * (2.2 - i * 0.45) , 0.10, -1.0 + i * 0.1);
+    rib.rotation.y = side * a;
+    wing.add(rib);
+  }
+
+  // wing-tip claw
+  const claw = mesh(cylGeo(0.03, 0.12, 0.75, 10, false), MAT.lightGrey);
+  claw.position.set(side * 6.35, 0.02, -1.15);
+  claw.rotation.z = side * THREE.MathUtils.degToRad(-70);
+  wing.add(claw);
+
+  return root;
+}
+dragon.add(buildWing(1));
+dragon.add(buildWing(-1));
+
+/* ---------- 5. TAIL: tapering plates -------------------------------- */
+const tail = new THREE.Group();
+tail.position.set(0, BODY_Y + PL + 0.1, 3.1);
+dragon.add(tail);
+
+let tCursor = new THREE.Group();
+tail.add(tCursor);
+
+const TAIL_SEGS = 9;
+for (let i = 0; i < TAIL_SEGS; i++) {
+  const seg = new THREE.Group();
+  tCursor.add(seg);
+
+  const t = i / (TAIL_SEGS - 1);
+  const widthStuds = Math.max(1, Math.round(4 - t * 3));
+  const s = 1 - t * 0.28;
+
+  const holder = new THREE.Group();
+  holder.scale.set(s, 1, 1);
+  seg.add(holder);
+
+  // stacked plates (two per segment near the base, one at the tip)
+  const layers = i < 4 ? 2 : 1;
+  for (let L = 0; L < layers; L++) {
+    const p = brick(widthStuds, 2, PL, L === 0 ? MAT.green : MAT.greenLite, { tubes: L === 0 });
+    p.position.set(0, L * PL, 0);
+    holder.add(p);
+  }
+
+  // orange spine studs continuing down the tail
+  if (i % 2 === 0 && i < 7) {
+    const sp = brick(1, 1, PL, MAT.orange, { tubes: false });
+    sp.position.set(0, layers * PL, 0);
+    holder.add(sp);
+  }
+
+  // advance
+  const next = new THREE.Group();
+  next.position.set(0, -0.10 - t * 0.06, 2 * P - GAP);
+  next.rotation.x = THREE.MathUtils.degToRad(6 + i * 1.6);
+  next.rotation.y = THREE.MathUtils.degToRad(i < 4 ? -3 : 5);
+  seg.add(next);
+  tCursor = next;
+}
+
+/* tail tip: orange arrow wedge */
+const tipHolder = new THREE.Group();
+tCursor.add(tipHolder);
+const tipL = slopeBrick(1, 3, PL * 1.6, MAT.orange, { lowH: 0.02 });
+tipL.position.set(-0.28, 0, 0.5);
+tipL.rotation.y = THREE.MathUtils.degToRad(10);
+tipHolder.add(tipL);
+const tipR = slopeBrick(1, 3, PL * 1.6, MAT.orange, { lowH: 0.02 });
+tipR.position.set(0.28, 0, 0.5);
+tipR.rotation.y = THREE.MathUtils.degToRad(-10);
+tipHolder.add(tipR);
+
+/* ---------- 6. LEGS: brick-built with ball-joint hips --------------- */
+function buildLeg(side, front) {
+  const g = new THREE.Group();
+  const zBase = front ? -1.85 : 1.95;
+  g.position.set(side * 1.75, BODY_Y, zBase);
+
+  // hip ball joint
+  const hip = ballJoint(MAT.lightGrey, MAT.darkGrey);
+  hip.position.set(0, -0.1, 0);
+  g.add(hip);
+
+  // upper leg: 2x2 brick angled outward
+  const upper = new THREE.Group();
+  upper.rotation.z = side * THREE.MathUtils.degToRad(front ? 9 : 13);
+  upper.rotation.x = THREE.MathUtils.degToRad(front ? 6 : -8);
+  g.add(upper);
+
+  const thighH = front ? BR * 1.1 : BR * 1.35;
+  const thigh = brick(2, 2, thighH, MAT.green, { studs: false });
+  thigh.position.set(0, -0.28 - thighH, 0);
+  upper.add(thigh);
+
+  // knee joint
+  const knee = mesh(sphGeo(0.22, 16, 12), MAT.lightGrey);
+  knee.position.set(0, -0.34 - thighH, 0);
+  upper.add(knee);
+
+  // lower leg
+  const lower = new THREE.Group();
+  lower.position.set(0, -0.34 - thighH, 0);
+  lower.rotation.x = THREE.MathUtils.degToRad(front ? -10 : 16);
+  lower.rotation.z = side * THREE.MathUtils.degToRad(-6);
+  upper.add(lower);
+
+  const shinH = front ? BR * 0.95 : BR * 1.05;
+  const shin = brick(2, 2, shinH, MAT.greenLite, { studs: false });
+  shin.position.set(0, -0.14 - shinH, 0);
+  lower.add(shin);
+
+  // foot plate + claws
+  const foot = new THREE.Group();
+  foot.position.set(0, -0.16 - shinH, 0);
+  lower.add(foot);
+
+  const fp = brick(2, 3, PL, MAT.greenDark, { studs: false });
+  fp.position.set(0, 0, -0.35);
+  foot.add(fp);
+  const fp2 = brick(2, 2, PL, MAT.greenDark, { studs: false });
+  fp2.position.set(0, PL, 0.05);
+  foot.add(fp2);
+
+  for (let i = 0; i < 3; i++) {
+    const claw = mesh(cylGeo(0.03, 0.11, 0.42, 10, false), MAT.white);
+    claw.position.set((i - 1) * 0.42, 0.1, -1.28);
+    claw.rotation.x = THREE.MathUtils.degToRad(78);
+    claw.rotation.z = (i - 1) * 0.16;
+    foot.add(claw);
+  }
+  return g;
+}
+dragon.add(buildLeg( 1, true));
+dragon.add(buildLeg(-1, true));
+dragon.add(buildLeg( 1, false));
+dragon.add(buildLeg(-1, false));
+
+/* ---------- 7. Belly tube detail visible under the chassis ---------- */
+for (let i = -2; i <= 2; i++) {
+  for (let j = -3; j <= 3; j++) {
+    const t = mesh(cylGeo(0.3, 0.3, 0.22, 16, true), MAT.greenDark);
+    t.position.set(i * P + P / 2, BODY_Y - 0.11, j * P + P / 2);
+    dragon.add(t);
+  }
+}
+
+/* ---------- 8. Ground the model & centre it ------------------------- */
+dragon.updateMatrixWorld(true);
+const bbox = new THREE.Box3().setFromObject(dragon);
+const size = new THREE.Vector3();
+const center = new THREE.Vector3();
+bbox.getSize(size);
+bbox.getCenter(center);
+
+// scale so the wingspan reads at a comfortable size, then sit on y=0
+const targetSpan = 15.5;
+const scl = targetSpan / Math.max(size.x, 0.001);
+dragon.scale.setScalar(scl);
+dragon.updateMatrixWorld(true);
+
+const bbox2 = new THREE.Box3().setFromObject(dragon);
+const c2 = new THREE.Vector3();
+bbox2.getCenter(c2);
+dragon.position.x -= c2.x;
+dragon.position.z -= c2.z;
+dragon.position.y -= bbox2.min.y;
+dragon.updateMatrixWorld(true);
+
+const finalBox = new THREE.Box3().setFromObject(dragon);
+const fc = new THREE.Vector3();
+finalBox.getCenter(fc);
+controls.target.set(0, fc.y, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Studio floor — shadow only
+ * ------------------------------------------------------------------ */
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(160, 160),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.position.y = 0;
+floor.receiveShadow = true;
+scene.add(floor);
+
+// faint circular studio pad for grounding (non-shadow, very subtle)
+const pad = new THREE.Mesh(
+  new THREE.CircleGeometry(22, 64),
+  new THREE.MeshStandardMaterial({ color: 0x202329, roughness: 0.95, metalness: 0.0 })
+);
+pad.rotation.x = -Math.PI / 2;
+pad.position.y = -0.02;
+pad.receiveShadow = true;
+scene.add(pad);
+
+/* ------------------------------------------------------------------ *
+ *  Lighting: hemisphere + key / fill / rim
+ * ------------------------------------------------------------------ */
+const hemi = new THREE.HemisphereLight(0x9fb6d4, 0x2b2f36, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.5);
+key.position.set(11, 16, 9);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 1;
+key.shadow.camera.far = 60;
+key.shadow.camera.left = -18;
+key.shadow.camera.right = 18;
+key.shadow.camera.top = 18;
+key.shadow.camera.bottom = -18;
+key.shadow.bias = -0.0008;
+key.shadow.normalBias = 0.02;
+key.shadow.radius = 3;
+scene.add(key);
+scene.add(key.target);
+key.target.position.set(0, 4.5, 0);
+
+const fill = new THREE.DirectionalLight(0xbcd4ff, 0.85);
+fill.position.set(-12, 7, 8);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd28a, 1.5);
+rim.position.set(-5, 8, -14);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0x66ff99, 0.35, 30, 2);
+bounce.position.set(0, 1.2, 0);
+scene.add(bounce);
+
+/* ------------------------------------------------------------------ *
+ *  Resize + render loop
+ * ------------------------------------------------------------------ */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

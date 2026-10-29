@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Procedural Food Truck — three.js</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #16181c; }
+  #app { position: fixed; inset: 0; }
+  .hint {
+    position: fixed; left: 14px; bottom: 12px; z-index: 10;
+    font: 12px/1.4 -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+    color: #aeb4bd; letter-spacing: .3px; user-select: none;
+    text-shadow: 0 1px 2px rgba(0,0,0,.6);
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="hint">Roadside Food Truck · drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+/* ---------------------------------------------------------------------------
+   Renderer / Scene / Camera
+--------------------------------------------------------------------------- */
+const container = document.getElementById('app');
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.06;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+container.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x181a1f);
+
+// Subtle image-based environment for realistic metal / glass reflections
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(42, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(8.6, 4.7, 9.2);
+
+/* ---------------------------------------------------------------------------
+   Lighting: hemisphere fill + key + fill + rim, soft shadows
+--------------------------------------------------------------------------- */
+const hemi = new THREE.HemisphereLight(0xcfe3ff, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2e2, 2.5);
+key.position.set(9, 11, 6);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.bias = -0.00025;
+key.shadow.normalBias = 0.02;
+const sc = key.shadow.camera;
+sc.near = 1; sc.far = 45; sc.left = -9; sc.right = 9; sc.top = 9; sc.bottom = -9;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb8d8, 0.75);
+fill.position.set(-8, 5, 7);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9b0, 1.15);
+rim.position.set(-6, 7, -9);
+scene.add(rim);
+
+/* ---------------------------------------------------------------------------
+   Ground plane that only receives shadows
+--------------------------------------------------------------------------- */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ---------------------------------------------------------------------------
+   Helpers
+--------------------------------------------------------------------------- */
+function mat(color, o = {}) {
+  return new THREE.MeshStandardMaterial({
+    color,
+    roughness: o.r ?? 0.6,
+    metalness: o.m ?? 0.0,
+    emissive: o.e ?? 0x000000,
+    emissiveIntensity: o.ei ?? 1,
+    envMapIntensity: o.env ?? 1,
+    side: o.side ?? THREE.FrontSide,
+    transparent: o.t ?? false,
+    opacity: o.o ?? 1,
+    flatShading: o.flat ?? false
+  });
+}
+function glassMat(color) {
+  return new THREE.MeshPhysicalMaterial({
+    color, metalness: 0, roughness: 0.06,
+    transmission: 0.92, thickness: 0.4, ior: 1.45,
+    envMapIntensity: 1.1, clearcoat: 1, clearcoatRoughness: 0.06
+  });
+}
+function bx(w, h, d, m) {
+  const me = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+  me.castShadow = true; me.receiveShadow = true;
+  return me;
+}
+function cy(rt, rb, h, m, seg = 28) {
+  const me = new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, seg), m);
+  me.castShadow = true; me.receiveShadow = true;
+  return me;
+}
+function place(mesh, x, y, z, rx, ry, rz) {
+  mesh.position.set(x, y, z);
+  mesh.rotation.set(rx || 0, ry || 0, rz || 0);
+  return mesh;
+}
+function add(parent, mesh, x, y, z, rx, ry, rz) {
+  place(mesh, x, y, z, rx, ry, rz);
+  parent.add(mesh);
+  return mesh;
+}
+
+/* ---------------------------------------------------------------------------
+   Material palette — cheerful vending livery
+--------------------------------------------------------------------------- */
+const M = {
+  body:     mat(0xf3ece0, { r: 0.42, m: 0.05, env: 0.75 }),   // cream paint
+  teal:     mat(0x27a99a, { r: 0.40, m: 0.10, env: 0.8 }),    // lower skirt
+  red:      mat(0xd6473c, { r: 0.40, m: 0.10, env: 0.8 }),    // stripe / accents
+  yellow:   mat(0xf3c24a, { r: 0.45, m: 0.05, env: 0.7 }),
+  cream2:   mat(0xfaf5ea, { r: 0.5,  m: 0.0 }),
+  darkTrim: mat(0x33373d, { r: 0.5,  m: 0.6, env: 1.0 }),
+  metal:    mat(0x2b2e33, { r: 0.5,  m: 0.75, env: 1.0 }),
+  chrome:   mat(0xd2d7db, { r: 0.18, m: 1.0, env: 1.2 }),
+  steel:    mat(0xbcc2c8, { r: 0.32, m: 0.7, env: 1.1 }),
+  darkSteel:mat(0x5b616a, { r: 0.4,  m: 0.7, env: 1.0 }),
+  tire:     mat(0x111318, { r: 0.85, m: 0.0 }),
+  rim:      mat(0xc4c8cd, { r: 0.3,  m: 0.9, env: 1.2 }),
+  interior: mat(0x14171b, { r: 0.9,  m: 0.1 }),
+  wood:     mat(0xb98a52, { r: 0.6,  m: 0.05 }),
+  fender:   mat(0x3a3e44, { r: 0.55, m: 0.55, env: 0.9 }),
+  glassWin: glassMat(0xbfe0e6),
+  glassCab: glassMat(0xaccbe0),
+  headEm:   mat(0xffffff, { e: 0xfff2c8, ei: 2.2 }),
+  tailEm:   mat(0x3a0805, { e: 0xff2a1a, ei: 2.4 }),
+  bulb:     mat(0xfff2cc, { e: 0xffcf7a, ei: 3.2 }),
+  menu:     mat(0x1d2530, { r: 0.7, m: 0.1 })
+};
+
+/* ---------------------------------------------------------------------------
+   Body dimensions (metres)
+--------------------------------------------------------------------------- */
+const BZ = 1.10;          // body half-width
+const B_X0 = -3.0, B_X1 = 1.5;      // box body extents (length)
+const B_Y0 = 0.90, B_Y1 = 2.70;     // box body height
+const bLen = B_X1 - B_X0, bCx = (B_X0 + B_X1) / 2;
+const bHt = B_Y1 - B_Y0, bCy = (B_Y0 + B_Y1) / 2;
+
+const truck = new THREE.Group();
+
+/* ============================ CARGO / SERVING BOX ======================== */
+const box = new THREE.Group();
+truck.add(box);
+
+// main shell
+add(box, bx(bLen, bHt, BZ * 2, M.body), bCx, bCy, 0);
+
+// lower teal skirt (proud)
+add(box, bx(bLen + 0.02, 0.42, BZ * 2 + 0.04, M.teal), bCx, B_Y0 + 0.21, 0);
+// red pinstripe
+add(box, bx(bLen + 0.03, 0.09, BZ * 2 + 0.07, M.red), bCx, B_Y0 + 0.48, 0);
+// yellow thin accent above red
+add(box, bx(bLen + 0.03, 0.03, BZ * 2 + 0.075, M.yellow), bCx, B_Y0 + 0.55, 0);
+// roof trim cap
+add(box, bx(bLen + 0.04, 0.10, BZ * 2 + 0.06, M.darkTrim), bCx, B_Y1 - 0.02, 0);
+// corner posts (front & rear vertical trims)
+for (const px of [B_X0 + 0.03, B_X1 - 0.03]) {
+  for (const pz of [-BZ, BZ]) {
+    add(box, bx(0.08, bHt, 0.08, M.cream2), px, bCy, pz);
+  }
+}
+
+/* --------- REAR: doors, tail lights, bumper --------- */
+const rear = new THREE.Group();
+box.add(rear);
+// two rear door panels (recessed dark seams)
+for (const dz of [-0.5, 0.5]) {
+  add(rear, bx(0.05, 1.45, 0.9, M.cream2), B_X0 - 0.005, 1.72, dz);
+  add(rear, bx(0.02, 1.45, 0.03, M.darkTrim), B_X0 - 0.03, 1.72, dz + (dz > 0 ? -0.46 : 0.46));
+  // vertical handle
+  add(rear, cy(0.02, 0.02, 0.5, M.chrome), B_X0 - 0.06, 1.55, dz + (dz > 0 ? 0.30 : -0.30));
+}
+add(rear, bx(0.02, 1.5, 0.05, M.darkTrim), B_X0 - 0.02, 1.72, 0); // centre seam
+// tail lights
+for (const tz of [-0.86, 0.86]) add(rear, bx(0.07, 0.34, 0.2, M.tailEm), B_X0 - 0.03, 1.02, tz);
+// rear bumper + step
+add(rear, bx(0.26, 0.22, 2.05, M.metal), B_X0 - 0.10, 0.62, 0);
+add(rear, bx(0.42, 0.05, 0.7, M.darkSteel), B_X0 - 0.22, 0.74, 0);
+// licence plate
+add(rear, bx(0.03, 0.22, 0.4, M.cream2), B_X0 - 0.04, 0.82, 0);
+
+/* ============================ DRIVER CAB ================================= */
+const CAB_X0 = 1.5, CAB_X1 = 2.95;
+const cLen = CAB_X1 - CAB_X0, cCx = (CAB_X0 + CAB_X1) / 2;
+const CAB_Y0 = 0.55, CAB_Y1 = 2.34;
+const cHt = CAB_Y1 - CAB_Y0, cCy = (CAB_Y0 + CAB_Y1) / 2;
+const CZ = 1.05;
+
+const cab = new THREE.Group();
+truck.add(cab);
+// cab shell
+add(cab, bx(cLen, cHt, CZ * 2, M.body), cCx, cCy, 0);
+// teal skirt on cab
+add(cab, bx(cLen + 0.02, 0.42, CZ * 2 + 0.04, M.teal), cCx, CAB_Y0 + 0.21, 0);
+add(cab, bx(cLen + 0.03, 0.09, CZ * 2 + 0.07, M.red), cCx, CAB_Y0 + 0.5, 0);
+
+// windshield (slight backward lean, cab-forward style)
+add(cab, bx(0.06, 0.9, 1.92, M.glassCab), CAB_X1 - 0.02, 1.94, 0, 0, 0, -0.20);
+// windshield frame top
+add(cab, bx(0.10, 0.08, 1.98, M.darkTrim), CAB_X1 - 0.10, 2.30, 0);
+// A-pillars
+for (const pz of [-0.96, 0.96]) add(cab, bx(0.12, 0.95, 0.1, M.body), CAB_X1 - 0.10, 1.9, pz, 0, 0, -0.20);
+
+// side windows + doors
+for (const sz of [-1, 1]) {
+  const z = sz * (CZ + 0.005);
+  add(cab, bx(0.5, 0.5, 0.04, M.glassCab), 2.42, 1.86, z);
+  // door seam + handle + panel line
+  add(cab, bx(0.6, 0.03, 0.02, M.darkTrim), 2.35, 1.5, z + sz * 0.01);
+  add(cab, bx(0.14, 0.05, 0.03, M.chrome), 2.2, 1.42, z + sz * 0.01);
+  // wing mirror
+  const marm = add(cab, cy(0.015, 0.015, 0.26, M.metal), CAB_X1 - 0.18, 1.95, sz * (CZ + 0.16), 0, 0, Math.PI / 2);
+  add(cab, bx(0.05, 0.24, 0.12, M.darkTrim), CAB_X1 - 0.18, 1.98, sz * (CZ + 0.28));
+}
+
+// front fascia: grille, headlights, bumper
+add(cab, bx(0.10, 0.42, 1.6, M.darkTrim), CAB_X1 + 0.02, 1.05, 0);
+for (let i = 0; i < 4; i++) add(cab, bx(0.06, 0.03, 1.55, M.chrome), CAB_X1 + 0.06, 0.92 + i * 0.09, 0);
+for (const hz of [-0.72, 0.72]) {
+  add(cab, cy(0.16, 0.16, 0.1, M.chrome), CAB_X1 + 0.02, 1.02, hz, Math.PI / 2, 0, 0);
+  add(cab, cy(0.12, 0.12, 0.12, M.headEm), CAB_X1 + 0.05, 1.02, hz, Math.PI / 2, 0, 0);
+}
+add(cab, bx(0.28, 0.28, 2.12, M.metal), CAB_X1 + 0.06, 0.62, 0);      // front bumper
+add(cab, bx(0.14, 0.30, 1.9, M.body), CAB_X1 - 0.02, 0.78, 0);        // valance
+
+/* ============================ CHASSIS / UNDERBODY ======================= */
+const chassis = new THREE.Group();
+truck.add(chassis);
+add(chassis, bx(5.4, 0.30, 0.72, M.metal), -0.35, 0.72, 0);
+for (const rz of [-0.42, 0.42]) add(chassis, bx(5.4, 0.14, 0.12, M.darkSteel), -0.35, 0.72, rz);
+// fuel tank
+add(chassis, cy(0.24, 0.24, 0.9, M.steel), -0.4, 0.62, -0.7, 0, 0, Math.PI / 2);
+
+/* ---- generator box (rear underside) ---- */
+const gen = new THREE.Group();
+chassis.add(gen);
+add(gen, bx(0.62, 0.5, 0.86, M.steel), -2.72, 0.66, 0.05);
+add(gen, bx(0.02, 0.42, 0.78, M.darkTrim), -2.42, 0.66, 0.05); // vented face
+for (let i = 0; i < 5; i++) add(gen, bx(0.03, 0.03, 0.7, M.metal), -2.41, 0.5 + i * 0.08, 0.05);
+add(gen, bx(0.1, 0.2, 0.18, M.red), -2.72, 0.78, 0.5); // control panel
+add(gen, cy(0.05, 0.05, 0.34, M.metal), -3.0, 0.6, -0.28, 0, 0, Math.PI / 2); // exhaust
+add(gen, cy(0.07, 0.07, 0.12, M.darkTrim), -3.18, 0.6, -0.28, 0, 0, Math.PI / 2);
+
+/* ============================ WHEELS + ARCHES =========================== */
+function buildWheel() {
+  const g = new THREE.Group();
+  const tire = cy(0.46, 0.46, 0.34, M.tire, 34);
+  tire.rotation.x = Math.PI / 2; g.add(tire);
+  const hub = cy(0.29, 0.29, 0.35, M.rim, 30);
+  hub.rotation.x = Math.PI / 2; g.add(hub);
+  const cap = cy(0.1, 0.1, 0.37, M.chrome, 20);
+  cap.rotation.x = Math.PI / 2; g.add(cap);
+  for (let i = 0; i < 6; i++) {
+    const a = (i / 6) * Math.PI * 2;
+    add(g, cy(0.03, 0.03, 0.36, M.darkTrim, 10), Math.cos(a) * 0.19, Math.sin(a) * 0.19, 0, Math.PI / 2, 0, 0);
+  }
+  return g;
+}
+const AXLES = [{ x: 2.32, z: 1.02 }, { x: -2.05, z: 1.02 }];
+for (const ax of AXLES) {
+  for (const s of [-1, 1]) {
+    add(truck, buildWheel(), ax.x, 0.46, ax.z * s);
+    // wheel-arch flare (upper half torus)
+    const arch = new THREE.Mesh(new THREE.TorusGeometry(0.57, 0.085, 14, 24, Math.PI), M.fender);
+    arch.castShadow = true; arch.receiveShadow = true;
+    add(truck, arch, ax.x, 0.5, s * (BZ + 0.02), 0, 0, 0);
+    arch.scale.z = 1.9;
+  }
+}
+
+/* ============================ ROOF: VENT + EXHAUST HOOD ================== */
+const roof = new THREE.Group();
+truck.add(roof);
+// mushroom turbine vent
+add(roof, cy(0.2, 0.24, 0.14, M.steel), 0.35, B_Y1 + 0.07, 0.42);
+add(roof, cy(0.3, 0.3, 0.06, M.steel), 0.35, B_Y1 + 0.16, 0.42);
+add(roof, cy(0.16, 0.28, 0.12, M.darkSteel), 0.35, B_Y1 + 0.25, 0.42);
+// large kitchen exhaust hood + capped duct
+add(roof, bx(1.05, 0.34, 0.95, M.steel), -1.25, B_Y1 + 0.16, 0);
+add(roof, bx(1.05, 0.16, 0.95, M.darkSteel), -1.25, B_Y1 + 0.02, 0);
+add(roof, cy(0.16, 0.16, 0.5, M.steel), -1.25, B_Y1 + 0.55, 0);
+add(roof, cy(0.24, 0.24, 0.08, M.darkSteel), -1.25, B_Y1 + 0.82, 0);
+// low rooftop AC unit near rear
+add(roof, bx(0.9, 0.26, 0.72, M.cream2), -2.35, B_Y1 + 0.11, 0);
+add(roof, bx(0.7, 0.06, 0.5, M.darkTrim), -2.35, B_Y1 + 0.26, 0);
+
+/* ============================ SERVING SIDE (+Z) ========================= */
+const serve = new THREE.Group();
+truck.add(serve);
+const SZ = BZ;                     // service wall at +Z
+// window opening extents
+const W_X0 = -2.3, W_X1 = 0.5, wCx = (W_X0 + W_X1) / 2, wW = W_X1 - W_X0;
+const W_Y0 = 1.46, W_Y1 = 2.34, wCy = (W_Y0 + W_Y1) / 2, wH = W_Y1 - W_Y0;
+
+// dark interior visible through opening
+add(serve, bx(wW, wH, 0.03, M.interior), wCx, wCy, SZ + 0.005);
+// hint of an interior shelf / equipment
+add(serve, bx(wW - 0.2, 0.12, 0.2, M.steel), wCx, 1.62, SZ - 0.12);
+add(serve, bx(0.3, 0.4, 0.2, M.red), wCx + 0.9, 1.9, SZ - 0.14);
+// steel window frame (proud)
+add(serve, bx(wW + 0.14, 0.09, 0.09, M.steel), wCx, W_Y1 + 0.02, SZ + 0.05);
+add(serve, bx(wW + 0.14, 0.09, 0.09, M.steel), wCx, W_Y0 - 0.02, SZ + 0.05);
+add(serve, bx(0.09, wH + 0.2, 0.09, M.steel), W_X0 - 0.05, wCy, SZ + 0.05);
+add(serve, bx(0.09, wH + 0.2, 0.09, M.steel), W_X1 + 0.05, wCy, SZ + 0.05);
+
+/* ---- hinged glass window, propped open (awning style) ---- */
+const flap = new THREE.Group();
+serve.add(flap);
+place(flap, wCx, W_Y1, SZ + 0.03);           // pivot at top edge of opening
+const glassGeo = new THREE.BoxGeometry(wW + 0.06, wH, 0.04);
+glassGeo.translate(0, -(wH / 2), 0);          // hang down from pivot
+const glass = new THREE.Mesh(glassGeo, M.glassWin);
+glass.castShadow = false; glass.receiveShadow = false;
+flap.add(glass);
+add(flap, bx(wW + 0.1, 0.06, 0.06, M.steel), 0, 0, 0);          // top rail
+add(flap, bx(wW + 0.1, 0.06, 0.06, M.steel), 0, -wH, 0);        // bottom rail
+flap.rotation.x = -1.92;                        // prop open up & outward
+// support stays from flap bottom corners back to body
+const flapBottom = new THREE.Vector3(0, -wH, 0).applyEuler(flap.rotation).add(flap.position);
+for (const sx of [-1, 1]) {
+  const from = new THREE.Vector3(wCx + sx * (wW / 2), flapBottom.y, flapBottom.z);
+  const to = new THREE.Vector3(wCx + sx * (wW / 2 - 0.1), W_Y1 - 0.02, SZ + 0.06);
+  const mid = from.clone().add(to).multiplyScalar(0.5);
+  const len = from.distanceTo(to);
+  const stay = cy(0.018, 0.018, len, M.chrome, 10);
+  stay.castShadow = true;
+  const dir = to.clone().sub(from).normalize();
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  stay.position.copy(mid); stay.quaternion.copy(q);
+  serve.add(stay);
+}
+
+/* ---- fold-out serving counter + brackets ---- */
+const counter = new THREE.Group();
+serve.add(counter);
+const cDepth = 0.78, cOut = SZ + cDepth / 2 + 0.02;
+add(counter, bx(wW + 0.24, 0.06, cDepth, M.steel), wCx, W_Y0 - 0.05, cOut);
+add(counter, bx(wW + 0.28, 0.05, 0.06, M.darkTrim), wCx, W_Y0 - 0.08, SZ + cDepth + 0.02); // front lip
+// diagonal support stays under the counter
+for (const sx of [-0.85, 0.85]) {
+  const from = new THREE.Vector3(wCx + sx, W_Y0 - 0.06, SZ + cDepth - 0.04);
+  const to = new THREE.Vector3(wCx + sx, 1.0, SZ + 0.06);
+  const mid = from.clone().add(to).multiplyScalar(0.5);
+  const len = from.distanceTo(to);
+  const stay = cy(0.02, 0.02, len, M.steel, 10);
+  stay.castShadow = true;
+  const dir = to.clone().sub(from).normalize();
+  stay.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir);
+  stay.position.copy(mid);
+  counter.add(stay);
+}
+
+/* ---- striped valance + string bulbs (cheerful livery) ---- */
+const valance = new THREE.Group();
+serve.add(valance);
+const nStripe = 12, vW = wW + 0.3, sW = vW / nStripe;
+for (let i = 0; i < nStripe; i++) {
+  const c = (i % 2 === 0) ? M.red : M.cream2;
+  add(valance, bx(sW * 0.98, 0.22, 0.04, c),
+      wCx - vW / 2 + sW * (i + 0.5), W_Y1 + 0.18, SZ + 0.30, -0.5);
+}
+add(valance, bx(vW + 0.06, 0.05, 0.28, M.darkTrim), wCx, W_Y1 + 0.30, SZ + 0.16); // valance roof
+// warm string bulbs along the valance edge
+for (let i = 0; i < 9; i++) {
+  add(valance, cy(0.045, 0.045, 0.045, M.bulb, 12),
+      wCx - vW / 2 + (vW / 8) * i, W_Y1 + 0.05, SZ + 0.42);
+}
+
+/* ---- menu board on brackets, beside the window (front side) ---- */
+const menu = new THREE.Group();
+serve.add(menu);
+const mBx = 0.95;                 // menu board X centre (front of window)
+// L-brackets holding the board off the wall
+for (const my of [1.62, 2.12]) {
+  add(menu, bx(0.24, 0.05, 0.05, M.metal), mBx, my, SZ + 0.12);
+  add(menu, bx(0.05, 0.14, 0.05, M.metal), mBx, my, SZ + 0.22);
+}
+add(menu, bx(0.05, 0.66, 0.9, M.menu), mBx, 1.9, SZ + 0.25);       // chalkboard
+add(menu, bx(0.02, 0.72, 0.96, M.darkTrim), mBx - 0.02, 1.9, SZ + 0.25); // frame
+// colourful "menu lines"
+const menuCols = [0xf3c24a, 0x27a99a, 0xd6473c, 0xf3ece0];
+for (let i = 0; i < 4; i++) {
+  add(menu, bx(0.02, 0.06, 0.55 - (i % 2) * 0.12, mat(menuCols[i], { r: 0.5 })),
+      mBx + 0.03, 2.08 - i * 0.13, SZ + 0.25 - 0.06);
+}
+
+/* ---- opposite side (-Z): service door outline + accent panel ---- */
+const left = new THREE.Group();
+truck.add(left);
+add(left, bx(0.9, 1.5, 0.03, M.cream2), -1.9, 1.75, -SZ - 0.01);
+add(left, bx(0.86, 1.46, 0.02, M.teal), -1.9, 1.75, -SZ - 0.02);
+add(left, cy(0.02, 0.02, 0.22, M.chrome), -1.52, 1.7, -SZ - 0.04); // handle
+add(left, bx(0.4, 0.3, 0.03, M.glassCab), -1.9, 2.05, -SZ - 0.02); // little door window
+// big brand roundel for cheer
+add(left, cy(0.42, 0.42, 0.03, M.red, 32), 0.2, 1.9, -SZ - 0.02, Math.PI / 2, 0, 0);
+add(left, cy(0.30, 0.30, 0.04, M.cream2, 32), 0.2, 1.9, -SZ - 0.03, Math.PI / 2, 0, 0);
+add(left, cy(0.14, 0.14, 0.05, M.yellow, 32), 0.2, 1.9, -SZ - 0.04, Math.PI / 2, 0, 0);
+
+/* ---------------------------------------------------------------------------
+   Centre the whole truck at origin and rest wheels on the ground
+--------------------------------------------------------------------------- */
+scene.add(truck);
+const bbox = new THREE.Box3().setFromObject(truck);
+const centre = bbox.getCenter(new THREE.Vector3());
+truck.position.x -= centre.x;
+truck.position.z -= centre.z;
+truck.position.y -= bbox.min.y;
+
+/* ---------------------------------------------------------------------------
+   Controls
+--------------------------------------------------------------------------- */
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 1.4, 0);
+controls.minDistance = 5.5;
+controls.maxDistance = 22;
+controls.maxPolarAngle = Math.PI * 0.5;
+controls.update();
+
+/* ---------------------------------------------------------------------------
+   Resize + render loop
+--------------------------------------------------------------------------- */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+});
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

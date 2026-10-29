@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Liquid Chrome Hammerhead</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #0a0b0d; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%);
+    font: 500 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    letter-spacing: 0.14em; text-transform: uppercase;
+    color: rgba(220, 228, 240, 0.35); pointer-events: none; user-select: none;
+    text-shadow: 0 1px 8px rgba(0,0,0,0.8);
+  }
+</style>
+</head>
+<body>
+<div id="hint">Liquid Chrome Hammerhead &nbsp;·&nbsp; drag to orbit &nbsp;·&nbsp; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ------------------------------------------------------------------ *
+ *  Renderer / Scene / Camera
+ * ------------------------------------------------------------------ */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x0b0c0f);
+scene.fog = new THREE.FogExp2(0x0b0c0f, 0.018);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.1, 200);
+camera.position.set(5.4, 2.3, 6.6);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.045;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.55;
+controls.minDistance = 3.2;
+controls.maxDistance = 22;
+controls.maxPolarAngle = Math.PI * 0.9;
+controls.target.set(0, 0.15, 0);
+
+/* ------------------------------------------------------------------ *
+ *  Procedural studio environment (drives the chrome reflections)
+ *  Built as a real scene of emissive strips + gradient dome, baked
+ *  into a PMREM cubemap. No external assets.
+ * ------------------------------------------------------------------ */
+
+function buildEnvScene() {
+  const env = new THREE.Scene();
+
+  // Gradient dome: dark floor-ward, luminous overhead.
+  const domeGeo = new THREE.SphereGeometry(60, 48, 32);
+  const domeMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide,
+    depthWrite: false,
+    uniforms: {
+      cTop:  { value: new THREE.Color(0x9fb2c9) },
+      cMid:  { value: new THREE.Color(0x1e232b) },
+      cBot:  { value: new THREE.Color(0x030405) }
+    },
+    vertexShader: /* glsl */`
+      varying vec3 vDir;
+      void main() {
+        vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+      }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec3 vDir;
+      uniform vec3 cTop, cMid, cBot;
+      void main() {
+        float h = vDir.y * 0.5 + 0.5;
+        vec3 c = mix(cBot, cMid, smoothstep(0.0, 0.5, h));
+        c = mix(c, cTop, smoothstep(0.48, 1.0, h));
+        // horizon band lift for a studio-cyc feel
+        c += vec3(0.06, 0.07, 0.085) * exp(-pow((h - 0.52) * 14.0, 2.0));
+        gl_FragColor = vec4(c, 1.0);
+      }
+    `
+  });
+  env.add(new THREE.Mesh(domeGeo, domeMat));
+
+  const strip = (w, h, d, color, intensity, pos, rot) => {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(w, h, d),
+      new THREE.MeshBasicMaterial({ color: new THREE.Color(color).multiplyScalar(intensity) })
+    );
+    m.position.set(pos[0], pos[1], pos[2]);
+    if (rot) m.rotation.set(rot[0], rot[1], rot[2]);
+    env.add(m);
+    return m;
+  };
+
+  // Big overhead softbox — the primary "smear" highlight along the flanks.
+  strip(46, 0.6, 12, 0xffffff, 5.2, [0, 20, 0], [0, 0, 0]);
+  // Long vertical / horizontal bars: these become the stretched silver bands.
+  strip(1.4, 26, 44, 0xdfe9ff, 3.4, [-24, 5, 0]);
+  strip(1.4, 26, 44, 0xcfd9ee, 2.2, [ 24, 5, 0]);
+  strip(44, 22, 1.4, 0xf2f6ff, 2.6, [0, 6, -26]);
+  strip(44, 16, 1.4, 0x8fa4bd, 1.1, [0, 4,  26]);
+  // Narrow accent slats overhead: multiple crisp bands raking across chrome.
+  for (let i = -4; i <= 4; i++) {
+    strip(40, 0.25, 0.9, 0xffffff, 2.4 + 0.25 * Math.cos(i * 0.9), [0, 13 + i * 0.15, i * 3.1]);
+  }
+  // Cool underside bounce so the belly is not dead black.
+  strip(40, 0.4, 40, 0x39506e, 0.9, [0, -9, 0]);
+  // Warm kicker for a touch of chromatic separation.
+  strip(0.8, 10, 16, 0xffd8b0, 1.6, [14, 3, -14], [0, Math.PI * 0.25, 0]);
+
+  return env;
+}
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+pmrem.compileEquirectangularShader();
+const envScene = buildEnvScene();
+const envRT = pmrem.fromScene(envScene, 0.015, 0.1, 120);
+scene.environment = envRT.texture;
+
+/* ------------------------------------------------------------------ *
+ *  Lighting  (key + fill + rim, plus hemi ambience)
+ * ------------------------------------------------------------------ */
+
+const hemi = new THREE.HemisphereLight(0xbcd0ea, 0x0a0d12, 0.45);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xffffff, 2.6);
+key.position.set(6.5, 9.5, 5.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 40;
+key.shadow.camera.left = -7;
+key.shadow.camera.right = 7;
+key.shadow.camera.top = 7;
+key.shadow.camera.bottom = -7;
+key.shadow.bias = -0.0009;
+key.shadow.normalBias = 0.03;
+key.shadow.radius = 4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x93b4e0, 0.75);
+fill.position.set(-7.0, 3.0, 4.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xdfe9ff, 2.0);
+rim.position.set(-3.5, 4.2, -8.5);
+scene.add(rim);
+
+const kicker = new THREE.PointLight(0xffe2bd, 12.0, 26, 2);
+kicker.position.set(4.2, 1.0, -5.0);
+scene.add(kicker);
+
+/* ------------------------------------------------------------------ *
+ *  Shadow-catcher ground
+ * ------------------------------------------------------------------ */
+
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(80, 80),
+  new THREE.ShadowMaterial({ opacity: 0.5 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -1.55;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// Faint pooled reflection halo under the sculpture (pure additive gradient).
+const halo = new THREE.Mesh(
+  new THREE.CircleGeometry(4.6, 96),
+  new THREE.ShaderMaterial({
+    transparent: true,
+    depthWrite: false,
+    blending: THREE.AdditiveBlending,
+    uniforms: { uColor: { value: new THREE.Color(0x6f8db8) } },
+    vertexShader: /* glsl */`
+      varying vec2 vUv;
+      void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position,1.0); }
+    `,
+    fragmentShader: /* glsl */`
+      varying vec2 vUv;
+      uniform vec3 uColor;
+      void main(){
+        float d = length(vUv - 0.5) * 2.0;
+        float a = smoothstep(1.0, 0.0, d);
+        a = pow(a, 2.6) * 0.42;
+        gl_FragColor = vec4(uColor * a, a);
+      }
+    `
+  })
+);
+halo.rotation.x = -Math.PI / 2;
+halo.position.y = -1.545;
+scene.add(halo);
+
+/* ------------------------------------------------------------------ *
+ *  THE SHARK — one centered object, fully procedural
+ * ------------------------------------------------------------------ */
+
+const shark = new THREE.Group();
+scene.add(shark);
+
+/* --- Liquid chrome material -------------------------------------- *
+ * Mirror-polished metal, with a shader injection that adds anisotropic
+ * "molten ripple" flow bands along the flanks by perturbing the normal.
+ */
+const rippleUniforms = {
+  uTime:      { value: 0 },
+  uRipple:    { value: 1.0 },
+  uFlowFreq:  { value: 7.5 },
+  uFlowAmp:   { value: 0.055 }
+};
+
+function makeChrome(opts = {}) {
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: opts.color !== undefined ? opts.color : 0xf2f5fa,
+    metalness: 1.0,
+    roughness: opts.roughness !== undefined ? opts.roughness : 0.045,
+    clearcoat: 1.0,
+    clearcoatRoughness: 0.02,
+    envMapIntensity: opts.envMapIntensity !== undefined ? opts.envMapIntensity : 1.55,
+    side: THREE.FrontSide
+  });
+
+  const amp = opts.rippleAmp !== undefined ? opts.rippleAmp : 1.0;
+
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTime     = rippleUniforms.uTime;
+    shader.uniforms.uFlowFreq = rippleUniforms.uFlowFreq;
+    shader.uniforms.uFlowAmp  = rippleUniforms.uFlowAmp;
+    shader.uniforms.uAmp      = { value: amp };
+
+    shader.vertexShader = shader.vertexShader
+      .replace('#include <common>', `
+        #include <common>
+        varying vec3 vLocalPos;
+      `)
+      .replace('#include <begin_vertex>', `
+        #include <begin_vertex>
+        vLocalPos = position;
+      `);
+
+    shader.fragmentShader = shader.fragmentShader
+      .replace('#include <common>', `
+        #include <common>
+        varying vec3 vLocalPos;
+        uniform float uTime;
+        uniform float uFlowFreq;
+        uniform float uFlowAmp;
+        uniform float uAmp;
+      `)
+      .replace('#include <normal_fragment_maps>', `
+        #include <normal_fragment_maps>
+        {
+          // Molten ripples travelling head -> tail along the flanks.
+          float s = vLocalPos.z;                 // body axis (nose +z)
+          float t = uTime;
+          float w1 = sin(s * uFlowFreq        - t * 1.35 + vLocalPos.y * 2.1);
+          float w2 = sin(s * uFlowFreq * 0.53 + t * 0.85 - vLocalPos.y * 1.3);
+          float w3 = sin(s * uFlowFreq * 2.10 - t * 2.05 + vLocalPos.x * 3.4);
+          float ripple = (w1 * 0.55 + w2 * 0.32 + w3 * 0.18);
+
+          // Fade ripples out near the very nose and on the head bar.
+          float mask = smoothstep(1.65, 1.05, s) * smoothstep(-2.35, -1.85, s);
+          mask = clamp(mask, 0.0, 1.0);
+
+          vec3 flowDir = normalize(vec3(0.0, 1.0, 0.0) - normal * dot(normal, vec3(0.0,1.0,0.0)) + 1e-5);
+          normal = normalize(normal + flowDir * ripple * uFlowAmp * uAmp * mask);
+        }
+      `);
+  };
+
+  return mat;
+}
+
+const bodyMat = makeChrome({ rippleAmp: 1.0 });
+const headMat = makeChrome({ rippleAmp: 0.18, roughness: 0.03, envMapIntensity: 1.7 });
+const finMat  = makeChrome({ rippleAmp: 0.55, roughness: 0.035, envMapIntensity: 1.75 });
+const darkMat = new THREE.MeshPhysicalMaterial({
+  color: 0x0b0e13, metalness: 1.0, roughness: 0.12,
+  clearcoat: 1.0, clearcoatRoughness: 0.05, envMapIntensity: 0.9
+});
+
+/* --- helpers ------------------------------------------------------ */
+
+const smoothstep = (e0, e1, x) => {
+  const t = Math.min(1, Math.max(0, (x - e0) / (e1 - e0)));
+  return t * t * (3 - 2 * t);
+};
+const clamp = (x, a, b) => Math.min(b, Math.max(a, x));
+const mix = (a, b, t) => a + (b - a) * t;
+
+/* --- BODY ---------------------------------------------------------
+ * A lathe-free, fully parametric tube: rings swept along the z axis
+ * from tail (z = -2.5) to snout (z = +1.75). Cross sections are a
+ * rounded, slightly flattened "shark" ellipse with a subtle keel and
+ * a raised dorsal ridge, plus travelling ripple relief baked into the
+ * silhouette so the flanks genuinely undulate.
+ */
+
+function buildBody() {
+  const ZT = -2.55;   // tail root end
+  const ZN =  1.78;   // snout end (head bar sits ahead of this)
+  const RS = 96;      // radial segments
+  const LS = 220;     // length segments
+
+  // radius profile along body (u = 0 tail .. 1 nose)
+  function profile(u) {
+    // girth: thin at tail, fat at ~0.62, tapering to the head junction
+    const g =
+      0.085 +
+      0.52 * Math.pow(Math.sin(Math.PI * Math.pow(clamp(u, 0, 1), 0.86)), 1.25) *
+      (0.72 + 0.28 * smoothstep(0.0, 0.28, u));
+    // slim toward the very front so it meets the cephalofoil cleanly
+    const front = 1.0 - 0.30 * smoothstep(0.72, 1.0, u);
+    // caudal peduncle pinch
+    const pinch = 1.0 - 0.30 * Math.exp(-Math.pow((u - 0.115) / 0.075, 2));
+    return g * front * pinch;
+  }
+
+  // vertical centerline (gentle molten sag/arc)
+  function centerY(u) {
+    return -0.06 * Math.sin(Math.PI * u) + 0.10 * smoothstep(0.55, 1.0, u) * 0.6 - 0.03;
+  }
+
+  // cross-section shape factor: width (x) and height (y) modulation
+  function sectionRadius(theta, u, r) {
+    const c = Math.cos(theta), s = Math.sin(theta);
+    // sharks are slightly taller than wide mid-body, rounder at front
+    const widthK  = mix(0.94, 1.02, smoothstep(0.15, 0.9, u));
+    const heightK = mix(1.16, 1.02, smoothstep(0.1, 0.85, u));
+    // dorsal ridge (top) + shallow ventral flattening (belly)
+    const top = clamp(s, 0, 1);
+    const bot = clamp(-s, 0, 1);
+    const ridge = 1.0 + 0.055 * Math.pow(top, 3.0) * smoothstep(0.12, 0.55, u);
+    const belly = 1.0 - 0.075 * Math.pow(bot, 2.2) * smoothstep(0.05, 0.6, u);
+    // lateral keel / flank crease near the horizontal midline
+    const flank = 1.0 + 0.035 * Math.exp(-Math.pow(s / 0.22, 2)) * smoothstep(0.1, 0.55, u);
+    // molten flow ripples along the flanks (static relief in geometry)
+    const ripAmp = 0.030 * smoothstep(0.05, 0.3, u) * smoothstep(1.0, 0.72, u) *
+                   (0.35 + 0.65 * Math.exp(-Math.pow(s / 0.65, 2)));
+    const rip = Math.sin(u * 34.0 - 0.9) * 0.6 + Math.sin(u * 21.0 + 1.7 + s * 1.5) * 0.4;
+
+    const rx = r * widthK  * ridge * belly * flank;
+    const ry = r * heightK * ridge * belly;
+    return {
+      x: (rx + ripAmp * rip * r * 1.4) * c,
+      y: (ry + ripAmp * rip * r * 0.9) * s
+    };
+  }
+
+  const positions = [];
+  const normals = [];
+  const uvs = [];
+  const indices = [];
+
+  const rings = [];
+  for (let j = 0; j <= LS; j++) {
+    const u = j / LS;
+    const z = mix(ZT, ZN, u);
+    const r = profile(u);
+    const cy = centerY(u);
+    const ring = [];
+    for (let i = 0; i <= RS; i++) {
+      const th = (i / RS) * Math.PI * 2;
+      const p = sectionRadius(th, u, r);
+      ring.push(new THREE.Vector3(p.x, p.y + cy, z));
+    }
+    rings.push(ring);
+  }
+
+  // Cap ends by collapsing to axis points (tail root & snout tip)
+  const tailCap = new THREE.Vector3(0, centerY(0), ZT - 0.02);
+  const noseCap = new THREE.Vector3(0, centerY(1), ZN + 0.10);
+
+  for (let j = 0; j <= LS; j++) {
+    for (let i = 0; i <= RS; i++) {
+      const v = rings[j][i];
+      positions.push(v.x, v.y, v.z);
+      uvs.push(i / RS, j / LS);
+      normals.push(0, 0, 0);
+    }
+  }
+  const baseCount = (LS + 1) * (RS + 1);
+  const tailIdx = baseCount;
+  const noseIdx = baseCount + 1;
+  positions.push(tailCap.x, tailCap.y, tailCap.z);
+  uvs.push(0.5, 0.0); normals.push(0, 0, 0);
+  positions.push(noseCap.x, noseCap.y, noseCap.z);
+  uvs.push(0.5, 1.0); normals.push(0, 0, 0);
+
+  const idx = (j, i) => j * (RS + 1) + i;
+  for (let j = 0; j < LS; j++) {
+    for (let i = 0; i < RS; i++) {
+      const a = idx(j, i), b = idx(j + 1, i), c = idx(j + 1, i + 1), d = idx(j, i + 1);
+      indices.push(a, b, d);
+      indices.push(b, c, d);
+    }
+  }
+  for (let i = 0; i < RS; i++) {
+    indices.push(tailIdx, idx(0, i + 1), idx(0, i));       // tail cap
+    indices.push(noseIdx, idx(LS, i), idx(LS, i + 1));     // nose cap
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const bodyMesh = new THREE.Mesh(buildBody(), bodyMat);
+bodyMesh.castShadow = true;
+bodyMesh.receiveShadow = true;
+shark.add(bodyMesh);
+
+/* --- CEPHALOFOIL (the mallet head bar) ----------------------------
+ * A wide, flat, mirror-polished bar smeared laterally across the nose,
+ * built as a parametric lofted slab: swept along x (wing span) with a
+ * lens-shaped cross section in (z, y), swept-back leading edge and
+ * rounded lobe tips.
+ */
+
+function buildHead() {
+  const SPAN = 1.44;    // half-span in x
+  const NX = 160;       // segments across span
+  const NA = 72;        // segments around cross-section
+
+  // half-chord (z extent) as a function of |x|/SPAN
+  function chord(t) {
+    // widest at the centre, gently narrowing then rounding off at the lobes
+    const base = 0.44 * (1.0 - 0.30 * t * t) * Math.sqrt(clamp(1.0 - Math.pow(t, 7.0), 0, 1));
+    return Math.max(base, 0.012);
+  }
+  // half-thickness (y extent)
+  function thick(t) {
+    return Math.max(0.155 * Math.sqrt(clamp(1.0 - Math.pow(t, 5.0), 0, 1)) * (1.0 - 0.18 * t * t), 0.006);
+  }
+  // chord centre offset in z: leading edge sweeps back toward the lobes
+  function zCenter(t) {
+    return -0.30 * t * t - 0.06 * Math.pow(t, 6.0);
+  }
+  function yCenter(t) {
+    return -0.012 * t * t;
+  }
+
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  const ringsCount = NX * 2 + 1;
+  for (let j = 0; j < ringsCount; j++) {
+    const s = j / (ringsCount - 1);          // 0 -> left lobe, 1 -> right lobe
+    const x = mix(-SPAN, SPAN, s);
+    const t = Math.abs(x) / SPAN;
+    const c = chord(t);
+    const th = thick(t);
+    const zc = zCenter(t);
+    const yc = yCenter(t);
+
+    for (let i = 0; i <= NA; i++) {
+      const a = (i / NA) * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      // superellipse-ish lens section: flat-ish top/bottom, sharp edges
+      const ez = Math.sign(ca) * Math.pow(Math.abs(ca), 0.86);
+      const ey = Math.sign(sa) * Math.pow(Math.abs(sa), 1.42);
+
+      // trailing edge (z<0) thins into the body; leading edge (z>0) is a blade
+      const edgeThin = 1.0 - 0.30 * clamp(-ez, 0, 1) - 0.10 * clamp(ez, 0, 1);
+
+      let pz = zc + c * ez;
+      let py = yc + th * ey * edgeThin;
+
+      // gentle downward cant of the lobe tips (mallet droop)
+      py += -0.055 * Math.pow(t, 3.0);
+
+      positions.push(x, py, pz);
+      uvs.push(i / NA, s);
+    }
+  }
+
+  const idx = (j, i) => j * (NA + 1) + i;
+  for (let j = 0; j < ringsCount - 1; j++) {
+    for (let i = 0; i < NA; i++) {
+      const a = idx(j, i), b = idx(j + 1, i), c2 = idx(j + 1, i + 1), d = idx(j, i + 1);
+      indices.push(a, d, b);
+      indices.push(b, d, c2);
+    }
+  }
+  // Cap the two lobe ends (they are nearly degenerate, but close them cleanly)
+  const capStart = positions.length / 3;
+  positions.push(-SPAN - 0.005, yCenter(1) - 0.055, zCenter(1)); uvs.push(0.5, 0);
+  positions.push( SPAN + 0.005, yCenter(1) - 0.055, zCenter(1)); uvs.push(0.5, 1);
+  for (let i = 0; i < NA; i++) {
+    indices.push(capStart, idx(0, i), idx(0, i + 1));
+    indices.push(capStart + 1, idx(ringsCount - 1, i + 1), idx(ringsCount - 1, i));
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const headMesh = new THREE.Mesh(buildHead(), headMat);
+headMesh.position.set(0, 0.045, 1.70);
+headMesh.castShadow = true;
+headMesh.receiveShadow = true;
+shark.add(headMesh);
+
+/* --- head/body blend collar: smooths the junction visually -------- */
+const collar = new THREE.Mesh(
+  new THREE.SphereGeometry(1, 64, 48),
+  headMat
+);
+collar.scale.set(0.40, 0.30, 0.46);
+collar.position.set(0, 0.045, 1.52);
+collar.castShadow = true;
+collar.receiveShadow = true;
+shark.add(collar);
+
+/* --- EYES: smooth dimples at the outer lobe tips ------------------ */
+function makeEye(sign) {
+  const g = new THREE.Group();
+
+  // The dimple: a shallow spherical depression rendered as a dark chrome
+  // lens, slightly inset so it reads as a smooth hollow rather than a ball.
+  const lens = new THREE.Mesh(
+    new THREE.SphereGeometry(0.098, 48, 36),
+    darkMat
+  );
+  lens.scale.set(1.0, 0.92, 0.86);
+  lens.castShadow = false;
+  lens.receiveShadow = false;
+  g.add(lens);
+
+  // Bright chrome rim around the dimple (a smeared torus, no hard seam).
+  const rimRing = new THREE.Mesh(
+    new THREE.TorusGeometry(0.104, 0.030, 24, 64),
+    headMat
+  );
+  rimRing.rotation.y = Math.PI / 2;
+  rimRing.scale.set(1.0, 0.95, 1.0);
+  g.add(rimRing);
+
+  // Tiny specular pupil highlight (pure mirror, adds the "liquid" glint).
+  const glint = new THREE.Mesh(
+    new THREE.SphereGeometry(0.040, 32, 24),
+    new THREE.MeshPhysicalMaterial({
+      color: 0xffffff, metalness: 1.0, roughness: 0.02,
+      clearcoat: 1.0, clearcoatRoughness: 0.01, envMapIntensity: 2.4
+    })
+  );
+  glint.position.set(sign * 0.045, 0.018, 0.030);
+  g.add(glint);
+
+  g.position.set(sign * 1.395, 0.010, -0.30);
+  g.rotation.z = sign * -0.12;
+  return g;
+}
+headMesh.add(makeEye(1));
+headMesh.add(makeEye(-1));
+
+/* --- nostril / sensory grooves smeared along the leading edge ----- */
+for (let i = 0; i < 2; i++) {
+  const sgn = i === 0 ? 1 : -1;
+  const groove = new THREE.Mesh(
+    new THREE.TorusGeometry(0.55, 0.012, 12, 120, Math.PI * 0.55),
+    darkMat
+  );
+  groove.rotation.set(Math.PI / 2, 0, sgn * (Math.PI * 0.5 - 0.28));
+  groove.position.set(sgn * 0.42, -0.10, 0.10);
+  groove.scale.set(1.5, 1.0, 1.0);
+  headMesh.add(groove);
+}
+
+/* --- FIN BUILDER --------------------------------------------------
+ * A parametric blade: 2D outline lofted into a symmetric aerofoil with
+ * a razor trailing/tip edge. Used for dorsal, pectorals, pelvics,
+ * second dorsal, anal fin and the caudal lobes.
+ */
+
+function buildFin({
+  length = 1.0,        // root -> tip
+  baseChord = 0.7,     // chord at root
+  tipChord = 0.10,     // chord at tip
+  sweep = 0.55,        // how far back the tip trails (in chord units)
+  thickness = 0.10,    // max half thickness at root
+  curve = 0.10,        // lateral (out-of-plane) curvature of the blade
+  segsL = 60,
+  segsC = 40,
+  tipRound = 0.14,     // rounding of the tip
+  chordShape = 1.0     // >1 keeps chord fuller toward the tip
+} = {}) {
+  const positions = [];
+  const uvs = [];
+  const indices = [];
+
+  for (let j = 0; j <= segsL; j++) {
+    const v = j / segsL;                       // 0 root .. 1 tip
+    const y = v * length;
+    const taper = Math.pow(1.0 - v, chordShape);
+    const c = mix(tipChord, baseChord, taper) * (1.0 - 0.9 * smoothstep(1.0 - tipRound, 1.0, v) * 0.85);
+    const zoff = -sweep * Math.pow(v, 1.25) * baseChord;
+    const th = thickness * Math.pow(1.0 - v, 0.85) * (1.0 - 0.85 * smoothstep(1.0 - tipRound, 1.0, v));
+    const xoff = curve * Math.pow(v, 1.6);
+
+    for (let i = 0; i <= segsC; i++) {
+      const s = i / segsC;                     // around the section
+      const a = s * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      // aerofoil-ish: fuller at leading edge, knife at trailing edge
+      const cz = Math.sign(ca) * Math.pow(Math.abs(ca), 0.9);
+      const cx = Math.sign(sa) * Math.pow(Math.abs(sa), 1.6);
+      const leanThin = 1.0 - 0.55 * clamp(-cz, 0, 1);
+
+      const pz = zoff + c * 0.5 * cz + c * 0.12;
+      const px = xoff + th * cx * leanThin;
+      const py = y;
+
+      positions.push(px, py, pz);
+      uvs.push(s, v);
+    }
+  }
+
+  const idx = (j, i) => j * (segsC + 1) + i;
+  for (let j = 0; j < segsL; j++) {
+    for (let i = 0; i < segsC; i++) {
+      const a = idx(j, i), b = idx(j + 1, i), c2 = idx(j + 1, i + 1), d = idx(j, i + 1);
+      indices.push(a, d, b);
+      indices.push(b, d, c2);
+    }
+  }
+  // seal root and tip
+  const capA = positions.length / 3;
+  positions.push(0, -0.001, 0.12 * baseChord); uvs.push(0.5, 0);
+  const capB = capA + 1;
+  positions.push(curve, length + 0.001, -sweep * baseChord); uvs.push(0.5, 1);
+  for (let i = 0; i < segsC; i++) {
+    indices.push(capA, idx(0, i + 1), idx(0, i));
+    indices.push(capB, idx(segsL, i), idx(segsL, i + 1));
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  geo.setIndex(indices);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function addFin(geo, { pos, rot, scale = 1 }) {
+  const m = new THREE.Mesh(geo, finMat);
+  m.position.set(pos[0], pos[1], pos[2]);
+  if (rot) m.rotation.set(rot[0], rot[1], rot[2]);
+  if (Array.isArray(scale)) m.scale.set(scale[0], scale[1], scale[2]);
+  else m.scale.setScalar(scale);
+  m.castShadow = true;
+  m.receiveShadow = true;
+  shark.add(m);
+  return m;
+}
+
+/* --- FIRST DORSAL: tall quicksilver blade ------------------------- */
+const dorsalGeo = buildFin({
+  length: 1.02,
+  baseChord: 0.80,
+  tipChord: 0.055,
+  sweep: 0.70,
+  thickness: 0.075,
+  curve: 0.0,
+  tipRound: 0.10,
+  chordShape: 1.15
+});
+addFin(dorsalGeo, { pos: [0, 0.44, 0.34], rot: [0.0, 0, 0] });
+
+/* --- SECOND DORSAL ------------------------------------------------ */
+const dorsal2Geo = buildFin({
+  length: 0.24,
+  baseChord: 0.30,
+  tipChord: 0.035,
+  sweep: 0.85,
+  thickness: 0.032,
+  tipRound: 0.16
+});
+addFin(dorsal2Geo, { pos: [0, 0.235, -1.42], rot: [0, 0, 0] });
+
+/* --- PECTORALS: long swept scythes -------------------------------- */
+const pectoralGeo = buildFin({
+  length: 1.06,
+  baseChord: 0.46,
+  tipChord: 0.045,
+  sweep: 1.05,
+  thickness: 0.052,
+  curve: -0.04,
+  tipRound: 0.12,
+  chordShape: 0.95
+});
+addFin(pectoralGeo, { pos: [ 0.30, -0.16, 0.62], rot: [0.13, 0.0, -1.36] });
+const pecL = addFin(pectoralGeo, { pos: [-0.30, -0.16, 0.62], rot: [0.13, 0.0,  1.36] });
+pecL.scale.set(-1, 1, 1);
+
+/* --- PELVICS ------------------------------------------------------ */
+const pelvicGeo = buildFin({
+  length: 0.42,
+  baseChord: 0.30,
+  tipChord: 0.035,
+  sweep: 0.95,
+  thickness: 0.034,
+  tipRound: 0.16
+});
+addFin(pelvicGeo, { pos: [ 0.16, -0.34, -0.86], rot: [0.10, 0, -1.16] });
+const pelL = addFin(pelvicGeo, { pos: [-0.16, -0.34, -0.86], rot: [0.10, 0,  1.16] });
+pelL.scale.set(-1, 1, 1);
+
+/* --- ANAL FIN ----------------------------------------------------- */
+const analGeo = buildFin({
+  length: 0.22,
+  baseChord: 0.26,
+  tipChord: 0.03,
+  sweep: 0.9,
+  thickness: 0.028,
+  tipRound: 0.18
+});
+addFin(analGeo, { pos: [0, -0.235, -1.46], rot: [Math.PI, 0, 0] });
+
+/* --- CAUDAL PEDUNCLE KEELS ---------------------------------------- */
+for (const sgn of [1, -1]) {
+  const keel = new THREE.Mesh(
+    buildFin({ length: 0.30, baseChord: 0.30, tipChord: 0.04, sweep: 0.5, thickness: 0.020, tipRound: 0.2 }),
+    finMat
+  );
+  keel.position.set(sgn * 0.075, -0.02, -2.05);
+  keel.rotation.set(0, 0, sgn * -Math.PI / 2);
+  keel.scale.set(1, 1, 0.8);
+  keel.castShadow = true;
+  shark.add(keel);
+}
+
+/* --- CRESCENT TAIL -------------------------------------------------
+ * Upper lobe: long, swept, scythe-like; lower lobe: shorter, hooked.
+ * Both are the same blade builder with strong sweep + a joining root
+ * mass so the crescent reads as one continuous pour.
+ */
+
+const tailGroup = new THREE.Group();
+tailGroup.position.set(0, -0.02, -2.48);
+shark.add(tailGroup);
+
+// upper lobe
+const upperLobe = new THREE.Mesh(
+  buildFin({
+    length: 1.36,
+    baseChord: 0.62,
+    tipChord: 0.05,
+    sweep: 1.25,
+    thickness: 0.055,
+    curve: 0.0,
+    tipRound: 0.09,
+    chordShape: 1.05
+  }),
+  finMat
+);
+upperLobe.rotation.set(-0.62, 0, 0);   // rake the whole lobe backwards
+upperLobe.position.set(0, 0.02, 0.02);
+upperLobe.castShadow = true;
+upperLobe.receiveShadow = true;
+tailGroup.add(upperLobe);
+
+// lower lobe (shorter, mirrored, hooked forward-down)
+const lowerLobe = new THREE.Mesh(
+  buildFin({
+    length: 0.66,
+    baseChord: 0.50,
+    tipChord: 0.045,
+    sweep: 0.95,
+    thickness: 0.050,
+    curve: 0.0,
+    tipRound: 0.12,
+    chordShape: 1.0
+  }),
+  finMat
+);
+lowerLobe.rotation.set(Math.PI + 0.30, 0, 0);
+lowerLobe.position.set(0, -0.02, 0.02);
+lowerLobe.castShadow = true;
+lowerLobe.receiveShadow = true;
+tailGroup.add(lowerLobe);
+
+// tail root mass — blends the two lobes into a single molten junction
+const tailRoot = new THREE.Mesh(new THREE.SphereGeometry(1, 48, 36), finMat);
+tailRoot.scale.set(0.055, 0.20, 0.17);
+tailRoot.position.set(0, 0.0, 0.03);
+tailRoot.castShadow = true;
+tailGroup.add(tailRoot);
+
+/* --- GILL SLITS: five smeared chrome creases per flank ------------ */
+for (const sgn of [1, -1]) {
+  for (let i = 0; i < 5; i++) {
+    const t = i / 4;
+    const g = new THREE.Mesh(
+      new THREE.TorusGeometry(0.30 - t * 0.035, 0.0125, 10, 90, Math.PI * 0.62),
+      darkMat
+    );
+    const z = 1.06 - i * 0.145;
+    const x = sgn * (0.40 - t * 0.03);
+    g.position.set(x, -0.045, z);
+    g.rotation.set(0, sgn * Math.PI / 2, Math.PI * 0.72);
+    g.scale.set(0.85, 1.0, 1.0);
+    g.castShadow = false;
+    shark.add(g);
+  }
+}
+
+/* --- MOUTH: a shallow crescent slot beneath the head bar ---------- */
+const mouth = new THREE.Mesh(
+  new THREE.TorusGeometry(0.60, 0.030, 14, 140, Math.PI * 0.60),
+  darkMat
+);
+mouth.rotation.set(Math.PI / 2, 0, Math.PI * 0.5 + Math.PI * 0.30);
+mouth.position.set(0, -0.115, 1.58);
+mouth.scale.set(1.0, 1.0, 0.55);
+shark.add(mouth);
+
+/* --- Center & scale the whole sculpture --------------------------- */
+const bbox = new THREE.Box3().setFromObject(shark);
+const center = bbox.getCenter(new THREE.Vector3());
+const size = bbox.getSize(new THREE.Vector3());
+shark.position.sub(center);          // centre at origin
+const maxDim = Math.max(size.x, size.y, size.z);
+const targetSpan = 5.2;
+shark.scale.setScalar(targetSpan / maxDim);
+shark.position.multiplyScalar(targetSpan / maxDim);
+
+// gentle presentation pose
+shark.rotation.set(0.0, 0.0, 0.0);
+
+const poseGroup = new THREE.Group();
+scene.remove(shark);
+poseGroup.add(shark);
+poseGroup.rotation.set(0.06, -0.30, 0.05);
+poseGroup.position.y = 0.15;
+scene.add(poseGroup);
+
+/* ------------------------------------------------------------------ *
+ *  Animate
+ * ------------------------------------------------------------------ */
+
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+
+  rippleUniforms.uTime.value = t;
+
+  // Very subtle "living pour" motion: a slow breathing sway.
+  poseGroup.rotation.z = 0.05 + Math.sin(t * 0.42) * 0.020;
+  poseGroup.rotation.x = 0.06 + Math.sin(t * 0.31 + 1.2) * 0.014;
+  poseGroup.position.y = 0.15 + Math.sin(t * 0.55) * 0.035;
+
+  // Tail & fins flex like liquid held in tension.
+  tailGroup.rotation.y = Math.sin(t * 0.7) * 0.075;
+  upperLobe.rotation.z = Math.sin(t * 0.7 + 0.4) * 0.045;
+  lowerLobe.rotation.z = Math.sin(t * 0.7 + 0.9) * 0.035;
+
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

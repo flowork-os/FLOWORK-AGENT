@@ -1,0 +1,698 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jazz Lounge Stage</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#0a0710}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================ CONFIG / PALETTE ============================= */
+const PAL = {
+  air:      0x0a0710,   // fog + clear colour: smoky plum black
+  stageTop: 0x191119,   // black-lacquer stage deck
+  velvet:   0x6b1226,   // burgundy house curtain
+  gold:     0xc79a45,   // art-deco brass trim
+  brass:    0xd9b45c,   // cymbals, fittings
+  chrome:   0xb9bec6,   // stands and hardware
+  lacquer:  0x0c0c11,   // piano black
+  maple:    0x9a5c22,   // double-bass body
+  rosewood: 0x2a1408,   // fingerboards, bentwood
+  cream:    0xefe3cb,   // drum heads, ivory keys
+  drumRed:  0x7a1420,   // drum shells
+  flame:    0xffb257,   // candle glow
+  rose:     0xff5a93,   // sweeping beam A
+  teal:     0x46cfe0,   // sweeping beam B
+  amber:    0xffc98a    // warm key wash
+};
+const ROOM = { w: 28, d: 28, h: 10.5 };                 // x -14..14, z -14..14
+const STAGE = { w: 18, d: 8.4, h: 0.95, zF: -3.1 };     // apron edge at z = -3.1
+
+/* ============================= PRNG / HELPERS ============================== */
+function mulberry32(seed) {
+  let a = seed >>> 0;
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(5150827);                        // single master stream
+const rand = (a, b) => a + (b - a) * rng();   // seeded jitter for every layout choice
+
+const box = (w, h, d, m) => new THREE.Mesh(new THREE.BoxGeometry(w, h, d), m);
+const cyl = (rt, rb, h, m, s = 20, open = false) =>
+  new THREE.Mesh(new THREE.CylinderGeometry(rt, rb, h, s, 1, open), m);
+const sph = (r, m, s = 16) => new THREE.Mesh(new THREE.SphereGeometry(r, s, s >> 1), m);
+const tor = (r, t, m, s = 24) => new THREE.Mesh(new THREE.TorusGeometry(r, t, 8, s), m);
+const at = (o, x, y, z) => { o.position.set(x, y, z); return o; };
+
+/** Cylinder spanning two points: stand legs, braces, strings, truss lacing. */
+function strut(a, b, r, mat, seg = 8) {
+  const dir = new THREE.Vector3().subVectors(b, a), len = dir.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, len, seg), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.normalize()); return m;
+}
+/** Enrol a whole sub-tree in the shadow pass. */
+function shade(obj, cast = true, receive = true) {
+  obj.traverse(o => { if (o.isMesh) { o.castShadow = cast; o.receiveShadow = receive; } });
+  return obj;
+}
+
+/* ============================= CANVAS TEXTURES ============================= */
+function canvasTex(w, h, draw, rx = 1, ry = 1, srgb = true) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.anisotropy = 4; if (srgb) t.colorSpace = THREE.SRGBColorSpace; return t;
+}
+/** Soft radial blob used by several of the canvas textures below. */
+function blob(g, x, y, r, c) {
+  const rg = g.createRadialGradient(x, y, 0, x, y, r);
+  rg.addColorStop(0, c); rg.addColorStop(1, 'rgba(0,0,0,0)');
+  g.fillStyle = rg; g.fillRect(x - r, y - r, r * 2, r * 2);
+}
+// Staggered parquet planks with bezier grain streaks.
+const texParquet = canvasTex(512, 512, (g, w, h) => {
+  g.fillStyle = '#3d2413'; g.fillRect(0, 0, w, h);
+  for (let row = 0; row < 8; row++) for (let col = 0; col < 4; col++) {
+    const x = col * 128 + (row % 2) * 64, y = row * 64, v = 0.72 + rng() * 0.5;
+    g.fillStyle = `rgb(${(96 * v) | 0},${(58 * v) | 0},${(30 * v) | 0})`;
+    g.fillRect(x + 1, y + 1, 126, 62);
+    g.strokeStyle = 'rgba(20,10,4,0.5)'; g.lineWidth = 1.4;
+    for (let s = 0; s < 6; s++) {
+      const yy = y + 7 + s * 9 + rng() * 4;
+      g.beginPath(); g.moveTo(x + 2, yy);
+      g.bezierCurveTo(x + 40, yy + rng() * 3 - 1.5, x + 88, yy - rng() * 3, x + 126, yy + rng() * 2);
+      g.stroke();
+    }
+  }
+}, 7, 7);
+// Crushed velvet: vertical fold bands, fibre speckle and a top-down falloff.
+const texVelvet = canvasTex(256, 512, (g, w, h) => {
+  const grd = g.createLinearGradient(0, 0, w, 0);
+  for (let i = 0; i <= 10; i++) {
+    const k = 0.42 + 0.58 * Math.abs(Math.sin(i * 1.9));
+    grd.addColorStop(i / 10, `rgb(${(178 * k) | 0},${(34 * k) | 0},${(62 * k) | 0})`);
+  }
+  g.fillStyle = grd; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 4200; i++) {
+    g.fillStyle = `rgba(255,190,205,${rng() * 0.05})`;
+    g.fillRect(rng() * w, rng() * h, 1.6, 3.4);
+  }
+  const v = g.createLinearGradient(0, 0, 0, h);
+  v.addColorStop(0, 'rgba(255,220,180,0.18)'); v.addColorStop(1, 'rgba(0,0,0,0.5)');
+  g.fillStyle = v; g.fillRect(0, 0, w, h);
+}, 4, 1);
+// Fluted deco wall: vertical reeding with a gilt chevron dado band.
+const texWall = canvasTex(256, 256, (g, w, h) => {
+  g.fillStyle = '#1c1424'; g.fillRect(0, 0, w, h);
+  for (let x = 0; x < w; x += 16) {
+    const grd = g.createLinearGradient(x, 0, x + 16, 0);
+    grd.addColorStop(0, '#120c18'); grd.addColorStop(0.5, '#2b2038'); grd.addColorStop(1, '#120c18');
+    g.fillStyle = grd; g.fillRect(x, 0, 16, h);
+  }
+  g.strokeStyle = 'rgba(199,154,69,0.45)'; g.lineWidth = 3;
+  for (let i = 0; i < 8; i++) {
+    g.beginPath(); g.moveTo(i * 32, 210); g.lineTo(i * 32 + 16, 192); g.lineTo(i * 32 + 32, 210);
+    g.stroke();
+  }
+}, 6, 2);
+// Soft sprite for the haze motes; fade ramp for the volumetric light cones.
+const texGlow = canvasTex(128, 128, (g, w) => blob(g, w / 2, w / 2, w / 2, 'rgba(255,244,232,0.9)'),
+  1, 1, false);
+const texBeam = canvasTex(16, 128, (g, w, h) => {
+  const grd = g.createLinearGradient(0, 0, 0, h);
+  grd.addColorStop(0, 'rgba(255,255,255,1)'); grd.addColorStop(0.45, 'rgba(255,255,255,0.5)');
+  grd.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = grd; g.fillRect(0, 0, w, h);
+}, 1, 1, false);
+// Equirect club "sky": what the gold, brass and chrome are given to reflect.
+const texEnv = canvasTex(512, 256, (g, w, h) => {
+  const sky = g.createLinearGradient(0, 0, 0, h);
+  sky.addColorStop(0, '#2a1f36'); sky.addColorStop(0.55, '#150e1c'); sky.addColorStop(1, '#0a0710');
+  g.fillStyle = sky; g.fillRect(0, 0, w, h);
+  blob(g, 70, 58, 110, '#ff7aa8'); blob(g, 250, 46, 120, '#ffd6a4');
+  blob(g, 408, 74, 60, '#3f9fb4'); blob(g, 170, 182, 110, '#8a2033');
+  blob(g, 350, 176, 120, '#d8ac5e');
+});
+texEnv.mapping = THREE.EquirectangularReflectionMapping;
+
+/* ================================ MATERIALS =============================== */
+const std = o => new THREE.MeshStandardMaterial(o);
+const M = {
+  floor:    std({ map: texParquet, roughness: 0.72, metalness: 0.08 }),
+  wall:     std({ map: texWall, roughness: 0.9, side: THREE.BackSide }),
+  ceiling:  std({ color: 0x0d0912, roughness: 1, side: THREE.BackSide }),
+  stage:    std({ color: PAL.stageTop, roughness: 0.3, metalness: 0.35, envMapIntensity: 0.9 }),
+  velvet:   std({ map: texVelvet, color: PAL.velvet, roughness: 0.95, side: THREE.DoubleSide }),
+  gold:     std({ color: PAL.gold, roughness: 0.3, metalness: 0.95, envMapIntensity: 1.5 }),
+  brass:    std({ color: PAL.brass, roughness: 0.24, metalness: 1, envMapIntensity: 1.6 }),
+  cymbal:   std({ color: PAL.brass, roughness: 0.2, metalness: 1, envMapIntensity: 1.8,
+                  side: THREE.DoubleSide }),
+  chrome:   std({ color: PAL.chrome, roughness: 0.2, metalness: 1, envMapIntensity: 1.8 }),
+  lacquer:  std({ color: PAL.lacquer, roughness: 0.11, metalness: 0.62, envMapIntensity: 1.6 }),
+  maple:    std({ color: PAL.maple, roughness: 0.35, metalness: 0.05, envMapIntensity: 0.8 }),
+  rosewood: std({ color: PAL.rosewood, roughness: 0.5 }),
+  cream:    std({ color: PAL.cream, roughness: 0.6 }),
+  drum:     std({ color: PAL.drumRed, roughness: 0.28, metalness: 0.3, envMapIntensity: 1.4 }),
+  cloth:    std({ color: 0x3c1824, roughness: 0.95, side: THREE.DoubleSide }),
+  seat:     std({ color: 0x6d1526, roughness: 0.85 }),
+  glass:    std({ color: 0xd9e6ea, roughness: 0.05, transparent: true, opacity: 0.3,
+                  side: THREE.DoubleSide, envMapIntensity: 1.8 }),
+  shade:    std({ color: 0xffb877, roughness: 0.5, transparent: true, opacity: 0.72,
+                  emissive: 0xff9440, emissiveIntensity: 1.1, side: THREE.DoubleSide }),
+  flame:    new THREE.MeshBasicMaterial({ color: 0xffc47a }),
+  lens:     new THREE.MeshBasicMaterial({ color: 0xfff0d2 })
+};
+const beamMat = c => new THREE.MeshBasicMaterial({ color: c, map: texBeam, transparent: true,
+  opacity: 0.09, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
+
+/* ================================ BUILDERS ================================ */
+/** Club shell: parquet floor, reeded walls, dado rails and deco sunburst fans. */
+function buildRoom() {
+  const g = new THREE.Group();
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(ROOM.w, ROOM.d), M.floor);
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; g.add(floor);
+  const shell = new THREE.Mesh(new THREE.BoxGeometry(ROOM.w, ROOM.h, ROOM.d), M.wall);
+  shell.position.y = ROOM.h / 2 - 0.02; shell.receiveShadow = true; g.add(shell);
+  g.add(at(new THREE.Mesh(new THREE.BoxGeometry(ROOM.w - 0.4, 0.5, ROOM.d - 0.4), M.ceiling),
+    0, ROOM.h + 0.2, 0));
+  for (const sx of [-1, 1]) {
+    g.add(at(box(0.16, 0.14, ROOM.d - 0.8, M.gold), sx * (ROOM.w / 2 - 0.12), 2.35, 0));
+    for (let i = 0; i < 4; i++) {                       // gilt sunburst wall fans
+      const fan = new THREE.Group();
+      for (let k = 0; k < 9; k++) {
+        const len = 1.05 - Math.abs(k - 4) * 0.11, ray = box(0.05, len, 0.05, M.gold);
+        ray.position.y = len / 2; ray.rotation.z = (k - 4) * 0.2; fan.add(ray);
+      }
+      fan.add(cyl(0.16, 0.16, 0.06, M.gold, 14)); fan.rotation.y = -sx * Math.PI / 2;
+      g.add(at(fan, sx * (ROOM.w / 2 - 0.18), 3.5, -5 + i * 4.4));
+    }
+  }
+  return g;
+}
+
+/** Raised stage: lacquer deck, bull-nosed apron, footlights, proscenium arch. */
+function buildStage() {
+  const g = new THREE.Group();
+  g.add(at(box(STAGE.w, STAGE.h, STAGE.d, M.stage), 0, STAGE.h / 2, STAGE.zF - STAGE.d / 2));
+  const nose = cyl(STAGE.h / 2, STAGE.h / 2, STAGE.w, M.lacquer, 18);
+  nose.rotation.z = Math.PI / 2; g.add(at(nose, 0, STAGE.h / 2, STAGE.zF));
+  g.add(at(box(STAGE.w + 0.1, 0.09, 0.09, M.gold), 0, STAGE.h - 0.02, STAGE.zF + 0.05));
+  for (let i = 0; i < 11; i++) {                        // footlight strip on the apron
+    const x = -7.5 + i * 1.5, z = STAGE.zF - 0.14;
+    g.add(at(cyl(0.13, 0.09, 0.14, M.gold, 12), x, STAGE.h + 0.07, z),
+      at(sph(0.085, M.flame, 10), x, STAGE.h + 0.17, z));
+  }
+  for (const sx of [-1, 1]) {                           // fluted pilasters with stepped capitals
+    const col = new THREE.Group();
+    for (let f = 0; f < 5; f++) col.add(at(cyl(0.13, 0.13, 6.4, M.gold, 10), (f - 2) * 0.27, 3.2, 0));
+    col.add(at(box(1.7, 0.3, 0.75, M.gold), 0, 6.55, 0));
+    for (let k = 0; k < 3; k++) col.add(at(box(1.5 - k * 0.34, 0.22, 0.62, M.gold), 0, 6.82 + k * 0.24, 0));
+    g.add(at(col, sx * 9.15, 0, STAGE.zF - 0.7));
+  }
+  g.add(at(box(19.4, 0.44, 0.52, M.lacquer), 0, 7.3, STAGE.zF - 0.72));
+  for (let k = 0; k < 3; k++)                           // stepped gilt entablature
+    g.add(at(box(20.2 - k * 0.7, 0.15, 0.74 - k * 0.16, M.gold), 0, 7.6 + k * 0.19, STAGE.zF - 0.7));
+  const medal = new THREE.Group();                      // sunburst medallion over the arch
+  for (let k = 0; k < 15; k++) {
+    const len = 1.5 - Math.abs(k - 7) * 0.1, ray = box(0.09, len, 0.09, M.gold);
+    ray.position.y = len / 2; ray.rotation.z = (k - 7) * 0.185; medal.add(ray);
+  }
+  medal.add(cyl(0.34, 0.34, 0.1, M.gold, 20)); g.add(at(medal, 0, 8.1, STAGE.zF - 0.75));
+  return shade(g);
+}
+
+/** House curtain: folded back drape, swagged valance, gathered side drapes. */
+function buildCurtain() {
+  const g = new THREE.Group();
+  const geo = new THREE.PlaneGeometry(19.5, 8.2, 110, 10);
+  const p = geo.attributes.position;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i), y = p.getY(i);
+    const fold = 0.3 * Math.cos(x * 3.4) + 0.1 * Math.cos(x * 8.1 + 1.3);
+    p.setZ(i, fold * (0.55 + 0.45 * (y + 4.1) / 8.2));
+    p.setX(i, x * (1 - 0.012 * Math.cos(x * 3.4)));
+  }
+  geo.computeVertexNormals();
+  const drape = new THREE.Mesh(geo, M.velvet);
+  drape.receiveShadow = true; g.add(at(drape, 0, 4.55, -11.25));
+  const val = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.55, 0.55, 19.5, 20, 1, false, 0, Math.PI), M.velvet);
+  val.rotation.z = Math.PI / 2; val.rotation.y = Math.PI; g.add(at(val, 0, 8.25, -11.0));
+  for (let i = 0; i < 13; i++) {                        // bullion fringe under the valance
+    const x = -9 + i * 1.5;
+    g.add(at(cyl(0.07, 0.05, 0.34, M.gold, 8), x, 7.68, -10.7), at(sph(0.09, M.gold, 10), x, 7.46, -10.7));
+  }
+  for (const sx of [-1, 1]) {                           // side drapes with tasselled tie-backs
+    const side = new THREE.Group();
+    for (let k = 0; k < 5; k++) side.add(at(cyl(0.4 - k * 0.03, 0.34 - k * 0.03, 8, M.velvet, 12),
+      k * 0.42, 4.0, -0.16 * k));
+    side.add(at(tor(0.5, 0.08, M.gold, 18), 0.6, 3.5, 0.2));
+    side.add(at(cyl(0.11, 0.16, 0.5, M.gold, 10), 0.6, 2.95, 0.26));
+    side.scale.x = sx; g.add(at(side, sx * 8.5, 0, -10.6));
+  }
+  return shade(g, false, true);
+}
+
+/** Grand piano: curved case, propped lid, harp, keybed, pedal lyre and bench. */
+function buildPiano() {
+  const g = new THREE.Group();
+  const s = new THREE.Shape(); s.moveTo(-0.78, 0); s.lineTo(0.78, 0);
+  s.bezierCurveTo(0.98, 0.9, 1.02, 1.9, 0.66, 2.62);
+  s.bezierCurveTo(0.42, 3.05, -0.1, 3.12, -0.52, 2.95);
+  s.lineTo(-0.78, 2.55); s.lineTo(-0.78, 0);
+  const body = new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.46, bevelEnabled: true,
+    bevelSize: 0.035, bevelThickness: 0.035, bevelSegments: 2, curveSegments: 16 }), M.lacquer);
+  body.rotation.x = -Math.PI / 2; g.add(at(body, 0, 0.62, 0));
+  const lid = new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.06, bevelEnabled: true,
+    bevelSize: 0.03, bevelThickness: 0.02, bevelSegments: 1, curveSegments: 16 }), M.lacquer);
+  lid.rotation.x = -Math.PI / 2; at(lid, 0.78, 0, 0);
+  const hinge = new THREE.Group(); hinge.add(lid);
+  hinge.position.set(-0.78, 1.1, 0); hinge.rotation.z = 0.86; g.add(hinge);
+  g.add(strut(new THREE.Vector3(0.6, 1.08, -1.5), new THREE.Vector3(0.1, 1.98, -1.5), 0.035, M.gold));
+  const plate = new THREE.Mesh(new THREE.ExtrudeGeometry(s, { depth: 0.03, bevelEnabled: false,
+    curveSegments: 12 }), M.gold);
+  plate.rotation.x = -Math.PI / 2; plate.scale.set(0.88, 0.88, 1); g.add(at(plate, 0, 1.05, -0.14));
+  for (let i = 0; i < 15; i++)                          // strings stretched over the harp
+    g.add(at(box(0.014, 0.006, 2.1 - i * 0.058, M.chrome), -0.6 + i * 0.086, 1.11, -1.3));
+  g.add(at(box(1.62, 0.16, 0.66, M.lacquer), 0, 1.02, 0.34));
+  const whites = new THREE.InstancedMesh(new THREE.BoxGeometry(0.062, 0.05, 0.52), M.cream, 21);
+  const blacks = new THREE.InstancedMesh(new THREE.BoxGeometry(0.036, 0.06, 0.33), M.lacquer, 15);
+  const d = new THREE.Object3D(); let bi = 0;
+  for (let i = 0; i < 21; i++) {
+    const x = -0.72 + i * 0.0705;
+    d.position.set(x, 1.13, 0.36); d.updateMatrix(); whites.setMatrixAt(i, d.matrix);
+    if (bi < 15 && [0, 1, 3, 4, 5].includes(i % 7)) {
+      d.position.set(x + 0.035, 1.17, 0.27); d.updateMatrix(); blacks.setMatrixAt(bi++, d.matrix);
+    }
+  }
+  whites.castShadow = blacks.castShadow = true; g.add(whites, blacks);
+  g.add(at(box(1.72, 0.12, 0.14, M.lacquer), 0, 1.16, 0.66));
+  const desk = box(1.1, 0.42, 0.05, M.lacquer);
+  desk.rotation.x = -0.22; g.add(at(desk, 0, 1.36, -0.08));
+  for (const [lx, lz] of [[-0.62, 0.22], [0.62, 0.22], [0.12, 2.5]]) {
+    g.add(at(cyl(0.09, 0.13, 0.62, M.lacquer, 12), lx, 0.31, lz));
+    g.add(at(cyl(0.15, 0.15, 0.05, M.gold, 12), lx, 0.03, lz));
+  }
+  const lyre = new THREE.Group();                       // pedal lyre
+  lyre.add(at(box(0.34, 0.44, 0.06, M.lacquer), 0, 0.28, 0));
+  for (let k = 0; k < 3; k++) lyre.add(at(box(0.1, 0.03, 0.24, M.gold), (k - 1) * 0.11, 0.08, 0.1));
+  const bench = at(new THREE.Group(), 0.05, 0, 1.35);
+  bench.add(at(box(1.0, 0.1, 0.42, M.seat), 0, 0.52, 0));
+  for (const bx of [-0.42, 0.42]) for (const bz of [-0.16, 0.16])
+    bench.add(at(cyl(0.035, 0.045, 0.5, M.lacquer, 8), bx, 0.25, bz));
+  g.add(at(lyre, 0, 0, 0.5), bench);
+  return shade(g);
+}
+
+/** Upright double bass on an A-frame stand: carved body, scroll, four strings. */
+function buildBass() {
+  const g = new THREE.Group();
+  const half = t => 0.09 + 0.66 * Math.pow(Math.cos(t * Math.PI * 0.5), 0.55) *
+    (1 - 0.55 * Math.exp(-Math.pow((t - 0.08) / 0.3, 2))) * (t < 0 ? 1.06 : 0.9);
+  const pts = [];
+  for (let i = 0; i <= 34; i++) { const t = -1 + 2 * i / 34; pts.push(new THREE.Vector2(half(t), t * 1.42)); }
+  for (let i = 34; i >= 0; i--) { const t = -1 + 2 * i / 34; pts.push(new THREE.Vector2(-half(t), t * 1.42)); }
+  const bodyGeo = new THREE.ExtrudeGeometry(new THREE.Shape(pts), { depth: 0.34, bevelEnabled: true,
+    bevelSize: 0.07, bevelThickness: 0.06, bevelSegments: 3, curveSegments: 6 });
+  bodyGeo.center(); g.add(at(new THREE.Mesh(bodyGeo, M.maple), 0, 1.5, 0));
+  for (const sx of [-1, 1]) {                           // f-holes
+    const fh = cyl(0.045, 0.045, 0.06, M.rosewood, 8); fh.rotation.x = Math.PI / 2;
+    g.add(at(fh, sx * 0.24, 1.52, 0.2), at(box(0.05, 0.42, 0.05, M.rosewood), sx * 0.24, 1.34, 0.2));
+  }
+  g.add(at(box(0.34, 0.06, 0.1, M.maple), 0, 2.06, 0.2),          // bridge and tailpiece
+    at(box(0.2, 0.42, 0.07, M.rosewood), 0, 0.55, 0.2));
+  g.add(at(cyl(0.07, 0.1, 1.5, M.rosewood, 12), 0, 3.05, 0.06),   // neck, board, pegbox, scroll
+    at(box(0.13, 1.5, 0.06, M.rosewood), 0, 3.05, 0.15),
+    at(box(0.16, 0.5, 0.16, M.rosewood), 0, 3.95, 0.06),
+    at(tor(0.13, 0.055, M.rosewood, 14), 0, 4.28, 0.06));
+  for (let k = 0; k < 4; k++) {                         // tuning machines
+    const px = k < 2 ? -0.16 : 0.16, py = 3.82 + (k % 2) * 0.24;
+    const peg = cyl(0.03, 0.03, 0.3, M.brass, 8); peg.rotation.z = Math.PI / 2;
+    g.add(at(peg, px, py, 0.06), at(sph(0.05, M.brass, 8), px * 1.9, py, 0.06));
+  }
+  for (let k = 0; k < 4; k++)
+    g.add(strut(new THREE.Vector3(-0.09 + k * 0.06, 0.72, 0.24),
+                new THREE.Vector3(-0.05 + k * 0.035, 3.86, 0.19), 0.008, M.cream, 5));
+  g.add(at(cyl(0.035, 0.035, 0.7, M.chrome, 8), 0, 0.35, 0));
+  for (const sx of [-1, 1]) g.add(strut(new THREE.Vector3(sx * 0.75, 0, 0.5),
+    new THREE.Vector3(0, 1.15, -0.05), 0.035, M.chrome));
+  g.add(strut(new THREE.Vector3(0, 0, -0.85), new THREE.Vector3(0, 1.15, -0.05), 0.035, M.chrome));
+  g.rotation.x = -0.13;
+  return shade(g);
+}
+
+/** Five-piece kit: kick, snare, toms, brass cymbals on tripods, throne. */
+function buildDrums() {
+  const g = new THREE.Group();
+  const shell = (r, depth, y, z, x = 0) => {
+    const grp = new THREE.Group();
+    const s = cyl(r, r, depth, M.drum, 24); s.rotation.x = Math.PI / 2; grp.add(s);
+    for (const sgn of [-1, 1]) {
+      const head = cyl(r * 1.01, r * 1.01, 0.02, M.cream, 24); head.rotation.x = Math.PI / 2;
+      grp.add(at(head, 0, 0, sgn * depth / 2), at(tor(r * 1.02, 0.026, M.gold, 24), 0, 0,
+        sgn * depth / 2));
+    }
+    for (let k = 0; k < 6; k++) {                       // tension lugs
+      const a = k / 6 * Math.PI * 2;
+      grp.add(at(box(0.05, 0.16, 0.05, M.chrome), Math.cos(a) * r, Math.sin(a) * r, 0));
+    }
+    return at(grp, x, y, z);
+  };
+  const cymbal = (r, x, y, z, tilt) => {
+    const c = new THREE.Group();
+    c.add(new THREE.Mesh(new THREE.ConeGeometry(r, r * 0.17, 30, 1, true), M.cymbal),
+      at(sph(r * 0.17, M.brass, 10), 0, r * 0.1, 0));
+    c.rotation.z = tilt; c.userData.swing = tilt;
+    return at(c, x, y, z);
+  };
+  const tripod = (x, z, h) => {
+    const t = new THREE.Group();
+    t.add(at(cyl(0.024, 0.024, h, M.chrome, 8), 0, h / 2, 0));
+    for (let k = 0; k < 3; k++) t.add(strut(new THREE.Vector3(0, h * 0.34, 0),
+      new THREE.Vector3(Math.cos(k * 2.1) * 0.34, 0, Math.sin(k * 2.1) * 0.34), 0.02, M.chrome, 6));
+    return at(t, x, 0, z);
+  };
+  g.add(shell(0.62, 0.5, 0.66, 0), at(box(0.5, 0.06, 0.14, M.chrome), 0, 0.06, 0.42));  // kick
+  const tomA = shell(0.3, 0.3, 1.42, -0.24, -0.3); tomA.rotation.x = 0.34; g.add(tomA);
+  const tomB = shell(0.34, 0.32, 1.4, -0.2, 0.36); tomB.rotation.x = 0.3; g.add(tomB);
+  g.add(at(cyl(0.03, 0.03, 0.5, M.chrome, 8), 0, 1.15, 0));
+  g.add(shell(0.44, 0.52, 0.62, 0.62, 1.15));           // floor tom
+  for (let k = 0; k < 3; k++) g.add(at(cyl(0.02, 0.02, 0.62, M.chrome, 6),
+    1.15 + Math.cos(k * 2.1) * 0.42, 0.31, 0.62 + Math.sin(k * 2.1) * 0.2));
+  const snare = shell(0.34, 0.24, 0.78, 0.72, -0.95); snare.rotation.x = 0.12; g.add(snare);
+  g.add(tripod(-0.95, 0.72, 0.62), tripod(-1.75, 1.42, 1.42), tripod(1.62, -0.5, 1.52),
+        tripod(-1.5, -0.6, 1.34));
+  const ride = cymbal(0.46, 1.62, 1.62, -0.5, -0.16), crash = cymbal(0.38, -1.5, 1.68, -0.6, 0.2);
+  const hatTop = cymbal(0.3, -1.75, 1.5, 1.42, 0.03), hatBot = cymbal(0.3, -1.75, 1.42, 1.42, -0.03);
+  g.add(ride, crash, hatTop, hatBot);
+  const throne = at(new THREE.Group(), 0.1, 0, 1.6);
+  throne.add(at(cyl(0.3, 0.3, 0.12, M.seat, 16), 0, 0.62, 0),
+    at(cyl(0.05, 0.05, 0.6, M.chrome, 8), 0, 0.3, 0));
+  for (let k = 0; k < 3; k++) throne.add(strut(new THREE.Vector3(0, 0.3, 0),
+    new THREE.Vector3(Math.cos(k * 2.1) * 0.36, 0, Math.sin(k * 2.1) * 0.36), 0.022, M.chrome, 6));
+  g.add(throne); g.userData.cymbals = [ride, crash, hatTop];
+  return shade(g);
+}
+
+/** Vintage ribbon microphone: chrome capsule, deco crown, boom stand, cable. */
+function buildMic() {
+  const g = new THREE.Group();
+  g.add(at(cyl(0.36, 0.4, 0.07, M.chrome, 22), 0, 0.035, 0),      // weighted base and shaft
+    at(cyl(0.12, 0.16, 0.14, M.gold, 16), 0, 0.13, 0),
+    at(cyl(0.045, 0.05, 1.6, M.chrome, 12), 0, 0.95, 0),
+    at(cyl(0.06, 0.06, 0.1, M.gold, 12), 0, 1.76, 0));
+  const head = at(new THREE.Group(), 0, 1.97, 0);
+  const capsule = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.2, 6, 18), M.chrome);
+  capsule.scale.z = 0.55; head.add(capsule);
+  for (let k = 0; k < 5; k++) {                         // grille bands
+    const band = tor(0.152, 0.014, M.rosewood, 16);
+    band.rotation.x = Math.PI / 2; band.scale.z = 0.58;
+    head.add(at(band, 0, -0.16 + k * 0.08, 0));
+  }
+  for (let k = 0; k < 3; k++)                           // stepped deco crown
+    head.add(at(box(0.2 - k * 0.05, 0.03, 0.1, M.gold), 0, 0.29 + k * 0.045, 0));
+  head.add(at(cyl(0.16, 0.16, 0.05, M.gold, 18), 0, 0.24, 0),
+    at(tor(0.24, 0.022, M.gold, 20), 0, 0.02, 0));
+  const cable = new THREE.CatmullRomCurve3([
+    new THREE.Vector3(0, 1.8, -0.02), new THREE.Vector3(0.06, 1.3, -0.2),
+    new THREE.Vector3(-0.1, 0.6, -0.1), new THREE.Vector3(0.2, 0.06, 0.3),
+    new THREE.Vector3(0.62, 0.05, 0.02), new THREE.Vector3(0.5, 0.05, -0.5),
+    new THREE.Vector3(0.02, 0.05, -0.62)]);
+  g.add(head, new THREE.Mesh(new THREE.TubeGeometry(cable, 50, 0.026, 6), M.rosewood));
+  return shade(g);
+}
+
+/** Bistro table: linen skirt, gilt rim, brass candle lamp and a coupe glass. */
+function buildTable(i) {
+  const g = new THREE.Group(), r = 0.52 + (i % 3) * 0.05;
+  g.add(at(cyl(r, r, 0.06, M.lacquer, 22), 0, 0.76, 0));
+  g.add(at(tor(r, 0.024, M.gold, 24).rotateX(Math.PI / 2), 0, 0.79, 0));
+  g.add(at(cyl(r * 0.99, r * 0.72, 0.5, M.cloth, 22, true), 0, 0.5, 0));
+  g.add(at(cyl(0.07, 0.07, 0.74, M.lacquer, 10), 0, 0.37, 0));
+  g.add(at(cyl(0.24, 0.28, 0.05, M.gold, 16), 0, 0.03, 0));
+  const lamp = at(new THREE.Group(), 0, 0.79, 0);       // brass candle lamp
+  const glow = cyl(0.1, 0.115, 0.22, M.shade.clone(), 14, true);
+  const flame = new THREE.Mesh(new THREE.ConeGeometry(0.035, 0.11, 8), M.flame);
+  lamp.add(at(cyl(0.11, 0.14, 0.06, M.gold, 14), 0, 0.03, 0), at(glow, 0, 0.17, 0),
+    at(flame, 0, 0.18, 0), at(tor(0.1, 0.014, M.gold, 14).rotateX(Math.PI / 2), 0, 0.29, 0));
+  g.add(lamp);
+  const glass = new THREE.Group();                      // coupe glass
+  glass.add(at(cyl(0.07, 0.02, 0.075, M.glass, 12, true), 0, 0.085, 0),
+    at(cyl(0.008, 0.008, 0.09, M.glass, 6), 0, 0.045, 0),
+    at(cyl(0.05, 0.05, 0.01, M.glass, 12), 0, 0.005, 0));
+  g.add(at(glass, Math.cos(i * 1.7) * r * 0.6, 0.79, Math.sin(i * 1.7) * r * 0.6));
+  g.userData.flame = flame; g.userData.glow = glow;
+  return shade(g);
+}
+
+/** Bentwood cafe chair: hoop back, round cushion, splayed legs. */
+function buildChair() {
+  const g = new THREE.Group();
+  g.add(at(cyl(0.25, 0.25, 0.07, M.seat, 16), 0, 0.47, 0),
+    at(tor(0.25, 0.022, M.rosewood, 18).rotateX(Math.PI / 2), 0, 0.5, 0));
+  const hoop = new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.024, 6, 16, Math.PI * 1.1), M.rosewood);
+  hoop.rotation.set(0.16, 0, -Math.PI * 0.05); g.add(at(hoop, 0, 0.78, -0.12));
+  for (const sx of [-1, 1]) g.add(strut(new THREE.Vector3(sx * 0.21, 0.44, -0.13),
+    new THREE.Vector3(sx * 0.22, 0.8, -0.16), 0.022, M.rosewood, 6));
+  for (let k = 0; k < 4; k++) {
+    const a = Math.PI / 4 + k * Math.PI / 2;
+    g.add(strut(new THREE.Vector3(Math.cos(a) * 0.19, 0.44, Math.sin(a) * 0.19),
+      new THREE.Vector3(Math.cos(a) * 0.27, 0, Math.sin(a) * 0.27), 0.024, M.rosewood, 6));
+  }
+  return shade(g);
+}
+
+/** Overhead lighting truss and its deco spotlight cans (two of them sweep). */
+function buildTruss() {
+  const g = new THREE.Group();
+  for (const y of [0, 0.55]) for (const z of [-0.28, 0.28])
+    g.add(at(cyl(0.055, 0.055, 20, M.chrome, 8).rotateZ(Math.PI / 2), 0, y, z));
+  for (let i = 0; i < 20; i++) {
+    const x = -9.5 + i;
+    g.add(strut(new THREE.Vector3(x, 0, -0.28), new THREE.Vector3(x + 0.5, 0.55, 0.28), 0.026, M.chrome, 5));
+  }
+  return shade(g, false, false);
+}
+function buildSpotCan(color) {
+  const g = new THREE.Group(), yoke = new THREE.Group();
+  const lens = cyl(0.23, 0.23, 0.03, M.lens.clone(), 14);
+  lens.material.color = new THREE.Color(color);
+  yoke.add(at(cyl(0.19, 0.22, 0.62, M.lacquer, 14), 0, -0.34, 0),
+    at(cyl(0.24, 0.19, 0.16, M.gold, 14), 0, -0.7, 0), at(lens, 0, -0.78, 0));
+  for (let k = 0; k < 4; k++)                           // barn doors
+    yoke.add(at(box(0.36, 0.02, 0.13, M.lacquer), 0, -0.86, 0).rotateY(k * Math.PI / 4));
+  const beam = new THREE.Mesh(new THREE.ConeGeometry(1, 1, 24, 1, true), beamMat(color));
+  g.add(at(tor(0.26, 0.03, M.chrome, 12), 0, -0.3, 0), yoke, beam);
+  g.userData.yoke = yoke; g.userData.beam = beam;
+  return g;
+}
+
+/** Music stand: tripod, tilted desk and an open sheet of manuscript paper. */
+function buildStand() {
+  const g = new THREE.Group();
+  g.add(at(cyl(0.028, 0.028, 1.05, M.lacquer, 8), 0, 0.52, 0));
+  for (let k = 0; k < 3; k++) g.add(strut(new THREE.Vector3(0, 0.3, 0),
+    new THREE.Vector3(Math.cos(k * 2.1) * 0.26, 0, Math.sin(k * 2.1) * 0.26), 0.018, M.lacquer, 6));
+  const desk = at(new THREE.Group(), 0, 1.16, 0);
+  desk.add(box(0.62, 0.44, 0.02, M.lacquer), at(box(0.58, 0.4, 0.012, M.cream), 0, 0.02, 0.02),
+    at(box(0.66, 0.06, 0.07, M.lacquer), 0, -0.21, 0.04));
+  desk.rotation.x = -0.42; g.add(desk);
+  return shade(g);
+}
+
+/** Drifting cigarette haze that catches the coloured beams. */
+function buildHaze(count) {
+  const pos = new Float32Array(count * 3), spd = new Float32Array(count);
+  for (let i = 0; i < count; i++) {
+    pos[i * 3] = rand(-12, 12); pos[i * 3 + 1] = rand(0.4, 8.4); pos[i * 3 + 2] = rand(-11, 11);
+    spd[i] = rand(0.05, 0.2);
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  const p = new THREE.Points(geo, new THREE.PointsMaterial({ size: 1.15, map: texGlow, color: 0xcdbcf0,
+    transparent: true, opacity: 0.075, depthWrite: false, blending: THREE.AdditiveBlending }));
+  p.userData.spd = spd; p.frustumCulled = false; return p;
+}
+
+/* ============================= SCENE ASSEMBLY ============================= */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(PAL.air); scene.fog = new THREE.FogExp2(PAL.air, 0.024);
+
+scene.add(buildRoom(), buildStage(), buildCurtain());
+
+const piano = buildPiano();                             // keyboard angled to the house
+piano.position.set(-5.4, STAGE.h, -7.5); piano.rotation.y = 0.7; piano.scale.setScalar(1.15);
+const bass = buildBass();
+bass.position.set(6.2, STAGE.h, -6.2); bass.rotation.y = -0.55; bass.scale.setScalar(0.46);
+const drums = buildDrums();
+drums.position.set(2.3, STAGE.h, -8.4); drums.rotation.y = -0.3; drums.scale.setScalar(0.72);
+const mic = buildMic();
+mic.position.set(-0.8, STAGE.h, -4.7); mic.scale.setScalar(0.95);
+scene.add(piano, bass, drums, mic);
+
+const standA = buildStand(); standA.position.set(-2.9, STAGE.h, -6.0); standA.rotation.y = 0.4;
+const standB = buildStand(); standB.position.set(4.7, STAGE.h, -5.4); standB.rotation.y = -0.5;
+scene.add(standA, standB);
+
+const tables = [];
+const layout = [[-6.2, 0.7], [-2.2, 1.3], [2.2, 0.6], [6.4, 1.5], [-4.4, 5.4], [1.0, 6.2], [5.8, 5.2]];
+layout.forEach(([tx, tz], i) => {
+  const t = buildTable(i);
+  t.position.set(tx + rand(-0.3, 0.3), 0, tz + rand(-0.3, 0.3));
+  t.rotation.y = rand(0, Math.PI); scene.add(t); tables.push(t);
+  for (let k = 0; k < 2; k++) {
+    const a = -Math.PI / 2 + (k - 0.5) * 1.7 + rand(-0.2, 0.2), rr = 0.95 + rand(0, 0.14);
+    const c = buildChair();
+    c.position.set(t.position.x + Math.cos(a) * rr, 0, t.position.z - Math.sin(a) * rr);
+    c.rotation.y = a - Math.PI / 2 + rand(-0.2, 0.2); scene.add(c);
+  }
+});
+
+scene.add(at(buildTruss(), 0, 8.45, -1.2));
+const cans = [[-6.2, PAL.rose], [-2.1, PAL.amber], [2.1, PAL.amber], [6.2, PAL.teal]]
+  .map(([x, col]) => {
+    const can = buildSpotCan(col);
+    can.position.set(x, 8.35, -1.2); scene.add(can); return can;
+  });
+const haze = buildHaze(400); scene.add(haze);
+
+const neon = [];                                        // neon banding across the stage apron
+for (const [y, col] of [[0.3, PAL.rose], [0.56, PAL.teal]]) {
+  const n = cyl(0.038, 0.038, STAGE.w - 0.5, new THREE.MeshBasicMaterial({ color: col }), 8);
+  n.rotation.z = Math.PI / 2; scene.add(at(n, 0, y, STAGE.zF + 0.5)); neon.push(n);
+}
+
+/* ================================ LIGHTING ================================ */
+scene.add(new THREE.AmbientLight(0x6a5a86, 1.0));
+scene.add(new THREE.HemisphereLight(0x7d6a9c, 0x3a1e0e, 0.8));
+
+const key = new THREE.SpotLight(PAL.amber, 560, 28, 0.42, 0.55, 2);
+key.position.set(-2.1, 8.35, -1.2); key.target.position.set(-5.0, 1.4, -7.2);
+key.castShadow = true; key.shadow.mapSize.set(1024, 1024);
+key.shadow.camera.near = 1; key.shadow.camera.far = 26; key.shadow.bias = -0.0018;
+scene.add(key, key.target);
+
+const key2 = new THREE.SpotLight(PAL.amber, 480, 28, 0.4, 0.6, 2);
+key2.position.set(2.1, 8.35, -1.2); key2.target.position.set(2.4, 1.1, -8.0);
+scene.add(key2, key2.target);
+
+const sweepA = new THREE.SpotLight(PAL.rose, 620, 32, 0.24, 0.45, 2);
+sweepA.position.set(-6.2, 8.35, -1.2); sweepA.castShadow = true;
+sweepA.shadow.mapSize.set(1024, 1024); sweepA.shadow.camera.far = 28; sweepA.shadow.bias = -0.002;
+const sweepB = new THREE.SpotLight(PAL.teal, 560, 32, 0.24, 0.45, 2);
+sweepB.position.set(6.2, 8.35, -1.2);
+scene.add(sweepA, sweepA.target, sweepB, sweepB.target);
+
+const stageFill = new THREE.PointLight(0xffb474, 90, 22, 2);   // low warm wash on the band
+stageFill.position.set(0.5, 3.4, -6.6);
+const backGlow = new THREE.PointLight(0xff3f6e, 90, 22, 2);    // rim glow inside the curtain
+backGlow.position.set(0, 5.4, -10.4);
+scene.add(stageFill, backGlow);
+
+const candleLights = [];                                // real lights only for front tables
+for (let i = 0; i < 4; i++) {
+  const l = new THREE.PointLight(PAL.flame, 4.5, 5.2, 2);
+  l.position.set(tables[i].position.x, 1.05, tables[i].position.z);
+  scene.add(l); candleLights.push(l);
+}
+
+/* ======================= RENDERER / CAMERA / CONTROLS ===================== */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.shadowMap.enabled = true; renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping; renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const pmrem = new THREE.PMREMGenerator(renderer);       // moody IBL for the metal trim
+scene.environment = pmrem.fromEquirectangular(texEnv).texture; pmrem.dispose();
+
+const camera = new THREE.PerspectiveCamera(46, window.innerWidth / window.innerHeight, 0.1, 120);
+camera.position.set(5.6, 5.4, 10.6);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.4, -5.2);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.75;
+controls.minDistance = 11; controls.maxDistance = 24;
+controls.minPolarAngle = 0.6; controls.maxPolarAngle = 1.44;
+controls.enablePan = false; controls.update();
+
+/* =============================== ANIMATION =============================== */
+const clock = new THREE.Clock(), aimPoint = new THREE.Vector3();
+const yUp = new THREE.Vector3(0, -1, 0); let prevT = 0;
+
+/** Point a can (and its light + volumetric cone) at a floor position. */
+function aimCan(can, light, x, y, z, spread) {
+  aimPoint.set(x, y, z);
+  light.target.position.copy(aimPoint); light.target.updateMatrixWorld();
+  const dir = aimPoint.clone().sub(can.position), len = dir.length();
+  dir.normalize(); can.userData.yoke.quaternion.setFromUnitVectors(yUp, dir);
+  const beam = can.userData.beam;
+  beam.scale.set(len * spread, len, len * spread);
+  beam.position.copy(dir).multiplyScalar(len * 0.5);
+  beam.quaternion.setFromUnitVectors(yUp, dir);
+}
+
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime(), dt = Math.min(t - prevT, 0.05); prevT = t;
+
+  // 1. the two coloured cans sweep and cross over the stage
+  aimCan(cans[0], sweepA, -3.0 + Math.sin(t * 0.21) * 4.4, 1.0, -6.6 + Math.cos(t * 0.17) * 1.8, 0.24);
+  aimCan(cans[3], sweepB, 3.0 - Math.sin(t * 0.19 + 1.1) * 4.4, 1.0, -6.6 + Math.sin(t * 0.15) * 1.8, 0.24);
+  aimCan(cans[1], key, -5.0, 1.4, -7.2, 0.32);
+  aimCan(cans[2], key2, 2.4, 1.1, -8.0, 0.3);
+  cans[0].userData.beam.material.opacity = 0.1 + 0.035 * Math.sin(t * 0.9);
+  cans[3].userData.beam.material.opacity = 0.1 + 0.035 * Math.sin(t * 0.9 + 2.1);
+
+  // 2. candle flames gutter, their shades breathe, the front lamps flicker
+  tables.forEach((tb, i) => {
+    const f = 0.82 + 0.18 * Math.sin(t * 5.3 + i * 1.7) + 0.1 * Math.sin(t * 11.7 + i);
+    tb.userData.flame.scale.set(0.9 + f * 0.16, f, 0.9 + f * 0.16);
+    tb.userData.glow.material.emissiveIntensity = 1.15 + f * 0.6;
+    if (i < candleLights.length) candleLights[i].intensity = 4.4 + f * 1.9;
+  });
+
+  // 3. haze motes rise through the beams and recycle at the floor
+  const hp = haze.geometry.attributes.position, spd = haze.userData.spd;
+  for (let i = 0; i < spd.length; i++) {
+    const y = hp.getY(i) + spd[i] * dt;
+    hp.setY(i, y > 8.8 ? 0.35 : y);
+    hp.setX(i, hp.getX(i) + Math.sin(t * 0.32 + i) * dt * 0.09);
+  }
+  hp.needsUpdate = true;
+
+  // 4. cymbals shiver, the curtain rim light swells, one neon tube stutters
+  drums.userData.cymbals.forEach((c, i) => {
+    c.rotation.z = c.userData.swing + Math.sin(t * 1.4 + i * 2.1) * 0.035;
+  });
+  backGlow.intensity = 84 + Math.sin(t * 0.6) * 22;
+  neon[1].visible = !(Math.sin(t * 7.3) > 0.93);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+
+/* ================================= RESIZE ================================= */
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+</script>
+</body>
+</html>

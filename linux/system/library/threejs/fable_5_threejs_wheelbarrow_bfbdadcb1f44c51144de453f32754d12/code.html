@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Wheelbarrow</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #1b1d20; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x1b1d20);
+scene.fog = new THREE.Fog(0x1b1d20, 12, 30);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(3.6, 2.4, 4.4);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.body.appendChild(renderer.canvas ?? renderer.domElement);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 1.2;
+controls.target.set(0, 0.55, 0);
+controls.maxPolarAngle = Math.PI * 0.49;
+controls.minDistance = 2.5;
+controls.maxDistance = 12;
+
+// --- Lighting ---
+scene.add(new THREE.HemisphereLight(0xbfd4e6, 0x3a3228, 0.55));
+const sun = new THREE.DirectionalLight(0xfff1dd, 2.2);
+sun.position.set(5, 7, 4);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -4;
+sun.shadow.camera.right = sun.shadow.camera.top = 4;
+sun.shadow.bias = -0.0004;
+sun.shadow.radius = 6;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x8fa9c9, 0.4);
+fill.position.set(-5, 3, -4);
+scene.add(fill);
+
+// --- Ground ---
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 48),
+  new THREE.MeshStandardMaterial({ color: 0x232528, roughness: 0.95, metalness: 0 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// soft radial contact shadow
+const shadowTexCanvas = document.createElement('canvas');
+shadowTexCanvas.width = shadowTexCanvas.height = 256;
+const sctx = shadowTexCanvas.getContext('2d');
+const grad = sctx.createRadialGradient(128, 128, 10, 128, 128, 128);
+grad.addColorStop(0, 'rgba(0,0,0,0.5)');
+grad.addColorStop(1, 'rgba(0,0,0,0)');
+sctx.fillStyle = grad;
+sctx.fillRect(0, 0, 256, 256);
+const contactShadow = new THREE.Mesh(
+  new THREE.PlaneGeometry(3.6, 2.6),
+  new THREE.MeshBasicMaterial({ map: new THREE.CanvasTexture(shadowTexCanvas), transparent: true, depthWrite: false })
+);
+contactShadow.rotation.x = -Math.PI / 2;
+contactShadow.position.y = 0.005;
+scene.add(contactShadow);
+
+// --- Materials ---
+const trayMat = new THREE.MeshStandardMaterial({
+  color: 0x6d7a80, metalness: 0.75, roughness: 0.55, side: THREE.DoubleSide
+});
+const frameMat = new THREE.MeshStandardMaterial({ color: 0x4a4f54, metalness: 0.6, roughness: 0.6 });
+const woodMat = new THREE.MeshStandardMaterial({ color: 0x8a6a45, metalness: 0.05, roughness: 0.85 });
+const rubberMat = new THREE.MeshStandardMaterial({ color: 0x24262a, metalness: 0.1, roughness: 0.95 });
+const hubMat = new THREE.MeshStandardMaterial({ color: 0x9a5a3a, metalness: 0.5, roughness: 0.6 });
+
+// subtle worn-paint noise on the tray
+{
+  const c = document.createElement('canvas');
+  c.width = c.height = 256;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = '#888';
+  ctx.fillRect(0, 0, 256, 256);
+  let seed = 42;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < 900; i++) {
+    const g = 90 + rnd() * 100;
+    ctx.fillStyle = `rgba(${g},${g},${g},${0.15 + rnd() * 0.25})`;
+    ctx.beginPath();
+    ctx.ellipse(rnd() * 256, rnd() * 256, 1 + rnd() * 9, 1 + rnd() * 4, rnd() * 6.28, 0, 6.28);
+    ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  trayMat.roughnessMap = tex;
+  const tint = tex.clone();
+  trayMat.map = tint;
+  trayMat.color.set(0x77848b);
+}
+
+// --- Wheelbarrow group ---
+const barrow = new THREE.Group();
+scene.add(barrow);
+
+const shadowify = m => { m.castShadow = true; m.receiveShadow = true; return m; };
+
+// Tray: shallow sloped basin built by lofting rectangular rings (narrow bottom -> flared rim, higher at rear)
+{
+  const bottomW = 0.62, bottomFront = -0.55, bottomBack = 0.55;
+  const rimW = 1.05, rimFront = -0.85, rimBack = 0.92;
+  const bottomY = 0.52, rimFrontY = 0.86, rimBackY = 1.0;
+  const seg = 6; // rings between bottom and rim
+  const pos = [];
+  const rings = [];
+  for (let i = 0; i <= seg; i++) {
+    const t = i / seg;
+    const e = t * t * 0.35 + t * 0.65; // slight ease for flare
+    const w = THREE.MathUtils.lerp(bottomW, rimW, e) / 2;
+    const zf = THREE.MathUtils.lerp(bottomFront, rimFront, e);
+    const zb = THREE.MathUtils.lerp(bottomBack, rimBack, e);
+    const yF = THREE.MathUtils.lerp(bottomY, rimFrontY, t);
+    const yB = THREE.MathUtils.lerp(bottomY, rimBackY, t);
+    // 8 corners per ring as 4 corner points (rect), y varies front->back
+    rings.push([
+      new THREE.Vector3(-w, yF, zf), new THREE.Vector3(w, yF, zf),
+      new THREE.Vector3(w, yB, zb), new THREE.Vector3(-w, yB, zb)
+    ]);
+  }
+  // side walls between consecutive rings
+  const quad = (a, b, c, d) => { pos.push(a.x,a.y,a.z, b.x,b.y,b.z, c.x,c.y,c.z, a.x,a.y,a.z, c.x,c.y,c.z, d.x,d.y,d.z); };
+  for (let i = 0; i < seg; i++) {
+    const r0 = rings[i], r1 = rings[i + 1];
+    for (let k = 0; k < 4; k++) {
+      const kn = (k + 1) % 4;
+      quad(r0[k], r0[kn], r1[kn], r1[k]);
+    }
+  }
+  // bottom cap
+  const b = rings[0];
+  quad(b[3], b[2], b[1], b[0]);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  const tray = shadowify(new THREE.Mesh(g, trayMat));
+  barrow.add(tray);
+
+  // rolled rim lip
+  const rim = rings[seg];
+  const lipPts = rim.map(v => v.clone());
+  lipPts.push(lipPts[0].clone());
+  const lipCurve = new THREE.CatmullRomCurve3(lipPts, true, 'catmullrom', 0.05);
+  const lip = shadowify(new THREE.Mesh(new THREE.TubeGeometry(lipCurve, 64, 0.028, 10, true), trayMat));
+  barrow.add(lip);
+}
+
+// Handles: two long tubes from rear grips, running under the tray to the wheel axle at front
+const handleY = 0.42, handleX = 0.34;
+const gripZ = 1.95, axleZ = -1.05, axleY = 0.32;
+for (const s of [-1, 1]) {
+  const pts = [
+    new THREE.Vector3(s * handleX * 0.82, handleY + 0.16, gripZ),
+    new THREE.Vector3(s * handleX * 0.9, handleY + 0.1, 1.55),
+    new THREE.Vector3(s * handleX, handleY, 0.7),
+    new THREE.Vector3(s * handleX, handleY, -0.35),
+    new THREE.Vector3(s * 0.16, axleY, axleZ)
+  ];
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'catmullrom', 0.2);
+  const rail = shadowify(new THREE.Mesh(new THREE.TubeGeometry(curve, 48, 0.035, 12), frameMat));
+  barrow.add(rail);
+  // wooden grip
+  const grip = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.048, 0.34, 12)));
+  grip.material = woodMat;
+  grip.rotation.x = Math.PI / 2 - 0.06;
+  grip.position.set(s * handleX * 0.81, handleY + 0.17, gripZ + 0.02);
+  barrow.add(grip);
+}
+
+// Front support legs (angled struts with feet)
+for (const s of [-1, 1]) {
+  const leg = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.028, 0.028, 0.52, 10), frameMat));
+  leg.position.set(s * 0.36, 0.24, 0.72);
+  leg.rotation.z = s * 0.16;
+  leg.rotation.x = -0.1;
+  barrow.add(leg);
+  const foot = shadowify(new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.03, 0.2), frameMat));
+  foot.position.set(s * 0.4, 0.018, 0.75);
+  barrow.add(foot);
+  // cross brace from leg up to handle rail
+  const brace = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.02, 0.02, 0.5, 8), frameMat));
+  brace.position.set(s * 0.35, 0.32, 0.4);
+  brace.rotation.x = 1.1;
+  barrow.add(brace);
+}
+// rear cross member under tray
+{
+  const cross = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.72, 10), frameMat));
+  cross.rotation.z = Math.PI / 2;
+  cross.position.set(0, handleY - 0.02, 0.72);
+  barrow.add(cross);
+}
+
+// Wheel: worn rubber tire, painted hub, axle
+{
+  const wheel = new THREE.Group();
+  wheel.position.set(0, axleY, axleZ);
+  const tire = shadowify(new THREE.Mesh(new THREE.TorusGeometry(0.24, 0.085, 14, 40), rubberMat));
+  tire.rotation.y = Math.PI / 2;
+  wheel.add(tire);
+  const hub = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.09, 0.1, 16), hubMat));
+  hub.rotation.z = Math.PI / 2;
+  wheel.add(hub);
+  // simple spokes disc
+  const disc = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.2, 0.2, 0.035, 20), hubMat));
+  disc.rotation.z = Math.PI / 2;
+  wheel.add(disc);
+  const axle = shadowify(new THREE.Mesh(new THREE.CylinderGeometry(0.022, 0.022, 0.42, 8), frameMat));
+  axle.rotation.z = Math.PI / 2;
+  wheel.add(axle);
+  barrow.add(wheel);
+  // flatten of worn tire: tiny sink into ground
+  wheel.position.y = axleY - 0.005;
+}
+
+// center the whole barrow around origin
+barrow.position.z = -0.35;
+
+// --- Render loop ---
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

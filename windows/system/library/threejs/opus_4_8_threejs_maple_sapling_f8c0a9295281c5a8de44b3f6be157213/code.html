@@ -1,0 +1,450 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Maple Sapling</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #16181b; }
+  #app { position: fixed; inset: 0; }
+  canvas { display: block; }
+  .caption {
+    position: fixed; left: 16px; bottom: 14px;
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    color: rgba(220,224,228,0.55); letter-spacing: 0.06em; user-select: none;
+    pointer-events: none; text-transform: uppercase;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<div class="caption">Acer · young maple sapling</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+
+// ---------------------------------------------------------------------------
+// Deterministic pseudo-random generator so the sapling always grows nicely
+// ---------------------------------------------------------------------------
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(20260706);
+
+const UP = new THREE.Vector3(0, 1, 0);
+
+// ---------------------------------------------------------------------------
+// Renderer
+// ---------------------------------------------------------------------------
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.getElementById('app').appendChild(renderer.domElement);
+
+// ---------------------------------------------------------------------------
+// Scene, camera, environment (neutral dark studio)
+// ---------------------------------------------------------------------------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171a);
+
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+const camera = new THREE.PerspectiveCamera(40, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(1.55, 0.98, 1.7);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.target.set(0, 0.7, 0);
+controls.minDistance = 0.8;
+controls.maxDistance = 6;
+controls.minPolarAngle = 0.2;
+controls.maxPolarAngle = Math.PI * 0.5;
+
+// ---------------------------------------------------------------------------
+// Lighting: hemisphere fill + directional key (shadows) + fill + rim
+// ---------------------------------------------------------------------------
+const hemi = new THREE.HemisphereLight(0xc6d8ea, 0x2c2822, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff3e2, 2.6);
+key.position.set(2.6, 4.0, 2.2);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.radius = 4;
+key.shadow.bias = -0.0004;
+key.shadow.normalBias = 0.02;
+const sc = key.shadow.camera;
+sc.near = 0.1; sc.far = 12;
+sc.left = -1.3; sc.right = 1.3; sc.top = 1.9; sc.bottom = -0.3;
+sc.updateProjectionMatrix();
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6d4, 0.55);
+fill.position.set(-3.0, 1.8, -1.0);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffffff, 1.15);
+rim.position.set(-1.6, 2.6, -3.0);
+scene.add(rim);
+
+// ---------------------------------------------------------------------------
+// Ground plane that only receives shadows
+// ---------------------------------------------------------------------------
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.34 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------------------------------------------------------------------------
+// Small geometry helpers
+// ---------------------------------------------------------------------------
+function perp(v) {
+  const a = Math.abs(v.x) < 0.9 ? new THREE.Vector3(1, 0, 0) : new THREE.Vector3(0, 1, 0);
+  return new THREE.Vector3().crossVectors(v, a).normalize();
+}
+
+function computeTangents(pts) {
+  const N = pts.length, t = [];
+  for (let i = 0; i < N; i++) {
+    let v;
+    if (i === 0) v = pts[1].clone().sub(pts[0]);
+    else if (i === N - 1) v = pts[N - 1].clone().sub(pts[N - 2]);
+    else v = pts[i + 1].clone().sub(pts[i - 1]);
+    if (v.lengthSq() < 1e-12) v.set(0, 1, 0);
+    t.push(v.normalize());
+  }
+  return t;
+}
+
+// Build a tapered tube along a centerline using a parallel-transport frame.
+// Adds gentle bark-like radius noise and a per-vertex color gradient.
+function buildTaperedTube(pts, radii, radialSegs, colBase, colTip) {
+  const N = pts.length;
+  const rs = radialSegs;
+  const tangents = computeTangents(pts);
+
+  const positions = [], normals = [], colors = [], uvs = [], indices = [];
+  let curNormal = perp(tangents[0]);
+  const tmpCol = new THREE.Color();
+
+  for (let i = 0; i < N; i++) {
+    if (i > 0) {
+      const t0 = tangents[i - 1], t1 = tangents[i];
+      const axis = new THREE.Vector3().crossVectors(t0, t1);
+      const len = axis.length();
+      if (len > 1e-6) {
+        axis.divideScalar(len);
+        const ang = Math.acos(THREE.MathUtils.clamp(t0.dot(t1), -1, 1));
+        curNormal.applyAxisAngle(axis, ang);
+      }
+      curNormal.addScaledVector(tangents[i], -curNormal.dot(tangents[i])).normalize();
+    }
+    const binormal = new THREE.Vector3().crossVectors(tangents[i], curNormal).normalize();
+    const r = radii[i];
+    const v = i / (N - 1);
+    tmpCol.copy(colBase).lerp(colTip, v);
+
+    for (let j = 0; j <= rs; j++) {
+      const a = (j / rs) * Math.PI * 2;
+      const nx = Math.cos(a), ny = Math.sin(a);
+      const dir = curNormal.clone().multiplyScalar(nx).addScaledVector(binormal, ny).normalize();
+      const noise = 1 + 0.06 * (Math.sin(i * 2.3 + j * 1.7) * 0.5 + Math.sin(i * 0.7 + j * 3.1) * 0.35);
+      const p = pts[i].clone().addScaledVector(dir, r * noise);
+      positions.push(p.x, p.y, p.z);
+      normals.push(dir.x, dir.y, dir.z);
+      const shade = 0.82 + 0.18 * (0.5 + 0.5 * Math.sin(i * 1.9 + j * 2.1));
+      colors.push(tmpCol.r * shade, tmpCol.g * shade, tmpCol.b * shade);
+      uvs.push(j / rs, v);
+    }
+  }
+  for (let i = 0; i < N - 1; i++) {
+    for (let j = 0; j < rs; j++) {
+      const a = i * (rs + 1) + j;
+      const b = a + 1;
+      const c = a + (rs + 1);
+      const d = c + 1;
+      indices.push(a, c, b, b, c, d);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(normals, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvs, 2));
+  g.setIndex(indices);
+  return g;
+}
+
+// ---------------------------------------------------------------------------
+// Procedural five-lobed maple leaf geometry (single, reused via instancing)
+// ---------------------------------------------------------------------------
+function makeLeafGeometry() {
+  // radial key points: [angle from top in degrees, radius]  (central + 2 upper + 2 lower lobes)
+  const keys = [
+    [0, 1.00],   // central lobe tip
+    [20, 0.40],  // sinus
+    [43, 0.86],  // upper lobe tip
+    [65, 0.34],  // sinus
+    [93, 0.70],  // lower (basal) lobe tip
+    [130, 0.20], // basal sinus
+    [162, 0.12],
+    [180, 0.05], // petiole base
+  ];
+  function radiusAt(phiDeg) {
+    const a = Math.abs(phiDeg);
+    for (let i = 0; i < keys.length - 1; i++) {
+      const [a0, r0] = keys[i], [a1, r1] = keys[i + 1];
+      if (a >= a0 && a <= a1) {
+        const t = (a - a0) / (a1 - a0);
+        return r0 + (r1 - r0) * t;
+      }
+    }
+    return keys[keys.length - 1][1];
+  }
+
+  const shape = new THREE.Shape();
+  const steps = 200;
+  for (let i = 0; i <= steps; i++) {
+    const phi = -180 + 360 * (i / steps);
+    const rad = THREE.MathUtils.degToRad(phi);
+    let r = radiusAt(phi);
+    r *= 1 + 0.026 * Math.sin(rad * 13); // subtle serrated margin
+    const x = r * Math.sin(rad);
+    const y = r * Math.cos(rad);
+    if (i === 0) shape.moveTo(x, y);
+    else shape.lineTo(x, y);
+  }
+  shape.closePath();
+
+  const geo = new THREE.ShapeGeometry(shape, 14);
+  geo.translate(0, 0.05, 0); // move petiole base to local origin
+
+  // give the blade a gentle cup + downward curl so it isn't flat
+  const pos = geo.attributes.position;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i);
+    const yc = Math.max(0, y);
+    const z = -0.13 * x * x - 0.05 * yc * yc;
+    pos.setZ(i, z);
+  }
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// ---------------------------------------------------------------------------
+// Grow the sapling: recursive branching hierarchy + leaf placement
+// ---------------------------------------------------------------------------
+const MAXD = 2;
+const LEAFSIZE = 0.062;
+const woodGeoms = [];
+const leafInstances = [];
+
+const barkTrunkA = new THREE.Color(0x5f4a30);
+const barkTrunkB = new THREE.Color(0x6d6446);
+const barkLimbA  = new THREE.Color(0x67573a);
+const barkLimbB  = new THREE.Color(0x777a4c);
+const petioleA   = new THREE.Color(0x74713f);
+const petioleB   = new THREE.Color(0x8a6a3d);
+
+function leafColor() {
+  const c = new THREE.Color();
+  if (rng() < 0.14) {
+    // young reddish growth
+    c.setHSL(0.03 + 0.03 * rng(), 0.55, 0.33 + 0.05 * rng());
+  } else {
+    c.setHSL(0.20 + 0.09 * rng(), 0.45 + 0.20 * rng(), 0.33 + 0.08 * rng());
+  }
+  return c;
+}
+
+function branchDir(tangent, az, spread) {
+  const t = tangent.clone().normalize();
+  const n = perp(t);
+  const b = new THREE.Vector3().crossVectors(t, n).normalize();
+  const outward = n.clone().multiplyScalar(Math.cos(az)).addScaledVector(b, Math.sin(az)).normalize();
+  return t.clone().multiplyScalar(Math.cos(spread)).addScaledVector(outward, Math.sin(spread)).normalize();
+}
+
+function addLeaf(nodePos, outDir, size) {
+  const pdir = outDir.clone().normalize().addScaledVector(UP, 0.4).normalize();
+  const plen = size * 0.5;
+  const pend = nodePos.clone().addScaledVector(pdir, plen);
+  woodGeoms.push(buildTaperedTube([nodePos, pend], [size * 0.05, size * 0.032], 4, petioleA, petioleB));
+
+  const yA = pdir.clone().addScaledVector(UP, -0.18).normalize();
+  let zA = UP.clone().addScaledVector(yA, -UP.dot(yA));
+  if (zA.lengthSq() < 1e-4) zA.set(0, 0, 1);
+  zA.normalize();
+  let xA = new THREE.Vector3().crossVectors(yA, zA).normalize();
+  zA.crossVectors(xA, yA).normalize();
+
+  const roll = (rng() - 0.5) * 0.7;
+  xA.applyAxisAngle(yA, roll);
+  zA.applyAxisAngle(yA, roll);
+
+  const m = new THREE.Matrix4().makeBasis(xA, yA, zA);
+  const q = new THREE.Quaternion().setFromRotationMatrix(m);
+  const s = size * (0.85 + rng() * 0.4);
+  const mat = new THREE.Matrix4().compose(pend, q, new THREE.Vector3(s, s, s));
+  leafInstances.push({ matrix: mat, color: leafColor() });
+}
+
+function grow(base, dir, len, rad, depth, phase) {
+  const N = Math.min(11, Math.max(4, Math.round(len * 8) + 2));
+  const pts = [], radii = [];
+  let p = base.clone();
+  let d = dir.clone().normalize();
+  const wobble = depth === 0 ? 0.05 : 0.15;
+  const upBias = depth === 0 ? 0.0 : 0.05;
+  const tipFactor = 0.32;
+  const step = len / (N - 1);
+
+  for (let i = 0; i < N; i++) {
+    pts.push(p.clone());
+    let r = rad * (1 - (1 - tipFactor) * (i / (N - 1)));
+    if (depth === 0 && i === 0) r *= 1.35; // subtle root flare
+    radii.push(r);
+    if (i < N - 1) {
+      const ax = perp(d).applyAxisAngle(d, rng() * Math.PI * 2);
+      d.applyAxisAngle(ax, (rng() - 0.5) * wobble);
+      const tu = UP.clone().addScaledVector(d, -d.dot(UP));
+      if (tu.lengthSq() > 1e-5) d.addScaledVector(tu.normalize(), upBias);
+      d.normalize();
+      p = p.clone().addScaledVector(d, step);
+    }
+  }
+
+  const colA = depth === 0 ? barkTrunkA : barkLimbA;
+  const colB = depth === 0 ? barkTrunkB : barkLimbB;
+  woodGeoms.push(buildTaperedTube(pts, radii, depth === 0 ? 9 : 6, colA, colB));
+
+  const tangents = computeTangents(pts);
+  const tip = pts[N - 1];
+  const tipTangent = tangents[N - 1];
+
+  if (depth < MAXD) {
+    const cfg = depth === 0
+      ? { count: 3, pair: true,  lo: 0.42, hi: 0.9,  spread: 0.90, lenR: 0.62 }
+      : { count: 2, pair: false, lo: 0.40, hi: 0.88, spread: 0.98, lenR: 0.60 };
+    let ph = phase;
+    for (let k = 0; k < cfg.count; k++) {
+      const f = cfg.lo + (cfg.hi - cfg.lo) * (cfg.count > 1 ? k / (cfg.count - 1) : 0.5);
+      const idx = Math.min(N - 1, Math.max(1, Math.round(f * (N - 1))));
+      const np = pts[idx], nr = radii[idx], nt = tangents[idx];
+      const sides = cfg.pair ? [0, Math.PI] : [0];
+      for (const sd of sides) {
+        const az = ph + sd + (rng() - 0.5) * 0.4;
+        const spread = cfg.spread + (rng() - 0.5) * 0.2;
+        const cdir = branchDir(nt, az, spread);
+        const clen = len * cfg.lenR * (0.85 + rng() * 0.3) * (1.05 - 0.3 * f);
+        grow(np, cdir, clen, nr * 0.72, depth + 1, ph + Math.PI / 2);
+      }
+      ph += 2.399963; // golden angle for pleasant node distribution
+    }
+
+    if (depth >= 1) addLeaf(tip, tipTangent, LEAFSIZE * 0.9); // primary tip leaf
+
+    if (depth === 0) { // leader crown at the very top
+      for (let k = 0; k < 3; k++) {
+        const az = k * 2.09 + rng();
+        addLeaf(tip, branchDir(tipTangent, az, 0.7), LEAFSIZE * (0.8 + rng() * 0.3));
+      }
+    }
+  } else {
+    // twig: one opposite leaf pair + a terminal leaf (keeps the crown sparse)
+    const idx = Math.min(N - 1, Math.round(0.55 * (N - 1)));
+    const np = pts[idx], nt = tangents[idx];
+    addLeaf(np, branchDir(nt, phase, 1.1), LEAFSIZE * (0.8 + rng() * 0.3));
+    addLeaf(np, branchDir(nt, phase + Math.PI, 1.1), LEAFSIZE * (0.8 + rng() * 0.3));
+    addLeaf(tip, tipTangent, LEAFSIZE * (0.9 + rng() * 0.3));
+  }
+}
+
+// Grow from the base
+grow(new THREE.Vector3(0, 0, 0), UP.clone(), 1.12, 0.011, 0, 0);
+
+// ---------------------------------------------------------------------------
+// Assemble meshes
+// ---------------------------------------------------------------------------
+const sapling = new THREE.Group();
+
+const woodGeo = mergeGeometries(woodGeoms, false);
+woodGeo.computeVertexNormals();
+const woodMat = new THREE.MeshStandardMaterial({
+  vertexColors: true, roughness: 0.92, metalness: 0.0, envMapIntensity: 0.4
+});
+const woodMesh = new THREE.Mesh(woodGeo, woodMat);
+woodMesh.castShadow = true;
+woodMesh.receiveShadow = true;
+sapling.add(woodMesh);
+
+const leafGeo = makeLeafGeometry();
+const leafMat = new THREE.MeshStandardMaterial({
+  color: 0xffffff, roughness: 0.55, metalness: 0.0,
+  side: THREE.DoubleSide, envMapIntensity: 0.55
+});
+leafMat.shadowSide = THREE.DoubleSide;
+
+const leafMesh = new THREE.InstancedMesh(leafGeo, leafMat, leafInstances.length);
+leafMesh.castShadow = true;
+leafMesh.receiveShadow = true;
+for (let i = 0; i < leafInstances.length; i++) {
+  leafMesh.setMatrixAt(i, leafInstances[i].matrix);
+  leafMesh.setColorAt(i, leafInstances[i].color);
+}
+leafMesh.instanceMatrix.needsUpdate = true;
+if (leafMesh.instanceColor) leafMesh.instanceColor.needsUpdate = true;
+sapling.add(leafMesh);
+
+scene.add(sapling);
+
+// frame the target on the crown
+const bbox = new THREE.Box3().setFromObject(sapling);
+controls.target.set(0, bbox.min.y + (bbox.max.y - bbox.min.y) * 0.55, 0);
+controls.update();
+
+// ---------------------------------------------------------------------------
+// Resize + render loop
+// ---------------------------------------------------------------------------
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

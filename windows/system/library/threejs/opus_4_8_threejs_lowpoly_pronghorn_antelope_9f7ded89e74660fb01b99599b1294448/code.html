@@ -1,0 +1,774 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Low-Poly Pronghorn</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #16181c; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 50%; bottom: 14px; transform: translateX(-50%);
+    font: 12px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+    color: rgba(235,232,226,0.42); letter-spacing: 0.09em; text-transform: uppercase;
+    pointer-events: none; user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Low-Poly Pronghorn &middot; drag to orbit &middot; scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ============================================================
+   Renderer / Scene / Camera
+   ============================================================ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x15171b);
+scene.fog = new THREE.Fog(0x15171b, 7.0, 20.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.05, 100);
+camera.position.set(2.7, 1.55, 3.5);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.75;
+controls.target.set(0, 0.86, 0);
+controls.minDistance = 1.8;
+controls.maxDistance = 12;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.update();
+
+/* ============================================================
+   Lighting : hemisphere ambient + key + fill + rim
+   ============================================================ */
+const hemi = new THREE.HemisphereLight(0xbfd4e8, 0x2a2620, 0.55);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2dd, 2.55);
+key.position.set(3.4, 5.2, 3.0);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.5;
+key.shadow.camera.far = 18;
+key.shadow.camera.left = -3.2;
+key.shadow.camera.right = 3.2;
+key.shadow.camera.top = 3.2;
+key.shadow.camera.bottom = -3.2;
+key.shadow.bias = -0.0011;
+key.shadow.normalBias = 0.018;
+key.shadow.radius = 3;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9fb6cf, 0.62);
+fill.position.set(-4.0, 2.0, 2.2);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd9a8, 1.25);
+rim.position.set(-2.2, 2.6, -4.4);
+scene.add(rim);
+
+/* ============================================================
+   Shadow-only ground
+   ============================================================ */
+const ground = new THREE.Mesh(
+  new THREE.PlaneGeometry(40, 40),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = 0;
+ground.receiveShadow = true;
+scene.add(ground);
+
+/* ============================================================
+   Palette + flat-shaded materials
+   ============================================================ */
+const PAL = {
+  tan:    0xc2934f,
+  tanLt:  0xd9ac68,
+  cocoa:  0x6b4a30,
+  cocoaD: 0x4c3423,
+  chalk:  0xe8e2d4,
+  chalkD: 0xcfc6b3,
+  horn:   0x2c2622,
+  hoof:   0x1e1a17,
+  eye:    0x14100e,
+  muzzle: 0x3a2d24
+};
+
+function mat(color, rough = 0.86, metal = 0.0) {
+  return new THREE.MeshStandardMaterial({
+    color: new THREE.Color(color),
+    flatShading: true,
+    roughness: rough,
+    metalness: metal
+  });
+}
+
+const M = {
+  tan:    mat(PAL.tan),
+  tanLt:  mat(PAL.tanLt),
+  cocoa:  mat(PAL.cocoa, 0.9),
+  cocoaD: mat(PAL.cocoaD, 0.9),
+  chalk:  mat(PAL.chalk, 0.8),
+  chalkD: mat(PAL.chalkD, 0.82),
+  horn:   mat(PAL.horn, 0.55, 0.12),
+  hoof:   mat(PAL.hoof, 0.45, 0.15),
+  eye:    mat(PAL.eye, 0.25, 0.0),
+  muzzle: mat(PAL.muzzle, 0.85)
+};
+
+/* ============================================================
+   Geometry helpers
+   ============================================================ */
+
+// Build a convex-ish faceted solid from an explicit vertex list + face list.
+function makePoly(verts, faces) {
+  const pos = [];
+  for (let i = 0; i < faces.length; i++) {
+    const f = faces[i];
+    // fan-triangulate the (possibly quad/ngon) face
+    for (let t = 1; t < f.length - 1; t++) {
+      const a = verts[f[0]], b = verts[f[t]], c = verts[f[t + 1]];
+      pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+/**
+ * Lofted faceted body: a chain of cross-section rings swept along a spine.
+ * sections: [{ pos:[x,y,z], w:halfWidth, h:halfHeight, top:extraTop, bot:extraBot }]
+ * Cross section is a hexagon (crisp facets, reads as low-poly).
+ */
+function makeLoft(sections, capStart = true, capEnd = true) {
+  const rings = [];
+  for (const s of sections) {
+    const [x, y, z] = s.pos;
+    const w = s.w, h = s.h;
+    const top = s.top !== undefined ? s.top : h;
+    const bot = s.bot !== undefined ? s.bot : h;
+    const sh = s.shoulder !== undefined ? s.shoulder : 0.55; // vertical position of widest point
+    // hexagonal ring, ordered CCW when viewed from +X (front of the sweep)
+    rings.push([
+      [x,           y + top,            z],              // 0 top
+      [x - w,       y + top * sh * 0.45, z],             // 1 upper-left
+      [x - w * 1.0, y - bot * sh * 0.35, z],             // 2 lower-left
+      [x,           y - bot,            z],              // 3 bottom
+      [x + w * 1.0, y - bot * sh * 0.35, z],             // 4 lower-right
+      [x + w,       y + top * sh * 0.45, z]              // 5 upper-right
+    ]);
+  }
+
+  const pos = [];
+  const tri = (a, b, c) => pos.push(a[0], a[1], a[2], b[0], b[1], b[2], c[0], c[1], c[2]);
+
+  for (let i = 0; i < rings.length - 1; i++) {
+    const A = rings[i], B = rings[i + 1];
+    for (let k = 0; k < 6; k++) {
+      const k2 = (k + 1) % 6;
+      tri(A[k], B[k], B[k2]);
+      tri(A[k], B[k2], A[k2]);
+    }
+  }
+  // caps (fan from centroid for clean flat facets)
+  const capRing = (R, flip) => {
+    const c = [0, 0, 0];
+    for (const v of R) { c[0] += v[0] / 6; c[1] += v[1] / 6; c[2] += v[2] / 6; }
+    for (let k = 0; k < 6; k++) {
+      const k2 = (k + 1) % 6;
+      if (flip) tri(c, R[k2], R[k]); else tri(c, R[k], R[k2]);
+    }
+  };
+  if (capStart) capRing(rings[0], true);
+  if (capEnd) capRing(rings[rings.length - 1], false);
+
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.computeVertexNormals();
+  return g;
+}
+
+// Triangular prism along +Y, length L, base radius r0 -> tip radius r1.
+function makePrism(L, r0, r1, twist = 0) {
+  const verts = [];
+  const ang = [Math.PI / 2, Math.PI / 2 + (2 * Math.PI) / 3, Math.PI / 2 + (4 * Math.PI) / 3];
+  for (let i = 0; i < 3; i++) {
+    verts.push([Math.cos(ang[i]) * r0, 0, Math.sin(ang[i]) * r0]);
+  }
+  for (let i = 0; i < 3; i++) {
+    const a = ang[i] + twist;
+    verts.push([Math.cos(a) * r1, L, Math.sin(a) * r1]);
+  }
+  const faces = [
+    [0, 1, 4, 3],
+    [1, 2, 5, 4],
+    [2, 0, 3, 5],
+    [2, 1, 0],       // bottom cap
+    [3, 4, 5]        // top cap
+  ];
+  return makePoly(verts, faces);
+}
+
+// Flat 2-sided triangle-ish wedge for tails/ears etc.
+function makeWedge(w, h, d) {
+  const verts = [
+    [0, 0, 0],
+    [-w, h * 0.35, -d * 0.5],
+    [ w, h * 0.35, -d * 0.5],
+    [0, h, 0]
+  ];
+  const faces = [
+    [0, 2, 3],
+    [0, 3, 1],
+    [1, 3, 2],
+    [0, 1, 2]
+  ];
+  return makePoly(verts, faces);
+}
+
+function meshOf(geo, material, castShadow = true) {
+  const m = new THREE.Mesh(geo, material);
+  m.castShadow = castShadow;
+  m.receiveShadow = true;
+  return m;
+}
+
+/* ============================================================
+   THE PRONGHORN
+   Scale: shoulder height ~0.90 (roughly 1 unit = 1 metre)
+   Facing +Z (head forward), orbit-centred at origin.
+   ============================================================ */
+const pronghorn = new THREE.Group();
+scene.add(pronghorn);
+
+const BODY_Y = 0.90;   // spine height at shoulder
+
+/* ---------- Torso : lofted hexagonal barrel ---------- */
+// z: -0.52 (rump) .. +0.52 (chest). Deep chest, tucked flank.
+const torsoSections = [
+  { pos: [0, BODY_Y - 0.020, -0.560], w: 0.070, top: 0.070, bot: 0.075, shoulder: 0.60 }, // rump tip
+  { pos: [0, BODY_Y + 0.020, -0.470], w: 0.135, top: 0.108, bot: 0.140, shoulder: 0.62 }, // hips
+  { pos: [0, BODY_Y + 0.028, -0.300], w: 0.152, top: 0.112, bot: 0.168, shoulder: 0.60 }, // loin
+  { pos: [0, BODY_Y + 0.012, -0.110], w: 0.140, top: 0.108, bot: 0.185, shoulder: 0.58 }, // waist / tuck
+  { pos: [0, BODY_Y + 0.010,  0.090], w: 0.150, top: 0.118, bot: 0.215, shoulder: 0.56 }, // ribs
+  { pos: [0, BODY_Y + 0.022,  0.270], w: 0.158, top: 0.126, bot: 0.228, shoulder: 0.56 }, // deep chest
+  { pos: [0, BODY_Y + 0.010,  0.420], w: 0.130, top: 0.118, bot: 0.190, shoulder: 0.58 }, // shoulder
+  { pos: [0, BODY_Y - 0.010,  0.520], w: 0.088, top: 0.096, bot: 0.128, shoulder: 0.60 }  // brisket front
+];
+const torso = meshOf(makeLoft(torsoSections), M.tan);
+pronghorn.add(torso);
+
+/* ---------- Flank panels : alternating tan / cocoa / chalk facets ---------- */
+// Thin faceted plates riding on the barrel — the "alternating panel" read.
+function flankPanel(zc, len, yTop, yBot, material, sideSign, bulge) {
+  const w = bulge;
+  const verts = [
+    [sideSign * w * 0.86, yTop, zc + len * 0.5],
+    [sideSign * w * 1.00, yTop - 0.02, zc],
+    [sideSign * w * 0.86, yTop - 0.01, zc - len * 0.5],
+    [sideSign * w * 0.80, yBot, zc - len * 0.42],
+    [sideSign * w * 0.94, yBot - 0.015, zc],
+    [sideSign * w * 0.80, yBot + 0.01, zc + len * 0.42],
+    // inner shell (slightly inset so the panel is a solid sliver)
+    [sideSign * w * 0.60, yTop - 0.005, zc + len * 0.5],
+    [sideSign * w * 0.70, yTop - 0.025, zc],
+    [sideSign * w * 0.60, yTop - 0.015, zc - len * 0.5],
+    [sideSign * w * 0.56, yBot + 0.005, zc - len * 0.42],
+    [sideSign * w * 0.66, yBot - 0.010, zc],
+    [sideSign * w * 0.56, yBot + 0.015, zc + len * 0.42]
+  ];
+  const outer = sideSign > 0 ? [0, 1, 2, 3, 4, 5] : [5, 4, 3, 2, 1, 0];
+  const inner = sideSign > 0 ? [11, 10, 9, 8, 7, 6] : [6, 7, 8, 9, 10, 11];
+  const faces = [outer, inner];
+  // side walls
+  const rim6 = [0, 1, 2, 3, 4, 5];
+  for (let i = 0; i < 6; i++) {
+    const a = rim6[i], b = rim6[(i + 1) % 6];
+    if (sideSign > 0) faces.push([a, a + 6, b + 6, b]);
+    else faces.push([b, b + 6, a + 6, a]);
+  }
+  const m = meshOf(makePoly(verts, faces), material);
+  return m;
+}
+
+const panelGroup = new THREE.Group();
+panelGroup.position.y = BODY_Y;
+pronghorn.add(panelGroup);
+
+const panelDefs = [
+  // z-centre, length, yTop, yBot, material, half-bulge
+  { z:  0.300, len: 0.210, yT:  0.075, yB: -0.130, m: M.tanLt, w: 0.168 },
+  { z:  0.095, len: 0.215, yT:  0.070, yB: -0.150, m: M.cocoa, w: 0.162 },
+  { z: -0.110, len: 0.205, yT:  0.062, yB: -0.140, m: M.tanLt, w: 0.152 },
+  { z: -0.300, len: 0.200, yT:  0.070, yB: -0.110, m: M.cocoaD, w: 0.163 },
+  // belly-line chalk strip
+  { z:  0.180, len: 0.300, yT: -0.140, yB: -0.215, m: M.chalk, w: 0.148 },
+  { z: -0.160, len: 0.290, yT: -0.130, yB: -0.190, m: M.chalk, w: 0.138 }
+];
+for (const p of panelDefs) {
+  panelGroup.add(flankPanel(p.z, p.len, p.yT, p.yB, p.m, +1, p.w));
+  panelGroup.add(flankPanel(p.z, p.len, p.yT, p.yB, p.m, -1, p.w));
+}
+
+/* ---------- Chalk-white rump patch ---------- */
+const rumpVerts = [
+  [ 0.000,  0.120, -0.585],
+  [-0.115,  0.055, -0.560],
+  [-0.130, -0.070, -0.520],
+  [ 0.000, -0.135, -0.505],
+  [ 0.130, -0.070, -0.520],
+  [ 0.115,  0.055, -0.560],
+  // inner (toward body)
+  [ 0.000,  0.095, -0.470],
+  [-0.090,  0.045, -0.455],
+  [-0.100, -0.055, -0.430],
+  [ 0.000, -0.110, -0.420],
+  [ 0.100, -0.055, -0.430],
+  [ 0.090,  0.045, -0.455]
+];
+const rumpFaces = [[0, 1, 2, 3, 4, 5]];
+for (let i = 0; i < 6; i++) {
+  const a = i, b = (i + 1) % 6;
+  rumpFaces.push([b, b + 6, a + 6, a]);
+}
+rumpFaces.push([11, 10, 9, 8, 7, 6]);
+const rumpPatch = meshOf(makePoly(rumpVerts, rumpFaces), M.chalk);
+rumpPatch.position.y = BODY_Y;
+pronghorn.add(rumpPatch);
+
+/* ---------- Chalk chest/brisket bib ---------- */
+const bibVerts = [
+  [ 0.000,  0.040,  0.560],
+  [-0.086, -0.010,  0.520],
+  [-0.070, -0.120,  0.470],
+  [ 0.000, -0.160,  0.455],
+  [ 0.070, -0.120,  0.470],
+  [ 0.086, -0.010,  0.520],
+  [ 0.000,  0.020,  0.470],
+  [-0.062, -0.020,  0.440],
+  [-0.052, -0.105,  0.400],
+  [ 0.000, -0.140,  0.390],
+  [ 0.052, -0.105,  0.400],
+  [ 0.062, -0.020,  0.440]
+];
+const bibFaces = [[5, 4, 3, 2, 1, 0]];
+for (let i = 0; i < 6; i++) {
+  const a = i, b = (i + 1) % 6;
+  bibFaces.push([a, a + 6, b + 6, b]);
+}
+bibFaces.push([6, 7, 8, 9, 10, 11]);
+const bib = meshOf(makePoly(bibVerts, bibFaces), M.chalkD);
+bib.position.y = BODY_Y;
+pronghorn.add(bib);
+
+/* ---------- Neck : lofted, lifted and angled forward (alert pose) ---------- */
+const neckGroup = new THREE.Group();
+neckGroup.position.set(0, BODY_Y + 0.055, 0.455);
+neckGroup.rotation.x = -0.50; // pitch the neck up/forward
+pronghorn.add(neckGroup);
+
+const neckSections = [
+  { pos: [0, -0.020, 0.000], w: 0.115, top: 0.100, bot: 0.110, shoulder: 0.6 },
+  { pos: [0,  0.000, 0.115], w: 0.098, top: 0.092, bot: 0.096, shoulder: 0.6 },
+  { pos: [0,  0.006, 0.240], w: 0.084, top: 0.082, bot: 0.084, shoulder: 0.6 },
+  { pos: [0,  0.008, 0.360], w: 0.074, top: 0.074, bot: 0.074, shoulder: 0.6 }
+];
+const neck = meshOf(makeLoft(neckSections), M.tan);
+neckGroup.add(neck);
+
+// Two cocoa neck bands (the pronghorn's throat bars) + chalk throat
+function neckBand(z, w, h, material) {
+  const verts = [
+    [-w,  h,  z + 0.030], [ w,  h,  z + 0.030], [ w,  h,  z - 0.030], [-w,  h,  z - 0.030],
+    [-w, -h,  z + 0.030], [ w, -h,  z + 0.030], [ w, -h,  z - 0.030], [-w, -h,  z - 0.030]
+  ];
+  const faces = [
+    [0, 1, 2, 3], [7, 6, 5, 4],
+    [4, 5, 1, 0], [5, 6, 2, 1], [6, 7, 3, 2], [7, 4, 0, 3]
+  ];
+  const m = meshOf(makePoly(verts, faces), material);
+  return m;
+}
+const band1 = neckBand(0.150, 0.099, 0.093, M.chalkD); band1.position.y = 0.001; neckGroup.add(band1);
+const band2 = neckBand(0.268, 0.085, 0.081, M.chalkD); band2.position.y = 0.006; neckGroup.add(band2);
+
+// Dark mane ridge along the top of the neck
+const maneVerts = [
+  [ 0.000,  0.128, -0.020],
+  [-0.026,  0.096, -0.020],
+  [ 0.026,  0.096, -0.020],
+  [ 0.000,  0.096,  0.370],
+  [-0.018,  0.070,  0.370],
+  [ 0.018,  0.070,  0.370]
+];
+const maneFaces = [
+  [0, 1, 4, 3], [0, 3, 5, 2], [1, 2, 5, 4], [2, 1, 0], [3, 4, 5]
+];
+neckGroup.add(meshOf(makePoly(maneVerts, maneFaces), M.cocoaD));
+
+/* ---------- Head : wedge-shaped muzzle ---------- */
+const head = new THREE.Group();
+head.position.set(0, 0.020, 0.395);
+head.rotation.x = 0.30; // level the skull relative to the lifted neck
+neckGroup.add(head);
+
+// Skull box (faceted, tapering to the muzzle)
+const skullVerts = [
+  // back plate (toward neck)
+  [-0.072,  0.068, -0.055],
+  [ 0.072,  0.068, -0.055],
+  [ 0.080, -0.028, -0.050],
+  [-0.080, -0.028, -0.050],
+  // brow / cheek
+  [-0.066,  0.078,  0.058],
+  [ 0.066,  0.078,  0.058],
+  [ 0.078, -0.038,  0.062],
+  [-0.078, -0.038,  0.062],
+  // muzzle wedge tip
+  [-0.038,  0.034,  0.215],
+  [ 0.038,  0.034,  0.215],
+  [ 0.033, -0.036,  0.212],
+  [-0.033, -0.036,  0.212]
+];
+const skullFaces = [
+  [3, 2, 1, 0],            // back
+  [0, 1, 5, 4],            // top rear
+  [4, 5, 9, 8],            // top front (muzzle bridge)
+  [1, 2, 6, 5],            // right rear
+  [5, 6, 10, 9],           // right front
+  [2, 3, 7, 6],            // bottom rear
+  [6, 7, 11, 10],          // bottom front (jaw)
+  [3, 0, 4, 7],            // left rear
+  [7, 4, 8, 11],           // left front
+  [8, 9, 10, 11]           // muzzle end cap
+];
+head.add(meshOf(makePoly(skullVerts, skullFaces), M.tan));
+
+// Cocoa muzzle band (dark nose bridge) — a thin faceted cap on the wedge
+const noseVerts = [
+  [-0.040,  0.036,  0.150],
+  [ 0.040,  0.036,  0.150],
+  [ 0.036, -0.038,  0.148],
+  [-0.036, -0.038,  0.148],
+  [-0.033,  0.032,  0.224],
+  [ 0.033,  0.032,  0.224],
+  [ 0.029, -0.034,  0.221],
+  [-0.029, -0.034,  0.221]
+];
+const noseFaces = [
+  [3, 2, 1, 0], [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7], [4, 5, 6, 7]
+];
+head.add(meshOf(makePoly(noseVerts, noseFaces), M.muzzle));
+
+// Chalk cheek patches
+function cheekPatch(side) {
+  const s = side;
+  const verts = [
+    [s * 0.079,  0.004,  0.040],
+    [s * 0.079, -0.036,  0.052],
+    [s * 0.055, -0.038,  0.140],
+    [s * 0.055,  0.008,  0.132],
+    [s * 0.062,  0.004,  0.040],
+    [s * 0.062, -0.034,  0.052],
+    [s * 0.042, -0.036,  0.138],
+    [s * 0.042,  0.006,  0.130]
+  ];
+  const faces = s > 0
+    ? [[0, 1, 2, 3], [7, 6, 5, 4], [0, 3, 7, 4], [3, 2, 6, 7], [2, 1, 5, 6], [1, 0, 4, 5]]
+    : [[3, 2, 1, 0], [4, 5, 6, 7], [4, 7, 3, 0], [7, 6, 2, 3], [6, 5, 1, 2], [5, 4, 0, 1]];
+  return meshOf(makePoly(verts, faces), M.chalk);
+}
+head.add(cheekPatch(1));
+head.add(cheekPatch(-1));
+
+// Eyes : small dark faceted gems
+function eye(side) {
+  const g = new THREE.OctahedronGeometry(0.0195, 0);
+  const m = meshOf(g, M.eye);
+  m.position.set(side * 0.070, 0.030, 0.055);
+  m.scale.set(0.75, 1.0, 1.05);
+  m.rotation.z = side * 0.3;
+  return m;
+}
+head.add(eye(1));
+head.add(eye(-1));
+
+// Nostrils : tiny dark inset triangles
+function nostril(side) {
+  const g = new THREE.TetrahedronGeometry(0.014, 0);
+  const m = meshOf(g, M.eye);
+  m.position.set(side * 0.020, -0.006, 0.222);
+  m.rotation.set(0.4, side * 0.6, 0);
+  return m;
+}
+head.add(nostril(1));
+head.add(nostril(-1));
+
+// Ears : long faceted leaf-blades, alert and swept back
+function ear(side) {
+  const s = side;
+  const verts = [
+    [0, 0, 0],
+    [-0.030, 0.055, 0.014],
+    [ 0.030, 0.055, -0.010],
+    [ 0.004, 0.135, 0.004],
+    [-0.014, 0.062, -0.012],
+    [ 0.012, 0.060, 0.016]
+  ];
+  const faces = [
+    [0, 2, 3], [0, 3, 1], [1, 3, 4], [4, 3, 2], [0, 1, 4], [0, 4, 2]
+  ];
+  const g = makePoly(verts, faces);
+  const m = meshOf(g, M.tanLt);
+  m.scale.set(1.0, 1.0, 0.55);
+  m.position.set(s * 0.062, 0.058, -0.012);
+  m.rotation.set(-0.42, s * 0.42, s * 0.55);
+  const inner = meshOf(makePoly(verts, faces), M.chalkD);
+  inner.scale.set(0.62, 0.86, 0.30);
+  inner.position.set(s * 0.006, 0.004, 0.012);
+  m.add(inner);
+  return m;
+}
+head.add(ear(1));
+head.add(ear(-1));
+
+/* ---------- Horns : faceted, forked, backward-curving ---------- */
+function horn(side) {
+  const g = new THREE.Group();
+  g.position.set(side * 0.040, 0.074, -0.008);
+  g.rotation.set(-0.16, 0, side * 0.20);
+
+  // Main shaft, built as stacked tapering triangular prisms with a rearward lean.
+  const segs = [
+    { L: 0.075, r0: 0.026, r1: 0.021, rx:  0.06, rz:  0.02 },
+    { L: 0.072, r0: 0.021, r1: 0.017, rx:  0.10, rz:  0.03 },
+    { L: 0.070, r0: 0.017, r1: 0.013, rx:  0.22, rz:  0.04 },
+    { L: 0.068, r0: 0.013, r1: 0.009, rx:  0.36, rz:  0.05 },
+    { L: 0.062, r0: 0.009, r1: 0.002, rx:  0.46, rz:  0.06 }
+  ];
+  let parent = g;
+  for (let i = 0; i < segs.length; i++) {
+    const s = segs[i];
+    const pivot = new THREE.Group();
+    pivot.rotation.set(s.rx, 0, side * s.rz);
+    parent.add(pivot);
+    const m = meshOf(makePrism(s.L, s.r0, s.r1, 0.18 * (i + 1)), M.horn);
+    pivot.add(m);
+    const next = new THREE.Group();
+    next.position.y = s.L;
+    pivot.add(next);
+    parent = next;
+  }
+
+  // Forward-pointing prong (the "prong" of pronghorn), on segment 2
+  const prongPivot = new THREE.Group();
+  prongPivot.position.set(0, 0.135, 0.006);
+  prongPivot.rotation.set(1.15, 0, side * 0.22);
+  g.add(prongPivot);
+  prongPivot.add(meshOf(makePrism(0.072, 0.016, 0.0025, 0.25), M.horn));
+
+  return g;
+}
+head.add(horn(1));
+head.add(horn(-1));
+
+/* ---------- Tail : tiny three-triangle flick ---------- */
+const tailGroup = new THREE.Group();
+tailGroup.position.set(0, BODY_Y + 0.055, -0.545);
+tailGroup.rotation.set(0.55, 0, 0);
+pronghorn.add(tailGroup);
+const tail = meshOf(makeWedge(0.030, 0.085, 0.026), M.cocoa);
+tailGroup.add(tail);
+
+/* ---------- Legs : slender triangular prisms ---------- */
+/**
+ * A leg = upper (thigh/shoulder), lower (cannon), hoof.
+ * hipZ / side define placement; angles give the alert standing stance.
+ */
+function buildLeg(opts) {
+  const {
+    side, z, hipY,
+    upperLen, upperR0, upperR1, upperTilt,
+    lowerLen, lowerR0, lowerR1, lowerTilt,
+    pastLen, pastR0, pastR1, pastTilt,
+    xOffset
+  } = opts;
+
+  const root = new THREE.Group();
+  root.position.set(side * xOffset, hipY, z);
+
+  // upper segment hangs downward: build prism along +Y then flip
+  const upperPivot = new THREE.Group();
+  upperPivot.rotation.x = upperTilt;
+  upperPivot.rotation.z = side * -0.035;
+  root.add(upperPivot);
+
+  const upperMesh = meshOf(makePrism(upperLen, upperR0, upperR1, 0.12), M.tan);
+  upperMesh.rotation.x = Math.PI;      // point down
+  upperPivot.add(upperMesh);
+
+  const kneeGroup = new THREE.Group();
+  kneeGroup.position.y = -upperLen;
+  upperPivot.add(kneeGroup);
+
+  // knee/hock faceted knuckle
+  const knee = meshOf(new THREE.OctahedronGeometry(upperR1 * 1.42, 0), M.cocoa);
+  knee.scale.set(1.0, 0.85, 1.0);
+  kneeGroup.add(knee);
+
+  const lowerPivot = new THREE.Group();
+  lowerPivot.rotation.x = lowerTilt;
+  kneeGroup.add(lowerPivot);
+
+  const lowerMesh = meshOf(makePrism(lowerLen, lowerR0, lowerR1, -0.10), M.tanLt);
+  lowerMesh.rotation.x = Math.PI;
+  lowerPivot.add(lowerMesh);
+
+  const fetlock = new THREE.Group();
+  fetlock.position.y = -lowerLen;
+  lowerPivot.add(fetlock);
+
+  const fetKnob = meshOf(new THREE.OctahedronGeometry(lowerR1 * 1.5, 0), M.cocoaD);
+  fetKnob.scale.set(1.0, 0.8, 1.0);
+  fetlock.add(fetKnob);
+
+  const pastPivot = new THREE.Group();
+  pastPivot.rotation.x = pastTilt;
+  fetlock.add(pastPivot);
+
+  const pastMesh = meshOf(makePrism(pastLen, pastR0, pastR1, 0.0), M.cocoa);
+  pastMesh.rotation.x = Math.PI;
+  pastPivot.add(pastMesh);
+
+  // hoof : small dark cleft wedge
+  const hoofGroup = new THREE.Group();
+  hoofGroup.position.y = -pastLen;
+  pastPivot.add(hoofGroup);
+
+  const hv = [
+    [-0.026, 0.000,  0.024],
+    [ 0.026, 0.000,  0.024],
+    [ 0.022, 0.000, -0.028],
+    [-0.022, 0.000, -0.028],
+    [-0.016, -0.048,  0.030],
+    [ 0.016, -0.048,  0.030],
+    [ 0.013, -0.046, -0.018],
+    [-0.013, -0.046, -0.018]
+  ];
+  const hf = [
+    [3, 2, 1, 0], [4, 5, 6, 7],
+    [0, 1, 5, 4], [1, 2, 6, 5], [2, 3, 7, 6], [3, 0, 4, 7]
+  ];
+  hoofGroup.add(meshOf(makePoly(hv, hf), M.hoof));
+
+  return { root, hoofGroup, pastLen };
+}
+
+const legDefs = [
+  // FRONT LEFT / RIGHT — straighter, alert, planted under the shoulder
+  { side: -1, z:  0.330, xOffset: 0.108, hipY: BODY_Y + 0.010,
+    upperLen: 0.330, upperR0: 0.062, upperR1: 0.038, upperTilt:  0.085,
+    lowerLen: 0.290, lowerR0: 0.034, lowerR1: 0.024, lowerTilt: -0.115,
+    pastLen:  0.115, pastR0: 0.023, pastR1: 0.019, pastTilt:  0.055 },
+  { side:  1, z:  0.330, xOffset: 0.108, hipY: BODY_Y + 0.010,
+    upperLen: 0.330, upperR0: 0.062, upperR1: 0.038, upperTilt:  0.020,
+    lowerLen: 0.290, lowerR0: 0.034, lowerR1: 0.024, lowerTilt: -0.050,
+    pastLen:  0.115, pastR0: 0.023, pastR1: 0.019, pastTilt:  0.030 },
+  // HIND LEFT / RIGHT — angled hock, set slightly back
+  { side: -1, z: -0.360, xOffset: 0.104, hipY: BODY_Y + 0.020,
+    upperLen: 0.315, upperR0: 0.072, upperR1: 0.040, upperTilt: -0.230,
+    lowerLen: 0.300, lowerR0: 0.036, lowerR1: 0.024, lowerTilt:  0.330,
+    pastLen:  0.120, pastR0: 0.023, pastR1: 0.019, pastTilt: -0.090 },
+  { side:  1, z: -0.360, xOffset: 0.104, hipY: BODY_Y + 0.020,
+    upperLen: 0.315, upperR0: 0.072, upperR1: 0.040, upperTilt: -0.285,
+    lowerLen: 0.300, lowerR0: 0.036, lowerR1: 0.024, lowerTilt:  0.385,
+    pastLen:  0.120, pastR0: 0.023, pastR1: 0.019, pastTilt: -0.095 }
+];
+
+const legs = [];
+for (const d of legDefs) {
+  const leg = buildLeg(d);
+  pronghorn.add(leg.root);
+  legs.push(leg);
+}
+
+/* ---------- Shoulder & haunch faceted masses (visual mass over the leg tops) ---------- */
+function haunch(side, z, r, material, scale, rotZ) {
+  const m = meshOf(new THREE.IcosahedronGeometry(r, 0), material);
+  m.position.set(side * 0.118, BODY_Y - 0.010, z);
+  m.scale.set(scale[0], scale[1], scale[2]);
+  m.rotation.set(0.2, side * 0.4, rotZ);
+  return m;
+}
+pronghorn.add(haunch(-1, -0.375, 0.150, M.cocoa,  [0.62, 1.02, 1.10], -0.2));
+pronghorn.add(haunch( 1, -0.375, 0.150, M.cocoa,  [0.62, 1.02, 1.10],  0.2));
+pronghorn.add(haunch(-1,  0.330, 0.128, M.tanLt, [0.60, 1.05, 0.95], -0.15));
+pronghorn.add(haunch( 1,  0.330, 0.128, M.tanLt, [0.60, 1.05, 0.95],  0.15));
+
+/* ============================================================
+   Ground the model exactly on y = 0 and centre it
+   ============================================================ */
+pronghorn.updateMatrixWorld(true);
+const bbox = new THREE.Box3().setFromObject(pronghorn);
+const centre = new THREE.Vector3();
+bbox.getCenter(centre);
+pronghorn.position.x -= centre.x;
+pronghorn.position.z -= centre.z;
+pronghorn.position.y -= bbox.min.y;
+
+pronghorn.updateMatrixWorld(true);
+const bbox2 = new THREE.Box3().setFromObject(pronghorn);
+const c2 = new THREE.Vector3();
+bbox2.getCenter(c2);
+controls.target.set(0, c2.y, 0);
+key.target.position.set(0, c2.y * 0.7, 0);
+scene.add(key.target);
+controls.update();
+
+/* ============================================================
+   Render loop / resize
+   ============================================================ */
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+function animate() {
+  requestAnimationFrame(animate);
+  controls.update();
+  renderer.render(scene, camera);
+}
+animate();
+</script>
+</body>
+</html>

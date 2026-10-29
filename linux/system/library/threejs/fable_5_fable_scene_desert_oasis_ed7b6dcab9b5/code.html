@@ -1,0 +1,712 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Desert Oasis Camp</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #241f3d; }
+  canvas { display: block; }
+</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================= 1. CONFIG & PALETTE ================= */
+const SEED = 20260815;
+const POOL = { x: 6, z: -2 };            // oasis pool centre (world XZ)
+const FIRE = { x: -3.5, z: 3.2 };        // campfire centre
+const PAL = {
+  sand:      0xd9a86c,  water:  0x2fb8a6,  waterDeep: 0x0f6f74,
+  trunk:     0x8a5a33,  frond:  0x3f7a3a,  wood:      0x5a3d24,
+  stone:     0x77655a,  clay:   0xb0623c,  camel:     0x453122,
+  rope:      0xcbb38a,  fire:   0xff8a3c,  ember:     0xff5a1e,
+  cushions:  [0x9c2f2f, 0x2f4b7a, 0xb8862f, 0x6a3f7a],
+  skyTop:    0x1c2452,  skyMid: 0x8d5a86,  horizon:   0xff9a5c,
+  fog:       0xb2726b
+};
+
+/* ================= 2. PRNG & HELPERS ================= */
+function mulberry32(a) {
+  return function () {
+    a |= 0; a = (a + 0x6D2B79F5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+const rng = mulberry32(SEED);
+const rand  = (lo, hi) => lo + rng() * (hi - lo);
+const pick  = (arr) => arr[Math.floor(rng() * arr.length)];
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+function smoothstep(e0, e1, x) {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+}
+// irregular oasis shoreline radius as a function of angle
+const poolRadius = (a) => 6.1 + 1.25 * Math.sin(a * 2 + 1.1) + 0.75 * Math.sin(a * 3 + 4.2);
+// dune height field: flat camp bowl, wind-carved ridges beyond, pool depression
+function duneHeight(x, z) {
+  const dc = Math.hypot(x, z);
+  const dm = smoothstep(14, 34, dc);                     // camp flattening mask
+  let h = 0;
+  h += Math.pow(1 - Math.abs(Math.sin(x * 0.035 + z * 0.018 + 0.9)), 1.7) * 6.8 * dm;
+  h += Math.pow(1 - Math.abs(Math.sin(x * 0.016 - z * 0.042 + 3.3)), 2.1) * 4.6 * dm;
+  h += Math.sin(x * 0.10 + Math.sin(z * 0.12) * 2.0) * 0.9 * dm;
+  h += Math.sin(x * 0.9 + z * 0.35) * 0.05 * (0.35 + 0.65 * dm);   // wind ripples
+  const dx = x - POOL.x, dz = z - POOL.z;
+  const pr = poolRadius(Math.atan2(dz, dx));
+  h -= (1 - smoothstep(pr - 1.5, pr + 3.2, Math.hypot(dx, dz))) * 1.3;  // pool bowl
+  return h;
+}
+const groundY = duneHeight;
+function mesh(geo, mat, cast = true, recv = true) {
+  const m = new THREE.Mesh(geo, mat);
+  m.castShadow = cast; m.receiveShadow = recv;
+  return m;
+}
+// tapered cylinder stretched between two points (ropes, legs, logs, trunks)
+function tube(a, b, r0, r1, mat, radial = 7) {
+  const len = a.distanceTo(b);
+  const geo = new THREE.CylinderGeometry(r1, r0, len, radial);
+  const m = mesh(geo, mat);
+  m.position.copy(a).lerp(b, 0.5);
+  m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3().subVectors(b, a).normalize());
+  return m;
+}
+
+/* ================= 3. CANVAS TEXTURES ================= */
+function makeTexture(w, h, draw, repX = 1, repY = 1) {
+  const c = document.createElement('canvas');
+  c.width = w; c.height = h;
+  draw(c.getContext('2d'), w, h);
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(repX, repY);
+  return tex;
+}
+const sandTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#d9a86c'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 1600; i++) {
+    const l = rand(-26, 26);
+    g.fillStyle = `rgba(${170 + l | 0},${125 + l | 0},${72 + l | 0},0.5)`;
+    g.fillRect(rand(0, w), rand(0, h), rand(1, 2.6), rand(1, 2.6));
+  }
+  g.strokeStyle = 'rgba(120,80,40,0.10)';
+  for (let i = 0; i < 22; i++) {
+    g.beginPath(); const y = rand(0, h);
+    g.moveTo(0, y); g.quadraticCurveTo(w * 0.5, y + rand(-14, 14), w, y);
+    g.stroke();
+  }
+}, 22, 22);
+const waterTex = makeTexture(256, 256, (g, w, h) => {
+  g.fillStyle = '#2aa696'; g.fillRect(0, 0, w, h);      // seamless: flat base, wrap-safe waves
+  for (let i = 0; i < 34; i++) {
+    g.strokeStyle = `rgba(255,255,255,${rand(0.04, 0.12)})`;
+    g.lineWidth = rand(0.8, 2.2);
+    g.beginPath(); const y = rand(8, h - 8);
+    g.moveTo(0, y);
+    g.bezierCurveTo(w * 0.3, y + rand(-7, 7), w * 0.7, y + rand(-7, 7), w, y);
+    g.stroke();
+  }
+}, 2, 2);
+const trunkTex = makeTexture(128, 128, (g, w, h) => {
+  g.fillStyle = '#8a5a33'; g.fillRect(0, 0, w, h);
+  for (let y = 0; y < h; y += 11) {
+    const off = (y / 11) % 2 ? 16 : 0;
+    for (let x = -16; x < w; x += 32) {
+      g.fillStyle = `rgba(52,32,16,${rand(0.30, 0.48)})`;
+      g.fillRect(x + off, y, 26, 6);
+      g.fillStyle = 'rgba(210,160,100,0.18)';
+      g.fillRect(x + off, y + 6, 26, 2);
+    }
+  }
+}, 1, 3);
+const frondTex = makeTexture(256, 64, (g, w, h) => {
+  g.clearRect(0, 0, w, h);
+  g.strokeStyle = '#2e5a2a'; g.lineWidth = 4;
+  g.beginPath(); g.moveTo(0, h / 2); g.lineTo(w, h / 2); g.stroke();
+  for (let x = 6; x < w; x += 7) {
+    const shade = 90 + rand(-25, 40);
+    g.strokeStyle = `rgb(${shade * 0.55 | 0},${shade + 30 | 0},${shade * 0.5 | 0})`;
+    g.lineWidth = 3.4;
+    const lean = rand(8, 16);
+    g.beginPath(); g.moveTo(x, h / 2); g.lineTo(x + lean, 2); g.stroke();
+    g.beginPath(); g.moveTo(x, h / 2); g.lineTo(x + lean, h - 2); g.stroke();
+  }
+});
+function stripeTexture(colA, colB) {
+  return makeTexture(256, 128, (g, w, h) => {
+    for (let x = 0; x < w; x += 32) {
+      g.fillStyle = (x / 32) % 2 ? colA : colB;
+      g.fillRect(x, 0, 32, h);
+    }
+    for (let i = 0; i < 500; i++) {           // fabric grain
+      g.fillStyle = `rgba(60,40,20,${rand(0.03, 0.10)})`;
+      g.fillRect(rand(0, w), rand(0, h), 1.4, rand(3, 9));
+    }
+  }, 3, 1);
+}
+const tentTexA = stripeTexture('#a63c2a', '#ecd9b0');
+const tentTexB = stripeTexture('#3f5a7a', '#e6d2a8');
+function rugTexture(base, band, motif) {
+  return makeTexture(256, 384, (g, w, h) => {
+    g.fillStyle = base; g.fillRect(0, 0, w, h);
+    g.fillStyle = band;
+    g.fillRect(0, 0, w, 26); g.fillRect(0, h - 26, w, 26);
+    g.fillRect(0, 42, w, 10); g.fillRect(0, h - 52, w, 10);
+    g.strokeStyle = motif; g.lineWidth = 5;
+    for (let y = 96; y <= h - 96; y += 64) {
+      for (let x = 32; x < w; x += 64) {
+        g.beginPath();
+        g.moveTo(x, y - 20); g.lineTo(x + 20, y); g.lineTo(x, y + 20); g.lineTo(x - 20, y);
+        g.closePath(); g.stroke();
+      }
+    }
+    for (let i = 0; i < 700; i++) {           // weave noise
+      g.fillStyle = `rgba(0,0,0,${rand(0.02, 0.08)})`;
+      g.fillRect(rand(0, w), rand(0, h), 2, 2);
+    }
+  });
+}
+const rugTexA = rugTexture('#8a2b26', '#2f3f6a', '#e8d3a0');
+const rugTexB = rugTexture('#2f4b6a', '#a3502e', '#e0c890');
+const clayTex = makeTexture(128, 128, (g, w, h) => {
+  g.fillStyle = '#b0623c'; g.fillRect(0, 0, w, h);
+  for (let i = 0; i < 420; i++) {
+    g.fillStyle = `rgba(70,35,18,${rand(0.05, 0.16)})`;
+    g.fillRect(rand(0, w), rand(0, h), rand(1, 3), rand(1, 3));
+  }
+  g.strokeStyle = 'rgba(60,28,12,0.22)';
+  for (let y = 8; y < h; y += 14) { g.beginPath(); g.moveTo(0, y); g.lineTo(w, y); g.stroke(); }
+}, 2, 1);
+
+/* ================= 4. MATERIALS ================= */
+const mats = {
+  sand:   new THREE.MeshStandardMaterial({ map: sandTex, vertexColors: true, roughness: 1 }),
+  water:  new THREE.MeshStandardMaterial({ map: waterTex, color: 0xbfe8df, roughness: 0.14,
+            metalness: 0.08, transparent: true, opacity: 0.93, emissive: PAL.waterDeep,
+            emissiveIntensity: 0.28 }),
+  trunk:  new THREE.MeshStandardMaterial({ map: trunkTex, roughness: 0.95 }),
+  frond:  new THREE.MeshStandardMaterial({ map: frondTex, alphaTest: 0.42,
+            side: THREE.DoubleSide, roughness: 0.85, color: 0xcfe0b8 }),
+  date:   new THREE.MeshStandardMaterial({ color: 0xc7702e, roughness: 0.6 }),
+  tentA:  new THREE.MeshStandardMaterial({ map: tentTexA, roughness: 0.92, side: THREE.DoubleSide }),
+  tentB:  new THREE.MeshStandardMaterial({ map: tentTexB, roughness: 0.92, side: THREE.DoubleSide }),
+  dark:   new THREE.MeshStandardMaterial({ color: 0x241a12, roughness: 1 }),
+  wood:   new THREE.MeshStandardMaterial({ color: PAL.wood, roughness: 0.95 }),
+  stone:  new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.9 }),
+  clay:   new THREE.MeshStandardMaterial({ map: clayTex, roughness: 0.85 }),
+  rope:   new THREE.MeshStandardMaterial({ color: PAL.rope, roughness: 1 }),
+  camel:  new THREE.MeshStandardMaterial({ color: PAL.camel, roughness: 1 }),
+  rugA:   new THREE.MeshStandardMaterial({ map: rugTexA, roughness: 1 }),
+  rugB:   new THREE.MeshStandardMaterial({ map: rugTexB, roughness: 1 }),
+  reed:   new THREE.MeshStandardMaterial({ color: 0x5d7a35, roughness: 0.9 }),
+  cattail:new THREE.MeshStandardMaterial({ color: 0x6a4526, roughness: 0.95 }),
+  flameO: new THREE.MeshBasicMaterial({ color: 0xff7a26, transparent: true, opacity: 0.85,
+            blending: THREE.AdditiveBlending, depthWrite: false }),
+  flameY: new THREE.MeshBasicMaterial({ color: 0xffd270, transparent: true, opacity: 0.9,
+            blending: THREE.AdditiveBlending, depthWrite: false })
+};
+
+/* ================= 5. BUILDER FUNCTIONS ================= */
+// --- dune terrain with vertex-tinted wet shoreline -------------------------
+function buildDunes() {
+  const geo = new THREE.PlaneGeometry(240, 240, 120, 120);
+  geo.rotateX(-Math.PI / 2);
+  const pos = geo.attributes.position;
+  const col = new Float32Array(pos.count * 3);
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), z = pos.getZ(i);
+    pos.setY(i, duneHeight(x, z));
+    const d = Math.hypot(x - POOL.x, z - POOL.z);
+    const pr = poolRadius(Math.atan2(z - POOL.z, x - POOL.x));
+    const wet = 1 - smoothstep(pr + 0.4, pr + 2.6, d);       // damp sand ring
+    const s = 1 - wet * 0.42;
+    col[i * 3] = s; col[i * 3 + 1] = s * 0.97; col[i * 3 + 2] = s * 0.9;
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  geo.computeVertexNormals();
+  const ground = mesh(geo, mats.sand, false, true);
+  const g = new THREE.Group(); g.add(ground);
+  return g;
+}
+// --- turquoise pool --------------------------------------------------------
+function buildPool() {
+  const pts = [];
+  for (let i = 0; i < 48; i++) {
+    const a = (i / 48) * Math.PI * 2;
+    const r = poolRadius(a) + 1.9;                            // tuck edge under bank
+    pts.push(new THREE.Vector2(Math.cos(a) * r, -Math.sin(a) * r));
+  }
+  const geo = new THREE.ShapeGeometry(new THREE.Shape(pts), 4);
+  geo.rotateX(-Math.PI / 2);
+  const water = mesh(geo, mats.water, false, true);
+  water.position.set(POOL.x, -0.45, POOL.z);
+  const g = new THREE.Group(); g.add(water);
+  return g;
+}
+// --- date palm (curved trunk, drooping fronds, date bunches) ---------------
+const frondGeo = (() => {
+  const segs = 7, posArr = [], uvArr = [], idx = [];
+  for (let i = 0; i <= segs; i++) {
+    const t = i / segs;
+    const x = 2.6 * t, y = -t * t * 1.5;
+    const w = 0.34 * Math.sin(Math.PI * Math.min(1, t * 1.12 + 0.06)) + 0.02;
+    posArr.push(x, y, -w, x, y, w);
+    uvArr.push(t, 0, t, 1);
+  }
+  for (let i = 0; i < segs; i++) {
+    const a = i * 2;
+    idx.push(a, a + 1, a + 2, a + 1, a + 3, a + 2);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(posArr, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uvArr, 2));
+  g.setIndex(idx); g.computeVertexNormals();
+  return g;
+})();
+function buildPalm(height) {
+  const g = new THREE.Group();
+  const lean = rand(0.5, 1.4), leanA = rand(0, Math.PI * 2), segs = 6;
+  const pAt = (t) => new THREE.Vector3(
+    Math.cos(leanA) * lean * t ** 1.7, height * t, Math.sin(leanA) * lean * t ** 1.7);
+  for (let i = 0; i < segs; i++) {
+    const t0 = i / segs, t1 = (i + 1) / segs;
+    const seg = tube(pAt(t0), pAt(t1), 0.34 * (1 - 0.5 * t0) , 0.34 * (1 - 0.5 * t1), mats.trunk, 8);
+    seg.material = mats.trunk;
+    g.add(seg);
+  }
+  const crown = new THREE.Group();
+  crown.position.copy(pAt(1));
+  const nF = 9;
+  for (let j = 0; j < nF; j++) {
+    const f = mesh(frondGeo, mats.frond);
+    f.rotation.y = (j / nF) * Math.PI * 2 + rand(-0.2, 0.2);
+    f.rotation.z = rand(0.1, 0.9);                            // droop spread
+    f.scale.setScalar(rand(0.85, 1.15));
+    crown.add(f);
+  }
+  for (let j = 0; j < 3; j++) {                               // hanging date bunches
+    const a = rand(0, Math.PI * 2);
+    const bunch = mesh(new THREE.IcosahedronGeometry(0.22, 1), mats.date);
+    bunch.scale.set(0.8, 1.6, 0.8);
+    bunch.position.set(Math.cos(a) * 0.38, -0.42, Math.sin(a) * 0.38);
+    crown.add(bunch);
+  }
+  crown.userData.sway = { amp: rand(0.025, 0.05), speed: rand(0.6, 1.0), phase: rand(0, 6.28) };
+  g.add(crown);
+  g.userData.crown = crown;
+  return g;
+}
+// --- reed clump (instanced blades + cattail heads) -------------------------
+function buildReedClump(count) {
+  const g = new THREE.Group();
+  const blade = new THREE.ConeGeometry(0.035, 1.55, 5);
+  blade.translate(0, 0.77, 0);
+  const blades = new THREE.InstancedMesh(blade, mats.reed, count);
+  const heads = new THREE.InstancedMesh(
+    new THREE.CylinderGeometry(0.05, 0.05, 0.3, 6), mats.cattail, Math.floor(count * 0.45));
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  let hi = 0;
+  for (let i = 0; i < count; i++) {
+    const px = rand(-0.9, 0.9), pz = rand(-0.9, 0.9);
+    const tx = rand(-0.14, 0.14), tz = rand(-0.14, 0.14), s = rand(0.7, 1.25);
+    q.setFromEuler(e.set(tx, rand(0, 6.28), tz));
+    m.compose(new THREE.Vector3(px, 0, pz), q, new THREE.Vector3(1, s, 1));
+    blades.setMatrixAt(i, m);
+    if (hi < heads.count && rng() < 0.45) {
+      m.compose(new THREE.Vector3(px + tz * 1.4, 1.55 * s, pz + tx * 1.4), q,
+        new THREE.Vector3(1, 1, 1));
+      heads.setMatrixAt(hi++, m);
+    }
+  }
+  blades.castShadow = heads.castShadow = true;
+  g.add(blades, heads);
+  g.userData.sway = { amp: rand(0.02, 0.045), speed: rand(0.9, 1.4), phase: rand(0, 6.28) };
+  return g;
+}
+// --- striped nomad tent ----------------------------------------------------
+function buildTent(mat) {
+  const g = new THREE.Group();
+  const canopy = mesh(new THREE.ConeGeometry(3.3, 3.6, 10, 1, false), mat);
+  canopy.position.y = 1.8;
+  g.add(canopy);
+  const door = mesh(new THREE.PlaneGeometry(1.25, 1.7), mats.dark, false, false);
+  door.position.set(0, 0.85, 2.62); door.rotation.x = -0.36;
+  g.add(door);
+  for (const sx of [-0.85, 0.85]) {
+    g.add(tube(new THREE.Vector3(sx, 0, 2.95), new THREE.Vector3(sx * 0.7, 1.75, 2.35),
+      0.05, 0.04, mats.wood, 6));
+  }
+  for (const a of [2.35, Math.PI, -2.35]) {                   // guy ropes + pegs
+    const hook = new THREE.Vector3(Math.sin(a) * 1.15, 2.4, Math.cos(a) * 1.15);
+    const peg  = new THREE.Vector3(Math.sin(a) * 4.3, 0.06, Math.cos(a) * 4.3);
+    g.add(tube(hook, peg, 0.02, 0.02, mats.rope, 5));
+    const p = mesh(new THREE.ConeGeometry(0.07, 0.32, 6), mats.wood);
+    p.position.copy(peg); p.rotation.x = Math.PI;
+    g.add(p);
+  }
+  const finial = mesh(new THREE.SphereGeometry(0.12, 8, 8), mats.wood);
+  finial.position.y = 3.68; g.add(finial);
+  const flagGeo = new THREE.BufferGeometry();
+  flagGeo.setAttribute('position',
+    new THREE.Float32BufferAttribute([0, 0, 0, 0.8, -0.09, 0, 0, -0.26, 0], 3));
+  flagGeo.computeVertexNormals();
+  const flag = new THREE.Mesh(flagGeo,
+    new THREE.MeshStandardMaterial({ color: 0xc23b2a, side: THREE.DoubleSide, roughness: 0.9 }));
+  flag.position.y = 3.95;
+  flag.userData.sway = { amp: 0.5, speed: 2.1, phase: rand(0, 6.28) };
+  g.add(flag);
+  g.userData.flag = flag;
+  return g;
+}
+// --- campfire: stone ring, crossed logs, additive flames, spark seeds ------
+function buildCampfire() {
+  const g = new THREE.Group();
+  const stones = new THREE.InstancedMesh(new THREE.DodecahedronGeometry(0.26, 0), mats.stone, 11);
+  const m = new THREE.Matrix4(), q = new THREE.Quaternion(), e = new THREE.Euler();
+  for (let i = 0; i < 11; i++) {
+    const a = (i / 11) * Math.PI * 2 + rand(-0.12, 0.12);
+    q.setFromEuler(e.set(rand(0, 3), rand(0, 3), rand(0, 3)));
+    m.compose(new THREE.Vector3(Math.cos(a) * 1.05, 0.14, Math.sin(a) * 1.05), q,
+      new THREE.Vector3(rand(0.8, 1.25), rand(0.65, 0.9), rand(0.8, 1.25)));
+    stones.setMatrixAt(i, m);
+  }
+  stones.castShadow = stones.receiveShadow = true;
+  g.add(stones);
+  for (let i = 0; i < 4; i++) {                               // leaning logs
+    const a = (i / 4) * Math.PI * 2 + 0.5;
+    g.add(tube(new THREE.Vector3(Math.cos(a) * 0.72, 0.1, Math.sin(a) * 0.72),
+      new THREE.Vector3(Math.cos(a + Math.PI) * 0.18, 0.62, Math.sin(a + Math.PI) * 0.18),
+      0.09, 0.07, mats.wood, 6));
+  }
+  const flames = [];
+  const flameSpecs = [[0.42, 1.35, mats.flameO], [0.3, 1.0, mats.flameY], [0.2, 0.7, mats.flameY]];
+  for (const [r, h, fm] of flameSpecs) {
+    const f = new THREE.Mesh(new THREE.ConeGeometry(r, h, 8), fm);
+    f.position.y = 0.35 + h / 2;
+    flames.push(f); g.add(f);
+  }
+  const glow = new THREE.Mesh(new THREE.SphereGeometry(0.34, 10, 8),
+    new THREE.MeshBasicMaterial({ color: PAL.ember, transparent: true, opacity: 0.7,
+      blending: THREE.AdditiveBlending, depthWrite: false }));
+  glow.position.y = 0.3; g.add(glow);
+  const light = new THREE.PointLight(PAL.fire, 55, 40, 2);
+  light.position.y = 1.35; g.add(light);
+  g.userData = { flames, glow, light };
+  return g;
+}
+// --- woven rug with scattered cushions -------------------------------------
+function buildRug(w, d, mat, nCushions) {
+  const g = new THREE.Group();
+  const rug = mesh(new THREE.BoxGeometry(w, 0.07, d), mat, false, true);
+  rug.position.y = 0.035; g.add(rug);
+  for (let i = 0; i < nCushions; i++) {
+    const c = mesh(new THREE.SphereGeometry(0.42, 12, 9),
+      new THREE.MeshStandardMaterial({ color: pick(PAL.cushions), roughness: 0.95 }));
+    c.scale.set(1, 0.55, 1);
+    c.position.set(rand(-w / 2 + 0.5, w / 2 - 0.5), 0.22, rand(-d / 2 + 0.5, d / 2 - 0.5));
+    c.rotation.y = rand(0, 6.28);
+    g.add(c);
+  }
+  return g;
+}
+// --- clay water jar --------------------------------------------------------
+function buildJar(scale) {
+  const profile = [
+    [0, 0], [0.3, 0.02], [0.44, 0.2], [0.5, 0.55], [0.44, 0.9],
+    [0.3, 1.1], [0.26, 1.2], [0.3, 1.3], [0.36, 1.34]
+  ].map(([x, y]) => new THREE.Vector2(x, y));
+  const g = new THREE.Group();
+  const body = mesh(new THREE.LatheGeometry(profile, 14), mats.clay);
+  body.scale.setScalar(scale);
+  g.add(body);
+  const band = mesh(new THREE.TorusGeometry(0.28 * scale, 0.025 * scale, 5, 12), mats.rope);
+  band.position.y = 1.18 * scale; band.rotation.x = Math.PI / 2;
+  g.add(band);
+  return g;
+}
+// --- resting camel silhouette ---------------------------------------------
+function buildCamel() {
+  const g = new THREE.Group(), M = mats.camel;
+  const body = mesh(new THREE.SphereGeometry(1.05, 18, 13), M);
+  body.scale.set(1.75, 0.92, 0.9); body.position.y = 1.0;
+  g.add(body);
+  const hump = mesh(new THREE.SphereGeometry(0.62, 14, 11), M);
+  hump.scale.set(1, 1.15, 0.85); hump.position.set(0.05, 1.78, 0);
+  g.add(hump);
+  g.add(tube(new THREE.Vector3(1.3, 1.15, 0), new THREE.Vector3(2.0, 2.45, 0), 0.3, 0.22, M, 8));
+  const head = mesh(new THREE.SphereGeometry(0.3, 12, 9), M);
+  head.scale.set(1.35, 0.85, 0.75); head.position.set(2.12, 2.52, 0);
+  g.add(head);
+  const snout = mesh(new THREE.BoxGeometry(0.42, 0.26, 0.3), M);
+  snout.position.set(2.45, 2.44, 0); snout.rotation.z = -0.12;
+  g.add(snout);
+  for (const sz of [-0.13, 0.13]) {
+    const ear = mesh(new THREE.ConeGeometry(0.06, 0.16, 5), M);
+    ear.position.set(1.98, 2.78, sz);
+    g.add(ear);
+  }
+  g.add(tube(new THREE.Vector3(-1.72, 1.1, 0.05), new THREE.Vector3(-1.95, 0.42, 0.16),
+    0.05, 0.03, M, 5));
+  for (const [lx, lz] of [[0.75, 0.62], [0.75, -0.62], [-0.85, 0.62], [-0.85, -0.62]]) {
+    const leg = mesh(new THREE.CylinderGeometry(0.15, 0.15, 0.95, 8), M);   // folded legs
+    leg.rotation.z = Math.PI / 2;
+    leg.position.set(lx, 0.3, lz);
+    g.add(leg);
+    const knee = mesh(new THREE.SphereGeometry(0.17, 8, 7), M);
+    knee.position.set(lx + 0.5, 0.3, lz);
+    g.add(knee);
+  }
+  const blanket = mesh(new THREE.BoxGeometry(1.15, 0.09, 1.65), mats.rugB, false);
+  blanket.position.set(-0.72, 1.5, 0); blanket.rotation.z = 0.16;
+  g.add(blanket);
+  g.userData.body = body;
+  return g;
+}
+// --- dusk sky dome + first stars ------------------------------------------
+function buildSky() {
+  const g = new THREE.Group();
+  const skyMat = new THREE.ShaderMaterial({
+    side: THREE.BackSide, depthWrite: false, fog: false,
+    uniforms: {
+      top: { value: new THREE.Color(PAL.skyTop) },
+      mid: { value: new THREE.Color(PAL.skyMid) },
+      hor: { value: new THREE.Color(PAL.horizon) },
+      sunDir: { value: new THREE.Vector3(-0.86, 0.2, 0.47).normalize() }
+    },
+    vertexShader: `varying vec3 vDir;
+      void main() { vDir = normalize(position);
+        gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `varying vec3 vDir;
+      uniform vec3 top, mid, hor, sunDir;
+      void main() {
+        float h = clamp(vDir.y, 0.0, 1.0);
+        vec3 col = mix(hor, mid, smoothstep(0.0, 0.24, h));
+        col = mix(col, top, smoothstep(0.16, 0.62, h));
+        float s = pow(max(dot(vDir, sunDir), 0.0), 16.0);
+        col += vec3(1.0, 0.62, 0.3) * s * 0.9;
+        col = mix(col, hor * 0.85, smoothstep(0.0, -0.3, vDir.y));
+        gl_FragColor = vec4(col, 1.0);
+      }`
+  });
+  g.add(new THREE.Mesh(new THREE.SphereGeometry(210, 32, 18), skyMat));
+  const starMats = [];
+  for (let field = 0; field < 2; field++) {                   // two twinkle phases
+    const n = 230, posArr = new Float32Array(n * 3), colArr = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      const az = rand(0, Math.PI * 2), el = Math.asin(rand(0.12, 0.98));
+      const r = 195;
+      posArr[i * 3] = Math.cos(az) * Math.cos(el) * r;
+      posArr[i * 3 + 1] = Math.sin(el) * r;
+      posArr[i * 3 + 2] = Math.sin(az) * Math.cos(el) * r;
+      const b = smoothstep(0.1, 0.55, Math.sin(el)) * rand(0.45, 1);
+      colArr[i * 3] = b; colArr[i * 3 + 1] = b; colArr[i * 3 + 2] = b * rand(0.9, 1.1);
+    }
+    const sg = new THREE.BufferGeometry();
+    sg.setAttribute('position', new THREE.BufferAttribute(posArr, 3));
+    sg.setAttribute('color', new THREE.BufferAttribute(colArr, 3));
+    const sm = new THREE.PointsMaterial({ size: 1.7, vertexColors: true, transparent: true,
+      opacity: 0.8, sizeAttenuation: true, fog: false, depthWrite: false,
+      blending: THREE.AdditiveBlending });
+    starMats.push(sm);
+    g.add(new THREE.Points(sg, sm));
+  }
+  g.userData.starMats = starMats;
+  return g;
+}
+
+/* ================= 6. ASSEMBLY & LAYOUT ================= */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(PAL.fog, 55, 200);
+const camera = new THREE.PerspectiveCamera(50, innerWidth / innerHeight, 0.1, 600);
+camera.position.set(23, 12.5, 28);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 1.4, 0);
+controls.enableDamping = true;
+controls.dampingFactor = 0.06;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 20;
+controls.maxDistance = 58;
+controls.maxPolarAngle = 1.42;
+controls.update();
+
+scene.add(buildSky());
+scene.add(buildDunes());
+scene.add(buildPool());
+
+const swayers = [];                                            // {obj, amp, speed, phase}
+function registerSway(obj) {
+  const s = obj.userData.sway;
+  swayers.push({ obj, ...s });
+}
+// date palms ringing the pool (east/north/south banks) + one dune sentinel
+const palmAngles = [-1.9, -1.05, -0.3, 0.45, 1.2, 2.0];
+for (const a of palmAngles) {
+  const r = poolRadius(a) + rand(3.6, 5.0);
+  const x = POOL.x + Math.cos(a) * r, z = POOL.z + Math.sin(a) * r;
+  const palm = buildPalm(rand(5.2, 7.2));
+  palm.position.set(x, groundY(x, z) - 0.08, z);
+  palm.rotation.y = rand(0, 6.28);
+  registerSway(palm.userData.crown);
+  scene.add(palm);
+}
+const farPalm = buildPalm(6.4);
+farPalm.position.set(-21, groundY(-21, 19) - 0.1, 19);
+registerSway(farPalm.userData.crown);
+scene.add(farPalm);
+// reed clumps along the shoreline
+for (let i = 0; i < 7; i++) {
+  const a = rand(0, Math.PI * 2);
+  const r = poolRadius(a) + rand(1.0, 2.3);
+  const x = POOL.x + Math.cos(a) * r, z = POOL.z + Math.sin(a) * r;
+  const clump = buildReedClump(16);
+  clump.position.set(x, groundY(x, z) - 0.06, z);
+  registerSway(clump);
+  scene.add(clump);
+}
+// pair of striped nomad tents facing the fire
+const tentSpots = [[-11.5, 4.5, mats.tentA], [-12.5, -4.0, mats.tentB]];
+for (const [tx, tz, tm] of tentSpots) {
+  const tent = buildTent(tm);
+  tent.position.set(tx, groundY(tx, tz) - 0.04, tz);
+  tent.rotation.y = Math.atan2(FIRE.x - tx, FIRE.z - tz);
+  registerSway(tent.userData.flag);
+  scene.add(tent);
+}
+// campfire
+const campfire = buildCampfire();
+campfire.position.set(FIRE.x, groundY(FIRE.x, FIRE.z), FIRE.z);
+scene.add(campfire);
+// rugs + cushions around the fire
+const rug1 = buildRug(3.4, 5.0, mats.rugA, 3);
+rug1.position.set(-5.9, groundY(-5.9, 6.2), 6.2); rug1.rotation.y = 0.5;
+scene.add(rug1);
+const rug2 = buildRug(2.8, 4.2, mats.rugB, 2);
+rug2.position.set(-7.6, groundY(-7.6, 0.6), 0.6); rug2.rotation.y = -0.9;
+scene.add(rug2);
+const rug3 = buildRug(2.2, 3.2, mats.rugA, 1);
+rug3.position.set(-1.2, groundY(-1.2, 7.4), 7.4); rug3.rotation.y = 1.8;
+scene.add(rug3);
+// clay water jars: cluster by the tents + one at the shoreline
+const jarSpots = [[-9.6, 7.4, 1.0], [-10.4, 6.6, 0.78], [-9.0, 6.5, 0.62], [0.6, 2.6, 0.9]];
+for (const [jx, jz, js] of jarSpots) {
+  const jar = buildJar(js);
+  jar.position.set(jx, groundY(jx, jz) - 0.03, jz);
+  jar.rotation.y = rand(0, 6.28);
+  scene.add(jar);
+}
+const spilledJar = buildJar(0.72);                             // one tipped on its side
+spilledJar.position.set(-8.2, groundY(-8.2, 8.6) + 0.34, 8.6);
+spilledJar.rotation.set(0, rand(0, 6.28), Math.PI / 2 - 0.12);
+scene.add(spilledJar);
+// resting camel silhouetted against the dunes
+const camel = buildCamel();
+camel.position.set(-9.5, groundY(-9.5, -9.5) + 0.02, -9.5);
+camel.rotation.y = 0.85;
+scene.add(camel);
+// drifting spark particles above the fire
+const SPARK_N = 90;
+const sparkPos = new Float32Array(SPARK_N * 3);
+const sparkSeed = [];
+for (let i = 0; i < SPARK_N; i++) sparkSeed.push({ t: rng(), a: rand(0, 6.28), r: rand(0.05, 0.4) });
+const sparkGeo = new THREE.BufferGeometry();
+sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPos, 3));
+const sparks = new THREE.Points(sparkGeo, new THREE.PointsMaterial({
+  color: 0xffb46a, size: 0.11, transparent: true, opacity: 0.95,
+  blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+scene.add(sparks);
+
+/* ================= 7. LIGHTING RIG ================= */
+const sun = new THREE.DirectionalLight(0xffb070, 2.4);         // low golden dusk sun
+sun.position.set(-45, 13, 24);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = -36; sun.shadow.camera.right = 36;
+sun.shadow.camera.top = 36; sun.shadow.camera.bottom = -36;
+sun.shadow.camera.near = 5; sun.shadow.camera.far = 130;
+sun.shadow.bias = -0.0006;
+scene.add(sun);
+const hemi = new THREE.HemisphereLight(0x6a5a9e, 0xc98d5a, 0.55);   // violet sky / warm bounce
+scene.add(hemi);
+const duskFill = new THREE.DirectionalLight(0x5a6aa8, 0.35);   // cool opposite fill
+duskFill.position.set(38, 20, -30);
+scene.add(duskFill);
+
+/* ================= 8. ANIMATION LOOP ================= */
+const clock = new THREE.Clock();
+const { flames, glow, light: fireLight } = campfire.userData;
+function animate() {
+  requestAnimationFrame(animate);
+  const t = clock.getElapsedTime();
+  // campfire flicker: layered sines drive light, glow and flame shape
+  const fl = Math.sin(t * 11.0) * 0.5 + Math.sin(t * 23.7 + 1.3) * 0.3 + Math.sin(t * 5.1) * 0.2;
+  fireLight.intensity = 55 + fl * 16;
+  glow.material.opacity = 0.62 + fl * 0.14;
+  flames.forEach((f, i) => {
+    f.scale.set(1 + fl * 0.1, 1 + Math.sin(t * 9 + i * 2.1) * 0.16, 1 + fl * 0.1);
+    f.rotation.y = t * (1.2 + i * 0.5);
+  });
+  // drifting sparks recycle upward with a sideways waver
+  for (let i = 0; i < SPARK_N; i++) {
+    const s = sparkSeed[i];
+    const life = (t * 0.4 + s.t) % 1;
+    const rr = s.r + life * 0.55;
+    sparkPos[i * 3] = FIRE.x + Math.cos(s.a + life * 3) * rr + Math.sin(t * 1.7 + i) * 0.06;
+    sparkPos[i * 3 + 1] = 0.5 + life * 3.1;
+    sparkPos[i * 3 + 2] = FIRE.z + Math.sin(s.a + life * 3) * rr;
+  }
+  sparkGeo.attributes.position.needsUpdate = true;
+  sparks.material.opacity = 0.7 + fl * 0.2;
+  // palm crowns, reeds and pennants sway on their own phases
+  for (const s of swayers) {
+    s.obj.rotation.z = Math.sin(t * s.speed + s.phase) * s.amp;
+    s.obj.rotation.x = Math.cos(t * s.speed * 0.8 + s.phase) * s.amp * 0.7;
+  }
+  // pool surface drift
+  waterFlow(t);
+  // first stars breathe in over the dunes
+  const sky = scene.children[0].userData.starMats;
+  sky[0].opacity = 0.55 + Math.sin(t * 0.7) * 0.3;
+  sky[1].opacity = 0.55 + Math.sin(t * 0.7 + 2.4) * 0.3;
+  // camel breathing, barely perceptible
+  camel.userData.body.scale.y = 0.92 + Math.sin(t * 1.1) * 0.012;
+  controls.update();
+  renderer.render(scene, camera);
+}
+function waterFlow(t) {
+  mats.water.map.offset.set(t * 0.006, Math.sin(t * 0.12) * 0.02);
+  mats.water.emissiveIntensity = 0.26 + Math.sin(t * 0.8) * 0.05;
+}
+animate();
+
+/* ================= 9. RESIZE ================= */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

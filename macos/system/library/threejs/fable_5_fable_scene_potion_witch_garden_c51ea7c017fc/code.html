@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Witch's Potion Garden</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#171029}canvas{display:block}</style>
+<script type="importmap">
+{ "imports": {
+    "three": "https://unpkg.com/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.160.0/examples/jsm/" } }
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ================================ config / palette ================================ */
+const PAL = {
+  fog:       0x241a3e,  // dusky violet haze
+  skyTop:    '#0b0a1f', skyMid: '#3c2158', skyRose: '#77406b', skyHorizon: '#3d5a44',
+  moss:      0x2c3520,  soil: 0x2a1e16,
+  woodDark:  0x3a2a1c,  twig: 0x4a3626,
+  plaster:   '#6e6478', shingle: '#3a3242',
+  stone:     0x5a5566,  iron: 0x23252c,
+  brew:      0xa5ff3f,  smoke: 0x74d98a,
+  violetGlow:0xb45cff,  acidGlow: 0xa8ff2e,
+  flame:     0xff8a3c,  window: 0xffb45e,
+  pumpkin:   0xe07a1f,  straw: 0xc9a24b,
+  moon:      0xf2ead0
+};
+const YARD = { x: 11, z: 9.5 };            // fence half-extents
+const CHIMNEY_SEGS = 4, SMOKE_N = 55, BUBBLE_N = 20, STAR_N = 320;
+
+/* ================================ prng / helpers ================================ */
+function mulberry32(seed){
+  let a = seed >>> 0;
+  return function(){
+    a |= 0; a = a + 0x6D2B79F5 | 0;
+    let t = Math.imul(a ^ a >>> 15, 1 | a);
+    t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  };
+}
+const prng = mulberry32(20251031);
+const rand  = (a, b) => a + prng() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const pick  = arr => arr[Math.floor(prng() * arr.length)];
+const dummy = new THREE.Object3D();          // shared instancing scratch
+const UP = new THREE.Vector3(0, 1, 0);
+
+// Cylinder stretched between two points (tree limbs, ladle, gnarled bits)
+function limb(a, b, r0, r1, mat, radial = 7){
+  const dir = new THREE.Vector3().subVectors(b, a);
+  const len = dir.length();
+  const m = new THREE.Mesh(new THREE.CylinderGeometry(r1, r0, len, radial), mat);
+  m.position.copy(a).addScaledVector(dir, 0.5);
+  m.quaternion.setFromUnitVectors(UP, dir.clone().normalize());
+  return m;
+}
+function shadowed(root, cast = true, receive = true){
+  root.traverse(o => { if (o.isMesh){ o.castShadow = cast; o.receiveShadow = receive; } });
+  return root;
+}
+
+/* ================================ canvas textures ================================ */
+function canvasTexture(size, painter, rx = 1, ry = 1){
+  const c = document.createElement('canvas'); c.width = c.height = size;
+  painter(c.getContext('2d'), size);
+  const t = new THREE.CanvasTexture(c);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping; t.repeat.set(rx, ry);
+  t.colorSpace = THREE.SRGBColorSpace;
+  return t;
+}
+const groundTex = canvasTexture(512, (g, s) => {       // murky mossy earth
+  g.fillStyle = '#1f2418'; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 260; i++){                       // moss / bruise-purple patches
+    g.fillStyle = pick(['#26301c', '#1a2015', '#2c2433', '#243021', '#211a2b']);
+    g.globalAlpha = rand(0.25, 0.6);
+    const r = rand(8, 42);
+    g.beginPath(); g.arc(rand(0, s), rand(0, s), r, 0, 7); g.fill();
+  }
+  g.globalAlpha = 1;
+  for (let i = 0; i < 900; i++){                       // speckle grit
+    g.fillStyle = prng() < 0.5 ? '#151a10' : '#39422a';
+    g.fillRect(rand(0, s), rand(0, s), rand(1, 3), rand(1, 3));
+  }
+}, 9, 9);
+const plankTex = canvasTexture(256, (g, s) => {        // weathered witch-wood
+  g.fillStyle = '#4a3a2c'; g.fillRect(0, 0, s, s);
+  const w = s / 5;
+  for (let p = 0; p < 5; p++){
+    g.fillStyle = pick(['#463527', '#503e2d', '#3e2f22', '#544233']);
+    g.fillRect(p * w + 1, 0, w - 2, s);
+    g.strokeStyle = 'rgba(20,12,6,0.8)'; g.lineWidth = 2;
+    g.strokeRect(p * w + 1, 0, w - 2, s);
+    g.strokeStyle = 'rgba(30,20,10,0.5)'; g.lineWidth = 1;
+    for (let k = 0; k < 6; k++){                       // grain streaks
+      const x = p * w + rand(4, w - 4);
+      g.beginPath(); g.moveTo(x, 0); g.bezierCurveTo(x + rand(-6, 6), s * 0.33, x + rand(-6, 6), s * 0.66, x, s); g.stroke();
+    }
+    if (prng() < 0.7){                                 // knot
+      g.fillStyle = '#2a1d12';
+      g.beginPath(); g.arc(p * w + w / 2, rand(30, s - 30), rand(3, 6), 0, 7); g.fill();
+    }
+  }
+}, 2, 1);
+const plasterTex = canvasTexture(256, (g, s) => {      // stained upper-storey plaster
+  g.fillStyle = PAL.plaster; g.fillRect(0, 0, s, s);
+  for (let i = 0; i < 90; i++){
+    g.fillStyle = pick(['#655b70', '#786d84', '#5d5468', '#71667c']);
+    g.globalAlpha = rand(0.2, 0.5);
+    g.beginPath(); g.arc(rand(0, s), rand(0, s), rand(6, 30), 0, 7); g.fill();
+  }
+  g.globalAlpha = 1; g.strokeStyle = 'rgba(40,34,48,0.65)'; g.lineWidth = 1.5;
+  for (let i = 0; i < 7; i++){                         // hairline cracks
+    let x = rand(0, s), y = rand(0, s);
+    g.beginPath(); g.moveTo(x, y);
+    for (let k = 0; k < 5; k++){ x += rand(-18, 18); y += rand(8, 24); g.lineTo(x, y); }
+    g.stroke();
+  }
+});
+const shingleTex = canvasTexture(256, (g, s) => {      // scalloped slate shingles
+  g.fillStyle = '#2b2436'; g.fillRect(0, 0, s, s);
+  const rw = 32, rh = 22;
+  for (let row = 0; row < s / rh + 1; row++){
+    for (let col = -1; col < s / rw + 1; col++){
+      const x = col * rw + (row % 2 ? rw / 2 : 0), y = row * rh;
+      g.fillStyle = pick(['#3a3242', '#453b52', '#332c3d', '#4c4059']);
+      g.beginPath(); g.moveTo(x, y); g.lineTo(x + rw, y);
+      g.lineTo(x + rw, y + rh - 6); g.arc(x + rw / 2, y + rh - 6, rw / 2, 0, Math.PI); g.closePath(); g.fill();
+      g.strokeStyle = 'rgba(15,10,20,0.7)'; g.stroke();
+    }
+  }
+}, 3, 2);
+function paintFace(g, s, fg){                           // shared jack-o'-lantern face
+  g.fillStyle = fg;
+  g.beginPath(); g.moveTo(s*0.30, s*0.46); g.lineTo(s*0.42, s*0.46); g.lineTo(s*0.36, s*0.34); g.fill();
+  g.beginPath(); g.moveTo(s*0.58, s*0.46); g.lineTo(s*0.70, s*0.46); g.lineTo(s*0.64, s*0.34); g.fill();
+  g.beginPath(); g.moveTo(s*0.28, s*0.60);
+  for (let i = 0; i <= 8; i++) g.lineTo(s*0.28 + i*s*0.055, s*(i % 2 ? 0.70 : 0.60));
+  g.lineTo(s*0.62, s*0.66); g.lineTo(s*0.34, s*0.66); g.fill();
+}
+const pumpkinMapTex = canvasTexture(256, (g, s) => {
+  g.fillStyle = '#e07a1f'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(150,70,10,0.8)'; g.lineWidth = 6;
+  for (let i = 0; i < 9; i++){ const x = i * s / 8; g.beginPath(); g.moveTo(x, 0); g.lineTo(x, s); g.stroke(); }
+  paintFace(g, s, '#2a1206');
+});
+const pumpkinGlowTex = canvasTexture(256, (g, s) => {
+  g.fillStyle = '#000'; g.fillRect(0, 0, s, s); paintFace(g, s, '#ffd23c');
+});
+const signTex = canvasTexture(256, (g, s) => {          // crooked gate sign
+  g.fillStyle = '#4a3a2c'; g.fillRect(0, 0, s, s);
+  g.strokeStyle = 'rgba(25,15,8,0.8)'; g.lineWidth = 3;
+  for (let i = 1; i < 3; i++){ g.beginPath(); g.moveTo(0, i * s / 3); g.lineTo(s, i * s / 3); g.stroke(); }
+  g.save(); g.translate(s / 2, s / 2); g.rotate(-0.06);
+  g.fillStyle = '#b9f04e'; g.font = `700 ${s * 0.22}px Georgia`; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText('POTIONS', 0, -s * 0.10);
+  g.font = `600 ${s * 0.13}px Georgia`; g.fillStyle = '#d8b5ff';
+  g.fillText('fresh brewed', 0, s * 0.16); g.restore();
+});
+const skyTex = canvasTexture(512, (g, s) => {           // twilight gradient dome
+  const gr = g.createLinearGradient(0, 0, 0, s);
+  gr.addColorStop(0.00, PAL.skyTop); gr.addColorStop(0.45, PAL.skyMid);
+  gr.addColorStop(0.68, PAL.skyRose); gr.addColorStop(0.86, PAL.skyHorizon);
+  gr.addColorStop(1.00, '#1c2418');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s);
+});
+const glowTex = canvasTexture(64, (g, s) => {           // soft round sprite
+  const gr = g.createRadialGradient(s/2, s/2, 0, s/2, s/2, s/2);
+  gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.4, 'rgba(255,255,255,0.5)');
+  gr.addColorStop(1, 'rgba(255,255,255,0)');
+  g.fillStyle = gr; g.fillRect(0, 0, s, s);
+});
+
+/* ================================ materials ================================ */
+const MAT = {
+  ground:  new THREE.MeshStandardMaterial({ map: groundTex, roughness: 1 }),
+  plank:   new THREE.MeshStandardMaterial({ map: plankTex, roughness: 0.9 }),
+  plaster: new THREE.MeshStandardMaterial({ map: plasterTex, roughness: 0.95 }),
+  shingle: new THREE.MeshStandardMaterial({ map: shingleTex, roughness: 0.85 }),
+  woodDark:new THREE.MeshStandardMaterial({ color: PAL.woodDark, roughness: 0.9 }),
+  twig:    new THREE.MeshStandardMaterial({ color: PAL.twig, roughness: 1 }),
+  stone:   new THREE.MeshStandardMaterial({ color: PAL.stone, roughness: 0.95, flatShading: true }),
+  iron:    new THREE.MeshStandardMaterial({ color: PAL.iron, roughness: 0.45, metalness: 0.7 }),
+  brew:    new THREE.MeshStandardMaterial({ color: 0x224400, emissive: PAL.brew, emissiveIntensity: 1.6, roughness: 0.3 }),
+  flame:   new THREE.MeshStandardMaterial({ color: 0x351000, emissive: PAL.flame, emissiveIntensity: 2.4 }),
+  ember:   new THREE.MeshStandardMaterial({ color: 0x180a06, emissive: 0xff5a1e, emissiveIntensity: 0.9, roughness: 1 }),
+  window:  new THREE.MeshStandardMaterial({ color: 0x201205, emissive: PAL.window, emissiveIntensity: 1.7 }),
+  stemV:   new THREE.MeshStandardMaterial({ color: 0x3c4a2a, roughness: 0.9 }),
+  bulbViolet: new THREE.MeshStandardMaterial({ color: 0x2a1638, emissive: PAL.violetGlow, emissiveIntensity: 1.6, roughness: 0.4 }),
+  bulbAcid:   new THREE.MeshStandardMaterial({ color: 0x1f2c0a, emissive: PAL.acidGlow, emissiveIntensity: 1.5, roughness: 0.4 }),
+  leaf:    new THREE.MeshStandardMaterial({ color: 0x2f4426, roughness: 0.95 }),
+  soil:    new THREE.MeshStandardMaterial({ color: PAL.soil, roughness: 1 }),
+  pumpkin: new THREE.MeshStandardMaterial({ map: pumpkinMapTex, emissiveMap: pumpkinGlowTex, emissive: 0xffffff, emissiveIntensity: 1.2, roughness: 0.7 }),
+  straw:   new THREE.MeshStandardMaterial({ color: PAL.straw, roughness: 1 }),
+  rag:     new THREE.MeshStandardMaterial({ color: 0x3d2f4d, roughness: 1, side: THREE.DoubleSide }),
+  cat:     new THREE.MeshStandardMaterial({ color: 0x0d0d11, roughness: 0.55 }),
+  catEye:  new THREE.MeshStandardMaterial({ color: 0x041a02, emissive: 0x8cff4a, emissiveIntensity: 2.2 }),
+  glass:   new THREE.MeshPhysicalMaterial({ color: 0xbfd8c8, roughness: 0.12, metalness: 0, transparent: true, opacity: 0.32 }),
+  cork:    new THREE.MeshStandardMaterial({ color: 0x8a6a42, roughness: 1 }),
+  mushCap: new THREE.MeshStandardMaterial({ color: 0x6e2438, emissive: 0x8c3ce0, emissiveIntensity: 0.25, roughness: 0.8 }),
+  mushStem:new THREE.MeshStandardMaterial({ color: 0xc7bda6, roughness: 0.95 }),
+  tuft:    new THREE.MeshStandardMaterial({ color: PAL.moss, roughness: 1 }),
+  moon:    new THREE.MeshBasicMaterial({ color: PAL.moon, fog: false })
+};
+const FX = { jars: [], flames: [] };       // animation registry
+
+/* ================================ builder: crooked cottage ================================ */
+function buildCottage(){
+  const g = new THREE.Group();
+  const plinth = new THREE.Mesh(new THREE.BoxGeometry(6.4, 0.5, 5.4), MAT.stone);
+  plinth.position.y = 0.25; g.add(plinth);
+  const lower = new THREE.Mesh(new THREE.BoxGeometry(5.6, 2.3, 4.6), MAT.plank);
+  lower.position.y = 1.6; g.add(lower);
+  const upper = new THREE.Mesh(new THREE.BoxGeometry(6.1, 1.8, 5.1), MAT.plaster);
+  upper.position.set(0.12, 3.6, 0); upper.rotation.set(-0.02, 0, 0.055); g.add(upper);
+  const beam = new THREE.Mesh(new THREE.BoxGeometry(6.25, 0.22, 5.25), MAT.woodDark);
+  beam.position.y = 2.78; beam.rotation.z = 0.03; g.add(beam);
+  const roof = new THREE.Mesh(new THREE.ConeGeometry(4.9, 3.3, 4), MAT.shingle);
+  roof.position.set(0.22, 6.05, 0); roof.rotation.y = Math.PI / 4; roof.rotation.z = 0.09;
+  roof.scale.z = 0.86; g.add(roof);
+  const tip = new THREE.Mesh(new THREE.SphereGeometry(0.16, 8, 6), MAT.iron);
+  tip.position.set(0.05, 7.75, 0); g.add(tip);
+  // bent chimney - stacked, progressively tilted flue blocks
+  let cx = 1.85, cy = 5.0, tilt = 0.10;
+  for (let i = 0; i < CHIMNEY_SEGS; i++){
+    const w = 0.95 - i * 0.09;
+    const seg = new THREE.Mesh(new THREE.BoxGeometry(w, 0.82, w), MAT.stone);
+    seg.position.set(cx, cy, -0.75); seg.rotation.z = tilt; g.add(seg);
+    cy += 0.74; cx += Math.sin(tilt) * 0.9; tilt += 0.17;
+  }
+  const cap = new THREE.Mesh(new THREE.BoxGeometry(0.86, 0.2, 0.86), MAT.woodDark);
+  cap.position.set(cx - 0.06, cy - 0.32, -0.75); cap.rotation.z = tilt - 0.17; g.add(cap);
+  g.userData.chimneyTip = new THREE.Vector3(cx - 0.05, cy - 0.1, -0.75);
+  // arched front door + step + knob
+  const door = new THREE.Mesh(new THREE.BoxGeometry(1.25, 2.15, 0.16), MAT.plank);
+  door.position.set(-1.15, 1.55, 2.34); g.add(door);
+  const arch = new THREE.Mesh(new THREE.CylinderGeometry(0.62, 0.62, 0.16, 12, 1, false, 0, Math.PI), MAT.plank);
+  arch.rotation.set(Math.PI / 2, 0, Math.PI / 2); arch.position.set(-1.15, 2.62, 2.34); g.add(arch);
+  const knob = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), MAT.iron);
+  knob.position.set(-0.72, 1.5, 2.44); g.add(knob);
+  const step = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.18, 0.7), MAT.stone);
+  step.position.set(-1.15, 0.09, 2.75); g.add(step);
+  // glowing windows: mullioned lower + round attic eye
+  const win = new THREE.Mesh(new THREE.PlaneGeometry(0.95, 1.1), MAT.window);
+  win.position.set(1.35, 1.85, 2.32); g.add(win);
+  const barV = new THREE.Mesh(new THREE.BoxGeometry(0.07, 1.12, 0.05), MAT.woodDark);
+  barV.position.set(1.35, 1.85, 2.34); g.add(barV);
+  const barH = barV.clone(); barH.rotation.z = Math.PI / 2; barH.scale.y = 0.85; g.add(barH);
+  const attic = new THREE.Mesh(new THREE.CircleGeometry(0.34, 20), MAT.window);
+  attic.position.set(0.6, 3.75, 2.62); attic.rotation.z = 0.05; g.add(attic);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.34, 0.05, 8, 20), MAT.woodDark);
+  ring.position.copy(attic.position); g.add(ring);
+  FX.windowMat = MAT.window;
+  return shadowed(g);
+}
+
+/* ================================ builder: broom by the door ================================ */
+function buildBroom(){
+  const g = new THREE.Group();
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.045, 2.1, 7), MAT.woodDark);
+  handle.position.y = 1.35; g.add(handle);
+  const head = new THREE.Mesh(new THREE.ConeGeometry(0.17, 0.62, 9), MAT.straw);
+  head.position.y = 0.32; head.rotation.x = Math.PI; g.add(head);
+  const band = new THREE.Mesh(new THREE.TorusGeometry(0.12, 0.025, 6, 12), MAT.iron);
+  band.rotation.x = Math.PI / 2; band.position.y = 0.56; g.add(band);
+  g.rotation.z = -0.3;                      // leant against the wall
+  return shadowed(g);
+}
+
+/* ================================ builder: bubbling cauldron ================================ */
+function buildCauldron(){
+  const g = new THREE.Group();
+  for (let i = 0; i < 8; i++){              // fire-ring stones
+    const a = i / 8 * Math.PI * 2;
+    const st = new THREE.Mesh(new THREE.DodecahedronGeometry(rand(0.16, 0.24)), MAT.stone);
+    st.position.set(Math.cos(a) * 1.15, 0.12, Math.sin(a) * 1.15);
+    st.rotation.set(prng() * 3, prng() * 3, 0); g.add(st);
+  }
+  for (let i = 0; i < 3; i++){              // glowing logs
+    const log = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 1.3, 6), MAT.ember);
+    log.rotation.set(Math.PI / 2, 0, i * 1.05); log.position.y = 0.14; g.add(log);
+  }
+  for (let i = 0; i < 3; i++){              // licking flames
+    const f = new THREE.Mesh(new THREE.ConeGeometry(rand(0.16, 0.24), rand(0.55, 0.8), 6), MAT.flame);
+    f.position.set(rand(-0.25, 0.25), 0.42, rand(-0.25, 0.25));
+    FX.flames.push(f); g.add(f);
+  }
+  for (let i = 0; i < 3; i++){              // iron legs
+    const a = i / 3 * Math.PI * 2 + 0.5;
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.07, 0.85, 6), MAT.iron);
+    leg.position.set(Math.cos(a) * 0.62, 0.42, Math.sin(a) * 0.62);
+    leg.rotation.set(Math.sin(a) * 0.28, 0, -Math.cos(a) * 0.28); g.add(leg);
+  }
+  const pot = new THREE.Mesh(new THREE.SphereGeometry(1.02, 24, 16), MAT.iron);
+  pot.position.y = 1.1; pot.scale.y = 0.9; g.add(pot);
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.7, 0.09, 10, 24), MAT.iron);
+  rim.rotation.x = Math.PI / 2; rim.position.y = 1.82; g.add(rim);
+  const liquid = new THREE.Mesh(new THREE.CircleGeometry(0.67, 24), MAT.brew);
+  liquid.rotation.x = -Math.PI / 2; liquid.position.y = 1.8; g.add(liquid);
+  g.add(limb(new THREE.Vector3(0.3, 1.7, 0.2), new THREE.Vector3(0.85, 2.6, 0.5), 0.035, 0.03, MAT.woodDark)); // ladle
+  shadowed(g);
+  // rising brew bubbles (local points, looped in tick)
+  const bpos = new Float32Array(BUBBLE_N * 3);
+  FX.bubbleSeed = [];
+  for (let i = 0; i < BUBBLE_N; i++) FX.bubbleSeed.push({ a: rand(0, 6.28), r: rand(0.05, 0.55), o: prng(), s: rand(0.7, 1.4) });
+  const bgeo = new THREE.BufferGeometry();
+  bgeo.setAttribute('position', new THREE.BufferAttribute(bpos, 3));
+  FX.bubbles = new THREE.Points(bgeo, new THREE.PointsMaterial({
+    map: glowTex, color: 0xd6ff7e, size: 0.13, transparent: true, opacity: 0.9,
+    depthWrite: false, blending: THREE.AdditiveBlending }));
+  g.add(FX.bubbles);
+  return g;
+}
+
+/* ================================ builder: glowing potion beds ================================ */
+function buildPotionBeds(){
+  const g = new THREE.Group();
+  const beds = [ { p: [3.0, 5.2], r: -0.12 }, { p: [3.2, 7.6], r: 0.08 }, { p: [-6.4, 5.8], r: 0.55 } ];
+  const spots = [];                          // world-ish plant anchors
+  for (const b of beds){
+    const frame = new THREE.Mesh(new THREE.BoxGeometry(4.7, 0.34, 1.7), MAT.woodDark);
+    frame.position.set(b.p[0], 0.17, b.p[1]); frame.rotation.y = b.r; g.add(frame);
+    const dirt = new THREE.Mesh(new THREE.BoxGeometry(4.4, 0.36, 1.4), MAT.soil);
+    dirt.position.set(b.p[0], 0.19, b.p[1]); dirt.rotation.y = b.r; g.add(dirt);
+    for (let row = 0; row < 2; row++) for (let col = 0; col < 7; col++){
+      const lx = -1.9 + col * 0.63 + rand(-0.08, 0.08), lz = -0.35 + row * 0.7 + rand(-0.06, 0.06);
+      const c = Math.cos(b.r), s = Math.sin(b.r);
+      spots.push({ x: b.p[0] + lx * c + lz * s, z: b.p[1] - lx * s + lz * c, h: rand(0.45, 0.75) });
+    }
+  }
+  shadowed(g);
+  const stems = new THREE.InstancedMesh(new THREE.ConeGeometry(0.055, 1, 5), MAT.stemV, spots.length);
+  const leaves = new THREE.InstancedMesh(new THREE.ConeGeometry(0.16, 0.34, 5), MAT.leaf, spots.length * 2);
+  const nV = Math.ceil(spots.length / 2), nA = spots.length - nV;
+  const bulbsV = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.17, 1), MAT.bulbViolet, nV);
+  const bulbsA = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(0.15, 1), MAT.bulbAcid, nA);
+  let iv = 0, ia = 0;
+  spots.forEach((sp, i) => {
+    dummy.position.set(sp.x, 0.36 + sp.h / 2, sp.z);
+    dummy.rotation.set(rand(-0.08, 0.08), rand(0, 6.28), rand(-0.08, 0.08));
+    dummy.scale.set(1, sp.h, 1); dummy.updateMatrix();
+    stems.setMatrixAt(i, dummy.matrix);
+    for (let l = 0; l < 2; l++){
+      const a = rand(0, 6.28);
+      dummy.position.set(sp.x + Math.cos(a) * 0.12, 0.45, sp.z + Math.sin(a) * 0.12);
+      dummy.rotation.set(rand(0.5, 0.9) * (l ? 1 : -1), a, 0);
+      dummy.scale.setScalar(rand(0.8, 1.2)); dummy.updateMatrix();
+      leaves.setMatrixAt(i * 2 + l, dummy.matrix);
+    }
+    dummy.position.set(sp.x, 0.4 + sp.h, sp.z); dummy.rotation.set(0, rand(0, 6.28), 0);
+    dummy.scale.setScalar(rand(0.8, 1.35)); dummy.updateMatrix();
+    if (i % 2 === 0 && iv < nV) bulbsV.setMatrixAt(iv++, dummy.matrix);
+    else bulbsA.setMatrixAt(ia++, dummy.matrix);
+  });
+  for (const im of [stems, leaves, bulbsV, bulbsA]){ im.castShadow = true; im.receiveShadow = true; g.add(im); }
+  return g;
+}
+
+/* ================================ builder: pumpkin scarecrow ================================ */
+function buildScarecrow(){
+  const g = new THREE.Group(), sway = new THREE.Group();
+  const pole = new THREE.Mesh(new THREE.CylinderGeometry(0.07, 0.09, 2.7, 7), MAT.twig);
+  pole.position.y = 1.35; g.add(pole); g.add(sway); sway.position.y = 1.1;
+  const bar = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.055, 2.2, 7), MAT.twig);
+  bar.rotation.z = Math.PI / 2; bar.position.y = 1.15; sway.add(bar);
+  const coat = new THREE.Mesh(new THREE.ConeGeometry(0.85, 1.7, 8, 3, true), MAT.rag);
+  const cp = coat.geometry.attributes.position;         // tatter the hem
+  for (let i = 0; i < cp.count; i++) if (cp.getY(i) < -0.5) cp.setY(i, cp.getY(i) + rand(-0.22, 0.1));
+  coat.geometry.computeVertexNormals();
+  coat.position.y = 0.55; sway.add(coat);
+  for (const sx of [-1, 1]){                            // ragged sleeves + straw hands
+    const sleeve = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.2, 0.9, 7), MAT.rag);
+    sleeve.rotation.z = Math.PI / 2 + sx * 0.12; sleeve.position.set(sx * 0.62, 1.15, 0); sway.add(sleeve);
+    const hand = new THREE.Mesh(new THREE.ConeGeometry(0.09, 0.3, 6), MAT.straw);
+    hand.rotation.z = sx * Math.PI / 2; hand.position.set(sx * 1.18, 1.15, 0); sway.add(hand);
+  }
+  const skirtStraw = new THREE.Mesh(new THREE.ConeGeometry(0.32, 0.5, 8), MAT.straw);
+  skirtStraw.position.y = -0.35; skirtStraw.rotation.x = Math.PI; sway.add(skirtStraw);
+  const head = new THREE.Mesh(new THREE.SphereGeometry(0.44, 18, 14), MAT.pumpkin);
+  head.scale.y = 0.85; head.position.y = 1.85; head.rotation.y = Math.PI / 2 + 0.15; sway.add(head);
+  const stalk = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.06, 0.2, 6), MAT.leaf);
+  stalk.position.y = 2.28; sway.add(stalk);
+  const hat = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.75, 9), MAT.rag);
+  hat.position.set(0.05, 2.55, -0.03); hat.rotation.z = -0.28; sway.add(hat);
+  const brim = new THREE.Mesh(new THREE.TorusGeometry(0.32, 0.09, 6, 14), MAT.rag);
+  brim.rotation.x = Math.PI / 2; brim.rotation.y = 0.1; brim.position.set(0.11, 2.28, -0.03); brim.rotation.z = -0.28; sway.add(brim);
+  const raven = new THREE.Group();                      // perched raven
+  const rb = new THREE.Mesh(new THREE.SphereGeometry(0.11, 10, 8), MAT.cat); rb.scale.set(1, 0.9, 1.5); raven.add(rb);
+  const rh = new THREE.Mesh(new THREE.SphereGeometry(0.065, 8, 6), MAT.cat); rh.position.set(0, 0.1, 0.13); raven.add(rh);
+  const rk = new THREE.Mesh(new THREE.ConeGeometry(0.028, 0.11, 5), MAT.straw); rk.rotation.x = Math.PI / 2; rk.position.set(0, 0.1, 0.23); raven.add(rk);
+  raven.position.set(-0.95, 1.28, 0); sway.add(raven);
+  FX.scarecrow = sway;
+  return shadowed(g);
+}
+
+/* ================================ builder: twig fence + gate ================================ */
+function buildFence(){
+  const g = new THREE.Group();
+  const corners = [[-YARD.x, -YARD.z], [YARD.x, -YARD.z], [YARD.x, YARD.z], [-YARD.x, YARD.z]];
+  const posts = [], railMats = [];
+  for (let e = 0; e < 4; e++){
+    const [ax, az] = corners[e], [bx, bz] = corners[(e + 1) % 4];
+    const len = Math.hypot(bx - ax, bz - az), n = Math.round(len / 1.55);
+    let prev = null;
+    for (let i = 0; i <= n; i++){
+      const t = i / n, x = ax + (bx - ax) * t, z = az + (bz - az) * t;
+      const isGate = (az === YARD.z && bz === YARD.z && Math.abs(x) < 1.5);
+      if (!isGate) posts.push({ x, z, tilt: rand(-0.09, 0.09), lean: rand(-0.09, 0.09), h: rand(1.0, 1.25) });
+      const cur = isGate ? null : { x, z };
+      if (prev && cur) for (const ry of [0.42, 0.82]){   // two crooked rails per bay
+        const mx = (prev.x + cur.x) / 2, mz = (prev.z + cur.z) / 2;
+        dummy.position.set(mx + rand(-0.03, 0.03), ry + rand(-0.05, 0.05), mz + rand(-0.03, 0.03));
+        dummy.rotation.set(0, Math.atan2(prev.x - cur.x, prev.z - cur.z) + Math.PI / 2, rand(-0.05, 0.05));
+        dummy.scale.set(Math.hypot(cur.x - prev.x, cur.z - prev.z) + 0.15, 1, 1);
+        dummy.updateMatrix(); railMats.push(dummy.matrix.clone());
+      }
+      prev = cur;
+    }
+  }
+  const postIM = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.055, 0.085, 1, 6), MAT.twig, posts.length);
+  posts.forEach((p, i) => {
+    dummy.position.set(p.x, p.h / 2, p.z); dummy.rotation.set(p.tilt, 0, p.lean);
+    dummy.scale.set(1, p.h, 1); dummy.updateMatrix(); postIM.setMatrixAt(i, dummy.matrix);
+  });
+  const railIM = new THREE.InstancedMesh(new THREE.BoxGeometry(1, 0.055, 0.055), MAT.twig, railMats.length);
+  railMats.forEach((m, i) => railIM.setMatrixAt(i, m));
+  postIM.castShadow = railIM.castShadow = true; g.add(postIM, railIM);
+  for (const sx of [-1, 1]){                             // taller gate posts
+    const gp = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.12, 1.7, 7), MAT.twig);
+    gp.position.set(sx * 1.6, 0.85, YARD.z); gp.rotation.z = sx * -0.06; gp.castShadow = true; g.add(gp);
+    const fin = new THREE.Mesh(new THREE.SphereGeometry(0.11, 8, 6), MAT.woodDark);
+    fin.position.set(sx * 1.66, 1.72, YARD.z); g.add(fin);
+  }
+  const sign = new THREE.Mesh(new THREE.BoxGeometry(1.35, 0.8, 0.07), new THREE.MeshStandardMaterial({ map: signTex, roughness: 0.9 }));
+  sign.position.set(1.95, 1.28, YARD.z + 0.12); sign.rotation.set(0.02, 0.18, -0.08); sign.castShadow = true; g.add(sign);
+  return g;
+}
+
+/* ================================ builder: firefly jar ================================ */
+function buildJar(){
+  const g = new THREE.Group();                            // origin = hanging hook
+  g.add(limb(new THREE.Vector3(0, 0, 0), new THREE.Vector3(0, -0.34, 0), 0.015, 0.015, MAT.twig, 5));
+  const jar = new THREE.Mesh(new THREE.CylinderGeometry(0.21, 0.18, 0.42, 10, 1), MAT.glass);
+  jar.position.y = -0.56; g.add(jar);
+  const cork = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.14, 0.1, 8), MAT.cork);
+  cork.position.y = -0.33; cork.castShadow = true; g.add(cork);
+  const n = 6, fpos = new Float32Array(n * 3), seeds = [];
+  for (let i = 0; i < n; i++) seeds.push({ a: rand(0, 6.28), b: rand(0, 6.28), s: rand(0.8, 1.6) });
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(fpos, 3));
+  const flies = new THREE.Points(geo, new THREE.PointsMaterial({
+    map: glowTex, color: 0xd8ff7a, size: 0.09, transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending }));
+  g.add(flies);
+  FX.jars.push({ group: g, flies, seeds, phase: rand(0, 6.28) });
+  return g;
+}
+
+/* ================================ builder: gnarled jar tree ================================ */
+function buildJarTree(){
+  const g = new THREE.Group();
+  const spine = [ new THREE.Vector3(0, 0, 0), new THREE.Vector3(0.16, 1.15, 0.05),
+    new THREE.Vector3(0.48, 2.25, -0.12), new THREE.Vector3(0.62, 3.1, 0.1) ];
+  for (let i = 0; i < spine.length - 1; i++)
+    g.add(limb(spine[i], spine[i + 1], 0.4 - i * 0.09, 0.34 - i * 0.09, MAT.twig, 8));
+  const ends = [ new THREE.Vector3(2.0, 3.5, 0.9), new THREE.Vector3(-1.25, 3.65, 0.6), new THREE.Vector3(1.25, 4.0, -1.05) ];
+  ends.forEach((e, i) => {
+    const from = spine[2 + (i % 2)];
+    g.add(limb(from, e, 0.14, 0.05, MAT.twig, 6));
+    const mid = from.clone().lerp(e, 0.55).add(new THREE.Vector3(0, 0.5, rand(-0.2, 0.2)));
+    g.add(limb(from.clone().lerp(e, 0.45), mid, 0.05, 0.02, MAT.twig, 5));     // twiglets
+    const jar = buildJar(); jar.position.copy(e).add(new THREE.Vector3(0, -0.05, 0)); g.add(jar);
+  });
+  const roots = new THREE.Mesh(new THREE.CylinderGeometry(0.55, 0.85, 0.35, 9), MAT.twig);
+  roots.position.y = 0.12; g.add(roots);
+  return shadowed(g);
+}
+
+/* ================================ builder: black cat on stump ================================ */
+function buildCatStump(){
+  const g = new THREE.Group();
+  const stump = new THREE.Mesh(new THREE.CylinderGeometry(0.52, 0.66, 0.72, 10), MAT.plank);
+  stump.position.y = 0.36; g.add(stump);
+  const top = new THREE.Mesh(new THREE.CircleGeometry(0.5, 10), MAT.straw);
+  top.rotation.x = -Math.PI / 2; top.position.y = 0.725; g.add(top);
+  const cat = new THREE.Group(); cat.position.y = 0.73; g.add(cat);
+  const haunch = new THREE.Mesh(new THREE.SphereGeometry(0.26, 12, 10), MAT.cat);
+  haunch.scale.set(1, 1.15, 1.1); haunch.position.set(0, 0.26, -0.08); cat.add(haunch);
+  const chest = new THREE.Mesh(new THREE.SphereGeometry(0.19, 12, 10), MAT.cat);
+  chest.scale.set(1, 1.35, 1); chest.position.set(0, 0.42, 0.14); cat.add(chest);
+  const headC = new THREE.Mesh(new THREE.SphereGeometry(0.165, 12, 10), MAT.cat);
+  headC.position.set(0, 0.72, 0.18); cat.add(headC);
+  for (const sx of [-1, 1]){
+    const ear = new THREE.Mesh(new THREE.ConeGeometry(0.06, 0.13, 4), MAT.cat);
+    ear.position.set(sx * 0.09, 0.86, 0.16); ear.rotation.z = sx * -0.25; cat.add(ear);
+    const eye = new THREE.Mesh(new THREE.SphereGeometry(0.028, 8, 6), MAT.catEye);
+    eye.position.set(sx * 0.065, 0.73, 0.32); cat.add(eye);
+    const paw = new THREE.Mesh(new THREE.SphereGeometry(0.06, 8, 6), MAT.cat);
+    paw.scale.set(1, 0.7, 1.4); paw.position.set(sx * 0.09, 0.04, 0.26); cat.add(paw);
+  }
+  const tail = new THREE.Group(); tail.position.set(0.16, 0.1, -0.3); cat.add(tail);
+  for (let i = 0; i < 5; i++){
+    const seg = new THREE.Mesh(new THREE.SphereGeometry(0.055 - i * 0.006, 8, 6), MAT.cat);
+    seg.position.set(Math.sin(i * 0.55) * 0.22, i * 0.02, -i * 0.09); tail.add(seg);
+  }
+  FX.catTail = tail;
+  return shadowed(g);
+}
+
+/* ================================ scene / renderer / camera ================================ */
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x171029);
+scene.fog = new THREE.Fog(PAL.fog, 28, 74);
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.18;
+document.body.appendChild(renderer.domElement);
+const camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 220);
+camera.position.set(14.5, 8.5, 17.5);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 2.1, 0.4);
+controls.enableDamping = true; controls.dampingFactor = 0.06;
+controls.autoRotate = true; controls.autoRotateSpeed = 0.8;
+controls.minDistance = 9; controls.maxDistance = 33;
+controls.maxPolarAngle = 1.42;
+
+/* ================================ assembly / layout ================================ */
+const sky = new THREE.Mesh(new THREE.SphereGeometry(62, 32, 20),
+  new THREE.MeshBasicMaterial({ map: skyTex, side: THREE.BackSide, fog: false }));
+scene.add(sky);
+const ground = new THREE.Mesh(new THREE.CircleGeometry(46, 48), MAT.ground);
+ground.rotation.x = -Math.PI / 2; ground.receiveShadow = true; scene.add(ground);
+
+const cottage = buildCottage(); cottage.position.set(-4.6, 0, -4.8); cottage.rotation.y = 0.16; scene.add(cottage);
+const broom = buildBroom(); broom.position.set(0.35, 0, 2.28); cottage.add(broom);       // leaning by the door
+const eaveJar = buildJar(); eaveJar.position.set(2.5, 3.3, 2.5); cottage.add(eaveJar);   // porch lantern-jar
+const cauldron = buildCauldron(); cauldron.position.set(4.2, 0, 1.2); cauldron.rotation.y = 0.5; scene.add(cauldron);
+scene.add(buildPotionBeds());
+const scarecrow = buildScarecrow(); scarecrow.position.set(7.2, 0, -3.4); scarecrow.rotation.y = -0.6; scene.add(scarecrow);
+scene.add(buildFence());
+const tree = buildJarTree(); tree.position.set(-9.2, 0, 2.6); tree.rotation.y = 0.7; scene.add(tree);
+const gateJar = buildJar(); gateJar.position.set(-1.62, 1.55, YARD.z); scene.add(gateJar);
+const catStump = buildCatStump(); catStump.position.set(-1.5, 0, 2.9); catStump.rotation.y = 2.6; scene.add(catStump);
+
+// winding stepping-stone path: gate -> front door
+const stonePts = [];
+for (let i = 0; i < 12; i++){
+  const t = i / 11, u = 1 - t;
+  stonePts.push(new THREE.Vector3(
+    u * u * 0.2 + 2 * u * t * -1.6 + t * t * -5.3 + rand(-0.18, 0.18), 0.05,
+    u * u * 9.2 + 2 * u * t * 4.2 + t * t * -1.5 + rand(-0.15, 0.15)));
+}
+const stoneIM = new THREE.InstancedMesh(new THREE.CylinderGeometry(1, 1.1, 0.12, 7), MAT.stone, stonePts.length);
+stonePts.forEach((p, i) => {
+  dummy.position.copy(p); dummy.rotation.set(0, rand(0, 6.28), 0);
+  dummy.scale.set(rand(0.4, 0.55), 1, rand(0.34, 0.48)); dummy.updateMatrix();
+  stoneIM.setMatrixAt(i, dummy.matrix);
+});
+stoneIM.receiveShadow = true; scene.add(stoneIM);
+
+// glowing toadstool clusters + scattered grass tufts
+const mush = [];
+for (let i = 0; i < 10; i++){ const a = rand(0, 6.28), r = rand(1.1, 2.6); mush.push([-9.2 + Math.cos(a) * r, 2.6 + Math.sin(a) * r]); }
+for (let i = 0; i < 8; i++) mush.push([rand(-10.4, 10.4), (prng() < 0.5 ? -1 : 1) * rand(8.2, 9.1)]);
+const capIM = new THREE.InstancedMesh(new THREE.SphereGeometry(1, 10, 6, 0, Math.PI * 2, 0, 1.35), MAT.mushCap, mush.length);
+const stemIM = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.05, 0.075, 0.24, 6), MAT.mushStem, mush.length);
+mush.forEach((m, i) => {
+  const s = rand(0.1, 0.2);
+  dummy.position.set(m[0], 0.2 * s / 0.15, m[1]); dummy.rotation.set(rand(-0.15, 0.15), 0, rand(-0.15, 0.15));
+  dummy.scale.setScalar(s); dummy.updateMatrix(); capIM.setMatrixAt(i, dummy.matrix);
+  dummy.position.set(m[0], 0.1, m[1]); dummy.scale.setScalar(s / 0.15); dummy.updateMatrix();
+  stemIM.setMatrixAt(i, dummy.matrix);
+});
+capIM.castShadow = true; scene.add(capIM, stemIM);
+const tuftIM = new THREE.InstancedMesh(new THREE.ConeGeometry(0.06, 0.4, 4), MAT.tuft, 90);
+for (let i = 0; i < 90; i++){
+  const a = rand(0, 6.28), r = rand(3, 20);
+  const x = Math.cos(a) * r, z = Math.sin(a) * r;
+  dummy.position.set(x, 0.16, z); dummy.rotation.set(rand(-0.2, 0.2), a, rand(-0.2, 0.2));
+  dummy.scale.set(1, rand(0.6, 1.5), 1); dummy.updateMatrix(); tuftIM.setMatrixAt(i, dummy.matrix);
+}
+scene.add(tuftIM);
+
+// moon, halo and star field
+const moon = new THREE.Mesh(new THREE.CircleGeometry(4, 28), MAT.moon);
+moon.position.set(-26, 26, -38); moon.lookAt(0, 4, 0); scene.add(moon);
+const halo = new THREE.Sprite(new THREE.SpriteMaterial({ map: glowTex, color: 0xcdb8ff, transparent: true, opacity: 0.55, fog: false, blending: THREE.AdditiveBlending }));
+halo.scale.setScalar(15); halo.position.copy(moon.position); scene.add(halo);
+FX.halo = halo;
+const starPos = new Float32Array(STAR_N * 3);
+for (let i = 0; i < STAR_N; i++){
+  const a = rand(0, Math.PI * 2), e = rand(0.12, 1.35), r = 57;
+  starPos.set([Math.cos(a) * Math.cos(e) * r, Math.sin(e) * r, Math.sin(a) * Math.cos(e) * r], i * 3);
+}
+const starGeo = new THREE.BufferGeometry();
+starGeo.setAttribute('position', new THREE.BufferAttribute(starPos, 3));
+scene.add(new THREE.Points(starGeo, new THREE.PointsMaterial({ color: 0xd8d4ff, size: 0.4, fog: false, transparent: true, opacity: 0.85 })));
+
+// green chimney smoke (local to the cottage so the bend carries it)
+const smokeSeed = [];
+const smokePos = new Float32Array(SMOKE_N * 3);
+for (let i = 0; i < SMOKE_N; i++) smokeSeed.push({ o: prng(), ph: rand(0, 6.28), r: rand(0.1, 0.4) });
+const smokeGeo = new THREE.BufferGeometry();
+smokeGeo.setAttribute('position', new THREE.BufferAttribute(smokePos, 3));
+const smoke = new THREE.Points(smokeGeo, new THREE.PointsMaterial({
+  map: glowTex, color: PAL.smoke, size: 1.5, transparent: true, opacity: 0.34, depthWrite: false }));
+smoke.position.copy(cottage.userData.chimneyTip); cottage.add(smoke);
+
+/* ================================ lighting rig ================================ */
+scene.add(new THREE.HemisphereLight(0x6f60a8, 0x2a3a24, 0.95));
+const moonLight = new THREE.DirectionalLight(0xb4bfff, 1.85);
+moonLight.position.set(-20, 26, -14);
+moonLight.castShadow = true;
+moonLight.shadow.mapSize.set(2048, 2048);
+moonLight.shadow.camera.left = moonLight.shadow.camera.bottom = -19;
+moonLight.shadow.camera.right = moonLight.shadow.camera.top = 19;
+moonLight.shadow.camera.far = 80;
+moonLight.shadow.bias = -0.0006;
+scene.add(moonLight);
+const fireLight = new THREE.PointLight(0xff8a3c, 3.4, 13, 2);
+fireLight.position.set(4.2, 0.9, 1.2); scene.add(fireLight);
+const brewLight = new THREE.PointLight(0x9dff4d, 2.2, 8, 2);
+brewLight.position.set(4.2, 2.6, 1.2); scene.add(brewLight);
+const windowLight = new THREE.PointLight(0xffb45e, 2.0, 10, 2);
+windowLight.position.set(-4.9, 2.0, -1.6); scene.add(windowLight);
+const flyLight = new THREE.PointLight(0xc8ff6a, 1.4, 9, 2);
+flyLight.position.set(-8.8, 3.0, 3.0); scene.add(flyLight);
+
+/* ================================ animation loop ================================ */
+const clock = new THREE.Clock();
+function tick(){
+  requestAnimationFrame(tick);
+  const t = clock.getElapsedTime();
+  // 1) green smoke curling out of the bent chimney
+  for (let i = 0; i < SMOKE_N; i++){
+    const s = smokeSeed[i], p = (t * 0.085 + s.o) % 1;
+    smokePos[i * 3]     = Math.sin(p * 7 + s.ph) * s.r * (0.4 + p) + p * 1.3;
+    smokePos[i * 3 + 1] = p * 5.6;
+    smokePos[i * 3 + 2] = Math.cos(p * 6 + s.ph) * s.r * (0.4 + p);
+  }
+  smokeGeo.attributes.position.needsUpdate = true;
+  // 2) cauldron: bubbles pop, brew pulses, fire gutters
+  const bp = FX.bubbles.geometry.attributes.position.array;
+  for (let i = 0; i < BUBBLE_N; i++){
+    const b = FX.bubbleSeed[i], p = (t * 0.45 * b.s + b.o) % 1;
+    bp[i * 3] = Math.cos(b.a) * b.r; bp[i * 3 + 1] = 1.82 + p * 0.5; bp[i * 3 + 2] = Math.sin(b.a) * b.r;
+  }
+  FX.bubbles.geometry.attributes.position.needsUpdate = true;
+  MAT.brew.emissiveIntensity = 1.55 + Math.sin(t * 2.6) * 0.35;
+  const gutter = Math.sin(t * 9.1) * 0.5 + Math.sin(t * 23.7) * 0.3;
+  fireLight.intensity = 3.4 + gutter; brewLight.intensity = 2.1 + Math.sin(t * 2.6) * 0.45;
+  FX.flames.forEach((f, i) => { f.scale.y = 1 + 0.28 * Math.sin(t * 11 + i * 2.1); f.rotation.y = t * (1.2 + i * 0.3); });
+  // 3) firefly jars: lazy swing + wandering sparks
+  for (const j of FX.jars){
+    j.group.rotation.z = Math.sin(t * 0.9 + j.phase) * 0.07;
+    j.group.rotation.x = Math.cos(t * 0.7 + j.phase) * 0.05;
+    const fp = j.flies.geometry.attributes.position.array;
+    j.seeds.forEach((sd, i) => {
+      fp[i * 3]     = Math.sin(t * sd.s + sd.a) * 0.11;
+      fp[i * 3 + 1] = -0.56 + Math.sin(t * sd.s * 1.3 + sd.b) * 0.13;
+      fp[i * 3 + 2] = Math.cos(t * sd.s + sd.b) * 0.11;
+    });
+    j.flies.geometry.attributes.position.needsUpdate = true;
+  }
+  // 4) living touches: cat tail, scarecrow sway, plant pulse, window + halo breath
+  FX.catTail.rotation.y = Math.sin(t * 1.4) * 0.5;
+  FX.catTail.rotation.x = Math.cos(t * 1.1) * 0.15;
+  FX.scarecrow.rotation.z = Math.sin(t * 0.6) * 0.035;
+  MAT.bulbViolet.emissiveIntensity = 1.6 + Math.sin(t * 1.3) * 0.5;
+  MAT.bulbAcid.emissiveIntensity = 1.5 + Math.sin(t * 1.7 + 2.1) * 0.5;
+  MAT.window.emissiveIntensity = 1.7 + Math.sin(t * 5.3) * 0.12;
+  FX.halo.material.opacity = 0.5 + Math.sin(t * 0.8) * 0.08;
+  controls.update();
+  renderer.render(scene, camera);
+}
+tick();
+
+/* ================================ resize ================================ */
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+</script>
+</body>
+</html>

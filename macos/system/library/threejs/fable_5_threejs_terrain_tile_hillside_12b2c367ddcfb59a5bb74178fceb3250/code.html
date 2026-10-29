@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Rocky Hillside Terrain Tile</title>
+<style>html,body{margin:0;height:100%;overflow:hidden;background:#1a1d22}</style>
+<script type="importmap">
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
+</script>
+</head>
+<body>
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ---------- seeded RNG ----------
+let s = 42;
+const rand = () => (s = (s * 16807) % 2147483647, (s - 1) / 2147483646);
+const rr = (a, b) => a + rand() * (b - a);
+
+// ---------- scene ----------
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x22262d);
+scene.fog = new THREE.Fog(0x22262d, 18, 40);
+
+const camera = new THREE.PerspectiveCamera(45, innerWidth / innerHeight, 0.1, 100);
+camera.position.set(8, 6.5, 9);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(innerWidth, innerHeight);
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+document.body.appendChild(renderer.domElement);
+
+// ---------- lights ----------
+scene.add(new THREE.HemisphereLight(0xbfd4e6, 0x4a4238, 0.75));
+const sun = new THREE.DirectionalLight(0xffe8c8, 2.2);
+sun.position.set(7, 10, 5);
+sun.castShadow = true;
+sun.shadow.mapSize.set(2048, 2048);
+sun.shadow.camera.left = sun.shadow.camera.bottom = -8;
+sun.shadow.camera.right = sun.shadow.camera.top = 8;
+sun.shadow.bias = -0.0004;
+sun.shadow.radius = 4;
+scene.add(sun);
+const fill = new THREE.DirectionalLight(0x9db8d8, 0.35);
+fill.position.set(-6, 4, -6);
+scene.add(fill);
+
+// ---------- soft ground shadow catcher ----------
+const ground = new THREE.Mesh(
+  new THREE.CircleGeometry(14, 48),
+  new THREE.ShadowMaterial({ opacity: 0.35 })
+);
+ground.rotation.x = -Math.PI / 2;
+ground.position.y = -0.02;
+ground.receiveShadow = true;
+scene.add(ground);
+
+// ---------- the tile (one centered object) ----------
+const tile = new THREE.Group();
+scene.add(tile);
+
+const SIZE = 6, HALF = SIZE / 2;
+
+// noise helpers
+const n2 = (x, z) =>
+  Math.sin(x * 1.7 + 3.1) * Math.cos(z * 1.3 - 1.2) * 0.5 +
+  Math.sin(x * 3.9 - z * 2.7) * 0.22 +
+  Math.sin(x * 8.1 + z * 7.3) * 0.07;
+
+// hill height: slopes up toward back-right corner
+const hillH = (x, z) => {
+  const u = (x + HALF) / SIZE, v = (z + HALF) / SIZE;
+  const ramp = Math.pow(THREE.MathUtils.smoothstep(0.5 * (1 - u) + 0.5 * v, 0.05, 0.95), 1.4) * 1.9;
+  const edge = THREE.MathUtils.smoothstep(HALF - Math.max(Math.abs(x), Math.abs(z)), 0, 0.55);
+  return Math.max(0, (ramp + n2(x, z) * 0.28 * (0.3 + ramp * 0.45)) * (0.35 + 0.65 * edge));
+};
+
+// winding footpath: S-curve from front-left up the slope
+const pathPts = [];
+for (let i = 0; i <= 60; i++) {
+  const t = i / 60;
+  const x = THREE.MathUtils.lerp(-2.55, 1.9, t) + Math.sin(t * Math.PI * 2.2) * 0.85;
+  const z = THREE.MathUtils.lerp(-2.55, 2.3, t) * -1 * (t - 1) - 2.55 + t * 4.9 + Math.cos(t * 5.1) * 0.35;
+  pathPts.push(new THREE.Vector2(x, THREE.MathUtils.clamp(z, -2.8, 2.8)));
+}
+const pathDist = (x, z) => {
+  let d = 1e9;
+  for (const p of pathPts) d = Math.min(d, Math.hypot(x - p.x, z - p.y));
+  return d;
+};
+
+// hill surface geometry
+const RES = 110;
+const geo = new THREE.PlaneGeometry(SIZE, SIZE, RES, RES);
+geo.rotateX(-Math.PI / 2);
+const pos = geo.attributes.position;
+const colors = [];
+const cGrass = new THREE.Color(0x6d8f4e), cGrass2 = new THREE.Color(0x8aa55f);
+const cDirt = new THREE.Color(0x9c8262), cRock = new THREE.Color(0x8b8578);
+const tmp = new THREE.Color();
+for (let i = 0; i < pos.count; i++) {
+  const x = pos.getX(i), z = pos.getZ(i);
+  let h = hillH(x, z);
+  const pd = pathDist(x, z);
+  const cut = THREE.MathUtils.smoothstep(pd, 0.0, 0.42);
+  h -= (1 - cut) * 0.14 * (0.4 + Math.min(h, 1)); // shallow path groove
+  pos.setY(i, h);
+  const mix = THREE.MathUtils.clamp(n2(x * 1.6, z * 1.6) * 0.5 + 0.5, 0, 1);
+  tmp.lerpColors(cGrass, cGrass2, mix);
+  if (h > 1.15) tmp.lerp(cRock, THREE.MathUtils.smoothstep(h, 1.15, 1.9) * 0.55);
+  tmp.lerp(cDirt, 1 - cut); // dirt on path
+  colors.push(tmp.r, tmp.g, tmp.b);
+}
+geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
+geo.computeVertexNormals();
+const hill = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95, metalness: 0 }));
+hill.castShadow = hill.receiveShadow = true;
+tile.add(hill);
+
+// slab base with chamfer
+const slabShape = new THREE.Shape();
+const b = HALF, c = 0.18;
+slabShape.moveTo(-b + c, -b); slabShape.lineTo(b - c, -b); slabShape.lineTo(b, -b + c);
+slabShape.lineTo(b, b - c); slabShape.lineTo(b - c, b); slabShape.lineTo(-b + c, b);
+slabShape.lineTo(-b, b - c); slabShape.lineTo(-b, -b + c); slabShape.closePath();
+const slab = new THREE.Mesh(
+  new THREE.ExtrudeGeometry(slabShape, { depth: 0.45, bevelEnabled: true, bevelThickness: 0.06, bevelSize: 0.06, bevelSegments: 2 }),
+  new THREE.MeshStandardMaterial({ color: 0x565049, roughness: 0.9 })
+);
+slab.rotation.x = -Math.PI / 2;
+slab.position.y = 0.51;
+slab.scale.y = 1; // extrude along z->y after rotation
+slab.castShadow = slab.receiveShadow = true;
+slab.position.y = 0;
+slab.rotation.x = Math.PI / 2;
+slab.position.y = 0.02;
+tile.add(slab);
+// raise hill onto slab
+hill.position.y = 0.02;
+
+// rock material + crag maker
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x87816f, roughness: 0.92, flatShading: true });
+const rockMat2 = new THREE.MeshStandardMaterial({ color: 0x74705f, roughness: 0.95, flatShading: true });
+function crag(x, z, scale, mat) {
+  const g = new THREE.IcosahedronGeometry(scale, 1);
+  const p = g.attributes.position, v = new THREE.Vector3();
+  for (let i = 0; i < p.count; i++) {
+    v.fromBufferAttribute(p, i);
+    const d = 1 + n2(v.x * 3 + x, v.z * 3 + z) * 0.35 + (rand() - 0.5) * 0.18;
+    v.multiplyScalar(d);
+    p.setXYZ(i, v.x, v.y * rr(1.1, 1.6), v.z);
+  }
+  g.computeVertexNormals();
+  const m = new THREE.Mesh(g, mat);
+  m.position.set(x, hillH(x, z) + 0.02 + scale * rr(0.15, 0.35), z);
+  m.rotation.set(rr(-0.25, 0.25), rr(0, 6.28), rr(-0.25, 0.25));
+  m.castShadow = m.receiveShadow = true;
+  return m;
+}
+// crag clusters on the high side + a few strays
+[[1.7, 1.9, 0.85], [2.2, 1.2, 0.6], [1.1, 2.3, 0.55], [0.4, 1.4, 0.42], [-1.9, 1.6, 0.5], [-2.2, 0.9, 0.35], [2.3, -0.6, 0.4], [-0.6, -1.9, 0.3], [1.5, 2.4, 0.45]]
+  .forEach(([x, z, r], i) => tile.add(crag(x, z, r, i % 2 ? rockMat2 : rockMat)));
+// small scattered stones
+for (let i = 0; i < 14; i++) {
+  const x = rr(-2.6, 2.6), z = rr(-2.6, 2.6);
+  if (pathDist(x, z) < 0.5) continue;
+  tile.add(crag(x, z, rr(0.08, 0.18), rockMat2));
+}
+
+// broken low retaining wall along lower slope
+const stoneMat = new THREE.MeshStandardMaterial({ color: 0x9a9284, roughness: 0.88, flatShading: true });
+const wall = new THREE.Group();
+const wStart = new THREE.Vector2(-2.4, 0.6), wEnd = new THREE.Vector2(0.9, -1.7);
+const wLen = wStart.distanceTo(wEnd), nBlocks = 14;
+for (let i = 0; i < nBlocks; i++) {
+  const t = i / (nBlocks - 1);
+  if (i === 6 || i === 7) continue; // the break
+  const x = THREE.MathUtils.lerp(wStart.x, wEnd.x, t) + rr(-0.03, 0.03);
+  const z = THREE.MathUtils.lerp(wStart.y, wEnd.y, t) + rr(-0.03, 0.03);
+  const rows = i < 3 || i > 10 ? 1 : 2;
+  for (let rIdx = 0; rIdx < rows; rIdx++) {
+    const bw = wLen / nBlocks * rr(0.82, 0.98), bh = rr(0.16, 0.22), bd = rr(0.24, 0.3);
+    const blk = new THREE.Mesh(new THREE.BoxGeometry(bw, bh, bd), stoneMat);
+    blk.position.set(x + rr(-0.02, 0.02), hillH(x, z) + 0.02 + bh / 2 + rIdx * bh * 0.98, z + rr(-0.02, 0.02));
+    blk.rotation.y = Math.atan2(wEnd.y - wStart.y, wEnd.x - wStart.x) + rr(-0.08, 0.08);
+    blk.rotation.z = rr(-0.05, 0.05);
+    blk.castShadow = blk.receiveShadow = true;
+    wall.add(blk);
+  }
+}
+// tumbled blocks at the break
+[[6.5 / (nBlocks - 1), 0.35, 0.6], [7.2 / (nBlocks - 1), 0.55, 0.9]].forEach(([t, ox, rot]) => {
+  const x = THREE.MathUtils.lerp(wStart.x, wEnd.x, t) + ox * 0.5;
+  const z = THREE.MathUtils.lerp(wStart.y, wEnd.y, t) + ox;
+  const blk = new THREE.Mesh(new THREE.BoxGeometry(0.24, 0.17, 0.26), stoneMat);
+  blk.position.set(x, hillH(x, z) + 0.12, z);
+  blk.rotation.set(rot, rr(0, 3), rot * 0.6);
+  blk.castShadow = blk.receiveShadow = true;
+  wall.add(blk);
+});
+tile.add(wall);
+
+// tufts of grass (tiny cones)
+const tuftMat = new THREE.MeshStandardMaterial({ color: 0x7fa153, roughness: 1 });
+for (let i = 0; i < 26; i++) {
+  const x = rr(-2.7, 2.7), z = rr(-2.7, 2.7);
+  if (pathDist(x, z) < 0.5) continue;
+  const t = new THREE.Mesh(new THREE.ConeGeometry(rr(0.05, 0.1), rr(0.12, 0.24), 5), tuftMat);
+  t.position.set(x, hillH(x, z) + 0.06, z);
+  t.rotation.set(rr(-0.2, 0.2), rr(0, 6), rr(-0.2, 0.2));
+  t.castShadow = true;
+  tile.add(t);
+}
+
+// ---------- controls ----------
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.target.set(0, 0.9, 0);
+controls.enableDamping = true;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.9;
+controls.minDistance = 4;
+controls.maxDistance = 25;
+controls.maxPolarAngle = Math.PI * 0.49;
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>

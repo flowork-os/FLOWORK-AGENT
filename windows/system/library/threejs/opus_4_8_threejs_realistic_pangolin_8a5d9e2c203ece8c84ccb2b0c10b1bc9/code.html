@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pangolin — procedural three.js</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; overflow: hidden; background: #17181a; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; left: 14px; bottom: 12px;
+    font: 12px/1.4 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    color: rgba(233, 226, 214, 0.45); letter-spacing: 0.02em; pointer-events: none;
+    user-select: none;
+  }
+</style>
+</head>
+<body>
+<div id="hint">Pangolin — drag to orbit · scroll to zoom</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+/* ==========================================================================
+   Renderer / Scene / Camera
+   ========================================================================== */
+
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.02;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+document.body.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x191a1c);
+scene.fog = new THREE.Fog(0x191a1c, 2.2, 8.0);
+
+const camera = new THREE.PerspectiveCamera(38, window.innerWidth / window.innerHeight, 0.02, 100);
+camera.position.set(0.95, 0.52, 1.18);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+controls.autoRotate = true;
+controls.autoRotateSpeed = 0.62;
+controls.minDistance = 0.55;
+controls.maxDistance = 4.5;
+controls.maxPolarAngle = Math.PI * 0.495;
+controls.target.set(0, 0.155, 0);
+
+/* ==========================================================================
+   Lighting: hemisphere ambience + key / fill / rim
+   ========================================================================== */
+
+const hemi = new THREE.HemisphereLight(0xbfd0e0, 0x3a3128, 0.42);
+scene.add(hemi);
+
+const key = new THREE.DirectionalLight(0xfff2dd, 2.5);
+key.position.set(1.35, 1.85, 1.1);
+key.castShadow = true;
+key.shadow.mapSize.set(2048, 2048);
+key.shadow.camera.near = 0.4;
+key.shadow.camera.far = 7.0;
+key.shadow.camera.left = -0.9;
+key.shadow.camera.right = 0.9;
+key.shadow.camera.top = 0.9;
+key.shadow.camera.bottom = -0.9;
+key.shadow.bias = -0.0012;
+key.shadow.normalBias = 0.012;
+key.shadow.radius = 2.4;
+scene.add(key);
+
+const fill = new THREE.DirectionalLight(0x9db4c8, 0.55);
+fill.position.set(-1.5, 0.75, 0.85);
+scene.add(fill);
+
+const rim = new THREE.DirectionalLight(0xffd6a0, 1.5);
+rim.position.set(-0.85, 1.05, -1.6);
+scene.add(rim);
+
+const bounce = new THREE.PointLight(0x604c3c, 0.35, 3.0, 2.0);
+bounce.position.set(0.1, -0.12, 0.35);
+scene.add(bounce);
+
+/* Ground: shadow-only catcher + a very subtle dark disc for grounding */
+const shadowFloor = new THREE.Mesh(
+  new THREE.PlaneGeometry(14, 14),
+  new THREE.ShadowMaterial({ opacity: 0.42 })
+);
+shadowFloor.rotation.x = -Math.PI / 2;
+shadowFloor.position.y = 0;
+shadowFloor.receiveShadow = true;
+scene.add(shadowFloor);
+
+const discMat = new THREE.MeshStandardMaterial({
+  color: 0x1f2022, roughness: 0.96, metalness: 0.0
+});
+const disc = new THREE.Mesh(new THREE.CircleGeometry(2.4, 96), discMat);
+disc.rotation.x = -Math.PI / 2;
+disc.position.y = -0.0015;
+disc.receiveShadow = true;
+scene.add(disc);
+
+/* ==========================================================================
+   Small math helpers
+   ========================================================================== */
+
+const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const smoothstep = (e0, e1, x) => {
+  const t = clamp((x - e0) / (e1 - e0), 0, 1);
+  return t * t * (3 - 2 * t);
+};
+
+// Deterministic pseudo-random (no Math.random, so the scene is reproducible)
+let __seed = 1337;
+function rand() {
+  __seed = (__seed * 1664525 + 1013904223) % 4294967296;
+  return __seed / 4294967296;
+}
+function randRange(a, b) { return a + (b - a) * rand(); }
+
+// cheap value-noise for canvas textures
+function hash2(x, y) {
+  const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453;
+  return s - Math.floor(s);
+}
+function vnoise(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const u = xf * xf * (3 - 2 * xf), v = yf * yf * (3 - 2 * yf);
+  const a = hash2(xi, yi), b = hash2(xi + 1, yi);
+  const c = hash2(xi, yi + 1), d = hash2(xi + 1, yi + 1);
+  return lerp(lerp(a, b, u), lerp(c, d, u), v);
+}
+function fbm(x, y, oct = 4) {
+  let amp = 0.5, f = 1.0, sum = 0, norm = 0;
+  for (let i = 0; i < oct; i++) {
+    sum += amp * vnoise(x * f, y * f);
+    norm += amp;
+    amp *= 0.5; f *= 2.0;
+  }
+  return sum / norm;
+}
+
+/* ==========================================================================
+   Procedural canvas textures
+   ========================================================================== */
+
+// --- Keratin scale plate: olive-brown body, amber rim, wear scratches -------
+function makeScaleTexture() {
+  const S = 256;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+
+  // base gradient — darker at root (v=0), warmer toward tip
+  const grad = g.createLinearGradient(0, S, 0, 0);
+  grad.addColorStop(0.00, '#4a3a24');
+  grad.addColorStop(0.35, '#6b5330');
+  grad.addColorStop(0.72, '#87683a');
+  grad.addColorStop(1.00, '#a07c45');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, S, S);
+
+  // mottled keratin grain
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const n = fbm(x / 26, y / 40, 4);
+      const n2 = fbm(x / 7 + 40, y / 9 - 20, 3);
+      const k = (n - 0.5) * 46 + (n2 - 0.5) * 16;
+      d[i] = clamp(d[i] + k * 1.05, 0, 255);
+      d[i + 1] = clamp(d[i + 1] + k * 0.92, 0, 255);
+      d[i + 2] = clamp(d[i + 2] + k * 0.68, 0, 255);
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // longitudinal growth striations (root -> tip)
+  g.globalAlpha = 0.13;
+  for (let i = 0; i < 46; i++) {
+    const x = randRange(0, S);
+    const w = randRange(0.7, 2.6);
+    g.strokeStyle = rand() > 0.5 ? '#2e2314' : '#c49a5c';
+    g.lineWidth = w;
+    g.beginPath();
+    g.moveTo(x, S);
+    g.bezierCurveTo(x + randRange(-8, 8), S * 0.66, x + randRange(-14, 14), S * 0.33, x + randRange(-18, 18), randRange(-10, 30));
+    g.stroke();
+  }
+
+  // fine wear scratches
+  g.globalAlpha = 0.22;
+  g.lineCap = 'round';
+  for (let i = 0; i < 34; i++) {
+    const x = randRange(0, S), y = randRange(10, S);
+    const len = randRange(8, 52), ang = randRange(-0.55, 0.55) + Math.PI / 2;
+    g.strokeStyle = rand() > 0.42 ? '#d8b478' : '#3a2c19';
+    g.lineWidth = randRange(0.5, 1.5);
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + Math.cos(ang) * len * randRange(-0.4, 0.4), y - Math.sin(ang) * len);
+    g.stroke();
+  }
+  // a few chipped/abraded pale nicks near the tip edge
+  g.globalAlpha = 0.3;
+  for (let i = 0; i < 12; i++) {
+    const x = randRange(0, S), y = randRange(0, S * 0.28);
+    g.fillStyle = '#cfae7a';
+    g.beginPath();
+    g.ellipse(x, y, randRange(1, 4), randRange(0.8, 2.4), randRange(0, Math.PI), 0, Math.PI * 2);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+
+  // amber edge highlight along the free (tip) margin
+  const rimGrad = g.createLinearGradient(0, 0, 0, S * 0.3);
+  rimGrad.addColorStop(0, 'rgba(226, 172, 88, 0.85)');
+  rimGrad.addColorStop(0.45, 'rgba(206, 154, 76, 0.30)');
+  rimGrad.addColorStop(1, 'rgba(180, 130, 60, 0.0)');
+  g.fillStyle = rimGrad;
+  g.fillRect(0, 0, S, S * 0.3);
+
+  // dark seated shadow at the root where the scale tucks under the previous row
+  const rootGrad = g.createLinearGradient(0, S, 0, S * 0.72);
+  rootGrad.addColorStop(0, 'rgba(26, 19, 11, 0.75)');
+  rootGrad.addColorStop(1, 'rgba(26, 19, 11, 0.0)');
+  g.fillStyle = rootGrad;
+  g.fillRect(0, S * 0.72, S, S * 0.28);
+
+  // subtle side vignette so scale borders read
+  const sideL = g.createLinearGradient(0, 0, S * 0.14, 0);
+  sideL.addColorStop(0, 'rgba(30, 22, 13, 0.5)');
+  sideL.addColorStop(1, 'rgba(30, 22, 13, 0)');
+  g.fillStyle = sideL; g.fillRect(0, 0, S * 0.14, S);
+  const sideR = g.createLinearGradient(S, 0, S * 0.86, 0);
+  sideR.addColorStop(0, 'rgba(30, 22, 13, 0.5)');
+  sideR.addColorStop(1, 'rgba(30, 22, 13, 0)');
+  g.fillStyle = sideR; g.fillRect(S * 0.86, 0, S * 0.14, S);
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+  return tex;
+}
+
+// roughness map for scales: worn tips glossier, root duller
+function makeScaleRoughness() {
+  const S = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  const grad = g.createLinearGradient(0, S, 0, 0);
+  grad.addColorStop(0.0, '#d8d8d8');
+  grad.addColorStop(0.5, '#b4b4b4');
+  grad.addColorStop(1.0, '#7c7c7c');
+  g.fillStyle = grad;
+  g.fillRect(0, 0, S, S);
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const n = (fbm(x / 11 + 90, y / 15 + 12, 3) - 0.5) * 70;
+      const v = clamp(d[i] + n, 0, 255);
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  // scratches read as polished streaks
+  g.globalAlpha = 0.35;
+  g.strokeStyle = '#5a5a5a';
+  for (let i = 0; i < 26; i++) {
+    g.lineWidth = randRange(0.5, 1.4);
+    const x = randRange(0, S), y = randRange(0, S);
+    g.beginPath();
+    g.moveTo(x, y);
+    g.lineTo(x + randRange(-6, 6), y - randRange(6, 30));
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(c);
+  tex.anisotropy = 4;
+  return tex;
+}
+
+// --- Soft skin: pinkish-grey, wrinkled ------------------------------------
+function makeSkinTexture() {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#b39289';
+  g.fillRect(0, 0, S, S);
+
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const n = fbm(x / 34, y / 34, 4);
+      const grain = (hash2(x * 1.7, y * 2.3) - 0.5) * 18;
+      const k = (n - 0.5) * 44 + grain;
+      d[i] = clamp(d[i] + k * 1.0 + 6, 0, 255);
+      d[i + 1] = clamp(d[i + 1] + k * 0.85, 0, 255);
+      d[i + 2] = clamp(d[i + 2] + k * 0.8, 0, 255);
+    }
+  }
+  g.putImageData(img, 0, 0);
+
+  // wrinkle creases
+  g.globalAlpha = 0.16;
+  g.lineCap = 'round';
+  for (let i = 0; i < 130; i++) {
+    const y0 = randRange(0, S);
+    const x0 = randRange(-40, S);
+    g.strokeStyle = rand() > 0.45 ? '#6d564f' : '#d9bcb2';
+    g.lineWidth = randRange(0.6, 2.4);
+    g.beginPath();
+    g.moveTo(x0, y0);
+    let px = x0, py = y0;
+    for (let k = 0; k < 4; k++) {
+      const nx = px + randRange(24, 70);
+      const ny = py + randRange(-16, 16);
+      g.quadraticCurveTo(px + randRange(4, 26), py + randRange(-16, 16), nx, ny);
+      px = nx; py = ny;
+    }
+    g.stroke();
+  }
+  // pore speckle
+  g.globalAlpha = 0.10;
+  for (let i = 0; i < 900; i++) {
+    g.fillStyle = rand() > 0.5 ? '#7a625b' : '#e0c6bd';
+    g.beginPath();
+    g.arc(randRange(0, S), randRange(0, S), randRange(0.4, 1.5), 0, Math.PI * 2);
+    g.fill();
+  }
+  g.globalAlpha = 1;
+
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+  return tex;
+}
+
+function makeSkinBump() {
+  const S = 512;
+  const c = document.createElement('canvas');
+  c.width = c.height = S;
+  const g = c.getContext('2d');
+  g.fillStyle = '#808080';
+  g.fillRect(0, 0, S, S);
+  const img = g.getImageData(0, 0, S, S);
+  const d = img.data;
+  for (let y = 0; y < S; y++) {
+    for (let x = 0; x < S; x++) {
+      const i = (y * S + x) * 4;
+      const n = fbm(x / 12 + 5, y / 12 + 31, 4);
+      const v = clamp(128 + (n - 0.5) * 150, 0, 255);
+      d[i] = d[i + 1] = d[i + 2] = v;
+    }
+  }
+  g.putImageData(img, 0, 0);
+  g.globalAlpha = 0.5;
+  g.lineCap = 'round';
+  for (let i = 0; i < 150; i++) {
+    const y0 = randRange(0, S);
+    let px = randRange(-40, S), py = y0;
+    g.strokeStyle = rand() > 0.5 ? '#3f3f3f' : '#c8c8c8';
+    g.lineWidth = randRange(0.8, 2.6);
+    g.beginPath();
+    g.moveTo(px, py);
+    for (let k = 0; k < 4; k++) {
+      const nx = px + randRange(24, 70);
+      const ny = py + randRange(-14, 14);
+      g.quadraticCurveTo(px + randRange(4, 26), py + randRange(-14, 14), nx, ny);
+      px = nx; py = ny;
+    }
+    g.stroke();
+  }
+  g.globalAlpha = 1;
+  const tex = new THREE.CanvasTexture(c);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  return tex;
+}
+
+const scaleMap = makeScaleTexture();
+const scaleRough = makeScaleRoughness();
+const skinMap = makeSkinTexture();
+const skinBump = makeSkinBump();
+
+/* ==========================================================================
+   Materials
+   ========================================================================== */
+
+const scaleMat = new THREE.MeshStandardMaterial({
+  map: scaleMap,
+  roughnessMap: scaleRough,
+  color: 0xffffff,
+  roughness: 0.62,
+  metalness: 0.06,
+  side: THREE.DoubleSide,
+  envMapIntensity: 0.9
+});
+
+// slightly darker variant for underside / limb scales
+const scaleMatDark = scaleMat.clone();
+scaleMatDark.color = new THREE.Color(0x9c8f7e);
+
+const skinMat = new THREE.MeshStandardMaterial({
+  map: skinMap,
+  bumpMap: skinBump,
+  bumpScale: 0.0022,
+  color: 0xc8a79c,
+  roughness: 0.88,
+  metalness: 0.0
+});
+skinMat.map.repeat.set(2.2, 2.2);
+skinMat.bumpMap.repeat.set(3.0, 3.0);
+
+const bellySkinMat = skinMat.clone();
+bellySkinMat.color = new THREE.Color(0xd0aca0);
+bellySkinMat.roughness = 0.9;
+
+const clawMat = new THREE.MeshStandardMaterial({
+  color: 0x2b2723, roughness: 0.42, metalness: 0.12
+});
+
+const eyeMat = new THREE.MeshStandardMaterial({
+  color: 0x08070a, roughness: 0.12, metalness: 0.0
+});
+const eyeGlossMat = new THREE.MeshPhysicalMaterial({
+  color: 0x000000, roughness: 0.03, metalness: 0.0,
+  transmission: 0.0, clearcoat: 1.0, clearcoatRoughness: 0.02,
+  transparent: true, opacity: 0.35
+});
+const eyelidMat = new THREE.MeshStandardMaterial({
+  color: 0x6d5a52, roughness: 0.85, metalness: 0.0
+});
+const nostrilMat = new THREE.MeshStandardMaterial({
+  color: 0x2a2020, roughness: 0.55, metalness: 0.0
+});
+const noseMat = new THREE.MeshStandardMaterial({
+  color: 0xa78579, roughness: 0.55, metalness: 0.0
+});
+
+/* ==========================================================================
+   Geometry helpers
+   ========================================================================== */
+
+// A single keratin scale plate: rounded-triangular, curved along its length,
+// slightly keeled, thin — built as a parametric grid.
+function makeScaleGeometry(len, wid, curve, keel, tipSharp, thick) {
+  const NU = 10, NV = 14; // across, along
+  const pos = [], uv = [], idx = [];
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;                 // 0 root -> 1 tip
+    // width profile: broad near root, tapers to a rounded point
+    const widthProfile = Math.pow(Math.sin(Math.PI * (0.5 + 0.5 * v)) , 0.0) * (1.0 - Math.pow(v, tipSharp) * 0.98);
+    const w = wid * clamp(widthProfile, 0.001, 1) * (0.86 + 0.18 * Math.sin(v * 2.2));
+    const y = v * len;
+    // longitudinal curve: bends away from body surface (negative z = lift)
+    const bend = -curve * len * v * v;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      const x = (u - 0.5) * 2 * w;
+      const t = (u - 0.5) * 2;
+      // transverse keel: middle raised
+      const k = keel * w * (1 - t * t);
+      pos.push(x, y, bend - k);
+      uv.push(u, v);
+    }
+  }
+  const rowStride = NU + 1;
+  for (let j = 0; j < NV; j++) {
+    for (let i = 0; i < NU; i++) {
+      const a = j * rowStride + i;
+      const b = a + 1;
+      const c2 = a + rowStride;
+      const d2 = c2 + 1;
+      idx.push(a, c2, b, b, c2, d2);
+    }
+  }
+  // Thin backing shell (offset in +z) so scales are not paper-thin from below
+  const baseCount = pos.length / 3;
+  for (let j = 0; j <= NV; j++) {
+    const v = j / NV;
+    const widthProfile = (1.0 - Math.pow(v, tipSharp) * 0.98);
+    const w = wid * clamp(widthProfile, 0.001, 1) * (0.86 + 0.18 * Math.sin(v * 2.2));
+    const y = v * len;
+    const bend = -curve * len * v * v;
+    for (let i = 0; i <= NU; i++) {
+      const u = i / NU;
+      const t = (u - 0.5) * 2;
+      const x = (u - 0.5) * 2 * w * 0.985;
+      const k = keel * w * (1 - t * t);
+      const taperT = thick * (1 - 0.75 * v);
+      pos.push(x, y, bend - k + taperT);
+      uv.push(u, v);
+    }
+  }
+  for (let j = 0; j < NV; j++) {
+    for (let i = 0; i < NU; i++) {
+      const a = baseCount + j * rowStride + i;
+      const b = a + 1;
+      const c2 = a + rowStride;
+      const d2 = c2 + 1;
+      idx.push(a, b, c2, b, d2, c2);
+    }
+  }
+  // rim strip joining top & bottom shells along the free edges
+  for (let j = 0; j < NV; j++) {
+    // left edge (i=0)
+    const t0 = j * rowStride, t1 = (j + 1) * rowStride;
+    const b0 = baseCount + t0, b1 = baseCount + t1;
+    idx.push(t0, b0, t1, t1, b0, b1);
+    // right edge (i=NU)
+    const T0 = j * rowStride + NU, T1 = (j + 1) * rowStride + NU;
+    const B0 = baseCount + T0, B1 = baseCount + T1;
+    idx.push(T0, T1, B0, T1, B1, B0);
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// Cached scale geometry variants (a handful of shapes; instances are scaled)
+const scaleGeoCache = [];
+for (let i = 0; i < 6; i++) {
+  scaleGeoCache.push(makeScaleGeometry(
+    1.0,
+    0.62 + i * 0.035,
+    0.30 + (i % 3) * 0.05,
+    0.20 + (i % 2) * 0.05,
+    2.1 + (i % 4) * 0.35,
+    0.055
+  ));
+}
+// narrow, pointier scales for limbs and tail tip
+const scaleGeoSlim = makeScaleGeometry(1.0, 0.5, 0.34, 0.22, 2.6, 0.05);
+
+/* ==========================================================================
+   Body form — a curled-forward pangolin.
+   The spine is an arched curve: head low & tucked forward, shoulders high,
+   hips high, tail sweeping down and forward alongside the body.
+   ========================================================================== */
+
+// Spine control points (units = meters; total animal ~0.75 m nose to tail tip)
+const spinePts = [
+  new THREE.Vector3( 0.000, 0.088,  0.310),  // 0 snout tip
+  new THREE.Vector3( 0.000, 0.098,  0.268),  // 1 muzzle
+  new THREE.Vector3( 0.000, 0.116,  0.226),  // 2 head
+  new THREE.Vector3( 0.000, 0.132,  0.186),  // 3 nape
+  new THREE.Vector3( 0.000, 0.152,  0.132),  // 4 neck/shoulder
+  new THREE.Vector3( 0.000, 0.176,  0.062),  // 5 shoulder
+  new THREE.Vector3( 0.000, 0.192, -0.012),  // 6 mid back
+  new THREE.Vector3( 0.000, 0.190, -0.086),  // 7 loin
+  new THREE.Vector3( 0.000, 0.172, -0.156),  // 8 hip
+  new THREE.Vector3( 0.000, 0.140, -0.216),  // 9 tail base
+  new THREE.Vector3( 0.000, 0.104, -0.266),  // 10 tail
+  new THREE.Vector3( 0.000, 0.072, -0.312),  // 11
+  new THREE.Vector3( 0.000, 0.048, -0.358),  // 12
+  new THREE.Vector3( 0.000, 0.032, -0.404),  // 13
+  new THREE.Vector3( 0.000, 0.024, -0.446)   // 14 tail tip
+];
+const spine = new THREE.CatmullRomCurve3(spinePts, false, 'catmullrom', 0.5);
+
+// Body radius profile along spine parameter t (0 = snout, 1 = tail tip)
+// Returns { rx (half-width), ry (half-height) }
+function bodyRadius(t) {
+  // snout -> head -> neck -> barrel -> hips -> tail taper
+  const head = 0.038 * Math.exp(-Math.pow((t - 0.135) / 0.085, 2));
+  const barrel = 0.079 * Math.exp(-Math.pow((t - 0.415) / 0.215, 2));
+  const hip = 0.048 * Math.exp(-Math.pow((t - 0.60) / 0.12, 2));
+  const snout = 0.0175 * Math.exp(-Math.pow((t - 0.0) / 0.10, 2));
+  const tail = 0.052 * smoothstep(1.0, 0.60, t) * (1.0 - smoothstep(0.62, 1.0, t) * 0.90);
+  let r = Math.max(snout, Math.max(head, Math.max(barrel, Math.max(hip, tail))));
+  r = Math.max(r, 0.0085);
+  // gentle overall
+  const rx = r * (t > 0.62 ? 1.16 : 1.0);            // tail flattens (wider than tall)
+  const ry = r * (t > 0.62 ? 0.70 : 1.0) * (t < 0.10 ? 0.86 : 1.0);
+  return { rx, ry };
+}
+
+// Build a lofted body mesh (the soft under-form beneath the scales)
+function buildBody() {
+  const NS = 190;   // along spine
+  const NR = 30;    // around
+  const pos = [], nor = [], uv = [], idx = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  const tmpT = new THREE.Vector3(), tmpN = new THREE.Vector3(), tmpB = new THREE.Vector3();
+
+  for (let s = 0; s <= NS; s++) {
+    const t = s / NS;
+    const p = spine.getPointAt(t);
+    spine.getTangentAt(t, tmpT);
+    tmpB.crossVectors(tmpT, up).normalize();       // lateral
+    tmpN.crossVectors(tmpB, tmpT).normalize();     // dorsal-ish
+    const { rx, ry } = bodyRadius(t);
+    for (let r = 0; r <= NR; r++) {
+      const a = (r / NR) * Math.PI * 2;
+      const ca = Math.cos(a), sa = Math.sin(a);
+      // belly slightly flattened, back rounded
+      const flat = sa < 0 ? 0.86 : 1.0;
+      let x = ca * rx;
+      let y = sa * ry * flat;
+      // ventral flattening for the tail
+      if (t > 0.62 && sa < 0) y *= 0.72;
+      const vx = tmpB.x * x + tmpN.x * y;
+      const vy = tmpB.y * x + tmpN.y * y;
+      const vz = tmpB.z * x + tmpN.z * y;
+      pos.push(p.x + vx, p.y + vy, p.z + vz);
+      const n = new THREE.Vector3(vx, vy, vz).normalize();
+      nor.push(n.x, n.y, n.z);
+      uv.push(r / NR, t);
+    }
+  }
+  const stride = NR + 1;
+  for (let s = 0; s < NS; s++) {
+    for (let r = 0; r < NR; r++) {
+      const a = s * stride + r, b = a + 1, c = a + stride, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+const pangolin = new THREE.Group();
+scene.add(pangolin);
+
+const bodyGeo = buildBody();
+const bodyMesh = new THREE.Mesh(bodyGeo, bellySkinMat);
+bodyMesh.castShadow = true;
+bodyMesh.receiveShadow = true;
+pangolin.add(bodyMesh);
+
+// A darker "underlayer" just below the scales so gaps don't show bright skin
+const underMat = new THREE.MeshStandardMaterial({
+  color: 0x2a2119, roughness: 0.95, metalness: 0.0
+});
+const underGeo = bodyGeo.clone();
+{
+  // push outward very slightly
+  const p = underGeo.attributes.position, n = underGeo.attributes.normal;
+  for (let i = 0; i < p.count; i++) {
+    p.setXYZ(i,
+      p.getX(i) + n.getX(i) * 0.0018,
+      p.getY(i) + n.getY(i) * 0.0018,
+      p.getZ(i) + n.getZ(i) * 0.0018);
+  }
+  p.needsUpdate = true;
+}
+const underMesh = new THREE.Mesh(underGeo, underMat);
+underMesh.castShadow = false;
+underMesh.receiveShadow = true;
+pangolin.add(underMesh);
+
+/* ==========================================================================
+   Frame at a spine location — used to seat scales on the body surface
+   ========================================================================== */
+
+const _up = new THREE.Vector3(0, 1, 0);
+function spineFrame(t) {
+  const p = spine.getPointAt(clamp(t, 0, 1));
+  const tan = spine.getTangentAt(clamp(t, 0, 1)).clone().normalize();
+  const lat = new THREE.Vector3().crossVectors(tan, _up).normalize();
+  const dor = new THREE.Vector3().crossVectors(lat, tan).normalize();
+  return { p, tan, lat, dor };
+}
+
+// Surface point + normal at spine param t and angular position a
+// a = 0 -> dorsal (top), increases toward the flank/belly on both sides via sign
+function surfaceAt(t, a) {
+  const f = spineFrame(t);
+  const { rx, ry } = bodyRadius(t);
+  const ca = Math.cos(a), sa = Math.sin(a);   // a measured from +dorsal
+  let lx = sa * rx;
+  let ly = ca * ry;
+  if (t > 0.62 && ca < 0) ly *= 0.72;
+  const pos = new THREE.Vector3()
+    .copy(f.p)
+    .addScaledVector(f.lat, lx)
+    .addScaledVector(f.dor, ly);
+  const nrm = new THREE.Vector3()
+    .addScaledVector(f.lat, (sa) / Math.max(rx, 1e-4))
+    .addScaledVector(f.dor, (ca) / Math.max(ry, 1e-4))
+    .normalize();
+  return { pos, nrm, frame: f };
+}
+
+/* ==========================================================================
+   Scale placement — overlapping rows fanning from the nape down the tail.
+   Rows are transverse bands; scales within a row are placed by angle.
+   ========================================================================== */
+
+const scaleGroup = new THREE.Group();
+pangolin.add(scaleGroup);
+
+const scaleInstances = [];   // {geo, matrix, mat}
+
+function placeScale(t, a, sizeLen, sizeWid, tiltExtra, matIndex, rollJitter) {
+  const { pos, nrm, frame } = surfaceAt(t, a);
+
+  // Build orientation: scale's local +Y points "backward along the body"
+  // (i.e. toward the tail) projected onto surface tangent plane;
+  // local +Z points outward along the surface normal (scale lifts off in -Z of geom,
+  // so we invert: geometry bends toward -z => that must face away from body).
+  const backDir = frame.tan.clone().negate();  // spine tangent points snout->tail? check
+  // spine.getTangentAt goes from snout(t=0) to tail(t=1), so tangent = toward tail.
+  const toTail = frame.tan.clone();
+
+  // project toTail onto tangent plane of surface
+  const yAxis = toTail.clone().addScaledVector(nrm, -toTail.dot(nrm)).normalize();
+  const zAxis = nrm.clone();
+  const xAxis = new THREE.Vector3().crossVectors(yAxis, zAxis).normalize();
+  // re-orthogonalize
+  yAxis.crossVectors(zAxis, xAxis).normalize();
+
+  const m = new THREE.Matrix4();
+  m.makeBasis(xAxis, yAxis, zAxis);
+
+  // scale geometry: +Y = root->tip (points toward tail), -Z = lifts off surface
+  // so flip Z so the lift goes outward (+normal)
+  const flipZ = new THREE.Matrix4().makeScale(1, 1, -1);
+
+  // tilt: rotate about local X so the tip lifts away from the body
+  const tilt = new THREE.Matrix4().makeRotationX(-tiltExtra);
+
+  const roll = new THREE.Matrix4().makeRotationY(rollJitter);
+
+  const scl = new THREE.Matrix4().makeScale(sizeWid, sizeLen, (sizeWid + sizeLen) * 0.5);
+
+  const trans = new THREE.Matrix4().makeTranslation(pos.x, pos.y, pos.z);
+
+  const final = new THREE.Matrix4()
+    .multiply(trans)
+    .multiply(m)
+    .multiply(flipZ)
+    .multiply(tilt)
+    .multiply(roll)
+    .multiply(scl);
+
+  scaleInstances.push({ matrix: final, gi: matIndex % scaleGeoCache.length, dark: false });
+  return final;
+}
+
+// --- Row layout -----------------------------------------------------------
+// Rows start behind the head (nape) and continue to the tail tip.
+// Angular half-extent of armor coverage varies: full wrap on the tail,
+// stopping at the flank on the barrel (belly stays bare skin).
+
+const rows = [];
+{
+  const T_START = 0.185;   // just behind the crown
+  const T_END = 0.988;
+  const ROWS = 27;
+  for (let r = 0; r < ROWS; r++) {
+    const u = r / (ROWS - 1);
+    // denser rows toward the tail
+    const t = lerp(T_START, T_END, Math.pow(u, 1.02));
+    rows.push(t);
+  }
+}
+
+for (let r = 0; r < rows.length; r++) {
+  const t = rows[r];
+  const u = r / (rows.length - 1);
+  const { rx, ry } = bodyRadius(t);
+
+  // Armor coverage: how far around from the dorsal midline scales reach.
+  // Barrel: down to ~118 deg (flank). Tail: near-full wrap (~168 deg).
+  let coverage;
+  if (t < 0.30) coverage = lerp(1.05, 1.72, smoothstep(0.185, 0.30, t));
+  else if (t < 0.62) coverage = lerp(1.72, 2.02, smoothstep(0.30, 0.62, t));
+  else coverage = lerp(2.02, 2.92, smoothstep(0.62, 1.0, t));
+
+  // number of scales across the row scales with girth
+  const arcLen = coverage * 2 * ((rx + ry) * 0.5);
+  let count = Math.max(3, Math.round(arcLen / 0.0295));
+  if (count % 2 === 0) count += 1;   // keep a centered dorsal scale on odd rows
+
+  // alternate rows offset by half a scale (quincunx / brick overlap)
+  const stagger = (r % 2) * 0.5;
+
+  const rowSpanNext = (r < rows.length - 1) ? (rows[r + 1] - t) : (t - rows[r - 1]);
+  const spineLen = spine.getLength();
+  const rowSpacingWorld = Math.abs(rowSpanNext) * spineLen;
+
+  for (let i = 0; i < count; i++) {
+    // angle across the row, centered on the dorsal midline
+    const f = count === 1 ? 0 : ((i + stagger) / (count - 1) - 0.5) * 2;
+    if (Math.abs(f) > 1.001) continue;
+    const a = f * coverage;
+
+    // Scale dimensions: big over the shoulders/back, smaller at nape and tail tip
+    const girth = (rx + ry) * 0.5;
+    let len = rowSpacingWorld * 2.55;                     // overlap ~2.5 rows
+    len *= lerp(1.0, 0.82, smoothstep(0.75, 1.0, t));     // tail tip scales shorter
+    len = clamp(len, 0.012, 0.062);
+    let wid = clamp(girth * coverage / count * 1.42, 0.008, 0.040);
+
+    // scales at the outer edge of coverage are a bit smaller
+    const edgeFade = 1.0 - 0.20 * Math.pow(Math.abs(f), 3.0);
+    len *= edgeFade;
+    wid *= lerp(1.0, 0.86, Math.pow(Math.abs(f), 2.4));
+
+    // lift the free tip more on the flanks (classic pangolin silhouette)
+    const tilt = 0.16 + 0.20 * Math.abs(f) + 0.09 * smoothstep(0.6, 1.0, t) + randRange(-0.02, 0.02);
+
+    // slight roll so scales fan outward from the midline
+    const roll = f * 0.16 + randRange(-0.035, 0.035);
+
+    placeScale(
+      t + randRange(-0.0012, 0.0012),
+      a,
+      len * randRange(0.97, 1.05),
+      wid * randRange(0.95, 1.05),
+      tilt,
+      (r * 7 + i * 3),
+      roll
+    );
+  }
+}
+
+// --- Head scales: small plates over the crown/nape fanning to the snout ----
+{
+  const headRows = 7;
+  for (let r = 0; r < headRows; r++) {
+    const u = r / (headRows - 1);
+    const t = lerp(0.078, 0.185, u);
+    const { rx, ry } = bodyRadius(t);
+    const coverage = lerp(0.55, 1.10, u);
+    const count = Math.max(3, Math.round(lerp(3, 7, u)));
+    const stagger = (r % 2) * 0.5;
+    for (let i = 0; i < count; i++) {
+      const f = count === 1 ? 0 : ((i + stagger) / (count - 1) - 0.5) * 2;
+      if (Math.abs(f) > 1.001) continue;
+      const a = f * coverage;
+      const len = lerp(0.011, 0.021, u) * randRange(0.94, 1.06);
+      const wid = lerp(0.008, 0.015, u) * randRange(0.94, 1.06);
+      const tilt = 0.10 + 0.16 * Math.abs(f);
+      placeScale(t, a, len, wid, tilt, r * 5 + i, f * 0.20);
+    }
+  }
+}
+
+/* ==========================================================================
+   Merge all scale instances into a few merged BufferGeometries (fast draw)
+   ========================================================================== */
+
+function mergeInstances(instances) {
+  // group by geometry index but merge everything into one big buffer
+  let totalPos = 0, totalIdx = 0;
+  for (const inst of instances) {
+    const g = scaleGeoCache[inst.gi];
+    totalPos += g.attributes.position.count;
+    totalIdx += g.index.count;
+  }
+  const positions = new Float32Array(totalPos * 3);
+  const normals = new Float32Array(totalPos * 3);
+  const uvs = new Float32Array(totalPos * 2);
+  const indices = (totalPos > 65535) ? new Uint32Array(totalIdx) : new Uint16Array(totalIdx);
+
+  let po = 0, io = 0, vBase = 0;
+  const nMat = new THREE.Matrix3();
+  const v = new THREE.Vector3();
+  const n = new THREE.Vector3();
+
+  for (const inst of instances) {
+    const g = scaleGeoCache[inst.gi];
+    const gp = g.attributes.position, gn = g.attributes.normal, gu = g.attributes.uv;
+    const gi = g.index;
+    nMat.getNormalMatrix(inst.matrix);
+    for (let i = 0; i < gp.count; i++) {
+      v.set(gp.getX(i), gp.getY(i), gp.getZ(i)).applyMatrix4(inst.matrix);
+      positions[po * 3] = v.x; positions[po * 3 + 1] = v.y; positions[po * 3 + 2] = v.z;
+      n.set(gn.getX(i), gn.getY(i), gn.getZ(i)).applyMatrix3(nMat).normalize();
+      normals[po * 3] = n.x; normals[po * 3 + 1] = n.y; normals[po * 3 + 2] = n.z;
+      uvs[po * 2] = gu.getX(i); uvs[po * 2 + 1] = gu.getY(i);
+      po++;
+    }
+    for (let i = 0; i < gi.count; i++) {
+      indices[io++] = gi.getX(i) + vBase;
+    }
+    vBase += gp.count;
+  }
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+  geo.setAttribute('normal', new THREE.BufferAttribute(normals, 3));
+  geo.setAttribute('uv', new THREE.BufferAttribute(uvs, 2));
+  geo.setIndex(new THREE.BufferAttribute(indices, 1));
+  geo.computeBoundingSphere();
+  return geo;
+}
+
+const mergedScales = mergeInstances(scaleInstances);
+const scalesMesh = new THREE.Mesh(mergedScales, scaleMat);
+scalesMesh.castShadow = true;
+scalesMesh.receiveShadow = true;
+scaleGroup.add(scalesMesh);
+
+/* ==========================================================================
+   Head details: snout, eyes, nostrils, ear openings
+   ========================================================================== */
+
+const head = new THREE.Group();
+pangolin.add(head);
+
+// snout / muzzle: a soft tapered cone of bare skin over the front of the body form
+{
+  const f0 = spineFrame(0.0);
+  const f1 = spineFrame(0.055);
+  const snoutGeo = new THREE.SphereGeometry(0.019, 28, 20);
+  snoutGeo.scale(0.82, 0.78, 1.0);
+  const snout = new THREE.Mesh(snoutGeo, skinMat);
+  const midP = spine.getPointAt(0.018);
+  snout.position.copy(midP);
+  snout.castShadow = true;
+  snout.receiveShadow = true;
+  head.add(snout);
+
+  // nose pad at the very tip
+  const tip = spine.getPointAt(0.0);
+  const tipTan = spine.getTangentAt(0.0).clone().negate(); // points forward (+z-ish)
+  const padGeo = new THREE.SphereGeometry(0.0115, 24, 18);
+  padGeo.scale(1.0, 0.80, 0.72);
+  const pad = new THREE.Mesh(padGeo, noseMat);
+  pad.position.copy(tip).addScaledVector(tipTan, 0.0028);
+  pad.castShadow = true;
+  head.add(pad);
+
+  // slitted nostrils — two thin dark slits on the pad, angled outward
+  for (const s of [-1, 1]) {
+    const slitGeo = new THREE.CapsuleGeometry(0.00085, 0.0052, 4, 8);
+    const slit = new THREE.Mesh(slitGeo, nostrilMat);
+    slit.position.copy(pad.position)
+      .addScaledVector(tipTan, 0.0072)
+      .add(new THREE.Vector3(s * 0.0042, 0.0012, 0));
+    slit.rotation.z = s * 0.30;
+    slit.rotation.x = 0.22;
+    head.add(slit);
+  }
+
+  // mouth line: a thin dark groove under the snout
+  const mouthGeo = new THREE.TorusGeometry(0.011, 0.00085, 8, 40, Math.PI * 0.72);
+  const mouth = new THREE.Mesh(mouthGeo, new THREE.MeshStandardMaterial({
+    color: 0x4a3830, roughness: 0.9
+  }));
+  const mp = spine.getPointAt(0.026);
+  mouth.position.copy(mp).add(new THREE.Vector3(0, -0.0085, 0.004));
+  mouth.rotation.set(Math.PI * 0.5, 0, Math.PI * 0.5 + Math.PI * 0.14);
+  head.add(mouth);
+}
+
+// eyes: tiny black beads with thick fleshy lids, set low on the sides of the head
+for (const s of [-1, 1]) {
+  const t = 0.115;
+  const { pos, nrm } = surfaceAt(t, s * 1.16);
+  const eyeR = 0.0042;
+
+  const socket = new THREE.Mesh(
+    (() => { const g = new THREE.SphereGeometry(eyeR * 1.85, 20, 14); g.scale(1.0, 0.85, 0.75); return g; })(),
+    eyelidMat
+  );
+  socket.position.copy(pos).addScaledVector(nrm, -0.0012);
+  socket.lookAt(pos.clone().addScaledVector(nrm, 1));
+  socket.castShadow = true;
+  head.add(socket);
+
+  const eye = new THREE.Mesh(new THREE.SphereGeometry(eyeR, 20, 16), eyeMat);
+  eye.position.copy(pos).addScaledVector(nrm, 0.0016);
+  head.add(eye);
+
+  const gloss = new THREE.Mesh(new THREE.SphereGeometry(eyeR * 1.09, 20, 16), eyeGlossMat);
+  gloss.position.copy(eye.position);
+  head.add(gloss);
+
+  // upper lid overhang
+  const lidGeo = new THREE.TorusGeometry(eyeR * 1.35, eyeR * 0.42, 8, 24, Math.PI * 1.15);
+  const lid = new THREE.Mesh(lidGeo, eyelidMat);
+  lid.position.copy(pos).addScaledVector(nrm, 0.0012);
+  lid.lookAt(pos.clone().addScaledVector(nrm, 1));
+  lid.rotateZ(-Math.PI * 0.08 * s);
+  head.add(lid);
+}
+
+// small ear openings (pangolins have reduced external ears): shallow dark pits
+for (const s of [-1, 1]) {
+  const { pos, nrm } = surfaceAt(0.168, s * 1.22);
+  const earGeo = new THREE.SphereGeometry(0.0038, 14, 10);
+  earGeo.scale(1.0, 1.35, 0.5);
+  const ear = new THREE.Mesh(earGeo, new THREE.MeshStandardMaterial({
+    color: 0x584740, roughness: 0.9
+  }));
+  ear.position.copy(pos).addScaledVector(nrm, -0.0006);
+  ear.lookAt(pos.clone().addScaledVector(nrm, 1));
+  head.add(ear);
+}
+
+/* ==========================================================================
+   Limbs: stubby, wrinkled pinkish-grey skin, heavy digging claws in front
+   ========================================================================== */
+
+// Build a tapered limb segment along a path of (offset, radius) samples
+function tubeFromPoints(points, radii, radialSegs = 16) {
+  const curve = new THREE.CatmullRomCurve3(points, false, 'catmullrom', 0.5);
+  const NS = 40;
+  const pos = [], uv = [], idx = [];
+  const up = new THREE.Vector3(0, 1, 0);
+  const altUp = new THREE.Vector3(0, 0, 1);
+  for (let s = 0; s <= NS; s++) {
+    const t = s / NS;
+    const p = curve.getPointAt(t);
+    const tan = curve.getTangentAt(t).normalize();
+    let ref = Math.abs(tan.dot(up)) > 0.92 ? altUp : up;
+    const nx = new THREE.Vector3().crossVectors(tan, ref).normalize();
+    const ny = new THREE.Vector3().crossVectors(nx, tan).normalize();
+    // sample radius by interpolating the radii array
+    const fi = t * (radii.length - 1);
+    const i0 = Math.floor(fi), i1 = Math.min(radii.length - 1, i0 + 1);
+    const r = lerp(radii[i0], radii[i1], fi - i0);
+    for (let k = 0; k <= radialSegs; k++) {
+      const a = (k / radialSegs) * Math.PI * 2;
+      const v = new THREE.Vector3()
+        .addScaledVector(nx, Math.cos(a) * r)
+        .addScaledVector(ny, Math.sin(a) * r);
+      pos.push(p.x + v.x, p.y + v.y, p.z + v.z);
+      uv.push(k / radialSegs, t);
+    }
+  }
+  const stride = radialSegs + 1;
+  for (let s = 0; s < NS; s++) {
+    for (let k = 0; k < radialSegs; k++) {
+      const a = s * stride + k, b = a + 1, c = a + stride, d = c + 1;
+      idx.push(a, c, b, b, c, d);
+    }
+  }
+  // caps
+  const capStart = pos.length / 3;
+  const p0 = curve.getPointAt(0);
+  pos.push(p0.x, p0.y, p0.z); uv.push(0.5, 0);
+  for (let k = 0; k < radialSegs; k++) idx.push(capStart, k + 1, k);
+  const capEnd = pos.length / 3;
+  const p1 = curve.getPointAt(1);
+  pos.push(p1.x, p1.y, p1.z); uv.push(0.5, 1);
+  const lastRow = NS * stride;
+  for (let k = 0; k < radialSegs; k++) idx.push(capEnd, lastRow + k, lastRow + k + 1);
+
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  geo.setIndex(idx);
+  geo.computeVertexNormals();
+  return geo;
+}
+
+// A single claw: curved, laterally compressed, pointed
+function makeClaw(len, baseR) {
+  const pts = [];
+  const N = 6;
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    const ang = u * 1.05;     // curve downward/backward
+    pts.push(new THREE.Vector3(
+      0,
+      -Math.sin(ang) * len * 0.62,
+      Math.cos(ang) * len * u + len * 0.02 * u
+    ));
+  }
+  const radii = [];
+  for (let i = 0; i <= N; i++) {
+    const u = i / N;
+    radii.push(baseR * Math.pow(1 - u, 0.72) + 0.00035);
+  }
+  const g = tubeFromPoints(pts, radii, 10);
+  g.scale(0.62, 1.0, 1.0);   // laterally compressed
+  return g;
+}
+
+function buildForelimb(side) {
+  const grp = new THREE.Group();
+
+  // Attach near the shoulder; the pangolin walks on the knuckles of the
+  // forefeet (claws curled under), so the front stance is short and tucked.
+  const sx = side;
+  const shoulder = new THREE.Vector3(sx * 0.048, 0.128, 0.088);
+  const elbow    = new THREE.Vector3(sx * 0.062, 0.072, 0.096);
+  const wrist    = new THREE.Vector3(sx * 0.055, 0.030, 0.104);
+  const knuckle  = new THREE.Vector3(sx * 0.052, 0.013, 0.100);
+
+  const limbGeo = tubeFromPoints(
+    [shoulder, elbow, wrist, knuckle],
+    [0.030, 0.024, 0.0165, 0.015],
+    18
+  );
+  const limb = new THREE.Mesh(limbGeo, skinMat);
+  limb.castShadow = true;
+  limb.receiveShadow = true;
+  grp.add(limb);
+
+  // knuckle pad (the fleshy foot the animal rests on)
+  const padGeo = new THREE.SphereGeometry(0.0165, 20, 14);
+  padGeo.scale(1.0, 0.72, 1.25);
+  const pad = new THREE.Mesh(padGeo, skinMat);
+  pad.position.copy(knuckle).add(new THREE.Vector3(0, -0.0015, -0.002));
+  pad.castShadow = true;
+  pad.receiveShadow = true;
+  grp.add(pad);
+
+  // three long digging claws curving forward/under from the knuckle
+  const clawSpec = [
+    { off: new THREE.Vector3(sx * -0.008, -0.002,  0.010), len: 0.030, r: 0.0034, yaw: -0.30 * sx, pitch: 0.30 },
+    { off: new THREE.Vector3(sx *  0.000, -0.001,  0.013), len: 0.036, r: 0.0038, yaw:  0.00,      pitch: 0.24 },
+    { off: new THREE.Vector3(sx *  0.009, -0.002,  0.010), len: 0.031, r: 0.0034, yaw:  0.30 * sx, pitch: 0.30 }
+  ];
+  for (const c of clawSpec) {
+    const claw = new THREE.Mesh(makeClaw(c.len, c.r), clawMat);
+    claw.position.copy(knuckle).add(c.off);
+    claw.rotation.set(c.pitch, c.yaw, 0);
+    claw.castShadow = true;
+    claw.receiveShadow = true;
+    grp.add(claw);
+
+    // small skin sheath where the claw emerges
+    const sh = new THREE.Mesh(
+      (() => { const g = new THREE.SphereGeometry(c.r * 1.9, 12, 9); g.scale(0.8, 0.9, 1.1); return g; })(),
+      skinMat
+    );
+    sh.position.copy(claw.position);
+    grp.add(sh);
+  }
+
+  // two small vestigial outer claws
+  for (const s2 of [-1, 1]) {
+    const claw = new THREE.Mesh(makeClaw(0.012, 0.0022), clawMat);
+    claw.position.copy(knuckle).add(new THREE.Vector3(sx * s2 * 0.014, -0.001, 0.004));
+    claw.rotation.set(0.55, s2 * sx * 0.7, 0);
+    claw.castShadow = true;
+    grp.add(claw);
+  }
+
+  // limb scales along the outer surface of the upper limb
+  const limbScaleInstances = [];
+  for (let r = 0; r < 5; r++) {
+    const u = r / 4;
+    const along = new THREE.Vector3().lerpVectors(shoulder, wrist, u * 0.85 + 0.05);
+    for (let i = -1; i <= 1; i++) {
+      const g = scaleGeoSlim;
+      const m = new THREE.Matrix4();
+      const outward = new THREE.Vector3(sx, 0.22, i * 0.55).normalize();
+      const down = new THREE.Vector3(0, -1, 0.12).normalize();
+      const xA = new THREE.Vector3().crossVectors(down, outward).normalize();
+      const yA = down.clone();
+      const zA = new THREE.Vector3().crossVectors(xA, yA).normalize();
+      const basis = new THREE.Matrix4().makeBasis(xA, yA, zA);
+      const rad = lerp(0.028, 0.017, u);
+      const p = along.clone().addScaledVector(outward, rad * 0.92);
+      const sLen = lerp(0.019, 0.013, u);
+      const sWid = lerp(0.012, 0.009, u);
+      m.makeTranslation(p.x, p.y, p.z)
+        .multiply(basis)
+        .multiply(new THREE.Matrix4().makeScale(1, 1, -1))
+        .multiply(new THREE.Matrix4().makeRotationX(-0.22))
+        .multiply(new THREE.Matrix4().makeRotationY(i * 0.24))
+        .multiply(new THREE.Matrix4().makeScale(sWid, sLen, (sWid + sLen) * 0.5));
+      limbScaleInstances.push({ matrix: m, gi: (r + i + 6) % scaleGeoCache.length });
+    }
+  }
+  const lsGeo = mergeInstances(limbScaleInstances);
+  const lsMesh = new THREE.Mesh(lsGeo, scaleMatDark);
+  lsMesh.castShadow = true;
+  lsMesh.receiveShadow = true;
+  grp.add(lsMesh);
+
+  return grp;
+}
+
+function buildHindlimb(side) {
+  const grp = new THREE.Group();
+  const sx = side;
+
+  const hip   = new THREE.Vector3(sx * 0.050, 0.140, -0.128);
+  const knee  = new THREE.Vector3(sx * 0.068, 0.084, -0.118);
+  const ankle = new THREE.Vector3(sx * 0.060, 0.034, -0.130);
+  const foot  = new THREE.Vector3(sx * 0.056, 0.010, -0.116);
+
+  const limbGeo = tubeFromPoints(
+    [hip, knee, ankle, foot],
+    [0.035, 0.027, 0.019, 0.018],
+    18
+  );
+  const limb = new THREE.Mesh(limbGeo, skinMat);
+  limb.castShadow = true;
+  limb.receiveShadow = true;
+  grp.add(limb);
+
+  // plantigrade hind foot: a broad flat sole
+  const soleGeo = new THREE.SphereGeometry(0.021, 22, 14);
+  soleGeo.scale(0.92, 0.46, 1.35);
+  const sole = new THREE.Mesh(soleGeo, skinMat);
+  sole.position.copy(foot).add(new THREE.Vector3(0, -0.0025, 0.004));
+  sole.castShadow = true;
+  sole.receiveShadow = true;
+  grp.add(sole);
+
+  // five short blunt hind claws
+  for (let i = 0; i < 5; i++) {
+    const f = (i / 4 - 0.5) * 2;
+    const claw = new THREE.Mesh(makeClaw(0.0125 - Math.abs(f) * 0.0028, 0.0026), clawMat);
+    claw.position.copy(sole.position).add(new THREE.Vector3(sx * f * 0.013, -0.0035, 0.021));
+    claw.rotation.set(0.85, f * 0.32 * sx, 0);
+    claw.castShadow = true;
+    grp.add(claw);
+  }
+
+  // hind-limb scales on the outer thigh
+  const inst = [];
+  for (let r = 0; r < 5; r++) {
+    const u = r / 4;
+    const along = new THREE.Vector3().lerpVectors(hip, ankle, u * 0.8 + 0.06);
+    for (let i = -1; i <= 1; i++) {
+      const outward = new THREE.Vector3(sx, 0.18, i * 0.6).normalize();
+      const down = new THREE.Vector3(0, -1, 0.05).normalize();
+      const xA = new THREE.Vector3().crossVectors(down, outward).normalize();
+      const yA = down.clone();
+      const zA = new THREE.Vector3().crossVectors(xA, yA).normalize();
+      const basis = new THREE.Matrix4().makeBasis(xA, yA, zA);
+      const rad = lerp(0.033, 0.020, u);
+      const p = along.clone().addScaledVector(outward, rad * 0.92);
+      const sLen = lerp(0.022, 0.014, u);
+      const sWid = lerp(0.014, 0.010, u);
+      const m = new THREE.Matrix4()
+        .makeTranslation(p.x, p.y, p.z)
+        .multiply(basis)
+        .multiply(new THREE.Matrix4().makeScale(1, 1, -1))
+        .multiply(new THREE.Matrix4().makeRotationX(-0.20))
+        .multiply(new THREE.Matrix4().makeRotationY(i * 0.22))
+        .multiply(new THREE.Matrix4().makeScale(sWid, sLen, (sWid + sLen) * 0.5));
+      inst.push({ matrix: m, gi: (r * 2 + i + 4) % scaleGeoCache.length });
+    }
+  }
+  const hsGeo = mergeInstances(inst);
+  const hs = new THREE.Mesh(hsGeo, scaleMatDark);
+  hs.castShadow = true;
+  hs.receiveShadow = true;
+  grp.add(hs);
+
+  return grp;
+}
+
+for (const s of [-1, 1]) {
+  pangolin.add(buildForelimb(s));
+  pangolin.add(buildHindlimb(s));
+}
+
+/* ==========================================================================
+   Belly: soft pinkish-grey wrinkled underside, plus a few sparse hairs
+   ========================================================================== */
+{
+  // A slightly inflated belly patch under the barrel so the bare skin reads
+  const bellyGeo = new THREE.SphereGeometry(0.075, 32, 24, 0, Math.PI * 2, Math.PI * 0.42, Math.PI * 0.42);
+  bellyGeo.scale(0.92, 0.62, 1.55);
+  const belly = new THREE.Mesh(bellyGeo, bellySkinMat);
+  belly.position.set(0, 0.155, 0.006);
+  belly.castShadow = true;
+  belly.receiveShadow = true;
+  pangolin.add(belly);
+
+  // sparse bristles poking between belly folds
+  const hairMat = new THREE.MeshStandardMaterial({ color: 0x8a7568, roughness: 0.9 });
+  const hairInst = [];
+  const hairGeo = new THREE.ConeGeometry(0.0007, 0.011, 5, 1, true);
+  const hairMesh = new THREE.InstancedMesh(hairGeo, hairMat, 90);
+  const dummy = new THREE.Object3D();
+  for (let i = 0; i < 90; i++) {
+    const t = randRange(0.28, 0.60);
+    const a = Math.PI - randRange(-0.75, 0.75);
+    const { pos, nrm } = surfaceAt(t, a);
+    dummy.position.copy(pos).addScaledVector(nrm, 0.004);
+    dummy.lookAt(pos.clone().addScaledVector(nrm, -1));
+    dummy.rotateX(Math.PI / 2);
+    dummy.rotation.z += randRange(-0.4, 0.4);
+    dummy.scale.setScalar(randRange(0.7, 1.4));
+    dummy.updateMatrix();
+    hairMesh.setMatrixAt(i, dummy.matrix);
+  }
+  hairMesh.instanceMatrix.needsUpdate = true;
+  hairMesh.castShadow = false;
+  pangolin.add(hairMesh);
+}
+
+/* ==========================================================================
+   Center & scale the whole animal
+   ========================================================================== */
+{
+  const box = new THREE.Box3().setFromObject(pangolin);
+  const size = new THREE.Vector3();
+  const center = new THREE.Vector3();
+  box.getSize(size);
+  box.getCenter(center);
+
+  // recenter in X/Z, sit on the ground plane
+  pangolin.position.x -= center.x;
+  pangolin.position.z -= center.z;
+  pangolin.position.y -= box.min.y;
+
+  // normalize to a pleasing on-screen size (~0.62 units long)
+  const maxDim = Math.max(size.x, size.y, size.z);
+  const target = 0.66;
+  const k = target / maxDim;
+  const wrapper = new THREE.Group();
+  scene.remove(pangolin);
+  wrapper.add(pangolin);
+  wrapper.scale.setScalar(k);
+  scene.add(wrapper);
+
+  const box2 = new THREE.Box3().setFromObject(wrapper);
+  const c2 = new THREE.Vector3();
+  box2.getCenter(c2);
+  controls.target.set(0, c2.y, 0);
+  controls.update();
+}
+
+/* ==========================================================================
+   Resize / render loop
+   ========================================================================== */
+
+function onResize() {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', onResize);
+
+renderer.setAnimationLoop(() => {
+  controls.update();
+  renderer.render(scene, camera);
+});
+</script>
+</body>
+</html>
