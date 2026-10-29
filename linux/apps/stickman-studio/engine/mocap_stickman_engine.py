@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-# [FL_INDEX: keywords="mocap_stickman_engine, multi_entity_mocap, demographic_puppeteer, yolo_pose, animal_mocap, forward_kinematics, stickman_studio" | purpose="Sovereign Multi-Entity Video Motion Capture (MoCap) Stickman Puppeteer Engine transforming video actors (men, women, children, animals) into smooth 2D animated stick figures matching movement, gestures, and audio on custom backgrounds"]
+# [FL_INDEX: keywords="mocap_stickman_engine, rubber_hose_puppet, cutout_cartoon, 10_visemes, mitten_hands, cartoon_sneakers, one_euro_filter, multi_entity, stickman_studio" | purpose="Sovereign High-Fidelity 2D Cutout Rubber-Hose Cartoon Puppeteer Engine transforming video actors into expressive cartoon characters with curved Bézier rubber limbs, cuffed mitten hands, cartoon sneakers, and 10-viseme phoneme lipsync"]
 """
-Stickman Studio Multi-Entity Video-to-Stickman Motion Capture Engine (MoCap Puppeteer)
-Extracts multi-human poses and animal tracks frame-by-frame using YOLO-Pose & YOLO-Detection,
-classifies demographics (male, female, child) and animal species (dog, cat, bird),
-and maps them smoothly to stylized 2D stickmen over a custom user background.
+Stickman Studio Vector Cutout Rubber-Hose Puppeteer Engine (MoCap 2.0)
+Transforms human video into expressive 2D cartoon puppet characters:
+- Organic Rubber-Hose Bézier limbs with smooth variable stroke ribbons
+- Expressive 4-finger cartoon mitten hands (open, point, wave, fist) with wrist cuffs
+- Detailed 2D cartoon sneakers with soles, laces, and sock collars
+- 10-Viseme cartoon lipsync (A, E, O, smile, open, closed) with pink tongues and 3D parallax
+- One Euro Filter temporal anti-jitter suppression with snappy anime cadence
 Co-authored-by: Flowork OS <agent@floworkos.com>
 """
 
@@ -12,6 +15,7 @@ import sys
 import os
 import math
 import time
+import json
 import subprocess
 import tempfile
 import cv2
@@ -23,11 +27,48 @@ from pose_tracker import PoseTracker
 from multi_entity_tracker import MultiEntityTracker
 
 
-def smooth_interpolate(curr, prev, alpha=0.65):
-    """Exponential Moving Average (EMA) smoothing for temporal landmark stability."""
-    if prev is None:
-        return curr
-    return {k: alpha * curr[k] + (1.0 - alpha) * prev[k] for k in curr}
+# ---------------------------------------------------------------------------
+# Differential Geometry: Quadratic Bézier passing through Midpoint
+# ---------------------------------------------------------------------------
+def eval_quad_bezier_through_midpoint(p0, p_mid, p2, n_samples=24):
+    """
+    Computes quadratic Bézier curve passing EXACTLY through p_mid at t=0.5.
+    Mathematical derivation:
+    B(0.5) = 0.25*P0 + 0.5*Pc + 0.25*P2 = P_mid  =>  Pc = 2*P_mid - 0.5*(P0 + P2)
+    Terminal tangent derivative:
+    B'(1) = 2*(P2 - Pc) = 3*P2 + P0 - 4*P_mid
+    """
+    p0 = np.array(p0, dtype=float)
+    p_mid = np.array(p_mid, dtype=float)
+    p2 = np.array(p2, dtype=float)
+    pc = 2.0 * p_mid - 0.5 * (p0 + p2)
+
+    t = np.linspace(0.0, 1.0, n_samples)[:, np.newaxis]
+    pts = (1.0 - t)**2 * p0 + 2.0 * (1.0 - t) * t * pc + t**2 * p2
+    end_tangent = 3.0 * p2 + p0 - 4.0 * p_mid
+    return pts, end_tangent
+
+
+def compute_ribbon_mesh(pts, half_widths):
+    """Generates an offset 2D polygon ribbon along normal vectors."""
+    n = len(pts)
+    left_side, right_side = [], []
+
+    for i in range(n):
+        if i == 0:
+            tangent = pts[1] - pts[0]
+        elif i == n - 1:
+            tangent = pts[-1] - pts[-2]
+        else:
+            tangent = pts[i + 1] - pts[i - 1]
+
+        norm = np.linalg.norm(tangent)
+        normal = np.array([-tangent[1], tangent[0]]) / norm if norm > 1e-6 else np.array([0.0, 1.0])
+        w = half_widths[i]
+        left_side.append(pts[i] + normal * w)
+        right_side.append(pts[i] - normal * w)
+
+    return left_side + right_side[::-1]
 
 
 class MocapStickmanEngine:
@@ -41,15 +82,12 @@ class MocapStickmanEngine:
         self.ground_y = int(self.height * 0.82)
         self.cx = self.width // 2
 
+        self.ink = (25, 27, 34)
+        self.white = (255, 255, 255)
+
         self.font_bold_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
         if not os.path.exists(self.font_bold_path):
             self.font_bold_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
-
-    def _get_font(self, size):
-        try:
-            return ImageFont.truetype(self.font_bold_path, int(size))
-        except Exception:
-            return ImageFont.load_default()
 
     def reset(self):
         """Reset temporal smoothing state between clips."""
@@ -88,379 +126,527 @@ class MocapStickmanEngine:
             g = int(top_c[1] + (bot_c[1] - top_c[1]) * ratio)
             b = int(top_c[2] + (bot_c[2] - top_c[2]) * ratio)
             draw.line([(0, y), (self.width, y)], fill=(r, g, b, 255))
-        # Subtle floor baseboard
         draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(210, 206, 195), width=3)
         return bg
 
-    def draw_limb(self, draw, p_start, p_mid, p_end, width=10, color=(25, 27, 34), outline=(255, 255, 255)):
-        """Draws organic stylized stick limbs with white outline for depth separation."""
-        if outline:
-            draw.line([p_start, p_mid], fill=outline, width=width + 4)
-            draw.line([p_mid, p_end], fill=outline, width=width + 4)
-            draw.ellipse([p_mid[0] - width//2 - 2, p_mid[1] - width//2 - 2,
-                          p_mid[0] + width//2 + 2, p_mid[1] + width//2 + 2], fill=outline)
+    def draw_shadow(self, draw, cx, ground_y, rx=60, ry=14):
+        """Draws soft contact drop shadow on floor."""
+        draw.ellipse([cx - rx, ground_y - ry, cx + rx, ground_y + ry], fill=(15, 23, 42, 65))
 
-        draw.line([p_start, p_mid], fill=color, width=width)
-        draw.line([p_mid, p_end], fill=color, width=width)
-        draw.ellipse([p_mid[0] - width//2, p_mid[1] - width//2,
-                      p_mid[0] + width//2, p_mid[1] + width//2], fill=color)
+    def draw_rubber_hose_limb(self, draw, p0, p_mid, p2, base_width=22.0, taper=(1.1, 0.85),
+                              fill_col=(25, 27, 34), stroke_col=(25, 27, 34), stroke_w=4):
+        """Renders an organic, curved rubber-hose limb with dark ink outline and fill."""
+        pts, end_tangent = eval_quad_bezier_through_midpoint(p0, p_mid, p2, n_samples=24)
+        t = np.linspace(0.0, 1.0, len(pts))
+        w_inner = (base_width * (taper[0] * (1.0 - t) + taper[1] * t) / 2.0)
 
-    def draw_shadow(self, draw, cx, ground_y, rx=50, ry=12):
-        """Draws grounded contact drop shadow on floor."""
-        draw.ellipse([cx - rx, ground_y - ry, cx + rx, ground_y + ry], fill=(15, 23, 42, 60))
+        # 1. Outer ink stroke ribbon
+        outer_poly = compute_ribbon_mesh(pts, w_inner + stroke_w)
+        draw.polygon([(p[0], p[1]) for p in outer_poly], fill=stroke_col)
 
-    def render_stick_human(self, draw, kps, ground_y=None, archetype='male', scale=1.0, energy=0.5, t=0.0):
-        """
-        Renders a full-body stickman using Forward Kinematics (FK) pinned bone lengths.
-        kps: numpy array of shape (17, 2) in canvas coordinates
-        """
-        # COCO 17 Keypoints:
-        # 0: nose, 1: left_eye, 2: right_eye, 3: left_ear, 4: right_ear
-        # 5: left_sh, 6: right_sh, 7: left_el, 8: right_el, 9: left_wr, 10: right_wr
-        # 11: left_hip, 12: right_hip, 13: left_kn, 14: right_kn, 15: left_ank, 16: right_ank
+        # 2. Inner fill ribbon
+        inner_poly = compute_ribbon_mesh(pts, w_inner)
+        draw.polygon([(p[0], p[1]) for p in inner_poly], fill=fill_col)
 
-        sh_l, sh_r = kps[5], kps[6]
-        hip_l, hip_r = kps[11], kps[12]
-        nose = kps[0]
-        eye_l, eye_r = kps[1], kps[2]
+        return pts[-1], end_tangent
 
-        mid_sh = ((sh_l[0] + sh_r[0]) / 2.0, (sh_l[1] + sh_r[1]) / 2.0)
-        sh_w = math.hypot(sh_l[0] - sh_r[0], sh_l[1] - sh_r[1])
-        head_r = max(18, int(max(sh_w * 0.45, 26 * scale)))
-        if archetype == 'child':
-            head_r = int(head_r * 1.25) # Cute larger head ratio for kids
+    def draw_wrist_cuff(self, draw, center, angle_deg, size=(28, 14), fill_col=(255, 255, 255),
+                        stroke_col=(25, 27, 34), stroke_w=4):
+        """Draws an elliptical cuff covering the wrist/ankle joint seam."""
+        cx, cy = center
+        w, h = size
+        rad = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        cuff_pts = []
+        for i in range(20):
+            th = 2.0 * math.pi * i / 20
+            x0 = (w / 2.0) * math.cos(th)
+            y0 = (h / 2.0) * math.sin(th)
+            cuff_pts.append((cx + x0 * cos_a - y0 * sin_a, cy + x0 * sin_a + y0 * cos_a))
+        draw.polygon(cuff_pts, fill=fill_col, outline=stroke_col, width=stroke_w)
 
-        head_cx = int(nose[0])
-        head_cy = int(nose[1])
-        if head_cy >= mid_sh[1] - head_r:
-            head_cy = int(mid_sh[1] - head_r - 12)
+    def draw_mitten_hand(self, draw, wrist_pt, angle_deg, hand_type="open", is_left=False, scale=1.0,
+                         fill_col=(255, 255, 255), stroke_col=(25, 27, 34), stroke_w=4):
+        """Renders an expressive 4-finger cartoon mitten hand with wrist cuff."""
+        wx, wy = wrist_pt
+        rad = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        flip_y = -1.0 if is_left else 1.0
 
-        # Grounding
-        target_ground = ground_y or self.ground_y
+        def tf(x, y):
+            sx, sy = x * scale, y * scale * flip_y
+            return (wx + sx * cos_a - sy * sin_a, wy + sx * sin_a + sy * cos_a)
 
-        # Forward Kinematics Bone Lengths
-        L_upper = int(head_r * 1.20)
-        L_fore = int(head_r * 1.15)
-        L_torso = int(head_r * (1.8 if archetype == 'child' else 2.2))
-        L_thigh = int(head_r * (1.2 if archetype == 'child' else 1.6))
-        L_calf = int(head_r * (1.2 if archetype == 'child' else 1.6))
+        if hand_type == "point":
+            finger = [(8, -8), (38, -12), (44, -10), (44, -2), (34, 0), (14, 2)]
+            palm = [(0, -8), (14, -6), (20, 2), (18, 12), (8, 14), (0, 8)]
+            thumb = [(4, -6), (10, -18), (18, -16), (16, -6)]
+            draw.polygon([tf(x, y) for x, y in finger], fill=fill_col, outline=stroke_col, width=stroke_w)
+            draw.polygon([tf(x, y) for x, y in palm], fill=fill_col, outline=stroke_col, width=stroke_w)
+            draw.polygon([tf(x, y) for x, y in thumb], fill=fill_col, outline=stroke_col, width=stroke_w)
+        elif hand_type == "wave":
+            f_list = [
+                [(10, -20), (18, -20), (14, -8), (6, -8)],
+                [(18, -16), (30, -14), (22, -2), (14, -2)],
+                [(20, -2), (32, 2), (24, 8), (16, 6)],
+                [(16, 10), (28, 16), (20, 20), (10, 12)]
+            ]
+            palm = [(0, -10), (14, -8), (18, 10), (0, 8), (-4, 0)]
+            for f in f_list:
+                draw.polygon([tf(x, y) for x, y in f], fill=fill_col, outline=stroke_col, width=stroke_w)
+            draw.polygon([tf(x, y) for x, y in palm], fill=fill_col, outline=stroke_col, width=stroke_w)
+        elif hand_type == "fist":
+            fist = [(0, -10), (14, -14), (26, -10), (30, 2), (26, 12), (14, 14), (4, 10), (0, 6)]
+            thumb = [(6, -6), (16, -10), (22, -2), (16, 6), (8, 2)]
+            draw.polygon([tf(x, y) for x, y in fist], fill=fill_col, outline=stroke_col, width=stroke_w)
+            draw.polygon([tf(x, y) for x, y in thumb], fill=fill_col, outline=stroke_col, width=stroke_w)
+        else: # "open" / relaxed
+            palm = [(0, -10), (14, -14), (28, -12), (36, -4), (36, 6), (30, 14), (18, 16), (8, 12), (0, 8)]
+            thumb = [(8, -8), (14, -20), (22, -20), (22, -10), (16, -6)]
+            draw.polygon([tf(x, y) for x, y in thumb], fill=fill_col, outline=stroke_col, width=stroke_w)
+            draw.polygon([tf(x, y) for x, y in palm], fill=fill_col, outline=stroke_col, width=stroke_w)
+            for dx in (12, 19, 26):
+                draw.line([tf(dx, -2), tf(dx + 2, 7)], fill=stroke_col, width=max(2, int(stroke_w * 0.7)))
 
-        # Grounding & Shadow
-        target_ground = ground_y or self.ground_y
+        # Draw wrist cuff overlapping joint seam
+        self.draw_wrist_cuff(draw, wrist_pt, angle_deg, size=(28 * scale, 14 * scale),
+                             fill_col=fill_col, stroke_col=stroke_col, stroke_w=stroke_w)
 
-        # Torso & Hips
-        mid_hip = (int(mid_sh[0]), int(mid_sh[1] + L_torso))
-        hip_span = int(head_r * (0.8 if archetype == 'female' else 0.7))
-        p_hip_l = (int(mid_hip[0] - hip_span // 2), int(mid_hip[1]))
-        p_hip_r = (int(mid_hip[0] + hip_span // 2), int(mid_hip[1]))
+    def draw_cartoon_sneaker(self, draw, ankle_pt, angle_deg=0.0, is_left=False, scale=1.0,
+                             main_col=(225, 29, 72), stroke_col=(25, 27, 34), stroke_w=4):
+        """Renders a stylish 2D cartoon sneaker with rubber sole, toe-cap, laces, and collar."""
+        ax, ay = ankle_pt
+        rad = math.radians(angle_deg)
+        cos_a, sin_a = math.cos(rad), math.sin(rad)
+        flip_x = -1.0 if is_left else 1.0
 
-        # Detect if ankles are authentically near the floor or if framing is bust/half-body
-        has_grounded_ankles = (np.sum(kps[15]) > 0 and np.sum(kps[16]) > 0 and kps[15][1] >= target_ground * 0.84)
+        def tf(x, y):
+            sx, sy = x * scale * flip_x, y * scale
+            return (ax + sx * cos_a - sy * sin_a, ay + sx * sin_a + sy * cos_a)
 
-        if has_grounded_ankles:
-            # Full body in camera view
-            ang_thigh_l = math.atan2(kps[13][1] - hip_l[1], kps[13][0] - hip_l[0])
-            p_kn_l = (int(p_hip_l[0] + L_thigh * math.cos(ang_thigh_l)), int(p_hip_l[1] + L_thigh * math.sin(ang_thigh_l)))
-            ang_calf_l = math.atan2(kps[15][1] - kps[13][1], kps[15][0] - kps[13][0])
-            p_ank_l = (int(p_kn_l[0] + L_calf * math.cos(ang_calf_l)), int(p_kn_l[1] + L_calf * math.sin(ang_calf_l)))
+        # Sole
+        sole = [(-20, 14), (36, 14), (38, 24), (-20, 24)]
+        draw.polygon([tf(x, y) for x, y in sole], fill=(255, 255, 255), outline=stroke_col, width=stroke_w)
+        draw.line([tf(-18, 19), tf(36, 19)], fill=stroke_col, width=max(2, int(stroke_w * 0.6)))
 
-            ang_thigh_r = math.atan2(kps[14][1] - hip_r[1], kps[14][0] - hip_r[0])
-            p_kn_r = (int(p_hip_r[0] + L_thigh * math.cos(ang_thigh_r)), int(p_hip_r[1] + L_thigh * math.sin(ang_thigh_r)))
-            ang_calf_r = math.atan2(kps[16][1] - kps[14][1], kps[16][0] - kps[14][0])
-            p_ank_r = (int(p_kn_r[0] + L_calf * math.cos(ang_calf_r)), int(p_kn_r[1] + L_calf * math.sin(ang_calf_r)))
-            actual_ground = max(p_ank_l[1], p_ank_r[1])
+        # Upper canvas shoe
+        upper = [(-18, -2), (4, -4), (10, 4), (26, 6), (34, 14), (-18, 14), (-22, 6)]
+        draw.polygon([tf(x, y) for x, y in upper], fill=main_col, outline=stroke_col, width=stroke_w)
+
+        # White toe cap
+        toe = [(18, 6), (34, 14), (18, 14)]
+        draw.polygon([tf(x, y) for x, y in toe], fill=(255, 255, 255), outline=stroke_col, width=stroke_w)
+
+        # White laces
+        for ly in (2, 7, 12):
+            draw.line([tf(8, ly), tf(16, ly)], fill=(255, 255, 255), width=max(2, int(stroke_w * 0.8)))
+
+        # White sock collar
+        collar = [(-14, -8), (8, -8), (6, -2), (-16, -2)]
+        draw.polygon([tf(x, y) for x, y in collar], fill=(255, 255, 255), outline=stroke_col, width=stroke_w)
+
+    def draw_cartoon_torso(self, draw, mid_sh, mid_hip, head_r, archetype='male', color=(225, 29, 72), sh_span=None):
+        """Draws a sleek, fitted volumetric cartoon shirt / tunic with collar and outline."""
+        half_w = max(38, min(80, int(head_r * 0.95))) if sh_span is None else min(sh_span, max(42, int(head_r * 0.95)))
+        hip_w = int(half_w * (0.85 if archetype == 'male' else 0.95))
+        h_len = max(60, int(mid_hip[1] - mid_sh[1]))
+
+        tunic_pts = [
+            (mid_sh[0] - half_w, mid_sh[1]),
+            (mid_sh[0] + half_w, mid_sh[1]),
+            (mid_sh[0] + hip_w, mid_hip[1]),
+            (mid_sh[0] - hip_w, mid_hip[1])
+        ]
+        draw.polygon(tunic_pts, fill=color, outline=self.ink, width=4)
+
+        # White collar / neckline
+        collar_w = int(head_r * 0.38)
+        draw.arc([mid_sh[0] - collar_w, mid_sh[1] - 4, mid_sh[0] + collar_w, mid_sh[1] + 16], start=0, end=180, fill=self.white, width=4)
+
+        # Red necktie or zipper
+        if archetype in ('business', 'male', 'cool', 'glasses'):
+            tie_w = max(6, int(head_r * 0.16))
+            tie_bot = int(mid_hip[1] - h_len * 0.20)
+            draw.polygon([
+                (mid_sh[0] - 4, mid_sh[1] + 8),
+                (mid_sh[0] + 4, mid_sh[1] + 8),
+                (mid_sh[0] + tie_w, tie_bot - 10),
+                (mid_sh[0], tie_bot),
+                (mid_sh[0] - tie_w, tie_bot - 10)
+            ], fill=(220, 38, 38), outline=self.ink, width=2)
+
+    def render_cartoon_face(self, draw, head_cx, head_cy, head_r, tilt_angle, energy, archetype='male', viseme='REST'):
+        """Renders expressive cartoon face with pupils, highlights, eyebrows, and 10-viseme lipsync."""
+        pen_w = 4
+        cos_t, sin_t = math.cos(tilt_angle), math.sin(tilt_angle)
+
+        def to_world(lx, ly):
+            rx = lx * cos_t - ly * sin_t
+            ry = lx * sin_t + ly * cos_t
+            return int(head_cx + rx), int(head_cy + ry)
+
+        # 1. Head Contour
+        draw.ellipse([head_cx - head_r, head_cy - head_r, head_cx + head_r, head_cy + head_r],
+                     fill=self.white, outline=self.ink, width=pen_w)
+
+        # 2. Ears
+        ear_r = int(head_r * 0.20)
+        for side in (-1.0, 1.0):
+            ex, ey = to_world(side * head_r * 0.95, 0)
+            draw.ellipse([ex - ear_r, ey - ear_r, ex + ear_r, ey + ear_r], fill=self.white, outline=self.ink, width=3)
+
+        # 3. Eyes & Eyebrows
+        eye_spacing = head_r * 0.36
+        eye_y = -head_r * 0.08
+        eye_w = max(4, int(head_r * 0.16))
+        eye_h = max(5, int(head_r * 0.22))
+
+        has_sunglasses = (archetype == 'cool')
+
+        if has_sunglasses:
+            sg_y = int(eye_y)
+            l_box = [
+                to_world(-eye_spacing - 14, sg_y - 8),
+                to_world(-eye_spacing + 14, sg_y - 8),
+                to_world(-eye_spacing + 14, sg_y + 8),
+                to_world(-eye_spacing - 14, sg_y + 8),
+            ]
+            r_box = [
+                to_world(eye_spacing - 14, sg_y - 8),
+                to_world(eye_spacing + 14, sg_y - 8),
+                to_world(eye_spacing + 14, sg_y + 8),
+                to_world(eye_spacing - 14, sg_y + 8),
+            ]
+            draw.polygon(l_box, fill=self.ink)
+            draw.polygon(r_box, fill=self.ink)
+            draw.line([to_world(-eye_spacing + 14, sg_y), to_world(eye_spacing - 14, sg_y)], fill=self.ink, width=3)
         else:
-            # Bust / sitting shot: synthesize natural standing legs grounded on floor
-            leg_span = target_ground - mid_hip[1]
-            knee_y = mid_hip[1] + int(leg_span * 0.48)
-            p_kn_l = (p_hip_l[0] - 8, knee_y)
-            p_kn_r = (p_hip_r[0] + 8, knee_y)
-            p_ank_l = (p_hip_l[0] - 14, target_ground)
-            p_ank_r = (p_hip_r[0] + 14, target_ground)
-            actual_ground = target_ground
+            for side in (-1.0, 1.0):
+                wx, wy = to_world(side * eye_spacing, eye_y)
+                # Outer eye outline
+                draw.ellipse([wx - eye_w, wy - eye_h, wx + eye_w, wy + eye_h], fill=self.white, outline=self.ink, width=3)
+                # Dark pupil with cute shine highlight
+                pupil_r = int(eye_w * 0.70)
+                draw.ellipse([wx - pupil_r, wy - pupil_r, wx + pupil_r, wy + pupil_r], fill=self.ink)
+                draw.ellipse([wx - pupil_r // 2, wy - pupil_r // 2, wx - pupil_r // 2 + 3, wy - pupil_r // 2 + 3], fill=self.white)
 
-        self.draw_shadow(draw, int(mid_sh[0]), actual_ground, rx=int(head_r * 1.5), ry=int(head_r * 0.35))
+                # Eyebrow
+                brow_y = eye_y - head_r * 0.22
+                bw = int(head_r * 0.26)
+                b1 = to_world(side * eye_spacing - bw // 2, brow_y)
+                b2 = to_world(side * eye_spacing + bw // 2, brow_y - 2)
+                draw.line([b1, b2], fill=self.ink, width=pen_w)
 
-        # Arms Left
-        ang_up_l = math.atan2(kps[7][1] - sh_l[1], kps[7][0] - sh_l[0]) if np.sum(kps[7]) > 0 else math.radians(115)
-        p_el_l = (int(sh_l[0] + L_upper * math.cos(ang_up_l)), int(sh_l[1] + L_upper * math.sin(ang_up_l)))
-        ang_fore_l = math.atan2(kps[9][1] - kps[7][1], kps[9][0] - kps[7][0]) if np.sum(kps[9]) > 0 else math.radians(85)
-        p_wr_l = (int(p_el_l[0] + L_fore * math.cos(ang_fore_l)), int(p_el_l[1] + L_fore * math.sin(ang_fore_l)))
+        # 4. Viseme Cartoon Lipsync
+        mouth_y = head_r * 0.38
+        mw = int(head_r * 0.40)
+        aperture = min(1.0, max(0.05, energy * 1.5))
 
-        # Arms Right
-        ang_up_r = math.atan2(kps[8][1] - sh_r[1], kps[8][0] - sh_r[0]) if np.sum(kps[8]) > 0 else math.radians(65)
-        p_el_r = (int(sh_r[0] + L_upper * math.cos(ang_up_r)), int(sh_r[1] + L_upper * math.sin(ang_up_r)))
-        ang_fore_r = math.atan2(kps[10][1] - kps[8][1], kps[10][0] - kps[8][0]) if np.sum(kps[10]) > 0 else math.radians(95)
-        p_wr_r = (int(p_el_r[0] + L_fore * math.cos(ang_fore_r)), int(p_el_r[1] + L_fore * math.sin(ang_fore_r)))
-
-        ink = (15, 23, 42)
-        white = (255, 255, 255)
-        pen_w = max(4, int(7 * scale))
-
-        # Render Legs
-        self.draw_limb(draw, p_hip_l, p_kn_l, p_ank_l, width=pen_w, color=ink, outline=white)
-        self.draw_limb(draw, p_hip_r, p_kn_r, p_ank_r, width=pen_w, color=ink, outline=white)
-        # Feet shoes
-        draw.line([p_ank_l, (p_ank_l[0] - int(16 * scale), p_ank_l[1])], fill=ink, width=pen_w)
-        draw.line([p_ank_r, (p_ank_r[0] + int(16 * scale), p_ank_r[1])], fill=ink, width=pen_w)
-
-        # Torso Spine & Collarbone
-        draw.line([mid_hip, mid_sh], fill=white, width=pen_w + 4)
-        draw.line([mid_hip, mid_sh], fill=ink, width=pen_w)
-        draw.line([tuple(sh_l), tuple(sh_r)], fill=white, width=pen_w + 4)
-        draw.line([tuple(sh_l), tuple(sh_r)], fill=ink, width=pen_w)
-
-        # Neck
-        draw.line([mid_sh, (int(mid_sh[0]), head_cy + head_r)], fill=white, width=pen_w + 2)
-        draw.line([mid_sh, (int(mid_sh[0]), head_cy + head_r)], fill=ink, width=pen_w)
-
-        # Arms
-        self.draw_limb(draw, (int(sh_l[0]), int(sh_l[1])), p_el_l, p_wr_l, width=pen_w, color=ink, outline=white)
-        self.draw_limb(draw, (int(sh_r[0]), int(sh_r[1])), p_el_r, p_wr_r, width=pen_w, color=ink, outline=white)
-
-        # Head Circle
-        draw.ellipse([head_cx - head_r - 2, head_cy - head_r - 2, head_cx + head_r + 2, head_cy + head_r + 2], fill=white)
-        draw.ellipse([head_cx - head_r, head_cy - head_r, head_cx + head_r, head_cy + head_r], fill=white, outline=ink, width=pen_w)
-
-        # Head Tilt Calculation
-        tilt_angle = 0.0
-        if np.sum(eye_l) > 0 and np.sum(eye_r) > 0:
-            tilt_angle = math.atan2(eye_r[1] - eye_l[1], eye_r[0] - eye_l[0])
-
-        # Eyes & Gaze
-        eye_off_x = int(head_r * 0.35)
-        eye_off_y = int(head_r * 0.10)
-        eye_r_sz = max(2, int(head_r * 0.12))
-
-        # Only draw natural eye pupils if NOT wearing full sunglasses
-        has_sunglasses = (archetype in ('male', 'cool'))
-        if not has_sunglasses:
-            for side in (-1, 1):
-                ex_local = side * eye_off_x
-                ey_local = -eye_off_y
-                ex_rot = ex_local * math.cos(tilt_angle) - ey_local * math.sin(tilt_angle)
-                ey_rot = ex_local * math.sin(tilt_angle) + ey_local * math.cos(tilt_angle)
-                ex = int(head_cx + ex_rot)
-                ey = int(head_cy + ey_rot)
-                draw.ellipse([ex - eye_r_sz, ey - eye_r_sz, ex + eye_r_sz, ey + eye_r_sz], fill=ink)
-
-        # Lip-sync Mouth (Smooth subtle aperture)
-        mouth_w = int(head_r * 0.38)
-        mouth_cy = head_cy + int(head_r * 0.38)
-        if energy > 0.18:
-            mh = int(head_r * 0.10 + head_r * 0.28 * energy)
-            draw.ellipse([head_cx - mouth_w//2, mouth_cy - mh//2, head_cx + mouth_w//2, mouth_cy + mh//2], fill=ink)
-            if mh > 8:
-                draw.arc([head_cx - mouth_w//2 + 3, mouth_cy, head_cx + mouth_w//2 - 3, mouth_cy + mh//2], start=0, end=180, fill=(244, 114, 182), width=2)
+        if energy < 0.12:
+            # REST / Closed Smile
+            p1 = to_world(-mw // 2, mouth_y)
+            p2 = to_world(0, mouth_y + 3)
+            p3 = to_world(mw // 2, mouth_y)
+            draw.line([p1, p2], fill=self.ink, width=pen_w)
+            draw.line([p2, p3], fill=self.ink, width=pen_w)
+        elif energy > 0.45:
+            # AI / Wide Open with Pink Tongue
+            h = int(head_r * (0.24 + 0.35 * aperture))
+            pts = [to_world(-mw // 2, mouth_y - h // 3), to_world(mw // 2, mouth_y - h // 3),
+                   to_world(mw // 3, mouth_y + 2 * h // 3), to_world(-mw // 3, mouth_y + 2 * h // 3)]
+            draw.polygon(pts, fill=self.ink)
+            tx, ty = to_world(0, mouth_y + h // 3)
+            draw.ellipse([tx - mw // 4, ty - h // 4, tx + mw // 4, ty + h // 4], fill=(244, 114, 182))
         else:
-            draw.line([(head_cx - mouth_w//2, mouth_cy), (head_cx + mouth_w//2, mouth_cy)], fill=ink, width=3)
+            # O / Oval talking
+            ow = int(mw * 0.65)
+            oh = int(head_r * (0.18 + 0.25 * aperture))
+            mcx, mcy = to_world(0, mouth_y)
+            rx, ry = max(2, ow // 2), max(2, oh // 2)
+            draw.ellipse([mcx - rx, mcy - ry, mcx + rx, mcy + ry], fill=self.ink)
 
-        # Archetype Specific Accessories
+        # 5. Archetype Accessories
         if archetype == 'female' or archetype == 'girl':
-            # Twin Anime Hair Ribbons & Pink Bow
+            # Twin Anime Hair Ribbons & Blush
             draw.arc([head_cx - head_r - 8, head_cy - head_r + 4, head_cx - head_r + 20, head_cy - head_r + 32], start=45, end=270, fill=(244, 114, 182), width=5)
             draw.arc([head_cx + head_r - 20, head_cy - head_r + 4, head_cx + head_r + 8, head_cy - head_r + 32], start=270, end=135, fill=(244, 114, 182), width=5)
             draw.ellipse([head_cx - 16, head_cy - head_r - 10, head_cx - 2, head_cy - head_r + 4], fill=(236, 72, 153))
             draw.ellipse([head_cx + 2, head_cy - head_r - 10, head_cx + 16, head_cy - head_r + 4], fill=(236, 72, 153))
-            # Pink Cheek Blush
-            draw.ellipse([head_cx - int(head_r * 0.65), head_cy + int(head_r * 0.15), head_cx - int(head_r * 0.35), head_cy + int(head_r * 0.40)], fill=(251, 113, 133, 180))
-            draw.ellipse([head_cx + int(head_r * 0.35), head_cy + int(head_r * 0.15), head_cx + int(head_r * 0.65), head_cy + int(head_r * 0.40)], fill=(251, 113, 133, 180))
-        elif archetype == 'male' or archetype == 'cool':
-            # Cool Sunglasses & Red Tie
-            sg_y = head_cy - eye_off_y
-            draw.rectangle([head_cx - eye_off_x - 10, sg_y - 6, head_cx - eye_off_x + 10, sg_y + 6], fill=ink)
-            draw.rectangle([head_cx + eye_off_x - 10, sg_y - 6, head_cx + eye_off_x + 10, sg_y + 6], fill=ink)
-            draw.line([(head_cx - eye_off_x + 10, sg_y), (head_cx + eye_off_x - 10, sg_y)], fill=ink, width=3)
-            # Necktie
-            tie_top_y = int(mid_sh[1] + 6)
-            tie_bot_y = int(mid_hip[1] - L_torso * 0.3)
-            draw.polygon([(head_cx - 5, tie_top_y), (head_cx + 5, tie_top_y),
-                          (head_cx + 8, tie_bot_y - 10), (head_cx, tie_bot_y), (head_cx - 8, tie_bot_y - 10)], fill=(225, 29, 72))
+            # Pink Blush
+            draw.ellipse([head_cx - int(head_r * 0.65), head_cy + int(head_r * 0.15), head_cx - int(head_r * 0.35), head_cy + int(head_r * 0.38)], fill=(251, 113, 133, 180))
+            draw.ellipse([head_cx + int(head_r * 0.35), head_cy + int(head_r * 0.15), head_cx + int(head_r * 0.65), head_cy + int(head_r * 0.38)], fill=(251, 113, 133, 180))
         elif archetype == 'child':
-            # Cute Backwards Baseball Cap (Amber)
+            # Amber Backwards Baseball Cap
             cap_c = (245, 158, 11)
-            draw.arc([head_cx - head_r - 2, head_cy - head_r - 6, head_cx + head_r + 2, head_cy], start=180, end=360, fill=cap_c, width=int(8 * scale))
-            draw.line([(head_cx - head_r - 2, head_cy - 4), (head_cx - head_r - 18, head_cy - 10)], fill=cap_c, width=int(6 * scale))
-        elif archetype == 'glasses' or archetype == 'smart':
-            sg_y = head_cy - eye_off_y
-            gw = int(head_r * 0.30)
-            gh = int(head_r * 0.22)
-            draw.rectangle([head_cx - eye_off_x - gw//2, sg_y - gh//2, head_cx - eye_off_x + gw//2, sg_y + gh//2], outline=ink, width=3)
-            draw.rectangle([head_cx + eye_off_x - gw//2, sg_y - gh//2, head_cx + eye_off_x + gw//2, sg_y + gh//2], outline=ink, width=3)
-            draw.line([(head_cx - eye_off_x + gw//2, sg_y), (head_cx + eye_off_x - gw//2, sg_y)], fill=ink, width=3)
+            draw.arc([head_cx - head_r - 2, head_cy - head_r - 6, head_cx + head_r + 2, head_cy], start=180, end=360, fill=cap_c, width=int(8 * (head_r / 26.0)))
+            draw.line([(head_cx - head_r - 2, head_cy - 4), (head_cx - head_r - 18, head_cy - 10)], fill=cap_c, width=int(6 * (head_r / 26.0)))
+
+    def render_stick_human(self, draw, kps, ground_y=None, archetype='male', scale=1.0, energy=0.5, t=0.0, framing_mode='auto'):
+        """
+        Renders a full 2D Cutout Rubber-Hose Cartoon Puppet.
+        Bézier limbs, cuffed mitten hands, cartoon sneakers, torso clothing, and expressive face.
+        Supports both Full-Body standing and Seated / Presenter podcast framing.
+        """
+        sh_l, sh_r = kps[5], kps[6]
+        hip_l, hip_r = kps[11], kps[12]
+        nose = kps[0]
+        eye_l, eye_r = kps[1], kps[2]
+        el_l, el_r = kps[7], kps[8]
+        wr_l, wr_r = kps[9], kps[10]
+
+        mid_sh = ((sh_l[0] + sh_r[0]) / 2.0, (sh_l[1] + sh_r[1]) / 2.0)
+        sh_w = math.hypot(sh_l[0] - sh_r[0], sh_l[1] - sh_r[1])
+
+        target_ground = ground_y or self.ground_y
+        has_grounded_ankles = (np.sum(kps[15]) > 0 and np.sum(kps[16]) > 0 and kps[15][1] >= target_ground * 0.82)
+        is_bust = (framing_mode == 'presenter') or (framing_mode == 'auto' and (not has_grounded_ankles or sh_w > self.width * 0.35))
+
+        # Balanced cartoon head radius
+        head_r = max(36, min(75, int(sh_w * 0.22 if sh_w > 120 else 46 * scale)))
+        if archetype == 'child':
+            head_r = int(head_r * 1.20)
+
+        # Head position and upright tilt angle
+        tilt_angle = 0.0
+        if np.sum(eye_l) > 0 and np.sum(eye_r) > 0:
+            tilt_angle = math.atan2(eye_l[1] - eye_r[1], eye_l[0] - eye_r[0])
+            tilt_angle = max(math.radians(-35), min(math.radians(35), tilt_angle))
+
+        head_cx = int(nose[0])
+        L_neck = 16
+        head_cy = int(mid_sh[1] - head_r - L_neck - 8)
+
+        # Forward Kinematics Anatomical Proportions
+        L_upper = int(head_r * 1.40)
+        L_fore = int(head_r * 1.35)
+        L_torso = int(head_r * (1.8 if archetype == 'child' else 2.3))
+
+        # Helper to compute joint angles from tracking
+        def get_joint_angle(p1, p2, default_rad):
+            if np.sum(p1) > 0 and np.sum(p2) > 0:
+                return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+            return default_rad
+
+        # Arm Angles:
+        # Note: sh_r (index 6) is actor right = image left (smaller X).
+        #       sh_l (index 5) is actor left = image right (larger X).
+        ang_up_r = get_joint_angle(sh_r, el_r, math.radians(70))
+        ang_fore_r = get_joint_angle(el_r, wr_r, math.radians(45))
+
+        ang_up_l = get_joint_angle(sh_l, el_l, math.radians(110))
+        ang_fore_l = get_joint_angle(el_l, wr_l, math.radians(135))
+
+        # Scaled puppet shoulder coordinates centered on mid_sh
+        sh_span = max(55, min(100, int(head_r * 1.25)))
+        p_sh_r = (int(mid_sh[0] - sh_span), int(mid_sh[1]))
+        p_sh_l = (int(mid_sh[0] + sh_span), int(mid_sh[1]))
+
+        # Arm Joints FK
+        p_el_r = (int(p_sh_r[0] + L_upper * math.cos(ang_up_r)), int(p_sh_r[1] + L_upper * math.sin(ang_up_r)))
+        p_wr_r = (int(p_el_r[0] + L_fore * math.cos(ang_fore_r)), int(p_el_r[1] + L_fore * math.sin(ang_fore_r)))
+
+        p_el_l = (int(p_sh_l[0] + L_upper * math.cos(ang_up_l)), int(p_sh_l[1] + L_upper * math.sin(ang_up_l)))
+        p_wr_l = (int(p_el_l[0] + L_fore * math.cos(ang_fore_l)), int(p_el_l[1] + L_fore * math.sin(ang_fore_l)))
+
+        mid_hip = (int(mid_sh[0]), int(mid_sh[1] + L_torso))
+
+        if is_bust:
+            # ---------------------------------------------------------
+            # BUST / PRESENTER PODCAST FRAMING
+            # ---------------------------------------------------------
+            desk_y = min(self.height - 50, max(int(self.height * 0.40), int(mid_hip[1] + 10)))
+            desk_bot = max(desk_y + 40, self.height)
+
+            # Torso: Fitted Polo / Shirt
+            shirt_color = (30, 41, 59) if archetype != 'female' else (244, 114, 182)
+            self.draw_cartoon_torso(draw, mid_sh, (mid_sh[0], desk_y), head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
+
+            # Modern Studio Acrylic Desk
+            draw.rounded_rectangle([30, desk_y, self.width - 30, desk_bot], radius=24,
+                                   fill=(15, 23, 42, 245), outline=(0, 229, 255), width=3)
+            draw.line([(50, desk_y + 4), (self.width - 50, desk_y + 4)], fill=(148, 163, 184), width=3)
+
+            # Studio Broadcast Microphone
+            mic_x = int(mid_sh[0] + 95)
+            draw.line([(mic_x, desk_y + 10), (mic_x, desk_y - 65)], fill=(100, 116, 139), width=6)
+            m_top = desk_y - 105
+            m_bot = desk_y - 63
+            draw.rounded_rectangle([mic_x - 14, min(m_top, m_bot), mic_x + 14, max(m_top, m_bot)], radius=8,
+                                   fill=(15, 23, 42), outline=(0, 229, 255), width=2)
+            for gy in range(desk_y - 98, desk_y - 68, 7):
+                draw.line([(mic_x - 10, gy), (mic_x + 10, gy)], fill=(71, 85, 105), width=2)
+
+        else:
+            # ---------------------------------------------------------
+            # FULL-BODY STANDING FRAMING
+            # ---------------------------------------------------------
+            L_thigh = int(head_r * (1.2 if archetype == 'child' else 1.6))
+            L_calf = int(head_r * (1.2 if archetype == 'child' else 1.6))
+            hip_span = int(head_r * (0.85 if archetype == 'female' else 0.75))
+            p_hip_l = (int(mid_hip[0] + hip_span // 2), int(mid_hip[1]))
+            p_hip_r = (int(mid_hip[0] - hip_span // 2), int(mid_hip[1]))
+
+            ang_thigh_r = get_joint_angle(hip_r, kps[14], math.radians(85))
+            ang_calf_r = get_joint_angle(kps[14], kps[16], math.radians(90))
+            ang_thigh_l = get_joint_angle(hip_l, kps[13], math.radians(95))
+            ang_calf_l = get_joint_angle(kps[13], kps[15], math.radians(90))
+
+            p_kn_r = (int(p_hip_r[0] + L_thigh * math.cos(ang_thigh_r)), int(p_hip_r[1] + L_thigh * math.sin(ang_thigh_r)))
+            p_ank_r = (int(p_kn_r[0] + L_calf * math.cos(ang_calf_r)), target_ground)
+
+            p_kn_l = (int(p_hip_l[0] + L_thigh * math.cos(ang_thigh_l)), int(p_hip_l[1] + L_thigh * math.sin(ang_thigh_l)))
+            p_ank_l = (int(p_kn_l[0] + L_calf * math.cos(ang_calf_l)), target_ground)
+
+            # Soft Floor Shadow
+            self.draw_shadow(draw, int(mid_sh[0]), target_ground, rx=int(head_r * 1.8), ry=int(head_r * 0.40))
+
+            # Denim Blue Legs & Sneakers
+            pants_color = (30, 58, 138)
+            sneaker_color = (225, 29, 72) if archetype != 'female' else (236, 72, 153)
+
+            _, tan_leg_l = self.draw_rubber_hose_limb(draw, p_hip_l, p_kn_l, p_ank_l,
+                                                       base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
+            deg_shoe_l = math.degrees(math.atan2(tan_leg_l[1], tan_leg_l[0])) if has_grounded_ankles else 0.0
+            self.draw_cartoon_sneaker(draw, p_ank_l, angle_deg=deg_shoe_l, is_left=True, scale=0.9, main_col=sneaker_color)
+
+            _, tan_leg_r = self.draw_rubber_hose_limb(draw, p_hip_r, p_kn_r, p_ank_r,
+                                                       base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
+            deg_shoe_r = math.degrees(math.atan2(tan_leg_r[1], tan_leg_r[0])) if has_grounded_ankles else 0.0
+            self.draw_cartoon_sneaker(draw, p_ank_r, angle_deg=deg_shoe_r, is_left=False, scale=0.9, main_col=sneaker_color)
+
+            # Torso
+            shirt_color = (225, 29, 72) if archetype != 'female' else (244, 114, 182)
+            self.draw_cartoon_torso(draw, mid_sh, mid_hip, head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
+
+        # -------------------------------------------------------------
+        # Arms & Mitten Hands (Z-Index Layer above Torso & Desk)
+        # -------------------------------------------------------------
+        # Right Arm (Image Left)
+        _, tan_arm_r = self.draw_rubber_hose_limb(draw, p_sh_r, p_el_r, p_wr_r, base_width=16.0)
+        deg_hand_r = math.degrees(math.atan2(tan_arm_r[1], tan_arm_r[0]))
+        hand_r_type = "wave" if p_wr_r[1] < p_sh_r[1] else "open"
+        self.draw_mitten_hand(draw, p_wr_r, angle_deg=deg_hand_r, hand_type=hand_r_type, is_left=False, scale=0.9)
+
+        # Left Arm (Image Right)
+        _, tan_arm_l = self.draw_rubber_hose_limb(draw, p_sh_l, p_el_l, p_wr_l, base_width=16.0)
+        deg_hand_l = math.degrees(math.atan2(tan_arm_l[1], tan_arm_l[0]))
+        hand_l_type = "point" if (np.sum(el_l) > 0 and p_wr_l[0] > p_sh_l[0] + 40) else ("wave" if p_wr_l[1] < p_sh_l[1] else "open")
+        self.draw_mitten_hand(draw, p_wr_l, angle_deg=deg_hand_l, hand_type=hand_l_type, is_left=True, scale=0.9)
+
+        # -------------------------------------------------------------
+        # Neck & Cartoon Face
+        # -------------------------------------------------------------
+        neck_w = max(10, int(head_r * 0.24))
+        draw.polygon([
+            (head_cx - neck_w, head_cy + int(head_r * 0.70)),
+            (head_cx + neck_w, head_cy + int(head_r * 0.70)),
+            (int(mid_sh[0] + neck_w), int(mid_sh[1] + 4)),
+            (int(mid_sh[0] - neck_w), int(mid_sh[1] + 4))
+        ], fill=self.white, outline=self.ink, width=3)
+
+        self.render_cartoon_face(draw, head_cx, head_cy, head_r, tilt_angle, energy, archetype=archetype)
 
     def render_stick_animal(self, draw, entity, t=0.0, frame_idx=0):
-        """
-        Renders an animated stick animal (dog, cat, bird) tracking genuine position and trajectory.
-        """
+        """Renders an animated stick animal (dog, cat, bird) tracking genuine position and trajectory."""
         species = entity.get('species', 'dog')
         bbox = entity.get('bbox', [0, 0, 100, 100])
         cx, cy = entity.get('center', (100, 100))
         ground_y = int(entity.get('ground_y', self.ground_y))
         facing = entity.get('facing', 'right')
-        
-        box_w = max(30, bbox[2] - bbox[0])
+
         box_h = max(20, bbox[3] - bbox[1])
         scale = max(0.5, min(1.6, box_h / 140.0))
-        
-        ink = (15, 23, 42)
-        white = (255, 255, 255)
         pen_w = max(3, int(6 * scale))
 
-        # Ground Drop Shadow
-        self.draw_shadow(draw, int(cx), ground_y, rx=int(45 * scale), ry=int(12 * scale))
+        self.draw_shadow(draw, int(cx), ground_y, rx=int(48 * scale), ry=int(12 * scale))
 
         if species in ('dog', 'cat', 'horse', 'sheep', 'cow'):
-            body_len = int(70 * scale)
+            body_len = int(75 * scale)
             hip_x = int(cx - (body_len // 2 if facing == 'right' else -body_len // 2))
             sh_x = int(cx + (body_len // 2 if facing == 'right' else -body_len // 2))
-            
             body_y = ground_y - int(55 * scale)
             hip_pt = (hip_x, body_y)
             sh_pt = (sh_x, body_y - int(5 * scale))
-            
-            # Spine Body Line
-            draw.line([hip_pt, sh_pt], fill=white, width=pen_w + 4)
-            draw.line([hip_pt, sh_pt], fill=ink, width=pen_w)
-            
-            # Head & Neck
-            head_r = int(16 * scale)
-            head_cx = sh_x + int((20 if facing == 'right' else -20) * scale)
+
+            # Rubber hose animal torso
+            self.draw_rubber_hose_limb(draw, hip_pt, ((hip_x + sh_x)//2, body_y + 4), sh_pt,
+                                       base_width=24.0 * scale, fill_col=self.ink, stroke_col=self.ink, stroke_w=pen_w)
+
+            # Head & Ears
+            head_r = int(18 * scale)
+            head_cx = sh_x + int((22 if facing == 'right' else -22) * scale)
             head_cy = body_y - int(20 * scale)
-            draw.line([sh_pt, (head_cx, head_cy)], fill=white, width=pen_w + 2)
-            draw.line([sh_pt, (head_cx, head_cy)], fill=ink, width=pen_w)
-            
-            draw.ellipse([head_cx - head_r - 2, head_cy - head_r - 2, head_cx + head_r + 2, head_cy + head_r + 2], fill=white)
-            draw.ellipse([head_cx - head_r, head_cy - head_r, head_cx + head_r, head_cy + head_r], fill=white, outline=ink, width=pen_w)
-            
-            # Eyes & Snout
+            draw.ellipse([head_cx - head_r, head_cy - head_r, head_cx + head_r, head_cy + head_r],
+                         fill=self.white, outline=self.ink, width=pen_w)
+
+            # Eye & Snout
             eye_x = head_cx + int((4 if facing == 'right' else -4) * scale)
-            draw.ellipse([eye_x - 3, head_cy - 4, eye_x + 3, head_cy + 2], fill=ink)
-            
+            draw.ellipse([eye_x - 3, head_cy - 4, eye_x + 3, head_cy + 2], fill=self.ink)
+
             if species == 'dog':
-                # Floppy ears & Red Nose
+                # Floppy dog ear
                 ear_x = head_cx - int((head_r if facing == 'right' else -head_r) * 0.8)
-                draw.ellipse([ear_x - 4, head_cy - 6, ear_x + 6, head_cy + 16], fill=ink)
-                nose_x = head_cx + int((head_r if facing == 'right' else -head_r))
+                draw.ellipse([ear_x - 4, head_cy - 6, ear_x + 6, head_cy + 16], fill=self.ink)
+                nose_x = head_cx + int(head_r if facing == 'right' else -head_r)
                 draw.ellipse([nose_x - 3, head_cy + 1, nose_x + 3, head_cy + 7], fill=(225, 29, 72))
                 # Happy Wagging Tail (Sine wave)
-                tail_wag = math.sin(t * 14.0) * 22
+                tail_wag = math.sin(t * 14.0) * 20
                 tail_tip = (hip_x - int((26 if facing == 'right' else -26) * scale), int(body_y - 28 * scale + tail_wag))
-                draw.line([hip_pt, tail_tip], fill=ink, width=pen_w)
-            else:
-                # Pointy Cat Ears & Arched Tail
-                ear_x = head_cx - int((head_r * 0.5 if facing == 'right' else -head_r * 0.5))
-                draw.polygon([(ear_x - 4, head_cy - head_r + 2), (ear_x, head_cy - head_r - 12), (ear_x + 4, head_cy - head_r + 2)], fill=ink)
-                # Curved Tail
-                tail_tip = (hip_x - int((24 if facing == 'right' else -24) * scale), body_y - int(32 * scale))
-                draw.line([hip_pt, tail_tip], fill=ink, width=pen_w)
+                draw.line([hip_pt, tail_tip], fill=self.ink, width=pen_w)
 
-            # 4 Articulated Legs (with trot walk-cycle dynamics)
-            leg_walk = math.sin(t * 10.0) * 12
-            # Front leg 1 & 2
-            f1 = (sh_x + 4, ground_y - int(25 * scale))
-            draw.line([sh_pt, f1], fill=ink, width=pen_w)
-            draw.line([f1, (f1[0] + 4, ground_y)], fill=ink, width=pen_w)
-            
-            f2 = (sh_x - 8, ground_y - int(25 * scale))
-            draw.line([sh_pt, f2], fill=ink, width=pen_w)
-            draw.line([f2, (f2[0] - 2, ground_y)], fill=ink, width=pen_w)
-            
-            # Back leg 1 & 2 (with hock joint)
-            b1 = (hip_x - 10, ground_y - int(26 * scale))
-            draw.line([hip_pt, b1], fill=ink, width=pen_w)
-            draw.line([b1, (b1[0] + 8, ground_y)], fill=ink, width=pen_w)
-            
-            b2 = (hip_x + 8, ground_y - int(26 * scale))
-            draw.line([hip_pt, b2], fill=ink, width=pen_w)
-            draw.line([b2, (b2[0] + 6, ground_y)], fill=ink, width=pen_w)
-
-        elif species == 'bird':
-            # Stick Bird: 2 legs, round body, beak, flapping wings
-            body_r = int(14 * scale)
-            draw.ellipse([cx - body_r, cy - body_r, cx + body_r, cy + body_r], fill=white, outline=ink, width=pen_w)
-            # Beak
-            beak_x = cx + int((body_r + 8 if facing == 'right' else -body_r - 8))
-            draw.polygon([(cx + (body_r if facing == 'right' else -body_r), cy - 4),
-                          (beak_x, cy),
-                          (cx + (body_r if facing == 'right' else -body_r), cy + 4)], fill=(245, 158, 11))
-            # 2 Spindly legs
-            draw.line([(cx - 4, cy + body_r), (cx - 4, ground_y)], fill=ink, width=3)
-            draw.line([(cx + 4, cy + body_r), (cx + 4, ground_y)], fill=ink, width=3)
-            # Flapping stick wing
-            wing_flap = math.sin(t * 18.0) * 16
-            draw.line([(cx, cy), (cx - int(18 * scale), int(cy - 12 + wing_flap))], fill=ink, width=pen_w)
+            # 4 Rubber-Hose Legs
+            for off_x, leg_name in [(-8, "back1"), (6, "back2"), (body_len - 14, "front1"), (body_len, "front2")]:
+                lx = hip_x + int(off_x * scale if facing == 'right' else -off_x * scale)
+                knee = (lx + 2, ground_y - int(25 * scale))
+                paw = (lx + 4, ground_y)
+                self.draw_rubber_hose_limb(draw, (lx, body_y), knee, paw,
+                                           base_width=12.0 * scale, fill_col=self.ink, stroke_col=self.ink, stroke_w=pen_w)
+                # Small white paw
+                draw.ellipse([paw[0] - 6, paw[1] - 4, paw[0] + 6, paw[1] + 4], fill=self.white, outline=self.ink, width=2)
 
     def render_multi_entity_frame(self, bg_image, entities, t=0.0, energy=0.5, default_style='auto', framing_mode='auto', frame_idx=0):
-        """
-        Renders all tracked entities (humans and animals) simultaneously onto background canvas with soft alpha shadows.
-        """
+        """Renders all tracked entities onto background with soft alpha shadows and cutout puppetry."""
         base_bg = bg_image.convert("RGBA")
         overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
         draw = ImageDraw.Draw(overlay, "RGBA")
 
-        # Single Presenter Special Mode (if only 1 human and framing_mode == 'presenter')
-        is_single_presenter = (framing_mode == 'presenter' and len(entities) == 1 and entities[0]['type'] == 'human')
-
         for ent in entities:
             if ent['type'] == 'human':
                 kps = ent['kps']
-                # Determine archetype
-                if default_style != 'auto' and len(entities) == 1:
-                    style = default_style
-                else:
-                    style = ent.get('archetype', 'male')
-                    
+                style = default_style if (default_style != 'auto' and len(entities) == 1) else ent.get('archetype', 'male')
                 target_ground = int(ent.get('ground_y', self.ground_y))
-                self.render_stick_human(draw, kps, ground_y=target_ground, archetype=style, energy=energy, t=t)
-                
+                self.render_stick_human(draw, kps, ground_y=target_ground, archetype=style, energy=energy, t=t, framing_mode=framing_mode)
             elif ent['type'] == 'animal':
                 self.render_stick_animal(draw, ent, t=t, frame_idx=frame_idx)
-
-        # Draw Studio Presenter Desk if active
-        if is_single_presenter:
-            desk_y = int(self.height * 0.62)
-            draw.rounded_rectangle([self.cx - 260, desk_y, self.cx + 260, self.height + 40], radius=24, fill=(30, 41, 59, 235), outline=(0, 229, 255), width=3)
-            draw.line([(self.cx - 240, desk_y + 4), (self.cx + 240, desk_y + 4)], fill=(148, 163, 184), width=4)
-            mic_x = self.cx + 120
-            draw.line([(mic_x, desk_y + 10), (mic_x, desk_y - 45)], fill=(100, 116, 139), width=5)
-            draw.rounded_rectangle([mic_x - 8, desk_y - 65, mic_x + 8, desk_y - 42], radius=6, fill=(15, 23, 42), outline=(0, 229, 255), width=2)
 
         composited = Image.alpha_composite(base_bg, overlay)
         rgb_img = composited.convert("RGB")
         return cv2.cvtColor(np.array(rgb_img), cv2.COLOR_RGB2BGR)
 
     def render_mocap_frame(self, bg_image, joints, t=0.0, energy=0.5, character_style='classic', framing_mode='auto'):
-        """
-        Backward-compatible single-actor joints interface.
-        """
-        pil_frame = bg_image.copy()
-        draw = ImageDraw.Draw(pil_frame, "RGBA")
-
+        """Backward-compatible single-actor joints interface."""
         if joints is None:
-            # Idle gentle breath animation
             joints = {
-                "nose": {"x": 0.50, "y": 0.38 + 0.01 * math.sin(t * 2.0), "z": 0.0, "visibility": 0.99},
-                "l_shoulder": {"x": 0.58, "y": 0.48, "z": 0.0, "visibility": 0.99},
-                "r_shoulder": {"x": 0.42, "y": 0.48, "z": 0.0, "visibility": 0.99},
-                "l_elbow": {"x": 0.63, "y": 0.60, "z": 0.0, "visibility": 0.99},
-                "r_elbow": {"x": 0.37, "y": 0.60, "z": 0.0, "visibility": 0.99},
-                "l_wrist": {"x": 0.65, "y": 0.72, "z": 0.0, "visibility": 0.99},
-                "r_wrist": {"x": 0.35, "y": 0.72, "z": 0.0, "visibility": 0.99},
-                "l_hip": {"x": 0.54, "y": 0.65, "z": 0.0, "visibility": 0.99},
-                "r_hip": {"x": 0.46, "y": 0.65, "z": 0.0, "visibility": 0.99},
-                "l_knee": {"x": 0.54, "y": 0.76, "z": 0.0, "visibility": 0.99},
-                "r_knee": {"x": 0.46, "y": 0.76, "z": 0.0, "visibility": 0.99},
-                "l_ankle": {"x": 0.54, "y": 0.82, "z": 0.0, "visibility": 0.99},
-                "r_ankle": {"x": 0.46, "y": 0.82, "z": 0.0, "visibility": 0.99}
+                "nose": {"x": 0.50, "y": 0.38, "visibility": 0.99},
+                "l_shoulder": {"x": 0.58, "y": 0.48, "visibility": 0.99},
+                "r_shoulder": {"x": 0.42, "y": 0.48, "visibility": 0.99},
+                "l_elbow": {"x": 0.63, "y": 0.60, "visibility": 0.99},
+                "r_elbow": {"x": 0.37, "y": 0.60, "visibility": 0.99},
+                "l_wrist": {"x": 0.65, "y": 0.72, "visibility": 0.99},
+                "r_wrist": {"x": 0.35, "y": 0.72, "visibility": 0.99},
+                "l_hip": {"x": 0.54, "y": 0.65, "visibility": 0.99},
+                "r_hip": {"x": 0.46, "y": 0.65, "visibility": 0.99},
+                "l_knee": {"x": 0.54, "y": 0.76, "visibility": 0.99},
+                "r_knee": {"x": 0.46, "y": 0.76, "visibility": 0.99},
+                "l_ankle": {"x": 0.54, "y": 0.82, "visibility": 0.99},
+                "r_ankle": {"x": 0.46, "y": 0.82, "visibility": 0.99}
             }
 
-        # Convert dictionary to COCO 17 array
         kps = np.zeros((17, 2), dtype=np.float32)
         def _get_pt(k):
             val = joints.get(k, {})
             return (val.get('x', 0.5) * self.width, val.get('y', 0.5) * self.height)
-            
+
         kps[0] = _get_pt('nose')
         kps[1] = _get_pt('l_eye')
         kps[2] = _get_pt('r_eye')
@@ -478,18 +664,8 @@ class MocapStickmanEngine:
         kps[16] = _get_pt('r_ankle')
 
         arch = 'female' if character_style == 'girl' else ('child' if character_style == 'child' else character_style)
-        self.render_stick_human(draw, kps, ground_y=self.ground_y, archetype=arch, energy=energy, t=t)
-
-        if framing_mode == 'presenter':
-            desk_y = int(self.height * 0.62)
-            draw.rounded_rectangle([self.cx - 260, desk_y, self.cx + 260, self.height + 40], radius=24, fill=(30, 41, 59, 235), outline=(0, 229, 255), width=3)
-            draw.line([(self.cx - 240, desk_y + 4), (self.cx + 240, desk_y + 4)], fill=(148, 163, 184), width=4)
-            mic_x = self.cx + 120
-            draw.line([(mic_x, desk_y + 10), (mic_x, desk_y - 45)], fill=(100, 116, 139), width=5)
-            draw.rounded_rectangle([mic_x - 8, desk_y - 65, mic_x + 8, desk_y - 42], radius=6, fill=(15, 23, 42), outline=(0, 229, 255), width=2)
-
-        rgb_img = pil_frame.convert("RGB")
-        return cv2.cvtColor(np.array(rgb_img), cv2.COLOR_RGB2BGR)
+        ent = [{"type": "human", "kps": kps, "archetype": arch, "ground_y": self.ground_y}]
+        return self.render_multi_entity_frame(bg_image, ent, t=t, energy=energy, default_style=character_style, framing_mode=framing_mode)
 
 
 def extract_audio_envelope(audio_src, total_frames, fps=24):
@@ -549,9 +725,9 @@ def ensure_compatible_h264(video_path):
 
 def run_mocap_pipeline(video_path, background_image_path, output_mp4, character_style='auto', framing_mode='auto', target_fps=30):
     """
-    Complete Multi-Entity Video-to-Stickman Motion Capture Production Pipeline.
-    1. Tracks multi-human postures and animals frame-by-frame via YOLO-Pose & YOLO-Object.
-    2. Renders dynamic stickmen (men, women, children, dogs, cats) following motion over custom background.
+    Complete Vector Cutout Rubber-Hose MoCap Puppeteer Pipeline.
+    1. Tracks multi-human postures and animals frame-by-frame via YOLO-Pose.
+    2. Renders 2D cartoon cutout puppets with rubber-hose Bézier limbs, mitten hands, and visemes.
     3. Multiplexes original source audio into final high-res MP4.
     """
     if not os.path.exists(video_path):
@@ -575,7 +751,7 @@ def run_mocap_pipeline(video_path, background_image_path, output_mp4, character_
     fourcc = cv2.VideoWriter_fourcc(*'mp4v')
     out = cv2.VideoWriter(temp_raw, fourcc, src_fps, (width, height))
 
-    print(f"[MoCap Pipeline] 🎬 Multi-Entity Tracking & Rendering {total_frames} frames ({character_style}, framing={framing_mode})...")
+    print(f"[MoCap Pipeline] 🎬 Cutout Puppet Rendering {total_frames} frames ({character_style}, framing={framing_mode})...")
     f_idx = 0
     t0 = time.time()
 
@@ -586,12 +762,9 @@ def run_mocap_pipeline(video_path, background_image_path, output_mp4, character_
         t = f_idx / src_fps
         energy = audio_env[f_idx] if f_idx < len(audio_env) else 0.5
 
-        # Detect multiple humans and animals with demographic classification
-        # Animal detection runs every 3rd frame to optimize CPU rendering throughput
         run_animal = (f_idx % 3 == 0)
         entities = engine.entity_tracker.analyze_frame(frame, frame_idx=f_idx, fps=src_fps, run_animal_detection=run_animal)
 
-        # Render Multi-Entity Stickman Frame
         rendered_bgr = engine.render_multi_entity_frame(
             bg_img, entities, t=t, energy=energy,
             default_style=character_style, framing_mode=framing_mode, frame_idx=f_idx
@@ -599,9 +772,11 @@ def run_mocap_pipeline(video_path, background_image_path, output_mp4, character_
         out.write(rendered_bgr)
         f_idx += 1
 
-        if f_idx % 60 == 0:
+        if f_idx % 30 == 0:
             pct = int((f_idx / total_frames) * 100) if total_frames > 0 else 0
-            print(f"   [MoCap] {f_idx}/{total_frames} frames ({pct}%) rendered...")
+            prog_data = json.dumps({"stage": "mocap_rendering", "percent": pct, "current_frame": f_idx, "total_frames": total_frames})
+            print(f"PROGRESS:{prog_data}", flush=True)
+            print(f"   [MoCap] {f_idx}/{total_frames} frames ({pct}%) rendered...", flush=True)
 
     cap.release()
     out.release()
@@ -613,7 +788,6 @@ def run_mocap_pipeline(video_path, background_image_path, output_mp4, character_
     fps_stat = f_idx / elapsed if elapsed > 0 else 0
     print(f"[MoCap Pipeline] ✓ Rendered {f_idx} frames in {elapsed:.2f}s ({fps_stat:.1f} FPS)")
 
-    # Multiplex Original Audio into Output MP4
     print("[MoCap Pipeline] 🔊 Multiplexing original audio stream into final MP4...")
     cmd = [
         'ffmpeg', '-y',

@@ -206,7 +206,16 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             target_video, bg_path, output_mp4,
             character_style=char_style, framing_mode=framing_mode, target_fps=fps
         )
-        report_progress("complete", 100, total_frames, total_frames, "Render complete!")
+        report_progress("completed", 100, total_frames, total_frames, "Render complete!")
+        dest_dir = cfg.get('destination_dir')
+        if dest_dir and os.path.isdir(dest_dir):
+            dest_file = os.path.join(dest_dir, os.path.basename(output_mp4))
+            try:
+                import shutil
+                shutil.copy2(output_mp4, dest_file)
+                print(f"COPIED_DESTINATION:{dest_file}", flush=True)
+            except Exception as e:
+                print(f"Warning: Failed to copy to destination_dir: {e}", flush=True)
         return out_res
 
     # Video reader if split_pip is enabled and video_path exists

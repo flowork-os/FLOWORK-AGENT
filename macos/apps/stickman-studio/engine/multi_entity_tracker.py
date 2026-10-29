@@ -125,38 +125,61 @@ class MultiEntityTracker:
         scale_x = self.width / float(orig_w)
         scale_y = self.height / float(orig_h)
         
-        # 1. Detect Humans (YOLO-Pose)
-        pose_res = self.pose_model(frame, verbose=False)[0]
+        # 1. Detect Humans (YOLO-Pose with conf >= 0.50)
+        pose_res = self.pose_model(frame, verbose=False, conf=0.50)[0]
         human_dets = []
         raw_human_boxes = []
-        
+
         if pose_res.keypoints is not None and len(pose_res.keypoints) > 0:
             kps_all = pose_res.keypoints.xy.cpu().numpy()
             boxes_all = pose_res.boxes.xyxy.cpu().numpy()
-            
-            for kps, box in zip(kps_all, boxes_all):
-                if np.sum(kps) == 0:
+            confs_all = pose_res.boxes.conf.cpu().numpy()
+
+            filtered_entries = []
+            for kps, box, conf in zip(kps_all, boxes_all, confs_all):
+                if conf < 0.50 or np.sum(kps) == 0:
+                    continue
+                # Require shoulders and head to avoid phantom limb / furniture hallucinations
+                has_sh = (np.sum(kps[5]) > 0 and np.sum(kps[6]) > 0)
+                has_head = (np.sum(kps[0]) > 0 or (np.sum(kps[1]) > 0 and np.sum(kps[2]) > 0))
+                area_pct = ((box[2] - box[0]) * (box[3] - box[1])) / float(orig_w * orig_h)
+                if not has_sh or not has_head or area_pct < 0.04:
                     continue
                 raw_human_boxes.append(box)
-                
-            for kps, box in zip(kps_all, boxes_all):
-                if np.sum(kps) == 0:
-                    continue
+                filtered_entries.append((conf, box, kps))
+
+            # Deduplicate vertical body splits (if one box is directly below another in same X column)
+            filtered_entries.sort(key=lambda x: x[0], reverse=True)
+            kept_entries = []
+            for conf, box, kps in filtered_entries:
+                overlap = False
+                for k_conf, k_box, _ in kept_entries:
+                    x_left = max(box[0], k_box[0])
+                    x_right = min(box[2], k_box[2])
+                    if x_right > x_left:
+                        col_overlap = (x_right - x_left) / float(min(box[2] - box[0], k_box[2] - k_box[0]))
+                        if col_overlap > 0.65:
+                            overlap = True
+                            break
+                if not overlap:
+                    kept_entries.append((conf, box, kps))
+
+            for conf, box, kps in kept_entries:
                 # Scale keypoints to target canvas (720x1280)
                 scaled_kps = kps.copy()
                 scaled_kps[:, 0] *= scale_x
                 scaled_kps[:, 1] *= scale_y
-                
+
                 scaled_box = [
                     box[0] * scale_x, box[1] * scale_y,
                     box[2] * scale_x, box[3] * scale_y
                 ]
-                
+
                 cx = (scaled_box[0] + scaled_box[2]) / 2.0
-                cy = (scaled_box[1] + scaled_box[2]) / 2.0
-                
+                cy = (scaled_box[1] + scaled_box[3]) / 2.0
+
                 archetype = self._classify_human(kps, box, raw_human_boxes)
-                
+
                 human_dets.append({
                     "type": "human",
                     "archetype": archetype,
