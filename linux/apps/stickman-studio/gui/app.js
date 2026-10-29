@@ -129,7 +129,7 @@
     isPlaying: false,
     startTime: 0,
     selectedProfile: 'kids',
-    characterArchetype: 'classic',
+    characterArchetype: 'auto',
     renderMode: 'mocap', // Video MoCap AI tracking standard
     framingMode: 'auto',
     customBackgroundPath: null,
