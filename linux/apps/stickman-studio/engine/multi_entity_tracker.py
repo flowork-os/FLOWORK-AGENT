@@ -17,12 +17,26 @@ from PIL import Image, ImageDraw, ImageFont
 # Suppress YOLO verbose output
 os.environ["YOLO_VERBOSE"] = "False"
 
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+from stickman_motion_smoother import OneEuroFilter, MocapMotionProcessor
+
 
 class MultiEntityTracker:
     def __init__(self, width=720, height=1280, smoothing_alpha=0.60):
         self.width = width
         self.height = height
         self.alpha = smoothing_alpha
+        
+        # Mocap Motion Processor (OneEuro adaptive filter + Cartoon Pose Snapper on Twos)
+        self.motion_processor = MocapMotionProcessor(
+            fps=30.0,
+            enable_one_euro=True,
+            enable_snapping=True,
+            enable_on_twos=True,
+            min_cutoff=0.85,
+            beta=0.025,
+            deadzone_radius=3.0
+        )
         
         # Active tracks: {track_id: dict_data}
         self.tracks = {}
@@ -47,6 +61,7 @@ class MultiEntityTracker:
         """Reset state between videos."""
         self.tracks.clear()
         self.next_track_id = 1
+        self.motion_processor.reset()
 
     def _match_tracks(self, detections, track_type='human', max_dist=160.0):
         """Matches current detections with existing active tracks using Euclidean distance."""
@@ -220,13 +235,16 @@ class MultiEntityTracker:
                         })
 
         # 3. Temporal Tracking Update (Match or Spawn)
+        if fps > 0:
+            self.motion_processor.fps = float(fps)
+        t_sec = frame_idx / float(fps if fps > 0 else 24.0)
         # Update humans
         matched_h, un_det_h, un_track_h = self._match_tracks(human_dets, track_type='human')
         for det_idx, t_id in matched_h:
             det = human_dets[det_idx]
             old_t = self.tracks[t_id]
-            # Smooth keypoints with Exponential Moving Average (EMA)
-            sm_kps = self.alpha * det['kps'] + (1.0 - self.alpha) * old_t['kps']
+            # Smooth & snap keypoints with MocapMotionProcessor (OneEuro + Cartoon Pose Snapper on Twos)
+            sm_kps = self.motion_processor.process_frame(t_id, det['kps'], timestamp=t_sec, frame_idx=frame_idx)
             # Demographic stability voting
             old_t['archetype_votes'].append(det['archetype'])
             if len(old_t['archetype_votes']) > 15:
@@ -251,10 +269,11 @@ class MultiEntityTracker:
             det = human_dets[det_idx]
             new_id = self.next_track_id
             self.next_track_id += 1
+            sm_kps = self.motion_processor.process_frame(new_id, det['kps'], timestamp=t_sec, frame_idx=frame_idx)
             self.tracks[new_id] = {
                 "id": new_id,
                 "type": "human",
-                "kps": det['kps'],
+                "kps": sm_kps,
                 "bbox": det['bbox'],
                 "center": det['center'],
                 "ground_y": det['ground_y'],

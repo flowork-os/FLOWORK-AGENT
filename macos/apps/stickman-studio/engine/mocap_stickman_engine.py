@@ -89,10 +89,16 @@ class MocapStickmanEngine:
         if not os.path.exists(self.font_bold_path):
             self.font_bold_path = "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf"
 
+        # Biomechanical & Kinematic Rig Stabilizers
+        self.prev_hand_angles = {}
+        self.foot_locks = {}
+
     def reset(self):
         """Reset temporal smoothing state between clips."""
         self.prev_joints = None
         self.entity_tracker.reset()
+        self.prev_hand_angles.clear()
+        self.foot_locks.clear()
 
     def load_background(self, bg_image_path=None):
         """Loads and cover-crops custom background image or generates a clean studio gradient."""
@@ -421,27 +427,38 @@ class MocapStickmanEngine:
         L_fore = int(head_r * 1.35)
         L_torso = int(head_r * (1.8 if archetype == 'child' else 2.3))
 
-        # Helper to compute joint angles from tracking
+        # Helper to compute joint angles from tracking with distance threshold
         def get_joint_angle(p1, p2, default_rad):
             if np.sum(p1) > 0 and np.sum(p2) > 0:
-                return math.atan2(p2[1] - p1[1], p2[0] - p1[0])
+                dx = p2[0] - p1[0]
+                dy = p2[1] - p1[1]
+                if math.hypot(dx, dy) >= 6.0:
+                    return math.atan2(dy, dx)
             return default_rad
 
-        # Arm Angles:
+        # Arm Angles with Biomechanical Joint Clamps (Anti-Elbow Hyperextension):
         # Note: sh_r (index 6) is actor right = image left (smaller X).
         #       sh_l (index 5) is actor left = image right (larger X).
         ang_up_r = get_joint_angle(sh_r, el_r, math.radians(70))
-        ang_fore_r = get_joint_angle(el_r, wr_r, math.radians(45))
+        ang_fore_r_raw = get_joint_angle(el_r, wr_r, math.radians(45))
+        # Clamp Right Elbow: inward flexion [-2.62, +0.20]
+        diff_r = math.atan2(math.sin(ang_fore_r_raw - ang_up_r), math.cos(ang_fore_r_raw - ang_up_r))
+        diff_r = max(-2.62, min(0.20, diff_r))
+        ang_fore_r = ang_up_r + diff_r
 
         ang_up_l = get_joint_angle(sh_l, el_l, math.radians(110))
-        ang_fore_l = get_joint_angle(el_l, wr_l, math.radians(135))
+        ang_fore_l_raw = get_joint_angle(el_l, wr_l, math.radians(135))
+        # Clamp Left Elbow: inward flexion [-0.20, +2.62]
+        diff_l = math.atan2(math.sin(ang_fore_l_raw - ang_up_l), math.cos(ang_fore_l_raw - ang_up_l))
+        diff_l = max(-0.20, min(2.62, diff_l))
+        ang_fore_l = ang_up_l + diff_l
 
         # Scaled puppet shoulder coordinates centered on mid_sh
         sh_span = max(55, min(100, int(head_r * 1.25)))
         p_sh_r = (int(mid_sh[0] - sh_span), int(mid_sh[1]))
         p_sh_l = (int(mid_sh[0] + sh_span), int(mid_sh[1]))
 
-        # Arm Joints FK
+        # Arm Joints FK (Strictly rigid bone lengths)
         p_el_r = (int(p_sh_r[0] + L_upper * math.cos(ang_up_r)), int(p_sh_r[1] + L_upper * math.sin(ang_up_r)))
         p_wr_r = (int(p_el_r[0] + L_fore * math.cos(ang_fore_r)), int(p_el_r[1] + L_fore * math.sin(ang_fore_r)))
 
@@ -457,9 +474,12 @@ class MocapStickmanEngine:
             desk_y = min(self.height - 50, max(int(self.height * 0.40), int(mid_hip[1] + 10)))
             desk_bot = max(desk_y + 40, self.height)
 
-            # Torso: Fitted Polo / Shirt
-            shirt_color = (30, 41, 59) if archetype != 'female' else (244, 114, 182)
-            self.draw_cartoon_torso(draw, mid_sh, (mid_sh[0], desk_y), head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
+            # Torso: Fitted Polo / Shirt or Classic Line
+            if archetype == 'classic':
+                draw.line([mid_sh, (mid_sh[0], desk_y)], fill=self.ink, width=12)
+            else:
+                shirt_color = (30, 41, 59) if archetype != 'female' else (244, 114, 182)
+                self.draw_cartoon_torso(draw, mid_sh, (mid_sh[0], desk_y), head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
 
             # Modern Studio Acrylic Desk
             draw.rounded_rectangle([30, desk_y, self.width - 30, desk_bot], radius=24,
@@ -478,7 +498,7 @@ class MocapStickmanEngine:
 
         else:
             # ---------------------------------------------------------
-            # FULL-BODY STANDING FRAMING
+            # FULL-BODY STANDING FRAMING (Grounded, Anti-Foot Slide)
             # ---------------------------------------------------------
             L_thigh = int(head_r * (1.2 if archetype == 'child' else 1.6))
             L_calf = int(head_r * (1.2 if archetype == 'child' else 1.6))
@@ -487,51 +507,123 @@ class MocapStickmanEngine:
             p_hip_r = (int(mid_hip[0] - hip_span // 2), int(mid_hip[1]))
 
             ang_thigh_r = get_joint_angle(hip_r, kps[14], math.radians(85))
-            ang_calf_r = get_joint_angle(kps[14], kps[16], math.radians(90))
+            ang_calf_r_raw = get_joint_angle(kps[14], kps[16], math.radians(90))
+            # Clamp Right Knee: only bend backwards
+            diff_kn_r = math.atan2(math.sin(ang_calf_r_raw - ang_thigh_r), math.cos(ang_calf_r_raw - ang_thigh_r))
+            diff_kn_r = max(-2.4, min(0.15, diff_kn_r))
+            ang_calf_r = ang_thigh_r + diff_kn_r
+
             ang_thigh_l = get_joint_angle(hip_l, kps[13], math.radians(95))
-            ang_calf_l = get_joint_angle(kps[13], kps[15], math.radians(90))
+            ang_calf_l_raw = get_joint_angle(kps[13], kps[15], math.radians(90))
+            # Clamp Left Knee: only bend backwards
+            diff_kn_l = math.atan2(math.sin(ang_calf_l_raw - ang_thigh_l), math.cos(ang_calf_l_raw - ang_thigh_l))
+            diff_kn_l = max(-0.15, min(2.4, diff_kn_l))
+            ang_calf_l = ang_thigh_l + diff_kn_l
 
             p_kn_r = (int(p_hip_r[0] + L_thigh * math.cos(ang_thigh_r)), int(p_hip_r[1] + L_thigh * math.sin(ang_thigh_r)))
-            p_ank_r = (int(p_kn_r[0] + L_calf * math.cos(ang_calf_r)), target_ground)
-
             p_kn_l = (int(p_hip_l[0] + L_thigh * math.cos(ang_thigh_l)), int(p_hip_l[1] + L_thigh * math.sin(ang_thigh_l)))
-            p_ank_l = (int(p_kn_l[0] + L_calf * math.cos(ang_calf_l)), target_ground)
+
+            # Foot ground contact detection
+            raw_ank_r_y = kps[16][1] if np.sum(kps[16]) > 0 else target_ground
+            raw_ank_l_y = kps[15][1] if np.sum(kps[15]) > 0 else target_ground
+            ground_thresh = target_ground - max(45, int(L_calf * 0.70))
+            is_r_grounded = (raw_ank_r_y >= ground_thresh)
+            is_l_grounded = (raw_ank_l_y >= ground_thresh)
+
+            calc_ank_r_x = int(p_kn_r[0] + L_calf * math.cos(ang_calf_r))
+            calc_ank_l_x = int(p_kn_l[0] + L_calf * math.cos(ang_calf_l))
+
+            # Smart Foot Locking: Plant feet solidly on floor without ice-skate sliding
+            if is_r_grounded:
+                locked_r = self.foot_locks.get('r')
+                if locked_r is not None and abs(calc_ank_r_x - locked_r) < 22:
+                    p_ank_r = (locked_r, target_ground)
+                else:
+                    self.foot_locks['r'] = calc_ank_r_x
+                    p_ank_r = (calc_ank_r_x, target_ground)
+            else:
+                self.foot_locks['r'] = None
+                p_ank_r = (calc_ank_r_x, min(target_ground, int(p_kn_r[1] + L_calf * math.sin(ang_calf_r))))
+
+            if is_l_grounded:
+                locked_l = self.foot_locks.get('l')
+                if locked_l is not None and abs(calc_ank_l_x - locked_l) < 22:
+                    p_ank_l = (locked_l, target_ground)
+                else:
+                    self.foot_locks['l'] = calc_ank_l_x
+                    p_ank_l = (calc_ank_l_x, target_ground)
+            else:
+                self.foot_locks['l'] = None
+                p_ank_l = (calc_ank_l_x, min(target_ground, int(p_kn_l[1] + L_calf * math.sin(ang_calf_l))))
 
             # Soft Floor Shadow
             self.draw_shadow(draw, int(mid_sh[0]), target_ground, rx=int(head_r * 1.8), ry=int(head_r * 0.40))
 
-            # Denim Blue Legs & Sneakers
-            pants_color = (30, 58, 138)
-            sneaker_color = (225, 29, 72) if archetype != 'female' else (236, 72, 153)
+            if archetype == 'classic':
+                # Classic Stickman Pure Lines
+                draw.line([p_hip_l, p_kn_l, p_ank_l], fill=self.ink, width=10, joint="curve")
+                draw.line([p_hip_r, p_kn_r, p_ank_r], fill=self.ink, width=10, joint="curve")
+                # Sleek rounded feet
+                draw.ellipse([p_ank_l[0] - 12, p_ank_l[1] - 6, p_ank_l[0] + 12, p_ank_l[1] + 6], fill=self.ink)
+                draw.ellipse([p_ank_r[0] - 12, p_ank_r[1] - 6, p_ank_r[0] + 12, p_ank_r[1] + 6], fill=self.ink)
+                # Pure Torso Line
+                draw.line([mid_sh, mid_hip], fill=self.ink, width=12)
+            else:
+                # Denim Blue Legs & Sneakers
+                pants_color = (30, 58, 138)
+                sneaker_color = (225, 29, 72) if archetype != 'female' else (236, 72, 153)
 
-            _, tan_leg_l = self.draw_rubber_hose_limb(draw, p_hip_l, p_kn_l, p_ank_l,
-                                                       base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
-            deg_shoe_l = math.degrees(math.atan2(tan_leg_l[1], tan_leg_l[0])) if has_grounded_ankles else 0.0
-            self.draw_cartoon_sneaker(draw, p_ank_l, angle_deg=deg_shoe_l, is_left=True, scale=0.9, main_col=sneaker_color)
+                _, tan_leg_l = self.draw_rubber_hose_limb(draw, p_hip_l, p_kn_l, p_ank_l,
+                                                           base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
+                deg_shoe_l = math.degrees(math.atan2(p_ank_l[1] - p_kn_l[1], p_ank_l[0] - p_kn_l[0])) if has_grounded_ankles else 0.0
+                self.draw_cartoon_sneaker(draw, p_ank_l, angle_deg=deg_shoe_l, is_left=True, scale=0.9, main_col=sneaker_color)
 
-            _, tan_leg_r = self.draw_rubber_hose_limb(draw, p_hip_r, p_kn_r, p_ank_r,
-                                                       base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
-            deg_shoe_r = math.degrees(math.atan2(tan_leg_r[1], tan_leg_r[0])) if has_grounded_ankles else 0.0
-            self.draw_cartoon_sneaker(draw, p_ank_r, angle_deg=deg_shoe_r, is_left=False, scale=0.9, main_col=sneaker_color)
+                _, tan_leg_r = self.draw_rubber_hose_limb(draw, p_hip_r, p_kn_r, p_ank_r,
+                                                           base_width=17.0, fill_col=pants_color, stroke_col=self.ink, stroke_w=4)
+                deg_shoe_r = math.degrees(math.atan2(p_ank_r[1] - p_kn_r[1], p_ank_r[0] - p_kn_r[0])) if has_grounded_ankles else 0.0
+                self.draw_cartoon_sneaker(draw, p_ank_r, angle_deg=deg_shoe_r, is_left=False, scale=0.9, main_col=sneaker_color)
 
-            # Torso
-            shirt_color = (225, 29, 72) if archetype != 'female' else (244, 114, 182)
-            self.draw_cartoon_torso(draw, mid_sh, mid_hip, head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
+                # Torso
+                shirt_color = (225, 29, 72) if archetype != 'female' else (244, 114, 182)
+                self.draw_cartoon_torso(draw, mid_sh, mid_hip, head_r, archetype=archetype, color=shirt_color, sh_span=sh_span)
 
         # -------------------------------------------------------------
-        # Arms & Mitten Hands (Z-Index Layer above Torso & Desk)
+        # Arms & Hands (Z-Index Layer above Torso & Desk)
         # -------------------------------------------------------------
-        # Right Arm (Image Left)
-        _, tan_arm_r = self.draw_rubber_hose_limb(draw, p_sh_r, p_el_r, p_wr_r, base_width=16.0)
-        deg_hand_r = math.degrees(math.atan2(tan_arm_r[1], tan_arm_r[0]))
-        hand_r_type = "wave" if p_wr_r[1] < p_sh_r[1] else "open"
-        self.draw_mitten_hand(draw, p_wr_r, angle_deg=deg_hand_r, hand_type=hand_r_type, is_left=False, scale=0.9)
+        if archetype == 'classic':
+            # Classic Pure Ink Arm Lines
+            draw.line([p_sh_r, p_el_r, p_wr_r], fill=self.ink, width=10, joint="curve")
+            draw.line([p_sh_l, p_el_l, p_wr_l], fill=self.ink, width=10, joint="curve")
+            draw.ellipse([p_wr_r[0] - 10, p_wr_r[1] - 10, p_wr_r[0] + 10, p_wr_r[1] + 10], fill=self.ink)
+            draw.ellipse([p_wr_l[0] - 10, p_wr_l[1] - 10, p_wr_l[0] + 10, p_wr_l[1] + 10], fill=self.ink)
+        else:
+            # Stable Forearm Vector Angle (Immune to Bezier tangent flipping)
+            rad_hand_r = math.atan2(p_wr_r[1] - p_el_r[1], p_wr_r[0] - p_el_r[0])
+            rad_hand_l = math.atan2(p_wr_l[1] - p_el_l[1], p_wr_l[0] - p_el_l[0])
 
-        # Left Arm (Image Right)
-        _, tan_arm_l = self.draw_rubber_hose_limb(draw, p_sh_l, p_el_l, p_wr_l, base_width=16.0)
-        deg_hand_l = math.degrees(math.atan2(tan_arm_l[1], tan_arm_l[0]))
-        hand_l_type = "point" if (np.sum(el_l) > 0 and p_wr_l[0] > p_sh_l[0] + 40) else ("wave" if p_wr_l[1] < p_sh_l[1] else "open")
-        self.draw_mitten_hand(draw, p_wr_l, angle_deg=deg_hand_l, hand_type=hand_l_type, is_left=True, scale=0.9)
+            # Smooth hand angle temporally to eliminate any micro-jitter
+            prev_r = self.prev_hand_angles.get('r', rad_hand_r)
+            diff_r = math.atan2(math.sin(rad_hand_r - prev_r), math.cos(rad_hand_r - prev_r))
+            rad_hand_r = prev_r + 0.65 * diff_r
+            self.prev_hand_angles['r'] = rad_hand_r
+
+            prev_l = self.prev_hand_angles.get('l', rad_hand_l)
+            diff_l = math.atan2(math.sin(rad_hand_l - prev_l), math.cos(rad_hand_l - prev_l))
+            rad_hand_l = prev_l + 0.65 * diff_l
+            self.prev_hand_angles['l'] = rad_hand_l
+
+            deg_hand_r = math.degrees(rad_hand_r)
+            deg_hand_l = math.degrees(rad_hand_l)
+
+            # Right Arm (Image Left)
+            self.draw_rubber_hose_limb(draw, p_sh_r, p_el_r, p_wr_r, base_width=16.0)
+            hand_r_type = "wave" if p_wr_r[1] < p_sh_r[1] else "open"
+            self.draw_mitten_hand(draw, p_wr_r, angle_deg=deg_hand_r, hand_type=hand_r_type, is_left=False, scale=0.9)
+
+            # Left Arm (Image Right)
+            self.draw_rubber_hose_limb(draw, p_sh_l, p_el_l, p_wr_l, base_width=16.0)
+            hand_l_type = "point" if (np.sum(el_l) > 0 and p_wr_l[0] > p_sh_l[0] + 40) else ("wave" if p_wr_l[1] < p_sh_l[1] else "open")
+            self.draw_mitten_hand(draw, p_wr_l, angle_deg=deg_hand_l, hand_type=hand_l_type, is_left=True, scale=0.9)
 
         # -------------------------------------------------------------
         # Neck & Cartoon Face

@@ -138,7 +138,7 @@ const server = http.createServer(async (req, res) => {
     // -------------------------------------------------------------
     if (pathname === '/api/voice/profiles' && req.method === 'GET') {
       const profiles = [
-        { id: 'kids', name: 'Cute Kids / Bocil', description: 'Bright, high pitch formant with lively child voice', pitch: 1.45, speed: 1.05 },
+        { id: 'kids', name: 'Cute Kid / Youth', description: 'Bright, high pitch formant with lively child voice', pitch: 1.45, speed: 1.05 },
         { id: 'cartoon', name: 'Wacky Cartoon', description: 'Expressive cartoon character with pitch oscillation', pitch: 1.6, speed: 1.1 },
         { id: 'chipmunk', name: 'High-Speed Chipmunk', description: 'Classic Alvin chipmunk ultra-high pitch', pitch: 1.85, speed: 1.25 },
         { id: 'robot', name: 'Cybernetic Robot', description: 'Flanged robotic modular vocoder voice', pitch: 0.95, speed: 1.0 },
@@ -175,11 +175,14 @@ const server = http.createServer(async (req, res) => {
         }
         try {
           const result = JSON.parse(stdout);
+          result.output_url = `/exports/${outName}`;
+          result.audio_url = `/exports/${outName}`;
+          result.output_path = outputPath;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           return res.end(JSON.stringify(result));
         } catch (e) {
           res.writeHead(200, { 'Content-Type': 'application/json' });
-          return res.end(JSON.stringify({ success: true, output_path: outputPath }));
+          return res.end(JSON.stringify({ success: true, output_path: outputPath, output_url: `/exports/${outName}`, audio_url: `/exports/${outName}` }));
         }
       });
       return;
@@ -300,13 +303,42 @@ const server = http.createServer(async (req, res) => {
       const writeStream = fs.createWriteStream(targetFile);
       req.pipe(writeStream);
       writeStream.on('finish', () => {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({
-          success: true,
-          path: targetFile,
-          filename: path.basename(targetFile),
-          size: fs.statSync(targetFile).size
-        }));
+        // Auto-detect and normalize video format (e.g. AV1, VP9, HEVC -> H.264) for universal playback and OpenCV decoding
+        const probeArgs = ['-v', 'error', '-select_streams', 'v:0', '-show_entries', 'stream=codec_name', '-of', 'default=noprint_wrappers=1:nokey=1', targetFile];
+        execFile('ffprobe', probeArgs, (probeErr, probeOut) => {
+          const videoCodec = (probeOut || '').trim().toLowerCase();
+          if (videoCodec && videoCodec !== 'h264') {
+            const normFile = `${targetFile}.norm.mp4`;
+            const transcodeArgs = ['-y', '-i', targetFile, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22', '-c:a', 'aac', '-b:a', '128k', '-pix_fmt', 'yuv420p', normFile];
+            execFile('ffmpeg', transcodeArgs, (transErr) => {
+              if (!transErr && fs.existsSync(normFile)) {
+                try {
+                  fs.unlinkSync(targetFile);
+                  fs.renameSync(normFile, targetFile);
+                } catch (_) {}
+              }
+              const stats = fs.statSync(targetFile);
+              res.writeHead(200, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({
+                success: true,
+                path: targetFile,
+                filename: path.basename(targetFile),
+                url: `/uploads/${path.basename(targetFile)}`,
+                size: stats.size
+              }));
+            });
+          } else {
+            const stats = fs.statSync(targetFile);
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({
+              success: true,
+              path: targetFile,
+              filename: path.basename(targetFile),
+              url: `/uploads/${path.basename(targetFile)}`,
+              size: stats.size
+            }));
+          }
+        });
       });
       writeStream.on('error', (err) => {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -364,7 +396,7 @@ const server = http.createServer(async (req, res) => {
       const outDir = path.join(DATA_DIR, 'beats_' + Date.now());
       fs.mkdirSync(outDir, { recursive: true });
 
-      const maxDur = body.max_duration !== undefined ? String(body.max_duration) : '90.0';
+      const maxDur = body.max_duration !== undefined ? String(body.max_duration) : '300.0';
       const args1 = [beatsScript, media_path, outDir, String(target_seconds || 3.0), maxDur];
       execFile('python3', args1, { maxBuffer: 10 * 1024 * 1024 }, (err1, stdout1, stderr1) => {
         if (err1) {
@@ -707,6 +739,7 @@ const server = http.createServer(async (req, res) => {
         background_path,
         character_style,
         framing_mode,
+        aspect_ratio,
         resolution,
         fps,
         voice_profile,
@@ -716,6 +749,9 @@ const server = http.createServer(async (req, res) => {
       const jobId = `job_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
       const outVideo = `stickman_${Date.now()}.mp4`;
       const outputVideoPath = path.join(EXPORTS_DIR, outVideo);
+
+      const targetRatio = aspect_ratio || (resolution?.includes('1280x720') || resolution?.includes('1920x1080') ? '16:9' : '9:16');
+      const targetRes = resolution || (targetRatio === '16:9' ? '1280x720' : '720x1280');
 
       const jobRecord = {
         id: jobId,
@@ -730,12 +766,13 @@ const server = http.createServer(async (req, res) => {
           render_mode: render_mode || 'full_stickman',
           staging_style: staging_style || 'stick_hub_storyteller',
           beats: beats || [],
-          title: title || 'Stickman Parody Short',
+          title: title || 'Stickman Story',
           background: background || 'podcast_studio',
           background_path: background_path || null,
           character_style: character_style || 'classic',
           framing_mode: framing_mode || 'auto',
-          resolution: resolution || '720x1280',
+          aspect_ratio: targetRatio,
+          resolution: targetRes,
           fps: fps || 24,
           voice_profile: voice_profile || 'kids',
           destination_dir: destination_dir || null
@@ -841,12 +878,18 @@ const server = http.createServer(async (req, res) => {
     }
 
     // -------------------------------------------------------------
-    // Static GUI Server & Asset Delivery
+    // Static GUI Server & Asset Delivery (with HTTP 206 Range Streaming)
     // -------------------------------------------------------------
     let filePath = path.join(GUI_DIR, pathname === '/' ? 'index.html' : pathname);
 
     if (pathname.startsWith('/exports/')) {
       filePath = path.join(EXPORTS_DIR, pathname.replace('/exports/', ''));
+    } else if (pathname.startsWith('/uploads/')) {
+      filePath = path.join(UPLOADS_DIR, pathname.replace('/uploads/', ''));
+    } else if (pathname.startsWith('/data/uploads/')) {
+      filePath = path.join(UPLOADS_DIR, pathname.replace('/data/uploads/', ''));
+    } else if (pathname.startsWith('/data/')) {
+      filePath = path.join(DATA_DIR, pathname.replace('/data/', ''));
     }
 
     if (fs.existsSync(filePath) && fs.statSync(filePath).isFile()) {
@@ -858,12 +901,39 @@ const server = http.createServer(async (req, res) => {
         '.json': 'application/json',
         '.png': 'image/png',
         '.jpg': 'image/jpeg',
+        '.jpeg': 'image/jpeg',
         '.svg': 'image/svg+xml',
         '.wav': 'audio/wav',
         '.mp3': 'audio/mpeg',
-        '.mp4': 'video/mp4'
+        '.mp4': 'video/mp4',
+        '.webm': 'video/webm'
       };
-      res.writeHead(200, { 'Content-Type': mimeTypes[ext] || 'application/octet-stream' });
+      const totalSize = fs.statSync(filePath).size;
+      const range = req.headers.range;
+
+      if (range && (ext === '.mp4' || ext === '.mp3' || ext === '.wav' || ext === '.webm')) {
+        const parts = range.replace(/bytes=/, '').split('-');
+        const start = parseInt(parts[0], 10);
+        const end = parts[1] ? parseInt(parts[1], 10) : totalSize - 1;
+        const chunkSize = (end - start) + 1;
+        res.writeHead(206, {
+          'Content-Range': `bytes ${start}-${end}/${totalSize}`,
+          'Accept-Ranges': 'bytes',
+          'Content-Length': chunkSize,
+          'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+          'Access-Control-Allow-Origin': '*',
+          'Access-Control-Allow-Private-Network': 'true'
+        });
+        return fs.createReadStream(filePath, { start, end }).pipe(res);
+      }
+
+      res.writeHead(200, {
+        'Content-Type': mimeTypes[ext] || 'application/octet-stream',
+        'Accept-Ranges': 'bytes',
+        'Content-Length': totalSize,
+        'Access-Control-Allow-Origin': '*',
+        'Access-Control-Allow-Private-Network': 'true'
+      });
       return fs.createReadStream(filePath).pipe(res);
     }
 
@@ -925,7 +995,13 @@ function executeRenderJob(jobId) {
     background: job.params.background || 'podcast_studio',
     character_style: job.params.character_style || 'classic',
     framing_mode: job.params.framing_mode || 'auto',
-    background_path: job.params.background_path || undefined
+    aspect_ratio: job.params.aspect_ratio || (job.params.resolution?.includes('1280x720') || job.params.resolution?.includes('1920x1080') ? '16:9' : '9:16'),
+    resolution: job.params.resolution || (job.params.aspect_ratio === '16:9' ? '1280x720' : '720x1280'),
+    fps: job.params.fps || 24,
+    background_path: job.params.background_path ? (job.params.background_path.startsWith('/') ? job.params.background_path : path.join(APP_ROOT, job.params.background_path)) : undefined,
+    voice_profile: job.params.voice_profile || undefined,
+    custom_pitch: job.params.custom_pitch || undefined,
+    custom_speed: job.params.custom_speed || undefined
   };
 
   fs.writeFileSync(tempConfigPath, JSON.stringify(cfg, null, 2), 'utf-8');

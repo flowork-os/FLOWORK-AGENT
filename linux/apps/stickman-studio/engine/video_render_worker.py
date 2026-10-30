@@ -58,6 +58,45 @@ def extract_audio_envelope(audio_src, total_frames, fps=24):
     return default_env
 
 
+def resolve_background_path(bg_path, app_root):
+    if not bg_path:
+        return None
+    bg_str = str(bg_path)
+    if os.path.exists(bg_str):
+        return os.path.abspath(bg_str)
+    clean_name = os.path.basename(bg_str)
+    cand_data = os.path.join(app_root, 'data', 'backgrounds', clean_name)
+    if os.path.exists(cand_data):
+        return os.path.abspath(cand_data)
+    cand_rel = os.path.join(app_root, bg_str.lstrip('/'))
+    if os.path.exists(cand_rel):
+        return os.path.abspath(cand_rel)
+    cand_data_rel = os.path.join(app_root, 'data', bg_str.lstrip('/'))
+    if os.path.exists(cand_data_rel):
+        return os.path.abspath(cand_data_rel)
+    return None
+
+
+def ensure_compatible_video(v_path):
+    if not v_path or not os.path.exists(v_path):
+        return None
+    test_cap = cv2.VideoCapture(v_path)
+    ok = False
+    if test_cap.isOpened():
+        ok, test_frame = test_cap.read()
+    test_cap.release()
+    if ok:
+        return v_path
+    # OpenCV failed to decode direct stream (e.g. AV1 or unsupported pix_fmt). Normalize via ffmpeg!
+    norm_path = v_path + ".norm.mp4"
+    print(f"[Render Worker] ⚠️ Video {v_path} could not be read directly by OpenCV. Normalizing to standard H.264...", flush=True)
+    cmd = ['ffmpeg', '-y', '-i', v_path, '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '22', '-c:a', 'aac', '-b:a', '128k', '-pix_fmt', 'yuv420p', norm_path]
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    if os.path.exists(norm_path) and os.path.getsize(norm_path) > 1000:
+        return norm_path
+    return v_path
+
+
 def render_stickman_video(config_input, output_mp4, progress_file=None):
     if os.path.exists(config_input):
         with open(config_input, 'r', encoding='utf-8') as f:
@@ -176,8 +215,19 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
         except Exception:
             duration = 30.0
 
-    width, height = 720, 1280
-    fps = 24
+    aspect_ratio = cfg.get('aspect_ratio')
+    res_str = str(cfg.get('resolution', ''))
+    if aspect_ratio == '16:9' or '1280x720' in res_str or '1920x1080' in res_str:
+        if '1920' in res_str:
+            width, height = 1920, 1080
+        else:
+            width, height = 1280, 720
+    elif cfg.get('width') and cfg.get('height'):
+        width, height = int(cfg['width']), int(cfg['height'])
+    else:
+        width, height = 720, 1280
+
+    fps = int(cfg.get('fps', 24))
     total_frames = int(duration * fps)
 
     # Fallback default beats if empty
@@ -196,8 +246,10 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
 
         char_style = cfg.get('character_style', 'classic')
         framing_mode = cfg.get('framing_mode', 'auto')
-        bg_path = cfg.get('background_path') or cfg.get('background_image')
-        if not bg_path or not os.path.exists(bg_path):
+        app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        raw_bg = cfg.get('background_path') or cfg.get('background_image')
+        bg_path = resolve_background_path(raw_bg, app_root)
+        if not bg_path:
             preset_bg = os.path.join(app_data_dir, 'backgrounds', 'clean_living_room.jpg')
             bg_path = preset_bg if os.path.exists(preset_bg) else None
 
@@ -220,8 +272,13 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
 
     # Video reader if split_pip is enabled and video_path exists
     cap = None
-    if render_mode == 'split_pip' and video_path and os.path.exists(video_path):
-        cap = cv2.VideoCapture(video_path)
+    if render_mode == 'split_pip':
+        v_cand = video_path or resolved_video or media_path
+        if v_cand:
+            v_cand = ensure_compatible_video(v_cand)
+            if v_cand and os.path.exists(v_cand):
+                cap = cv2.VideoCapture(v_cand)
+                video_path = v_cand
 
     temp_raw_video = os.path.abspath(output_mp4 + ".raw.mp4")
     output_mp4 = os.path.abspath(output_mp4)
@@ -230,18 +287,38 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
     out = cv2.VideoWriter(temp_raw_video, fourcc, fps, (width, height))
 
     # Initialize Cartoonist, Scene Composer, Pro Stickman Engine, and Stick Hub Storyteller Engine
-    stickman_h = 640 if (render_mode == 'split_pip' and cap is not None) else height
+    is_landscape = (width > height)
+    if is_landscape:
+        pip_w, pip_h = width // 2, height
+    else:
+        pip_w, pip_h = width, height // 2
+
+    stickman_w = pip_w if (render_mode == 'split_pip' and cap is not None) else width
+    stickman_h = pip_h if (render_mode == 'split_pip' and cap is not None) else height
+
     cartoonist = DynamicCartoonist(width=width, height=height)
-    composer = StickmanSceneComposer(width=width, height=stickman_h)
-    pro_engine = ProStickmanEngine(width=width, height=stickman_h)
+    composer = StickmanSceneComposer(width=stickman_w, height=stickman_h)
+    pro_engine = ProStickmanEngine(width=stickman_w, height=stickman_h)
     storyteller_engine = StickHubStorytellerEngine(width=width, height=height)
-    storyteller_pip = StickHubStorytellerEngine(width=width, height=640)
+    storyteller_pip = StickHubStorytellerEngine(width=pip_w, height=pip_h)
 
     # Audio amplitude envelope for real-time procedural lip-sync
     audio_src = audio_path or video_path or media_path
     audio_envelope = extract_audio_envelope(audio_src, total_frames, fps=fps)
 
-    # Ensure all beats have indices and pose_data from PoseTracker
+    # Resolve global background from cfg or first beat
+    app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    global_bg_raw = cfg.get('background_path') or cfg.get('background_image')
+    global_bg = resolve_background_path(global_bg_raw, app_root)
+    if not global_bg and beats:
+        for b in beats:
+            cand = b.get('background_image') or b.get('background_path')
+            rc = resolve_background_path(cand, app_root)
+            if rc:
+                global_bg = rc
+                break
+
+    # Ensure all beats have indices, pose_data, and background
     tracker = None
     for idx, b in enumerate(beats):
         if 'index' not in b:
@@ -254,6 +331,12 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
                 if tracker is None:
                     tracker = PoseTracker()
                 b['pose_data'] = tracker.analyze_image(kf_path)
+        # Background inheritance: resolve beat bg or fallback to global custom bg
+        beat_bg_raw = b.get('background_image') or b.get('background_path') or global_bg
+        resolved_b_bg = resolve_background_path(beat_bg_raw, app_root) or global_bg
+        if resolved_b_bg:
+            b['background_image'] = resolved_b_bg
+            b['background_path'] = resolved_b_bg
 
     report_progress("rendering_frames", 10, 0, total_frames)
     last_reported_pct = -1
@@ -284,7 +367,6 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             cam_shake = (math.sin(t * 30.0) * shake_amp, math.cos(t * 25.0) * shake_amp)
 
         if render_mode == 'split_pip' and cap is not None:
-            # --- 1. TOP HALF: Original Real Video Frame (720x640) Synchronized ---
             cap.set(cv2.CAP_PROP_POS_MSEC, t * 1000.0)
             ret, orig_frame = cap.read()
             if not ret or orig_frame is None:
@@ -293,9 +375,8 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
                 last_orig_frame = orig_frame.copy()
 
             if orig_frame is not None:
-                # Center-crop original frame to 720x640 (aspect ratio 9:8)
                 of_h, of_w = orig_frame.shape[:2]
-                target_ratio = 720.0 / 640.0
+                target_ratio = pip_w / float(pip_h)
                 curr_ratio = of_w / float(of_h)
 
                 if curr_ratio > target_ratio:
@@ -307,26 +388,11 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
                     start_y = (of_h - new_h) // 2
                     cropped = orig_frame[start_y:start_y+new_h, :]
 
-                resized_top = cv2.resize(cropped, (720, 640), interpolation=cv2.INTER_LINEAR)
-                full_frame[0:640, 0:720] = resized_top
+                resized_orig = cv2.resize(cropped, (pip_w, pip_h), interpolation=cv2.INTER_LINEAR)
             else:
-                full_frame[0:640, 0:720] = (20, 24, 32)
+                resized_orig = np.full((pip_h, pip_w, 3), (20, 24, 32), dtype=np.uint8)
 
-            # Badge on top: ORIGINAL CLIP
-            cv2.rectangle(full_frame, (24, 24), (160, 56), (15, 20, 28), -1)
-            cv2.rectangle(full_frame, (24, 24), (160, 56), (0, 229, 255), 1)
-            cv2.putText(full_frame, 'ORIGINAL CLIP', (34, 46), cv2.FONT_HERSHEY_DUPLEX, 0.42, (0, 229, 255), 1)
-
-            # --- 2. MIDDLE DIVIDER BAR (y=636..644) ---
-            cv2.rectangle(full_frame, (0, 636), (720, 644), (0, 240, 255), -1)
-            # Center Badge
-            cv2.rectangle(full_frame, (width//2 - 90, 624), (width//2 + 90, 656), (15, 23, 42), -1)
-            cv2.rectangle(full_frame, (width//2 - 90, 624), (width//2 + 90, 656), (0, 240, 255), 2)
-            cv2.putText(full_frame, 'VS STICKMAN', (width//2 - 68, 646), cv2.FONT_HERSHEY_DUPLEX, 0.48, (255, 255, 255), 1)
-
-            # --- 3. BOTTOM HALF: Rich Stickman Animation & Choreography (720x640) ---
             energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
-
             if staging_style == 'podcast_desk':
                 actors = current_beat.get("actors")
                 if actors and len(actors) >= 2:
@@ -339,15 +405,43 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
                     current_beat["speaking_actor"] = "HOST" if (beat_num % 2 == 1) else "CO-HOST"
                 stickman_layer = pro_engine.render_full_frame(current_beat, t=t, energy=energy)
             else:
-                # Default Stick Hub Storyteller Puppet
                 stickman_layer = storyteller_pip.render_frame(current_beat, t=t, energy=energy)
 
-            if stickman_layer.shape[0] != 640 or stickman_layer.shape[1] != 720:
-                stickman_layer = cv2.resize(stickman_layer, (720, 640), interpolation=cv2.INTER_AREA)
-            full_frame[640:1280, 0:720] = stickman_layer
+            if stickman_layer.shape[0] != pip_h or stickman_layer.shape[1] != pip_w:
+                stickman_layer = cv2.resize(stickman_layer, (pip_w, pip_h), interpolation=cv2.INTER_AREA)
+
+            if is_landscape:
+                # --- Landscape: Side-by-Side PIP (Left: Original Video, Right: Stickman) ---
+                full_frame[0:height, 0:pip_w] = resized_orig
+                full_frame[0:height, pip_w:width] = stickman_layer
+
+                # Vertical Divider
+                cv2.rectangle(full_frame, (pip_w - 4, 0), (pip_w + 4, height), (0, 240, 255), -1)
+                # Badges
+                cv2.rectangle(full_frame, (24, 24), (160, 56), (15, 20, 28), -1)
+                cv2.rectangle(full_frame, (24, 24), (160, 56), (0, 229, 255), 1)
+                cv2.putText(full_frame, 'ORIGINAL CLIP', (34, 46), cv2.FONT_HERSHEY_DUPLEX, 0.42, (0, 229, 255), 1)
+
+                cv2.rectangle(full_frame, (pip_w - 80, height//2 - 18), (pip_w + 80, height//2 + 18), (15, 23, 42), -1)
+                cv2.rectangle(full_frame, (pip_w - 80, height//2 - 18), (pip_w + 80, height//2 + 18), (0, 240, 255), 2)
+                cv2.putText(full_frame, 'VS STICKMAN', (pip_w - 60, height//2 + 6), cv2.FONT_HERSHEY_DUPLEX, 0.46, (255, 255, 255), 1)
+            else:
+                # --- Portrait: Top-Bottom PIP (Top: Original Video, Bottom: Stickman) ---
+                full_frame[0:pip_h, 0:pip_w] = resized_orig
+                full_frame[pip_h:height, 0:pip_w] = stickman_layer
+
+                # Horizontal Divider
+                cv2.rectangle(full_frame, (0, pip_h - 4), (width, pip_h + 4), (0, 240, 255), -1)
+                cv2.rectangle(full_frame, (24, 24), (160, 56), (15, 20, 28), -1)
+                cv2.rectangle(full_frame, (24, 24), (160, 56), (0, 229, 255), 1)
+                cv2.putText(full_frame, 'ORIGINAL CLIP', (34, 46), cv2.FONT_HERSHEY_DUPLEX, 0.42, (0, 229, 255), 1)
+
+                cv2.rectangle(full_frame, (width//2 - 90, pip_h - 16), (width//2 + 90, pip_h + 16), (15, 23, 42), -1)
+                cv2.rectangle(full_frame, (width//2 - 90, pip_h - 16), (width//2 + 90, pip_h + 16), (0, 240, 255), 2)
+                cv2.putText(full_frame, 'VS STICKMAN', (width//2 - 68, pip_h + 6), cv2.FONT_HERSHEY_DUPLEX, 0.48, (255, 255, 255), 1)
 
         else:
-            # --- 100% Full Vertical Stickman Mode (720x1280) ---
+            # --- 100% Full Canvas Stickman Mode ---
             energy = audio_envelope[frame_idx] if frame_idx < len(audio_envelope) else 0.5
 
             if staging_style == 'podcast_desk':
@@ -420,7 +514,7 @@ def render_stickman_video(config_input, output_mp4, progress_file=None):
             cmd[5] = '1:a:0'
             subprocess.run(cmd, check=True)
     else:
-        print("[Render Worker] ⚠️ No active audio found; generating placeholder audio track.", flush=True)
+        print("[Render Worker] ℹ️ No active audio source found; generating silent baseline audio track (AAC stereo).", flush=True)
         # Universal fallback: provide genuine AAC silent stereo track
         cmd = [
             'ffmpeg', '-y',

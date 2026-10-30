@@ -468,6 +468,93 @@ class TestStickmanStudio(unittest.TestCase):
                 if os.path.exists(out_test):
                     os.unlink(out_test)
 
+    def test_12_landscape_and_lyric_narrative_engine(self):
+        """Verify 16:9 Landscape rendering, 300s duration capacity, and lyric-driven narrative acting poses."""
+        sys.path.append(os.path.join(APP_DIR, 'engine'))
+        from stick_hub_storyteller_engine import StickHubStorytellerEngine
+        import numpy as np
+
+        # 1. Verify 16:9 Landscape (1280x720) initialization and coordinate adaptation
+        engine_16_9 = StickHubStorytellerEngine(width=1280, height=720)
+        self.assertTrue(engine_16_9.is_landscape, "Engine failed to detect 16:9 landscape aspect ratio")
+        self.assertEqual(engine_16_9.ground_y, int(720 * 0.84))
+
+        # 2. Verify all 10 Lyric-Driven Narrative Acting Poses in Landscape
+        dramatic_poses = [
+            'kneel_crying', 'holding_photo', 'reaching_out', 'walking_cold',
+            'running_chase', 'peeking_heartbreak', 'cafe_reflecting',
+            'heartbreak_clutch', 'stargazing_rooftop', 'peaceful_sunrise'
+        ]
+        for pose in dramatic_poses:
+            beat = {
+                "text": f"Dramatic acting beat: {pose}",
+                "pose": pose,
+                "emotion": "sad" if "crying" in pose or "heartbreak" in pose else "neutral",
+                "background": "raining_street",
+                "prop": "photo_frame" if pose == "holding_photo" else "fading_silhouette"
+            }
+            frame = engine_16_9.render_frame(beat, t=1.0, energy=0.8)
+            self.assertIsInstance(frame, np.ndarray)
+            self.assertEqual(frame.shape, (720, 1280, 3), f"Frame shape mismatch for pose {pose}")
+            self.assertGreater(float(np.std(frame)), 15.0, f"Frame for {pose} has insufficient visual variation")
+
+        # 3. Verify all 6 Procedural Song Stages
+        song_stages = ['raining_street', 'bedroom_night', 'dream_void', 'rooftop_stars', 'sunrise_hill', 'cafe_interior']
+        for stage in song_stages:
+            beat = {
+                "text": f"Stage test: {stage}",
+                "pose": "peaceful_sunrise",
+                "emotion": "happy",
+                "background": stage
+            }
+            frame = engine_16_9.render_frame(beat, t=2.5, energy=0.6)
+            self.assertEqual(frame.shape, (720, 1280, 3))
+            self.assertGreater(float(np.std(frame)), 15.0, f"Stage {stage} has blank output")
+
+        # 4. Verify Dual-Actor Ethereal Glowing Memory Silhouette
+        flashback_beat = {
+            "text": "Flashback memory of us together",
+            "background": "dream_void",
+            "actors": [
+                {
+                    "label": "STICKY",
+                    "action": "reaching_out",
+                    "emotion": "sad",
+                    "accent_color": [0, 229, 255],
+                    "speaking": True
+                },
+                {
+                    "label": "FADING MEMORY",
+                    "action": "listen",
+                    "emotion": "neutral",
+                    "is_silhouette": True,
+                    "accent_color": [192, 132, 252],
+                    "speaking": False
+                }
+            ]
+        }
+        silh_frame = engine_16_9.render_frame(flashback_beat, t=1.5, energy=0.7)
+        self.assertEqual(silh_frame.shape, (720, 1280, 3))
+        self.assertGreater(float(np.std(silh_frame)), 20.0, "Silhouette frame missing rendering")
+
+        # 5. Verify Cognitive Director lyrical classification
+        from cognitive_director import direct_storyboard_beats
+        test_lyric_manifest = {
+            "staging_style": "music_narrative_story",
+            "beats": [
+                {"id": "b1", "text": "Hujan deras malam ini aku menangis mengingatmu kau pergi meninggalkanku", "start": 0.0, "end": 3.0},
+                {"id": "b2", "text": "Memandang fotomu di kamar dingin ini hatiku hancur", "start": 3.0, "end": 6.0},
+                {"id": "b3", "text": "Mengejarmu di jalanan sepi tapi kau hilang seperti bayangan", "start": 6.0, "end": 9.0},
+                {"id": "b4", "text": "Kini mentari terbit menyinari bukit damai", "start": 9.0, "end": 12.0}
+            ]
+        }
+        res = direct_storyboard_beats(test_lyric_manifest)
+        enriched = res.get('beats', [])
+        self.assertEqual(res.get('domain_theme'), 'music_narrative_story')
+        self.assertIn(enriched[0].get('pose'), dramatic_poses)
+        self.assertEqual(len(enriched[0].get('actors', [])), 2)
+        self.assertTrue(enriched[0]['actors'][1].get('is_silhouette'))
+
 
 if __name__ == '__main__':
     unittest.main()

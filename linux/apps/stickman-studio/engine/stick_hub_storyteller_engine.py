@@ -115,9 +115,15 @@ class StickHubStorytellerEngine:
     def __init__(self, width=720, height=1280):
         self.width = width
         self.height = height
-        self.scale = 1.15 * (self.height / 1280.0)
-        self.ground_y = int(self.height * 0.82)
-        self.cx = self.width // 2
+        self.is_landscape = (self.width > self.height)
+        if self.is_landscape:
+            self.scale = 1.05 * (self.height / 720.0)
+            self.ground_y = int(self.height * 0.84)
+            self.cx = int(self.width * 0.36)
+        else:
+            self.scale = 1.15 * (self.height / 1280.0)
+            self.ground_y = int(self.height * 0.82)
+            self.cx = self.width // 2
 
         # High-res TrueType fonts for clean kinetic subtitles and UI
         self.font_bold_path = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -179,12 +185,121 @@ class StickHubStorytellerEngine:
                 g_draw = ImageDraw.Draw(ground_overlay)
                 g_draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(0, 0, 0, 60), width=3)
                 pil_img.alpha_composite(ground_overlay)
-                return (240, 240, 240)  # assume background is present
+                return (240, 240, 240)
             except Exception as e:
                 print(f"[StickHubEngine] Warning loading bg {bg_image_path}: {e}", file=sys.stderr)
 
-        # Option B: Clean Procedural Minimal Cartoon Stage (Stick Hub Aesthetic)
         th = (stage_theme or 'minimal_clean').lower()
+
+        # Option B: Lyrical Narrative Music Video Dynamic Procedural Stages
+        if 'raining_street' in th or 'rain' in th:
+            # Dark rainy night street
+            for y in range(self.ground_y):
+                ratio = y / float(self.ground_y)
+                r, g, b = int(10 + 10 * ratio), int(15 + 12 * ratio), int(28 + 18 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+            # Wet asphalt ground
+            draw.rectangle([0, self.ground_y, self.width, self.height], fill=(12, 14, 20))
+            draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(40, 60, 90), width=3)
+            # Streetlamp light cone
+            lamp_x = int(self.width * 0.82) if not self.is_landscape else int(self.width * 0.88)
+            lamp_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+            l_draw = ImageDraw.Draw(lamp_overlay)
+            l_draw.line([(lamp_x, int(self.height * 0.2)), (lamp_x, self.ground_y)], fill=(30, 35, 45, 255), width=6)
+            l_draw.ellipse([lamp_x - 14, int(self.height * 0.2) - 10, lamp_x + 14, int(self.height * 0.2) + 10], fill=(254, 240, 138, 255))
+            l_draw.polygon([(lamp_x, int(self.height * 0.2)), (lamp_x - 120, self.ground_y), (lamp_x + 120, self.ground_y)], fill=(254, 240, 138, 30))
+            # Falling animated rain streaks
+            for i in range(45):
+                rx = (int(i * 37 + t * 900) % self.width)
+                ry = (int(i * 59 + t * 1400) % self.ground_y)
+                l_draw.line([(rx, ry), (rx - 6, ry + 18)], fill=(186, 230, 253, 110), width=1)
+            pil_img.alpha_composite(lamp_overlay)
+            return (20, 28, 48)
+
+        elif 'bedroom_night' in th:
+            # Melancholy bedroom at night
+            for y in range(self.ground_y):
+                ratio = y / float(self.ground_y)
+                r, g, b = int(14 + 10 * ratio), int(18 + 10 * ratio), int(34 + 12 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+            draw.rectangle([0, self.ground_y, self.width, self.height], fill=(16, 20, 30))
+            draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(35, 45, 65), width=3)
+            # Window with pale moonlight
+            wx0 = int(self.width * 0.65) if self.is_landscape else int(self.width * 0.58)
+            wy0 = int(self.height * 0.15)
+            ww, wh = int(140 * self.scale), int(180 * self.scale)
+            draw.rectangle([wx0, wy0, wx0 + ww, wy0 + wh], fill=(20, 32, 55), outline=(50, 65, 95), width=3)
+            draw.line([(wx0 + ww // 2, wy0), (wx0 + ww // 2, wy0 + wh)], fill=(50, 65, 95), width=2)
+            draw.line([(wx0, wy0 + wh // 2), (wx0 + ww, wy0 + wh // 2)], fill=(50, 65, 95), width=2)
+            # Crescent moon in window
+            draw.ellipse([wx0 + int(ww * 0.65), wy0 + int(wh * 0.25), wx0 + int(ww * 0.85), wy0 + int(wh * 0.45)], fill=(254, 240, 138))
+            draw.ellipse([wx0 + int(ww * 0.68), wy0 + int(wh * 0.23), wx0 + int(ww * 0.88), wy0 + int(wh * 0.43)], fill=(20, 32, 55))
+            return (18, 22, 36)
+
+        elif 'dream_void' in th:
+            # Deep abstract dream void with floating nebula particles
+            for y in range(self.height):
+                ratio = y / float(self.height)
+                r, g, b = int(8 + 15 * ratio), int(10 + 8 * ratio), int(26 + 22 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+            void_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+            v_draw = ImageDraw.Draw(void_overlay)
+            for i in range(25):
+                px = (int(i * 61 + math.sin(t * 0.5 + i) * 80) % self.width)
+                py = (int(i * 73 - t * 45) % self.height)
+                pr = int(2 + (i % 4) * self.scale)
+                alpha = int(90 + 70 * math.sin(t * 2.0 + i))
+                v_draw.ellipse([px - pr, py - pr, px + pr, py + pr], fill=(0, 229, 255, alpha))
+            pil_img.alpha_composite(void_overlay)
+            return (18, 12, 35)
+
+        elif 'rooftop_stars' in th:
+            # Starry night sky on rooftop
+            for y in range(self.ground_y):
+                ratio = y / float(self.ground_y)
+                r, g, b = int(5 + 8 * ratio), int(7 + 10 * ratio), int(20 + 20 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+            # Twinkling stars
+            for i in range(35):
+                sx = (i * 53) % self.width
+                sy = (i * 37) % int(self.ground_y * 0.75)
+                twinkle = int(180 + 75 * math.sin(t * 3.5 + i))
+                draw.ellipse([sx - 1, sy - 1, sx + 1, sy + 1], fill=(twinkle, twinkle, 255))
+            # Rooftop floor & railing
+            draw.rectangle([0, self.ground_y, self.width, self.height], fill=(12, 14, 18))
+            draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(30, 36, 48), width=4)
+            for rx in range(0, self.width, int(60 * self.scale)):
+                draw.line([(rx, self.ground_y - int(35 * self.scale)), (rx, self.ground_y)], fill=(40, 48, 64), width=2)
+            draw.line([(0, self.ground_y - int(35 * self.scale)), (self.width, self.ground_y - int(35 * self.scale))], fill=(50, 60, 80), width=3)
+            return (10, 14, 30)
+
+        elif 'sunrise_hill' in th:
+            # Radiant warm sunrise over hill
+            for y in range(self.ground_y):
+                ratio = y / float(self.ground_y)
+                # Orange-yellow dawn gradient
+                r = int(249 - 50 * ratio)
+                g = int(115 + 76 * ratio)
+                b = int(22 + 180 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+            # Sun orb at horizon
+            sun_cx = int(self.width * 0.72) if self.is_landscape else int(self.width * 0.65)
+            draw.ellipse([sun_cx - 60, self.ground_y - 60, sun_cx + 60, self.ground_y + 60], fill=(254, 240, 138))
+            # Rolling green-dark hill
+            draw.rectangle([0, self.ground_y, self.width, self.height], fill=(22, 38, 28))
+            draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(34, 60, 42), width=4)
+            return (220, 150, 70)
+
+        elif 'cafe_interior' in th:
+            # Warm ambient cafe interior
+            for y in range(self.ground_y):
+                ratio = y / float(self.ground_y)
+                draw.line([(0, y), (self.width, y)], fill=(int(38 + 12 * ratio), int(26 + 10 * ratio), int(18 + 8 * ratio)))
+            draw.rectangle([0, self.ground_y, self.width, self.height], fill=(24, 18, 14))
+            draw.line([(0, self.ground_y), (self.width, self.ground_y)], fill=(70, 50, 35), width=4)
+            return (38, 26, 18)
+
+        # Option C: Clean Procedural Minimal Cartoon Stage (Stick Hub Aesthetic)
         if 'dark' in th or 'cyber' in th:
             top_c = (15, 23, 42)
             bot_c = (30, 41, 59)
@@ -291,6 +406,35 @@ class StickHubStorytellerEngine:
             self.draw_bezier_limb(draw, sh_l, el_l, hand_l, width=limb_w - 1, color=ink_color, outline=white_color)
             self.draw_bezier_limb(draw, sh_r, el_r, hand_r, width=limb_w - 1, color=ink_color, outline=white_color)
 
+        elif 'kneel' in str(action).lower():
+            # Dramatic Kneeling Breakdown Pose
+            breath = math.sin(t * 6.0) * 3 * sc
+            gy = self.ground_y
+            hip = (int(cx), int(gy - 55 * sc + breath * 0.4))
+
+            # Ground Shadow
+            sw = int(175 * sc)
+            draw.ellipse([cx - sw, gy - 8, cx + sw, gy + 16], fill=(0, 0, 0, 60))
+
+            # Kneeling legs bent on the floor
+            limb_w = max(8, int(13 * sc))
+            for side in (-1, 1):
+                knee = (int(cx + side * 45 * sc), gy)
+                foot = (int(cx + side * 15 * sc), gy)
+                self.draw_bezier_limb(draw, hip, (int(knee[0] - side * 10 * sc), int(knee[1] - 25 * sc)), knee, width=limb_w, color=ink_color, outline=white_color)
+                draw.line([knee, foot], fill=ink_color, width=limb_w)
+
+            # Torso leaning forward in sorrow
+            lean = 18 * sc
+            neck = (int(cx + lean), int(hip[1] - torso_len * 0.82 + breath))
+            draw.line([hip, neck], fill=white_color, width=limb_w + 4)
+            draw.line([hip, neck], fill=ink_color, width=limb_w)
+
+            # Arms & Expressive Gestures
+            sh_l = (int(neck[0] - 12 * sc), int(neck[1] + 16 * sc))
+            sh_r = (int(neck[0] + 12 * sc), int(neck[1] + 16 * sc))
+            self.draw_standing_arms(draw, sh_l, sh_r, action, t, energy, sc, limb_w, ink_color, white_color)
+
         else:
             # Standing dynamic stance with natural breathing & weight shift
             breath = math.sin(t * 2.6) * 4 * sc
@@ -310,7 +454,7 @@ class StickHubStorytellerEngine:
                 draw.line([foot, (foot[0] + int(side * 26 * sc), gy)], fill=ink_color, width=limb_w)
 
             # Torso
-            sad = emotion == 'sad' or action == 'sad'
+            sad = emotion == 'sad' or action == 'sad' or 'cry' in str(action)
             lean = 12 * sc if sad else 0.0
             neck = (int(cx + lean), int(hip[1] - torso_len + breath * 0.5))
             draw.line([hip, neck], fill=white_color, width=limb_w + 4)
@@ -343,13 +487,92 @@ class StickHubStorytellerEngine:
         act = (action or 'talk').lower()
         s = math.sin
 
-        if 'point' in act:
-            # Right arm points forward/up emphatically
-            el_r = (int(sh_r[0] + 65 * sc), int(sh_r[1] - 40 * sc))
-            hand_r = (int(sh_r[0] + 140 * sc + s(t * 3.0) * 8 * sc), int(sh_r[1] - 90 * sc))
-            # Left arm relaxed at hip
-            el_l = (int(sh_l[0] - 40 * sc), int(sh_l[1] + 60 * sc))
-            hand_l = (int(sh_l[0] - 25 * sc), int(sh_l[1] + 110 * sc))
+        # --- THEATRICAL MUSIC MV DRAMATIC ACTING POSES ---
+        if 'kneel_crying' in act or 'cry' in act or 'weep' in act:
+            # Hands cupped up covering face in sorrow
+            heave = s(t * 7.0) * 5 * sc
+            el_l = (int(sh_l[0] - 25 * sc), int(sh_l[1] + 10 * sc + heave))
+            hand_l = (int(sh_l[0] + 5 * sc), int(sh_l[1] - 45 * sc + heave))
+            el_r = (int(sh_r[0] + 25 * sc), int(sh_r[1] + 10 * sc + heave))
+            hand_r = (int(sh_r[0] - 5 * sc), int(sh_r[1] - 45 * sc + heave))
+
+        elif 'holding_photo' in act:
+            # Both hands gently held inward close to heart cupping a photo frame
+            el_l = (int(sh_l[0] - 30 * sc), int(sh_l[1] + 45 * sc))
+            hand_l = (int(sh_l[0] + 12 * sc), int(sh_l[1] + 55 * sc))
+            el_r = (int(sh_r[0] + 30 * sc), int(sh_r[1] + 45 * sc))
+            hand_r = (int(sh_r[0] - 12 * sc), int(sh_r[1] + 55 * sc))
+            # Mini photo frame held in hands
+            p_cx = (sh_l[0] + sh_r[0]) // 2
+            p_cy = int(sh_l[1] + 55 * sc)
+            draw.rectangle([p_cx - int(14 * sc), p_cy - int(18 * sc), p_cx + int(14 * sc), p_cy + int(18 * sc)],
+                           fill=(245, 245, 245), outline=ink_color, width=max(1, int(2 * sc)))
+            draw.line([(p_cx - int(10 * sc), p_cy + int(8 * sc)), (p_cx, p_cy - int(4 * sc)), (p_cx + int(10 * sc), p_cy + int(8 * sc))],
+                      fill=(180, 180, 180), width=1)
+
+        elif 'reaching_out' in act or 'reach' in act:
+            # Desperate reach forward toward empty void
+            el_r = (int(sh_r[0] + 65 * sc), int(sh_r[1] - 15 * sc))
+            hand_r = (int(sh_r[0] + 145 * sc), int(sh_r[1] - 40 * sc))
+            # Open reaching fingers
+            draw.line([hand_r, (hand_r[0] + int(12 * sc), hand_r[1] - int(6 * sc))], fill=ink_color, width=max(2, int(3 * sc)))
+            draw.line([hand_r, (hand_r[0] + int(14 * sc), hand_r[1])], fill=ink_color, width=max(2, int(3 * sc)))
+            draw.line([hand_r, (hand_r[0] + int(10 * sc), hand_r[1] + int(8 * sc))], fill=ink_color, width=max(2, int(3 * sc)))
+            # Left arm trailing back
+            el_l = (int(sh_l[0] - 45 * sc), int(sh_l[1] + 50 * sc))
+            hand_l = (int(sh_l[0] - 65 * sc), int(sh_l[1] + 95 * sc))
+
+        elif 'walking_cold' in act or 'cold' in act:
+            # Hands hunched deep in coat pockets
+            el_l = (int(sh_l[0] - 25 * sc), int(sh_l[1] + 45 * sc))
+            hand_l = (int(sh_l[0] - 5 * sc), int(sh_l[1] + 75 * sc))
+            el_r = (int(sh_r[0] + 25 * sc), int(sh_r[1] + 45 * sc))
+            hand_r = (int(sh_r[0] + 5 * sc), int(sh_r[1] + 75 * sc))
+
+        elif 'running_chase' in act:
+            # Dynamic sprinting arms pumping
+            s_arm = s(t * 12.0) * 65 * sc
+            el_l = (int(sh_l[0] - 45 * sc - s_arm * 0.6), int(sh_l[1] + 35 * sc))
+            hand_l = (int(sh_l[0] - 70 * sc - s_arm), int(sh_l[1] + 25 * sc))
+            el_r = (int(sh_r[0] + 45 * sc + s_arm * 0.6), int(sh_r[1] + 35 * sc))
+            hand_r = (int(sh_r[0] + 70 * sc + s_arm), int(sh_r[1] + 25 * sc))
+
+        elif 'peeking_heartbreak' in act:
+            # Peeking from edge, one hand holding wall, one clutching chest
+            el_l = (int(sh_l[0] - 50 * sc), int(sh_l[1] + 15 * sc))
+            hand_l = (int(sh_l[0] - 75 * sc), int(sh_l[1] + 10 * sc))
+            el_r = (int(sh_r[0] + 20 * sc), int(sh_r[1] + 40 * sc))
+            hand_r = (int(sh_r[0] - 15 * sc), int(sh_r[1] + 35 * sc))
+
+        elif 'cafe_reflecting' in act:
+            # Seated posture, right elbow resting on table, palm propping chin
+            el_r = (int(sh_r[0] + 45 * sc), int(sh_r[1] + 45 * sc))
+            hand_r = (int(sh_r[0] + 20 * sc), int(sh_r[1] - 45 * sc))
+            # Left arm resting on lap
+            el_l = (int(sh_l[0] - 30 * sc), int(sh_l[1] + 50 * sc))
+            hand_l = (int(sh_l[0] - 10 * sc), int(sh_l[1] + 90 * sc))
+
+        elif 'heartbreak_clutch' in act:
+            # Both hands clutching tightly over left chest
+            thump = s(t * 9.0) * 3 * sc
+            el_l = (int(sh_l[0] - 35 * sc), int(sh_l[1] + 35 * sc))
+            hand_l = (int(sh_l[0] - 5 * sc), int(sh_l[1] + 30 * sc + thump))
+            el_r = (int(sh_r[0] + 15 * sc), int(sh_r[1] + 35 * sc))
+            hand_r = (int(sh_l[0] - 5 * sc), int(sh_l[1] + 32 * sc + thump))
+
+        elif 'stargazing_rooftop' in act or 'stargaze' in act:
+            # Wistful stargaze: left hand pointing up to night sky, right at side
+            el_l = (int(sh_l[0] - 50 * sc), int(sh_l[1] - 30 * sc))
+            hand_l = (int(sh_l[0] - 80 * sc), int(sh_l[1] - 110 * sc))
+            el_r = (int(sh_r[0] + 35 * sc), int(sh_r[1] + 50 * sc))
+            hand_r = (int(sh_r[0] + 25 * sc), int(sh_r[1] + 95 * sc))
+
+        elif 'peaceful_sunrise' in act or 'peace' in act:
+            # Open serene posture welcoming the sunrise
+            el_l = (int(sh_l[0] - 55 * sc), int(sh_l[1] + 35 * sc))
+            hand_l = (int(sh_l[0] - 90 * sc), int(sh_l[1] + 55 * sc))
+            el_r = (int(sh_r[0] + 55 * sc), int(sh_r[1] + 35 * sc))
+            hand_r = (int(sh_r[0] + 90 * sc), int(sh_r[1] + 55 * sc))
 
         elif 'think' in act:
             # Right hand touches chin / head
@@ -440,6 +663,16 @@ class StickHubStorytellerEngine:
                 draw.ellipse([ex - 3, ey - 3, ex + 3, ey + 3], fill=ink_color)
             else:
                 draw.ellipse([ex - eye_r, ey - eye_r, ex + eye_r, ey + eye_r], fill=ink_color)
+
+        # Heartbreak / sad tear animation
+        if emotion == 'sad' or 'cry' in str(emotion):
+            for side in (-1, 1):
+                tear_phase = (t * 2.8 + (0.5 if side == 1 else 0.0)) % 1.2
+                tear_y = int(eye_y + 8 * sc + tear_phase * 35 * sc)
+                tear_x = int(hx + side * eye_offset_x + look_dx)
+                if tear_y < hy + 50 * sc:
+                    draw.ellipse([tear_x - int(2.5 * sc), tear_y - int(3.5 * sc),
+                                  tear_x + int(2.5 * sc), tear_y + int(3.5 * sc)], fill=(56, 189, 248))
 
         # 3. Expressive Eyebrows
         brow_y = hy - int(24 * sc)
@@ -573,6 +806,47 @@ class StickHubStorytellerEngine:
             draw.text((lx, ly), line, font=font, fill=(255, 255, 255))
 
     # -------------------------------------------------------------
+    # LAYER 5B: Glowing Memory Silhouette Partner (Music Story MV)
+    # -------------------------------------------------------------
+    def draw_silhouette_actor(self, pil_img, draw, sx, t, sc):
+        """Draws a translucent cyan/violet glowing memory silhouette of the lost partner."""
+        sil_overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+        s_draw = ImageDraw.Draw(sil_overlay)
+
+        torso_len = 160 * sc
+        leg_len = 150 * sc
+        head_r = int(48 * sc)
+        gy = self.ground_y
+        hip = (int(sx), int(gy - leg_len))
+        neck = (int(sx), int(hip[1] - torso_len))
+        head_cy = int(neck[1] - head_r - 4 * sc)
+
+        # Soft glowing ethereal aura
+        aura_r = int(75 * sc)
+        s_draw.ellipse([sx - aura_r, head_cy - aura_r, sx + aura_r, head_cy + aura_r], fill=(0, 229, 255, 35))
+
+        # Silhouette body (translucent glowing ethereal violet-cyan)
+        col = (192, 132, 252, 95)
+        # Head
+        s_draw.ellipse([sx - head_r, head_cy - head_r, sx + head_r, head_cy + head_r], fill=col)
+        # Torso
+        s_draw.line([hip, neck], fill=col, width=int(10 * sc))
+        # Flowing dress or gentle legs
+        s_draw.polygon([(int(sx - 24 * sc), gy), (int(sx + 24 * sc), gy), hip], fill=(192, 132, 252, 80))
+        # Gentle arm folded
+        s_draw.line([neck, (int(sx + 25 * sc), int(neck[1] + 60 * sc)), (int(sx + 10 * sc), int(neck[1] + 90 * sc))], fill=col, width=int(7 * sc))
+
+        # Floating memory light dust rising into the sky
+        for i in range(8):
+            p_phi = (t * 1.5 + i * 0.8) % 3.0
+            p_y = int(gy - (p_phi / 3.0) * 350 * sc)
+            p_x = int(sx + math.sin(t * 2.0 + i) * 35 * sc)
+            p_alpha = int(120 * (1.0 - p_phi / 3.0))
+            s_draw.ellipse([p_x - 3, p_y - 3, p_x + 3, p_y + 3], fill=(0, 229, 255, p_alpha))
+
+        pil_img.alpha_composite(sil_overlay)
+
+    # -------------------------------------------------------------
     # MASTER FRAME RENDERER: Full Composite
     # -------------------------------------------------------------
     def render_frame(self, beat_data, t=0.0, energy=0.7):
@@ -598,11 +872,31 @@ class StickHubStorytellerEngine:
         is_walking = False
         if any(w in text_lower for w in ["walk", "jalan", "melangkah", "pergi", "bergerak", "run", "lari"]):
             is_walking = True
-        elif action in ["walk", "run", "stride", "move"]:
+        elif action in ["walk", "run", "stride", "move", "walking_cold", "running_chase"]:
             is_walking = True
 
         if not action or action == 'talk':
-            if any(w in text_lower for w in ["pikir", "think", "kenapa", "mengapa", "tahu", "gimana"]):
+            if any(w in text_lower for w in ["menangis", "tangis", "air mata", "cried", "tears", "weep"]):
+                action = 'kneel_crying'
+                emotion = 'sad'
+            elif any(w in text_lower for w in ["foto", "kenangan", "bayangmu", "memori", "photograph"]):
+                action = 'holding_photo'
+                emotion = 'sad'
+            elif any(w in text_lower for w in ["pergi", "tinggalkan", "jangan pergi", "ku mohon", "stay"]):
+                action = 'reaching_out'
+                emotion = 'sad'
+            elif any(w in text_lower for w in ["hujan", "gerimis", "dingin", "rain", "storm"]):
+                action = 'walking_cold'
+                emotion = 'sad'
+            elif any(w in text_lower for w in ["kejar", "mengejar", "chasing", "find you"]):
+                action = 'running_chase'
+                emotion = 'surprised'
+            elif any(w in text_lower for w in ["bintang", "stars", "night sky"]):
+                action = 'stargazing_rooftop'
+            elif any(w in text_lower for w in ["ikhlas", "mentari", "fajar", "sunrise"]):
+                action = 'peaceful_sunrise'
+                emotion = 'happy'
+            elif any(w in text_lower for w in ["pikir", "think", "kenapa", "mengapa", "tahu", "gimana"]):
                 action = 'think'
                 emotion = 'thinking'
             elif any(w in text_lower for w in ["kaget", "shock", "wow", "astaga", "lihat", "surprised"]):
@@ -623,7 +917,21 @@ class StickHubStorytellerEngine:
             # Walking across screen or subtle cyclical drift
             char_x = int(self.cx + math.sin(t * 0.8) * 40 * self.scale)
 
-        # 3. Solo Animated Character
+        # 3. Solo Animated Character or Music MV Duo with Silhouette Memory
+        actors = beat_data.get('actors')
+        has_silhouette = False
+        sil_x = int(self.width * 0.72) if self.is_landscape else int(self.width * 0.70)
+
+        if actors and len(actors) >= 2:
+            a2 = actors[1]
+            if a2.get('is_silhouette') or a2.get('label') == 'FADING MEMORY':
+                has_silhouette = True
+                sil_x = a2.get('x', sil_x)
+
+        if has_silhouette or beat_data.get('secondary_actor') == 'fading_silhouette' or 'bayangmu' in text_lower or 'silhouette' in text_lower:
+            # Draw the glowing memory silhouette partner
+            self.draw_silhouette_actor(pil_img, draw, sil_x, t, self.scale)
+
         head_pos = self.draw_character(draw, char_x, t, energy, action, emotion, is_walking=is_walking)
 
         # 4. Comic Props Pop-In

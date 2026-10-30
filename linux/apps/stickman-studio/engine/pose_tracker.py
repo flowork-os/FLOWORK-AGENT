@@ -18,6 +18,11 @@ _DETECTOR = None
 def get_detector():
     global _DETECTOR
     if _DETECTOR is None:
+        import sys
+        from unittest.mock import MagicMock
+        if 'matplotlib' not in sys.modules:
+            sys.modules['matplotlib'] = MagicMock()
+            sys.modules['matplotlib.pyplot'] = MagicMock()
         import mediapipe as mp
         from mediapipe.tasks import python
         from mediapipe.tasks.python import vision

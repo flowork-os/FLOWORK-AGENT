@@ -61,14 +61,30 @@ class ProStickmanEngine:
     # LAYER 1: Background Wall & Neon Atmosphere (AI Scene / Custom / Thematic)
     # -------------------------------------------------------------
     def draw_background_wall(self, draw, t, bg_image_path=None, stage_theme='podcast_studio', pil_img=None):
-        wall_h = self.desk_y + 10
+        # Resolve background image path robustly
+        resolved_bg = None
+        if bg_image_path:
+            bg_str = str(bg_image_path)
+            if os.path.exists(bg_str):
+                resolved_bg = bg_str
+            else:
+                app_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                cands = [
+                    os.path.join(app_root, 'data', 'backgrounds', os.path.basename(bg_str)),
+                    os.path.join(app_root, bg_str.lstrip('/')),
+                    os.path.join(app_root, 'data', bg_str.lstrip('/'))
+                ]
+                for c in cands:
+                    if os.path.exists(c):
+                        resolved_bg = c
+                        break
 
-        # Option A: Custom or AI Generated Background Image
-        if bg_image_path and os.path.exists(bg_image_path) and pil_img is not None:
+        # Option A: Custom or AI Generated Background Image (Full-Frame 720x1280)
+        if resolved_bg and os.path.exists(resolved_bg) and pil_img is not None:
             try:
-                bg_raw = Image.open(bg_image_path).convert("RGBA")
+                bg_raw = Image.open(resolved_bg).convert("RGBA")
                 bg_w, bg_h = bg_raw.size
-                target_ratio = self.width / float(wall_h)
+                target_ratio = self.width / float(self.height)
                 curr_ratio = bg_w / float(bg_h)
                 if curr_ratio > target_ratio:
                     new_w = int(bg_h * target_ratio)
@@ -78,18 +94,19 @@ class ProStickmanEngine:
                     new_h = int(bg_w / target_ratio)
                     start_y = (bg_h - new_h) // 2
                     cropped = bg_raw.crop((0, start_y, bg_w, start_y + new_h))
-                resized = cropped.resize((self.width, wall_h), Image.Resampling.LANCZOS)
+                resized = cropped.resize((self.width, self.height), Image.Resampling.LANCZOS)
                 pil_img.paste(resized, (0, 0))
 
                 # Ambient Neon Strip above Desk
                 pulse = 0.85 + 0.15 * math.sin(t * 3.5)
                 neon_c = (int(0 * pulse), int(229 * pulse), int(255 * pulse), 220)
-                draw.line([(0, self.desk_y - 2), (self.width, self.desk_y - 2)], fill=neon_c, width=4)
-                return
+                draw.line([(0, self.desk_y - 2), (self.width, self.desk_y - 2)], fill=neon_c, width=3)
+                return True
             except Exception as e:
-                print(f"[ProEngine] Warning loading background image {bg_image_path}: {e}", file=sys.stderr)
+                print(f"[ProEngine] Warning loading background image {resolved_bg}: {e}", file=sys.stderr)
 
         # Option B: Thematic Procedural Backgrounds
+        wall_h = self.desk_y + 10
         th = (stage_theme or 'podcast_studio').lower()
         if 'classroom' in th:
             for y in range(wall_h):
@@ -303,16 +320,26 @@ class ProStickmanEngine:
     # -------------------------------------------------------------
     # LAYER 4: Foreground Podcast Desk (In front of torsos!)
     # -------------------------------------------------------------
-    def draw_foreground_desk(self, draw):
-        for y in range(self.desk_y, self.height):
-            ratio = (y - self.desk_y) / float(self.height - self.desk_y)
-            r = int(50 - 24 * ratio)
-            g = int(34 - 18 * ratio)
-            b = int(24 - 12 * ratio)
-            draw.line([(0, y), (self.width, y)], fill=(r, g, b))
+    def draw_foreground_desk(self, draw, has_custom_bg=False, pil_img=None):
+        if has_custom_bg and pil_img is not None:
+            # Modern sleek translucent acrylic desk bar with cyan neon edge
+            overlay = Image.new("RGBA", (self.width, self.height), (0, 0, 0, 0))
+            o_draw = ImageDraw.Draw(overlay)
+            desk_h = max(55, int((self.height - self.desk_y) * 0.35))
+            o_draw.rounded_rectangle([20, self.desk_y, self.width - 20, self.desk_y + desk_h],
+                                     radius=12, fill=(15, 23, 42, 140), outline=(0, 229, 255, 220), width=3)
+            o_draw.line([(35, self.desk_y + 4), (self.width - 35, self.desk_y + 4)], fill=(255, 255, 255, 120), width=2)
+            pil_img.alpha_composite(overlay)
+        else:
+            for y in range(self.desk_y, self.height):
+                ratio = (y - self.desk_y) / float(self.height - self.desk_y)
+                r = int(50 - 24 * ratio)
+                g = int(34 - 18 * ratio)
+                b = int(24 - 12 * ratio)
+                draw.line([(0, y), (self.width, y)], fill=(r, g, b))
 
-        draw.line([(0, self.desk_y), (self.width, self.desk_y)], fill=(130, 90, 60), width=3)
-        draw.line([(0, self.desk_y + 3), (self.width, self.desk_y + 3)], fill=(80, 52, 32), width=2)
+            draw.line([(0, self.desk_y), (self.width, self.desk_y)], fill=(130, 90, 60), width=3)
+            draw.line([(0, self.desk_y + 3), (self.width, self.desk_y + 3)], fill=(80, 52, 32), width=2)
 
     # -------------------------------------------------------------
     # LAYER 5: Forearms, Hands on Desk, Props, Mics
@@ -465,11 +492,12 @@ class ProStickmanEngine:
         # Layer 1: Background Wall & Neon Strip (Custom AI Image / Thematic / Studio)
         custom_bg = beat_data.get("background_image") or beat_data.get("background_path")
         stage_theme = beat_data.get("stage_theme") or beat_data.get("background", "podcast_studio")
-        self.draw_background_wall(draw, t, bg_image_path=custom_bg, stage_theme=stage_theme, pil_img=pil_img)
+        has_custom_bg = bool(self.draw_background_wall(draw, t, bg_image_path=custom_bg, stage_theme=stage_theme, pil_img=pil_img))
 
-        # Layer 2: Ergonomic Studio Chairs
-        self.draw_studio_chair(draw, cx=self.host_x, cy=self.desk_y)
-        self.draw_studio_chair(draw, cx=self.cohost_x, cy=self.desk_y)
+        # Layer 2: Ergonomic Studio Chairs (omitted when custom scenery is present so scenery is not blocked)
+        if not has_custom_bg:
+            self.draw_studio_chair(draw, cx=self.host_x, cy=self.desk_y)
+            self.draw_studio_chair(draw, cx=self.cohost_x, cy=self.desk_y)
 
         # Layer 3: Character Torsos and Heads
         host_speaking = beat_data.get("speaking_actor", "HOST") == "HOST"
@@ -490,8 +518,8 @@ class ProStickmanEngine:
             speaking=cohost_speaking, speech_energy=cohost_energy, t=t
         )
 
-        # Layer 4: Foreground Wooden Desk Surface
-        self.draw_foreground_desk(draw)
+        # Layer 4: Foreground Desk Surface (Translucent modern acrylic when custom scenery is present)
+        self.draw_foreground_desk(draw, has_custom_bg=has_custom_bg, pil_img=pil_img)
 
         # Layer 5: Character Hands & Forearms resting/gesturing on desk + Microphones & Props
         self.draw_arms_and_props(draw, l_sh_h, r_sh_h, is_host=True, action=host_action,
